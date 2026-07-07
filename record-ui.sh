@@ -4,27 +4,50 @@ set -euo pipefail
 
 # --- configuration ---
 OUT="blitzy/evidence/cata-ui.mp4"
-USERDIR="/tmp/cata-ui-userdir/"
 DISPLAY_NUM=99
 GEOM="1920x1080"
 FRAMERATE=30
 RECORD_SECS=25
 VCODEC="libx264"
 PIXFMT="yuv420p"
-FRAME="/tmp/cata-ui-frame.png"
-BLACKLOG="/tmp/cata-ui-blackdetect.log"
 MIN_COLORS=50
 
 mkdir -p "$(dirname "$OUT")"
-mkdir -p "$USERDIR"
+
+# --- private scratch directory ---
+TMPROOT="$(mktemp -d "${TMPDIR:-/tmp}/cata-ui.XXXXXX")"
+chmod 700 "$TMPROOT"
+USERDIR="$TMPROOT/userdir/"
+FRAME="$TMPROOT/frame.png"
+BLACKLOG="$TMPROOT/blackdetect.log"
+XVFB_LOG="$TMPROOT/xvfb.log"
+GAME_LOG="$TMPROOT/game.log"
+XDG_DIR="$TMPROOT/xdg"
+mkdir -p "$USERDIR" "$XDG_DIR"
+chmod 700 "$XDG_DIR"
+
+# --- process management ---
+XVFB_PID=""
+FFMPEG_PID=""
+GAME_PID=""
+# shellcheck disable=SC2317
+cleanup() {
+    for pid in "$GAME_PID" "$FFMPEG_PID" "$XVFB_PID"; do
+        if [ -n "$pid" ]; then
+            kill "$pid" 2>/dev/null || true
+        fi
+    done
+    if [ -n "${TMPROOT:-}" ] && [ -d "$TMPROOT" ]; then
+        rm -rf "$TMPROOT" 2>/dev/null || true
+    fi
+}
+trap cleanup EXIT INT TERM
 
 export DISPLAY=":${DISPLAY_NUM}"
 export SDL_VIDEODRIVER=x11
 export SDL_AUDIODRIVER=dummy
 export LIBGL_ALWAYS_SOFTWARE=1
-mkdir -p /tmp/xdg
-chmod 700 /tmp/xdg
-export XDG_RUNTIME_DIR=/tmp/xdg
+export XDG_RUNTIME_DIR="$XDG_DIR"
 
 # --- preflight ---
 if [ ! -x ./cataclysm-tiles ]; then
@@ -55,22 +78,8 @@ if [ "$missing" -ne 0 ]; then
     exit 1
 fi
 
-# --- process management ---
-XVFB_PID=""
-FFMPEG_PID=""
-GAME_PID=""
-# shellcheck disable=SC2317
-cleanup() {
-    for pid in "$GAME_PID" "$FFMPEG_PID" "$XVFB_PID"; do
-        if [ -n "$pid" ]; then
-            kill "$pid" 2>/dev/null || true
-        fi
-    done
-}
-trap cleanup EXIT INT TERM
-
 # --- start virtual framebuffer ---
-Xvfb ":${DISPLAY_NUM}" -screen 0 "${GEOM}x24" >/tmp/cata-ui-xvfb.log 2>&1 &
+Xvfb ":${DISPLAY_NUM}" -screen 0 "${GEOM}x24" >"$XVFB_LOG" 2>&1 &
 XVFB_PID=$!
 sleep 2
 if command -v xdpyinfo >/dev/null 2>&1; then
@@ -88,10 +97,13 @@ ffmpeg -nostdin -y -loglevel error -f x11grab -video_size "$GEOM" -framerate "$F
     -c:v "$VCODEC" -pix_fmt "$PIXFMT" "$OUT" &
 FFMPEG_PID=$!
 
-./cataclysm-tiles --userdir "$USERDIR" >/tmp/cata-ui-game.log 2>&1 &
+./cataclysm-tiles --userdir "$USERDIR" >"$GAME_LOG" 2>&1 &
 GAME_PID=$!
 
-wait "$FFMPEG_PID" || true
+if ! wait "$FFMPEG_PID"; then
+    echo "FAIL: ffmpeg recording process exited non-zero; the UI recording did not complete." >&2
+    exit 1
+fi
 kill "$GAME_PID" 2>/dev/null || true
 kill "$XVFB_PID" 2>/dev/null || true
 
@@ -126,20 +138,14 @@ if ! [ "${NFRAMES:-0}" -gt 0 ] 2>/dev/null; then
     exit 1
 fi
 
-# (b) reject an all-black clip (black from frame 0 across ~the whole duration)
-ffmpeg -nostdin -hide_banner -i "$OUT" -vf "blackdetect=d=0.1:pic_th=0.98" -an -f null - >"$BLACKLOG" 2>&1 || true
-if awk -v total="$RECORD_SECS" '
-        /black_start:/ {
-            bs = ""; bd = "";
-            for (i = 1; i <= NF; i++) {
-                if ($i ~ /^black_start:/)    { split($i, a, ":"); bs = a[2] }
-                if ($i ~ /^black_duration:/) { split($i, a, ":"); bd = a[2] }
-            }
-            if (bs != "" && bd != "" && (bs + 0) <= 0.5 && (bd + 0) >= total * 0.9) { found = 1 }
-        }
-        END { exit(found ? 0 : 1) }
-    ' "$BLACKLOG"; then
-    echo "FAIL: clip is black from the first frame for its full duration — UI never rendered (dummy driver? wrong DISPLAY?)." >&2
+# (b) reject a clip that is black from frame 0 (UI never rendered)
+if ! ffmpeg -nostdin -hide_banner -i "$OUT" -vf "blackdetect=d=1:pix_th=0.10" -an -f null - >"$BLACKLOG" 2>&1; then
+    cat "$BLACKLOG" >&2
+    echo "FAIL: blackdetect verification could not run on $OUT." >&2
+    exit 1
+fi
+if grep -Eq 'black_start:0([[:space:]]|$)' "$BLACKLOG"; then
+    echo "FAIL: black_start:0 detected — clip is black from the first frame; UI never rendered (dummy driver? wrong DISPLAY?)." >&2
     exit 1
 fi
 
