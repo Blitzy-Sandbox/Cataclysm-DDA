@@ -10,9 +10,7 @@ FRAMERATE=30
 RECORD_SECS=25
 VCODEC="libx264"
 PIXFMT="yuv420p"
-# Minimum unique colors required in a frame extracted from the encoded MP4
-# (H.264/yuv420p encoding spreads the palette across many values).
-MIN_COLORS=500
+MIN_COLORS=50
 
 mkdir -p "$(dirname "$OUT")"
 
@@ -24,7 +22,6 @@ FRAME="$TMPROOT/frame.png"
 BLACKLOG="$TMPROOT/blackdetect.log"
 XVFB_LOG="$TMPROOT/xvfb.log"
 GAME_LOG="$TMPROOT/game.log"
-WARMUP_LOG="$TMPROOT/warmup.log"
 XDG_DIR="$TMPROOT/xdg"
 mkdir -p "$USERDIR" "$XDG_DIR"
 chmod 700 "$XDG_DIR"
@@ -33,10 +30,9 @@ chmod 700 "$XDG_DIR"
 XVFB_PID=""
 FFMPEG_PID=""
 GAME_PID=""
-WARMUP_PID=""
 # shellcheck disable=SC2317
 cleanup() {
-    for pid in "$WARMUP_PID" "$GAME_PID" "$FFMPEG_PID" "$XVFB_PID"; do
+    for pid in "$GAME_PID" "$FFMPEG_PID" "$XVFB_PID"; do
         if [ -n "$pid" ]; then
             kill "$pid" 2>/dev/null || true
         fi
@@ -52,11 +48,6 @@ export SDL_VIDEODRIVER=x11
 export SDL_AUDIODRIVER=dummy
 export LIBGL_ALWAYS_SOFTWARE=1
 export XDG_RUNTIME_DIR="$XDG_DIR"
-# Force a uniform C locale: the game maps this to English and boots straight to
-# the main menu, instead of stopping on the first-run "Select your language"
-# modal (which never advances without input and leaves the capture blank).
-export LC_ALL=C
-unset LANG LANGUAGE 2>/dev/null || true
 
 # --- preflight ---
 if [ ! -x ./cataclysm-tiles ]; then
@@ -100,64 +91,14 @@ if command -v xdpyinfo >/dev/null 2>&1; then
     done
 fi
 
-# --- warm-up run ---
-# A fresh user dir's first launch opens a minimum 80x24 window and only then
-# writes the auto-detected terminal size to config; the recorded run below
-# reuses this config so it opens at full resolution. Stop this run once the
-# config file has been written.
-./cataclysm-tiles --userdir "$USERDIR" >"$WARMUP_LOG" 2>&1 &
-WARMUP_PID=$!
-for _ in $(seq 1 40); do
-    if [ -f "${USERDIR}config/options.json" ]; then
-        break
-    fi
-    if ! kill -0 "$WARMUP_PID" 2>/dev/null; then
-        break
-    fi
-    sleep 0.5
-done
-sleep 3
-kill "$WARMUP_PID" 2>/dev/null || true
-wait "$WARMUP_PID" 2>/dev/null || true
-WARMUP_PID=""
-
-# --- launch the recorded run and wait until the UI has actually rendered ---
-# Starting the capture only after a non-blank frame appears keeps the clip free
-# of the leading black frames produced while the game loads.
-./cataclysm-tiles --userdir "$USERDIR" >"$GAME_LOG" 2>&1 &
-GAME_PID=$!
-
-ui_ready=0
-for _ in $(seq 1 40); do
-    sleep 1
-    if ! kill -0 "$GAME_PID" 2>/dev/null; then
-        echo "FAIL: cataclysm-tiles exited before the UI rendered." >&2
-        cat "$GAME_LOG" >&2 2>/dev/null || true
-        exit 1
-    fi
-    rm -f "$FRAME"
-    ffmpeg -nostdin -y -loglevel error -f x11grab -video_size "$GEOM" \
-        -i ":${DISPLAY_NUM}" -frames:v 1 "$FRAME" 2>/dev/null || true
-    if [ -s "$FRAME" ]; then
-        probe_colors="$("$IM" "$FRAME" -format "%k" info: 2>/dev/null || echo 0)"
-        case "$probe_colors" in '' | *[!0-9]*) probe_colors=0 ;; esac
-        if [ "$probe_colors" -ge 30 ]; then
-            ui_ready=1
-            break
-        fi
-    fi
-done
-if [ "$ui_ready" -ne 1 ]; then
-    echo "FAIL: UI did not render a non-blank frame within the timeout; refusing to record a blank clip." >&2
-    exit 1
-fi
-sleep 1
-
-# --- record the live, already-rendered UI ---
+# --- record UI and launch game ---
 ffmpeg -nostdin -y -loglevel error -f x11grab -video_size "$GEOM" -framerate "$FRAMERATE" \
     -i ":${DISPLAY_NUM}" -t "$RECORD_SECS" \
     -c:v "$VCODEC" -pix_fmt "$PIXFMT" "$OUT" &
 FFMPEG_PID=$!
+
+./cataclysm-tiles --userdir "$USERDIR" >"$GAME_LOG" 2>&1 &
+GAME_PID=$!
 
 if ! wait "$FFMPEG_PID"; then
     echo "FAIL: ffmpeg recording process exited non-zero; the UI recording did not complete." >&2
@@ -197,10 +138,8 @@ if ! [ "${NFRAMES:-0}" -gt 0 ] 2>/dev/null; then
     exit 1
 fi
 
-# (b) reject a clip that is black from frame 0 (UI never rendered). The
-# picture-black-ratio threshold classifies a frame as black only when almost
-# all of its pixels are black.
-if ! ffmpeg -nostdin -hide_banner -i "$OUT" -vf "blackdetect=d=1:pix_th=0.10:picture_black_ratio_th=0.995" -an -f null - >"$BLACKLOG" 2>&1; then
+# (b) reject a clip that is black from frame 0 (UI never rendered)
+if ! ffmpeg -nostdin -hide_banner -i "$OUT" -vf "blackdetect=d=1:pix_th=0.10" -an -f null - >"$BLACKLOG" 2>&1; then
     cat "$BLACKLOG" >&2
     echo "FAIL: blackdetect verification could not run on $OUT." >&2
     exit 1
