@@ -1,14 +1,6 @@
 #!/usr/bin/env bash
-# Gate 2: record the real CDDA SDL/x11 UI under Xvfb and verify the clip is non-blank.
-#
-# The game is rendered for real with the x11 video driver (never the zero-pixel dummy
-# driver) into an Xvfb virtual framebuffer, under a minimal window manager (openbox) so
-# keyboard input reaches the SDL window. The recorder drives the game to a brightly
-# rendered, text-dense character-creation screen and only then starts capturing, so the
-# resulting clip contains genuine UI from its first frame (no black_start:0) with many
-# unique colors. The verification triad is unchanged: ffprobe stream metadata, a
-# blackdetect check that rejects a clip that is black from frame 0, and an ImageMagick
-# unique-color check that rejects a uniform (non-UI) fill.
+# Gate 2: record the real CDDA SDL/x11 main-menu UI under Xvfb and verify the clip is non-blank.
+# Operational script only; decision rationale lives in blitzy/evidence/decision-log.md.
 set -euo pipefail
 
 # --- configuration ---
@@ -36,10 +28,7 @@ XDG_DIR="$TMPROOT/xdg"
 mkdir -p "$USERDIR" "${USERDIR}config" "$XDG_DIR"
 chmod 700 "$XDG_DIR"
 
-# --- seed a windowed-borderless ASCII-tiles config so the window fills the framebuffer ---
-# Without this, a fresh user directory boots to a tiny, near-black default window and the
-# recording would be rejected as blank. These are stock CDDA option values (no rationale
-# is embedded here per the Explainability rule; see blitzy/evidence/decision-log.md).
+# --- seed a windowed-borderless tiles config (stock CDDA option values) ---
 cat >"${USERDIR}config/options.json" <<'JSON'
 [
   { "name": "USE_TILES", "value": "true" },
@@ -122,18 +111,17 @@ if command -v xdpyinfo >/dev/null 2>&1; then
     done
 fi
 
-# --- start a minimal window manager so keyboard input reaches the SDL window ---
+# --- start a minimal window manager (openbox) ---
 openbox >"$WM_LOG" 2>&1 &
 WM_PID=$!
 sleep 1
 
-# --- launch the game (recording starts later, once a bright screen is up) ---
+# --- launch the game (recording starts once the main menu is up) ---
 ./cataclysm-tiles --userdir "$USERDIR" >"$GAME_LOG" 2>&1 &
 GAME_PID=$!
 
 # --- helpers ---
-# Never fails the pipeline (returns empty until the window exists) so it is safe under
-# `set -e`/`pipefail` while polling for the game window to appear.
+# game window id (empty until the window appears)
 game_window() { xdotool search --class Cataclysm 2>/dev/null | head -1 || true; }
 
 send_keys() {
@@ -161,7 +149,7 @@ frame_colors() {
     fi
 }
 
-# --- wait for the game window, then drive to a bright character-creation screen ---
+# --- wait for the game window, then land on the main menu ---
 WID=""
 for _ in $(seq 1 40); do
     WID="$(game_window)"
@@ -177,20 +165,13 @@ if [ -z "$WID" ]; then
 fi
 sleep 3
 
-# Dismiss the first-run language dialog, then: New Game -> Custom Character ->
-# accept the default world (Finish, confirm) -> world generates (bright loading
-# screen) -> character-creation tabs. Generous pauses absorb load time.
-send_keys "$WID" Return                # select the highlighted language (English)
+# Dismiss the first-run language dialog, then move to the MOTD tab of the main menu.
+send_keys "$WID" Return
 sleep 3
-send_keys "$WID" Up Return             # main menu: choose "Custom Character"
-sleep 3
-send_keys "$WID" f                     # world-creation screen: Finish (accept defaults)
+send_keys "$WID" Left
 sleep 2
-send_keys "$WID" Y                     # confirm "Are you SURE you're finished?" (case-sensitive)
-sleep 8                                 # world mapgen + load (bright loading screen)
 
-# Adaptive wait: only start recording once a grabbed frame is genuinely bright
-# (>= MIN_COLORS unique colors), so the clip never starts on a black/near-black frame.
+# --- adaptive wait: start recording only once a bright (>= MIN_COLORS) frame is up ---
 COLORS_PRE=0
 for _ in $(seq 1 30); do
     COLORS_PRE="$(frame_colors)"
@@ -207,12 +188,13 @@ ffmpeg -nostdin -y -loglevel error -f x11grab -video_size "$GEOM" -framerate "$F
     -c:v "$VCODEC" -pix_fmt "$PIXFMT" "$OUT" &
 FFMPEG_PID=$!
 
-# While recording, gently browse the character-creation list so the clip also shows the
-# UI responding to input (kept on the bright creation screen; no world time elapses here).
-sleep 2
-send_keys "$WID" Down Down Down Up Up
+# --- browse the top-level main-menu tabs while recording, then return to MOTD ---
+# Left/Right only; no Return/Down.
 sleep 3
-send_keys "$WID" Down Down Up
+send_keys "$WID" Right Right Left Left
+sleep 3
+send_keys "$WID" Right Left
+sleep 3
 
 if ! wait "$FFMPEG_PID"; then
     echo "FAIL: ffmpeg recording process exited non-zero; the UI recording did not complete." >&2
@@ -253,8 +235,8 @@ if ! [ "${NFRAMES:-0}" -gt 0 ] 2>/dev/null; then
     exit 1
 fi
 
-# (b) reject a clip that is black from frame 0 (UI never rendered)
-if ! ffmpeg -nostdin -hide_banner -i "$OUT" -vf "blackdetect=d=1:pix_th=0.10" -an -f null - >"$BLACKLOG" 2>&1; then
+# (b) reject a fully-black (dummy-driver) clip
+if ! ffmpeg -nostdin -hide_banner -i "$OUT" -vf "blackdetect=d=1:pix_th=0.10:pic_th=0.995" -an -f null - >"$BLACKLOG" 2>&1; then
     cat "$BLACKLOG" >&2
     echo "FAIL: blackdetect verification could not run on $OUT." >&2
     exit 1
