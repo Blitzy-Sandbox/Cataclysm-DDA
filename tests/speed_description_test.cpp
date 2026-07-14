@@ -3,6 +3,7 @@
 #include <vector>
 
 #include "cata_catch.h"
+#include "map_helpers.h"
 #include "monster.h"
 #include "mtype.h"
 #include "player_helpers.h"
@@ -27,6 +28,7 @@ TEST_CASE( "monster_speed_description", "[monster][speed_description]" )
      */
 
     auto get_speed_string = []( const mtype_id & mon_id ) {
+        clear_map();
         clear_avatar();
         monster mon( mon_id );
         return monster::speed_description(
