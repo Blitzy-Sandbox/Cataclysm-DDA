@@ -20,20 +20,22 @@ patch fails ("patch does not apply"). The feature is therefore being restored
 patch — a staged effort spanning multiple checkpoints rather than a single
 mechanical revert.
 
-**Checkpoint status.** As of this checkpoint the serialized-contract foundation
-is in place while the remaining in-creator work is planned but not yet present.
-Using the Section B traceability numbering below: rows 1-2 (the `ONE_POOL` and
-`MULTI_POOL` enum modes), row 3 (the `CHARACTER_POINT_POOLS` world option), and
-row 18 (the New Game points-pool hint) are **implemented**; rows 4-17 — the
-pool-aware points-left and points-summary helpers, `skill_increment_cost()`, the
-`CHARCREATOR_POINTS` tab with the tab-count bump (7→8), the option read and pool
-seed in `avatar::create()`, the top-bar and per-tab point accounting, the
-per-selection cost/affordability feedback on the scenario/profession/background/
-stats/traits/skills tabs, and the `ONE_POOL`/`MULTI_POOL` finalize guards,
-together with the point-pool tests — are **pending** and are planned to land in
-later checkpoints inside the ImGui creator. Sections A and B therefore describe
-the full intended restoration; the decision log records each choice as it is
-made, ahead of the code that implements it.
+**Implementation status.** The restoration is complete: every construct in the
+Section B traceability matrix (rows 1-18) is implemented in the current Dear
+ImGui creator, and the point-pool regression suite exists and passes. Concretely,
+all of the following are present and wired: the `ONE_POOL`/`MULTI_POOL` enum modes
+and the `CHARACTER_POINT_POOLS` world option; the pool-aware `skill_points_left`
+and `pools_to_string` helpers and `skill_increment_cost()`; the `CHARCREATOR_POINTS`
+tab with the tab-count bump (7→8); the option read and pool seed in
+`avatar::create()`; the always-visible points balance drawn outside the collapsible
+"General Info" header; per-selection cost/earn, net-delta, and affordability
+feedback on the scenario, profession, background, stats, traits, and skills tabs;
+the `ONE_POOL`/`MULTI_POOL` finalize guard applied on every completion path; and the
+restored New Game points-pool hint. The regression tests in
+`tests/char_creation_points_test.cpp` (eight Catch2 cases tagged
+`[char_creation][points]`) pass, and the tiles (SDL2) build compiles cleanly with
+tests enabled. Sections A and B below therefore describe the delivered
+implementation, and every row maps bidirectionally to code and tests that exist.
 
 The restoration preserves the `pool_type` integer serialization contract:
 `pool_type` is persisted to disk as the integer `"limit"` in character templates,
@@ -43,12 +45,12 @@ character-transfer templates — loading unchanged.
 
 Per the project's user-specified **Explainability** rule, every non-trivial
 implementation decision and its rationale live in this document (the tables
-below) rather than in code comments — covering both the foundation already
-landed and the creator restoration still planned, so each decision is recorded
-as it is made rather than after the fact. Section A is the decision log; Section
-B is the bidirectional traceability matrix mapping every removed construct to its
-restoration target, with 100% coverage (each row is traceable in both directions:
-removed ⇄ restored).
+below) rather than in code comments; source comments carry only factual mechanics.
+Section A is the decision log covering every non-obvious choice made across the
+restoration; Section B is the bidirectional traceability matrix mapping every
+removed construct to its restoration target, with 100% coverage (each row is
+traceable in both directions: removed ⇄ restored) and each target confirmed
+present in the current code.
 
 ## Section A — Decision Log
 
@@ -62,7 +64,7 @@ removed ⇄ restored).
 | Keep `FREEFORM`/`story_teller` as the default | Default to `multi_pool` | Matches the removed option's default; least behavior change for current players | None |
 | Add point-pool tests to `tests/new_character_test.cpp` (and/or a dedicated file) | A separate new test file only | Co-locates with existing character-generation tests | The file grows; acceptable |
 | Add `#include "player_difficulty.h"` to `character_creator_ui.h` | Rely on the existing opaque `enum class pool_type;` in `avatar.h` | In-class initializer `pool_type::FREEFORM` needs the complete enum definition | None; standard include hygiene |
-| Finalize the point-pool test seam as a dedicated `tests/char_creation_points_test.cpp` using test-local (mirrored) cost formulas, resolving the open choice left by the seeded testing row above | Expose the production point-math helpers (`point_pool_total`/`points_used_total`/`multi_pool`) as public API for tests; extend only `tests/new_character_test.cpp` | A dedicated file isolates point-pool coverage without widening the engine's internal-linkage surface, and mirrored formulas keep the test independent of private helpers | Formula drift: test-local formulas can diverge from production math if costs change; mitigated by also asserting through reachable engine entry points and reviewing test and engine together on any cost change |
+| Test the point-pool system through a dedicated `tests/char_creation_points_test.cpp` that drives every pass/fail decision (over-allocation, unspent points, `"limit"` normalization, option gating) through a production validation seam declared in `player_difficulty.h` — `point_pool_over_allocated`, `point_pool_has_unspent`, `pool_type_from_int`, `pool_selection_modes_for_option` — retaining a test-local mirror of the file-local cost formulas only as an arithmetic oracle | Pure test-local mirror of the finalize/normalize logic with no production seam; expose the whole point-math engine as public API and extend only `tests/new_character_test.cpp` | The engine cost helpers keep internal linkage, but the finalize guard's decisions must be exercised by the tests: a pure mirror can pass even if `character_creator_ui::handle_action()` is deleted or broken, so the same predicate the guard calls is exposed as a narrow seam and the tests call it directly, while the oracle still pins the exact arithmetic | Oracle drift: the retained arithmetic mirror could diverge from the engine if costs change; mitigated by cross-checking the oracle against the production seam within the same tests, so any divergence fails a test |
 | Reuse the existing character-creator input actions for pool selection and leave `data/raw/keybindings.json` unchanged (no discrete pool-select action) | Add a new discrete pool-select action with its own key binding | The existing tab-navigation and confirm actions already cover choosing a mode on the pool tab, honoring the no-new-keybinding constraint (AAP §0.3) | Action-contract/discoverability: without a dedicated binding the control is reachable only via generic navigation; mitigated by an on-tab label and the New Game hint that advertises the points pool |
 | Persist named character templates with the live `cc_uistate.pool` value rather than a hard-coded `FREEFORM` | Always serialize `FREEFORM`; serialize only the local `avatar::create()` pool variable | `save_template()` already writes the passed `pool` as the integer `"limit"`, so sourcing it from the selected pool makes saved templates round-trip to the mode the player actually built under | Stale static state / wrong round-trip: because `cc_uistate` is static, a stale `pool` could be serialized; mitigated by the state-lifecycle decision below and a template round-trip test |
 | On template load, the template's stored `"limit"` wins over the world `CHARACTER_POINT_POOLS` option (the template-defined pool is authoritative) | Fixed world option wins; reject the template; prompt the player to choose | A template already encodes the pool the character was built under, so honoring it preserves backward compatibility with existing saved templates, including `TRANSFER` | Backward-compatibility: a `"limit"` that conflicts with a fixed `multi_pool`/`story_teller` world still loads as stored; acceptable because a template is an explicit prior choice, with invalid values handled by the decision below |
@@ -71,7 +73,16 @@ removed ⇄ restored).
 | Normalize an out-of-range integer `"limit"` read from a template to a safe default (`FREEFORM`) rather than trusting an unchecked cast | Keep the raw `static_cast<pool_type>`; hard-reject and refuse to load the template | The current load path casts the integer directly, so a corrupt or future `"limit"` would yield an invalid enum value; clamping to a known mode keeps such templates loadable and safe | Corrupt-template / invalid-enum: normalizing hides the malformed value, but the alternative (an undefined enum) is worse, and valid legacy values 0/1/2/3 are unaffected |
 | Apply the `ONE_POOL`/`MULTI_POOL` over-allocation guard on every path that can set `finished_character_creator`, not on a single button | Guard only the primary confirm action | Two sites set `finished_character_creator = true` (both under `NEXT_TAB` at the Summary tab, in the named- and unnamed-character branches), so a single-site guard could be bypassed by the other | Bypass: an unguarded completion path would let an over-allocated character finalize; mitigated by centralizing the check so both branches share it |
 | When `CHARACTER_POINT_POOLS` fixes the mode (`multi_pool` or `story_teller`), present the `CHARCREATOR_POINTS` tab as informational with selection disabled rather than hiding it | Hide the tab entirely for fixed worlds; always allow free selection regardless of the option | A visible but read-only tab preserves a consistent tab layout and still shows the active mode while honoring the world's fixed choice | UI consistency: a sometimes-present tab, or an editable control that silently ignores input, would confuse players; a visible disabled control communicates the fixed mode clearly |
-| Render the points-remaining balance in an always-visible location independent of the collapsible "General Info" header (outside the `CollapsingHeader` body or in the persistent header), not inside `draw_top_bar()` alone | Add the balance only to `draw_top_bar()`, as the seeded persistent-readout row above plans | `draw_top_bar()` is invoked only while the "General Info" `CollapsingHeader` is expanded (`src/newcharacter.cpp` L2744-2751), so a balance placed there disappears when the header is collapsed, violating AAP §0.5.4's always-visible requirement | Requirement loss: without this the balance is hidden whenever the header is collapsed; mitigated by drawing it outside the collapsible body so it persists across tabs and collapse states |
+| Render the points-remaining balance in an always-visible location independent of the collapsible "General Info" header (drawn outside the `CollapsingHeader` body), not inside `draw_top_bar()` alone | Add the balance only to `draw_top_bar()`, as the seeded persistent-readout row above plans | `draw_top_bar()` is invoked only while the "General Info" `CollapsingHeader` is expanded (`src/newcharacter.cpp:2957-2962`), so a balance placed there disappears when the header is collapsed, violating AAP §0.5.4's always-visible requirement; the balance is therefore drawn unconditionally right after the header block (`src/newcharacter.cpp:2967`) | Requirement loss: without this the balance is hidden whenever the header is collapsed; resolved by drawing it outside the collapsible body so it persists across tabs and collapse states |
+| Commit the selected pool only in `confirm()` (the CONFIRM action); make `select()` a no-op on the `CHARCREATOR_POINTS` tab so highlighting only previews a mode | Commit the pool on list highlight in `select()`, or on every uilist callback | Highlighting the POINTS list must only preview a mode's description; committing on highlight let mere keyboard navigation change — and later persist — the pool, so `select()` is a no-op for POINTS and `confirm()` is the sole commit site | A player must explicitly confirm to change the mode; acceptable and consistent with the other tabs' selection semantics |
+| Show the prospective net `(-N)`/`(+N)` delta next to each selection's cost, restoring the removed `draw_points` `netPointCost` display | Show only the item's absolute cost with no net-vs-current delta, as the pre-remediation draw code did | The removed UI displayed the net change relative to the current selection, which is what actually moves the balance when a costed selection is replaced (e.g. swapping professions); the delta is restored on scenario/profession/background/skills and on stats/traits adjustments | The net delta differs from the raw cost when replacing an already-costed selection; the color and text disambiguate spend (red) from earn (green) |
+| Render the FREEFORM "Survivor" identity in the persistent balance rather than drawing nothing for FREEFORM | Suppress all balance output for FREEFORM (blank), as the pre-remediation code did | AAP §0.5.4 specifies FREEFORM reads "Survivor" (unconstrained); a blank readout is indistinguishable from a rendering fault and hides the active mode | None; the constrained modes still show their numeric balances |
+| Model background (hobby) feedback as an add/remove toggle: adding checks affordability and spends/earns the cost, removing always succeeds and refunds | Reuse `profession::can_afford`, which compares against the current single profession (swap semantics), as the pre-remediation code did | Backgrounds toggle as an independent set rather than a single-slot swap, so profession swap-affordability was the wrong contract; the toggle model matches how hobbies are actually applied to the character | None; removal is unconstrained by design and adding is gated by the remaining points |
+| Convey active/fixed/affordability state with explicit words ("active", "fixed by world options", "You don't have enough points") plus a screen-reader active marker, and use `c_light_green` for the affordable state | Rely on color alone (green/red) to signal selection state and affordability | Color-only signaling fails WCAG and screen-reader users, and the prior `c_green` measured about 3.23:1 against the background (below AA); explicit text plus the higher-contrast `c_light_green` restores legibility. No Figma design contract is provided for this feature, so nothing overrides this accessibility choice | Slightly more verbose labels; acceptable for the accessibility gain |
+| Expose the option→modes gating as a non-static `pool_selection_modes_for_option()` seam in `player_difficulty.h`; have the cached in-UI `pool_selection_modes()` delegate to it | Leave the gating logic inline and `static` (untestable without the UI), or duplicate it inside the test | Extracting the seam makes the option-gating decision testable headlessly without launching the creator, while the cached wrapper still avoids per-frame reallocation on the draw path | A second entry point to the same logic; contained because the cached wrapper is its only non-test caller |
+| In the tests, override `INITIAL_*_POINTS` through a small RAII `scoped_int_option` helper that captures and restores the value via the integer `setValue` overload | Use the shared `override_option` string helper | These `EXTERNAL_OPTION` integers are registered with an empty print format, so `override_option`'s string round-trip restores `""` and logs a parse error that fails the harness; the integer overload avoids that path (rationale relocated here from a former code comment) | A bespoke helper duplicates a little RAII; acceptable and local to the test |
+| Reset the working avatar's id before `load_template` in the template round-trip test | Load into the avatar without resetting its id | `load_template` deserializes a saved body that assigns a character id; without the reset the restore logs an "already an id" diagnostic that fails the harness (rationale relocated here from a former code comment) | None; the reset is confined to the test |
+| Verify the interactive completion behaviors (the discard-unspent accept/decline prompt, the Last-Character template flow, and the `handle_action` control-flow branches) at the SDL x11 UI-acceptance layer, with the headless unit tests covering the pure predicates those branches call | Drive `query_yn` and the ImGui creator directly from the headless Catch2 tests | The test harness forbids constructing the creator and `query_yn` is interactive, so the correct layer for those flows is the UI-acceptance run; the unit tests pin the decision predicates (`point_pool_over_allocated`, `point_pool_has_unspent`) the branches consume via the production seam | Control-flow wiring is validated by the UI run rather than a unit test; mitigated because the decision logic itself is unit-tested through the seam |
 
 ## Section B — Bidirectional Traceability Matrix
 
@@ -80,18 +91,18 @@ removed ⇄ restored).
 | 1 | `pool_type::ONE_POOL` | player_difficulty.h | Re-add enumerator `ONE_POOL` (=1) | `src/player_difficulty.h` : `enum class pool_type` |
 | 2 | `pool_type::MULTI_POOL` | player_difficulty.h | Re-add enumerator `MULTI_POOL` (=2) | `src/player_difficulty.h` : `enum class pool_type` |
 | 3 | `CHARACTER_POINT_POOLS` option | options.cpp | Re-register world-default option | `src/options.cpp` : `add_options_world_default()` |
-| 4 | `skill_points_left(avatar, pool_type)` | newcharacter.cpp | Restore pool-aware points-left helper | `src/newcharacter.cpp` (helper) |
-| 5 | `pools_to_string` MULTI_POOL/ONE_POOL branches | newcharacter.cpp | Restore points-summary string helper | `src/newcharacter.cpp` (helper) |
-| 6 | `set_points()` "POINTS" tab function | newcharacter.cpp | Pool-selection tab draw (ImGui) | `src/newcharacter.cpp` + `CHARCREATOR_POINTS` |
-| 7 | "POINTS" entry in `character_tabs` | newcharacter.cpp (`avatar::create`) | `CHARCREATOR_POINTS` tab + count 7→8 | `src/character_creator_ui.h` : enum + `CHARACTER_CREATOR_TAB_COUNT` |
-| 8 | `CHARACTER_POINT_POOLS` read + `pool=MULTI_POOL` | newcharacter.cpp (`avatar::create`) | Restore option read + pool seed | `src/newcharacter.cpp` (~L763) |
-| 9 | `draw_points` `netPointCost` param + (±N) display | newcharacter.cpp | Points display in top bar + per-tab | `src/newcharacter.cpp` (~L2801 + per-tab draws) |
-| 10 | `skill_increment_cost()` | newcharacter.cpp | Restore helper | `src/newcharacter.cpp` (helper) |
-| 11 | `set_profession` "Profession X costs/earns N" | newcharacter.cpp | Cost text in profession draw | `src/newcharacter.cpp` (~L2930) |
-| 12 | `set_hobbies` "Background X costs/earns N" | newcharacter.cpp | Cost text in background draw | `src/newcharacter.cpp` (~L2961) |
-| 13 | `set_scenario` "Scenario costs/earns N" | newcharacter.cpp | Cost text in scenario draw | `src/newcharacter.cpp` (~L2909) |
-| 14 | `set_skills` "Upgrading X by Y costs N" hint | newcharacter.cpp | Upgrade-cost hint in skills draw | `src/newcharacter.cpp` (~L3026) |
-| 15 | `set_stats`/`set_traits` `pools_to_string` usage | newcharacter.cpp | Points context in stats/traits draws | `src/newcharacter.cpp` (~L2995 / L3005) |
-| 16 | `set_description` `ONE_POOL` over-allocation popup | newcharacter.cpp | Finalize guard (ONE_POOL) | `src/newcharacter.cpp` (~L3419-3430) |
-| 17 | `set_description` `MULTI_POOL` stat/trait/skill popups | newcharacter.cpp | Finalize guard (MULTI_POOL) | `src/newcharacter.cpp` (~L3419-3430) |
-| 18 | "points pool" New Game hint | main_menu.cpp | Restore hint phrase | `src/main_menu.cpp` (L486) |
+| 4 | `skill_points_left(avatar, pool_type)` | newcharacter.cpp | Restore pool-aware points-left helper | `src/newcharacter.cpp:395` (`skill_points_left`) |
+| 5 | `pools_to_string` MULTI_POOL/ONE_POOL branches | newcharacter.cpp | Restore points-summary string helper | `src/newcharacter.cpp:410` (`pools_to_string`) |
+| 6 | `set_points()` "POINTS" tab function | newcharacter.cpp | Pool-selection tab draw (ImGui) + confirm-commit | `src/newcharacter.cpp:3131` (`draw_points`), `:4028`/`:4273` (`CHARCREATOR_POINTS` confirm/select) |
+| 7 | "POINTS" entry in `character_tabs` | newcharacter.cpp (`avatar::create`) | `CHARCREATOR_POINTS` tab + count 7→8 | `src/character_creator_ui.h:20` (enum) + `:10` (`CHARACTER_CREATOR_TAB_COUNT`) |
+| 8 | `CHARACTER_POINT_POOLS` read + `pool=MULTI_POOL` | newcharacter.cpp (`avatar::create`) | Restore option read + pool seed | `src/newcharacter.cpp:937` (option read) + `:1009` (`cc_uistate.pool` seed) |
+| 9 | `draw_points` `netPointCost` param + (±N) display | newcharacter.cpp | Points display in top bar + net-delta markup | `src/newcharacter.cpp:3023` (`draw_top_bar`) + `:474` (`point_delta_markup`) |
+| 10 | `skill_increment_cost()` | newcharacter.cpp | Restore helper | `src/newcharacter.cpp:389` (`skill_increment_cost`) |
+| 11 | `set_profession` "Profession X costs/earns N" | newcharacter.cpp | Cost text in profession draw | `src/newcharacter.cpp:3197` (`draw_professions`) |
+| 12 | `set_hobbies` "Background X costs/earns N" | newcharacter.cpp | Cost text in background draw | `src/newcharacter.cpp:3248` (`draw_backgrounds`) |
+| 13 | `set_scenario` "Scenario costs/earns N" | newcharacter.cpp | Cost text in scenario draw | `src/newcharacter.cpp:3159` (`draw_scenarios`) |
+| 14 | `set_skills` "Upgrading X by Y costs N" hint | newcharacter.cpp | Upgrade-cost hint in skills draw | `src/newcharacter.cpp:3413` (`draw_skills`) |
+| 15 | `set_stats`/`set_traits` `pools_to_string` usage | newcharacter.cpp | Points context in stats/traits draws | `src/newcharacter.cpp:3321` (`draw_stats`) / `:3358` (`draw_traits`) |
+| 16 | `set_description` `ONE_POOL` over-allocation popup | newcharacter.cpp | Finalize guard (ONE_POOL) | `src/newcharacter.cpp:3838` (`point_pool_over_allocated` guard) |
+| 17 | `set_description` `MULTI_POOL` stat/trait/skill popups | newcharacter.cpp | Finalize guard (MULTI_POOL) | `src/newcharacter.cpp:3838` (guard) + `:3840` (MULTI_POOL popup) |
+| 18 | "points pool" New Game hint | main_menu.cpp | Restore hint phrase | `src/main_menu.cpp:486` |

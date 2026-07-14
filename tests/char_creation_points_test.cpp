@@ -1,15 +1,20 @@
 #include <algorithm>
 #include <array>
+#include <chrono>
+#include <climits>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "avatar.h"
 #include "cata_catch.h"
 #include "character.h"
 #include "character_id.h"
+#include "filesystem.h"
 #include "game_constants.h"
 #include "mutation.h"
 #include "options.h"
+#include "path_info.h"
 #include "player_difficulty.h"
 #include "player_helpers.h"
 #include "profession.h"
@@ -19,13 +24,8 @@
 
 namespace
 {
-// RAII override for the INITIAL_*_POINTS world options. The shared override_option
-// helper restores an option by feeding getValue() back into the string setValue();
-// these EXTERNAL_OPTION integers are registered with an empty print `format`, so
-// getValue() yields "" and the string restore logs a parse error
-// (src/options.cpp: "Could not convert '' to an integer"), which the harness treats
-// as a test failure. Capturing and restoring the value through the int setValue
-// overload avoids that path entirely.
+// RAII override of an integer world option: captures the current value on construction and
+// restores it on destruction, going through the integer setValue overload.
 struct scoped_int_option {
     std::string name_;
     int old_value_;
@@ -40,13 +40,24 @@ struct scoped_int_option {
     }
 };
 
+// RAII guard that deletes a character template file (avatar::save_template writes
+// <templatedir>/<name>.template) when the enclosing scope exits, on any test outcome.
+struct template_file_guard {
+    std::string name_;
+    explicit template_file_guard( std::string name ) : name_( std::move( name ) ) {}
+    template_file_guard( const template_file_guard & ) = delete;
+    template_file_guard &operator=( const template_file_guard & ) = delete;
+    ~template_file_guard() {
+        remove_file( PATH_INFO::templatedir() + name_ + ".template" );
+    }
+};
+
 // ---------------------------------------------------------------------------
-// Mirror of the file-local point-math engine in src/newcharacter.cpp (~L249-341).
-// The real helpers have internal linkage (`static`) and `struct multi_pool` lives
-// in an anonymous namespace, so they cannot be linked from this translation unit
-// and there is no src/newcharacter.h to include. These copies reproduce the engine
-// formulas verbatim and are driven with REAL avatar data + deterministic option
-// overrides.
+// Local re-derivation of the file-local point-math engine formulas in
+// src/newcharacter.cpp (the engine functions there have internal linkage). Used here as an
+// exact-arithmetic oracle. The over-allocation, unspent-points, limit-normalization and
+// option-gating pass/fail decisions are taken from the production seam declared in
+// player_difficulty.h and are cross-checked against this oracle below.
 // ---------------------------------------------------------------------------
 int stat_point_pool()
 {
@@ -116,9 +127,9 @@ bool has_unspent_points( const Character &u )
     return points_used_total( u ) < point_pool_total();
 }
 
-// Mirror of struct multi_pool (anonymous namespace in src/newcharacter.cpp).
-// pure_X = pool_X - used_X ; the *_points_left members implement cross-pool
-// borrowing: a lower pool's deficit is absorbed by the surplus of higher pools.
+// Mirror of struct multi_pool (anonymous namespace in src/newcharacter.cpp). pure_X =
+// pool_X - used_X; the *_points_left members implement cross-pool borrowing: a lower pool's
+// deficit is absorbed by the surplus of higher pools.
 struct multi_pool {
     const int pure_stat_points;
     const int pure_trait_points;
@@ -153,34 +164,6 @@ pool_left points_left_from_pure( int pure_stat, int pure_trait, int pure_skill )
     r.trait_left = pure_stat + pure_trait + std::min( 0, pure_skill );
     r.skill_left = pure_stat + pure_trait + pure_skill;
     return r;
-}
-
-// Validity predicates mirroring the finalize guard in
-// character_creator_ui::handle_action() (the NEXT_TAB action while the Summary tab
-// is selected). ONE_POOL blocks when total used exceeds the total pool; MULTI_POOL
-// blocks when any pool is still negative after borrowing; FREEFORM/TRANSFER never
-// block on points.
-bool one_pool_valid( const Character &u )
-{
-    return points_used_total( u ) <= point_pool_total();
-}
-bool multi_pool_valid( const Character &u )
-{
-    const multi_pool p( u );
-    return p.stat_points_left >= 0 && p.trait_points_left >= 0 && p.skill_points_left >= 0;
-}
-bool finalize_blocked( const Character &u, pool_type pool )
-{
-    switch( pool ) {
-        case pool_type::ONE_POOL:
-            return !one_pool_valid( u );
-        case pool_type::MULTI_POOL:
-            return !multi_pool_valid( u );
-        case pool_type::FREEFORM:
-        case pool_type::TRANSFER:
-        default:
-            return false;
-    }
 }
 } // namespace
 
@@ -220,6 +203,11 @@ TEST_CASE( "char_creation_point_pool_arithmetic", "[char_creation][points]" )
     CHECK( has_unspent_points( u ) );
     CHECK( ( points_used_total( u ) < point_pool_total() ) == has_unspent_points( u ) );
 
+    // The production seam agrees with the oracle for this balanced, in-budget survivor.
+    CHECK( point_pool_has_unspent( u ) == has_unspent_points( u ) );
+    CHECK_FALSE( point_pool_over_allocated( u, pool_type::ONE_POOL ) );
+    CHECK_FALSE( point_pool_over_allocated( u, pool_type::MULTI_POOL ) );
+
     SECTION( "raising a stat costs points, doubling past HIGH_STAT" ) {
         const int before = stat_points_used( u );
         u.set_str_base( 13 );
@@ -248,13 +236,16 @@ TEST_CASE( "char_creation_point_pool_arithmetic", "[char_creation][points]" )
         scoped_int_option z_skill( "INITIAL_SKILL_POINTS", 0 );
         REQUIRE( point_pool_total() == 32 );
         REQUIRE( points_used_total( u ) == 32 );
-        CHECK_FALSE( has_unspent_points( u ) ); // 32 < 32 is false
+        CHECK_FALSE( has_unspent_points( u ) );        // 32 < 32 is false
+        CHECK_FALSE( point_pool_has_unspent( u ) );    // production seam agrees
     }
 }
 
 TEST_CASE( "char_creation_multi_pool_borrowing", "[char_creation][points]" )
 {
-    // (a) The cross-pool borrowing arithmetic, checked against exact pairs.
+    // (a) The cross-pool borrowing arithmetic, checked against exact pairs covering a
+    // stat-only surplus, an all-negative pool, a skill deficit covered by the stat surplus,
+    // a trait deficit covered by the stat surplus, and combined trait + skill deficits.
     struct borrow_case {
         int pure_stat;
         int pure_trait;
@@ -296,6 +287,7 @@ TEST_CASE( "char_creation_multi_pool_borrowing", "[char_creation][points]" )
         CHECK( p.stat_points_left == 10 );
         CHECK( p.trait_points_left == 10 );
         CHECK( p.skill_points_left == 10 );
+        CHECK_FALSE( point_pool_over_allocated( u, pool_type::MULTI_POOL ) );
     }
 
     SECTION( "a skill deficit borrows from the stat surplus" ) {
@@ -313,6 +305,8 @@ TEST_CASE( "char_creation_multi_pool_borrowing", "[char_creation][points]" )
         CHECK( r.stat_left == p.stat_points_left );
         CHECK( r.trait_left == p.trait_points_left );
         CHECK( r.skill_left == p.skill_points_left );
+        // Borrowing keeps every pool non-negative, so the production guard does not block.
+        CHECK_FALSE( point_pool_over_allocated( u, pool_type::MULTI_POOL ) );
     }
 }
 
@@ -321,41 +315,175 @@ TEST_CASE( "char_creation_point_pool_over_allocation", "[char_creation][points]"
     avatar &u = get_avatar();
     clear_avatar();
     set_scenario( scenario::generic() );
-    scoped_int_option opt_stat( "INITIAL_STAT_POINTS", 0 );
-    scoped_int_option opt_trait( "INITIAL_TRAIT_POINTS", 0 );
-    scoped_int_option opt_skill( "INITIAL_SKILL_POINTS", 0 );
-    REQUIRE( point_pool_total() == 32 ); // 4*8 + 0 + 0 + 0
 
     SECTION( "a balanced survivor is within budget in every pool mode" ) {
+        scoped_int_option opt_stat( "INITIAL_STAT_POINTS", 0 );
+        scoped_int_option opt_trait( "INITIAL_TRAIT_POINTS", 0 );
+        scoped_int_option opt_skill( "INITIAL_SKILL_POINTS", 0 );
+        REQUIRE( point_pool_total() == 32 ); // 4*8 + 0 + 0 + 0
         REQUIRE( points_used_total( u ) == 32 );
-        CHECK( one_pool_valid( u ) );                              // 32 <= 32
-        CHECK( multi_pool_valid( u ) );                            // all pools_left == 0
-        CHECK_FALSE( finalize_blocked( u, pool_type::ONE_POOL ) );
-        CHECK_FALSE( finalize_blocked( u, pool_type::MULTI_POOL ) );
-        CHECK_FALSE( finalize_blocked( u, pool_type::FREEFORM ) );
+
+        // Production predicate: nothing is over-allocated when used == total.
+        CHECK_FALSE( point_pool_over_allocated( u, pool_type::ONE_POOL ) );
+        CHECK_FALSE( point_pool_over_allocated( u, pool_type::MULTI_POOL ) );
+        CHECK_FALSE( point_pool_over_allocated( u, pool_type::FREEFORM ) );
+        CHECK_FALSE( point_pool_over_allocated( u, pool_type::TRANSFER ) );
     }
 
-    SECTION( "over-allocation blocks ONE_POOL and MULTI_POOL but never FREEFORM" ) {
+    SECTION( "global over-allocation blocks ONE_POOL and MULTI_POOL, never FREEFORM/TRANSFER" ) {
+        scoped_int_option opt_stat( "INITIAL_STAT_POINTS", 0 );
+        scoped_int_option opt_trait( "INITIAL_TRAIT_POINTS", 0 );
+        scoped_int_option opt_skill( "INITIAL_SKILL_POINTS", 0 );
         u.set_str_base( 14 );
         u.set_dex_base( 14 );
         u.set_int_base( 14 );
         u.set_per_base( 14 );
-        REQUIRE( points_used_total( u ) == 64 ); // 4 * (14 + 2)
+        REQUIRE( points_used_total( u ) == 64 ); // 4 * (14 + 2), pool total 32
 
-        CHECK_FALSE( one_pool_valid( u ) );   // 64 > 32
-        CHECK_FALSE( multi_pool_valid( u ) ); // stat_left = 32 - 64 = -32 < 0
+        // The finalize guard's production predicate blocks the constrained pools.
+        CHECK( point_pool_over_allocated( u, pool_type::ONE_POOL ) );
+        CHECK( point_pool_over_allocated( u, pool_type::MULTI_POOL ) );
+        CHECK_FALSE( point_pool_over_allocated( u, pool_type::FREEFORM ) );  // unconstrained
+        CHECK_FALSE( point_pool_over_allocated( u, pool_type::TRANSFER ) );  // unconstrained
 
-        CHECK( finalize_blocked( u, pool_type::ONE_POOL ) );
-        CHECK( finalize_blocked( u, pool_type::MULTI_POOL ) );
-        CHECK_FALSE( finalize_blocked( u, pool_type::FREEFORM ) );  // unconstrained
-        CHECK_FALSE( finalize_blocked( u, pool_type::TRANSFER ) );  // unconstrained
+        // The production predicate agrees with the oracle for each constrained mode.
+        CHECK( point_pool_over_allocated( u, pool_type::ONE_POOL ) ==
+               ( points_used_total( u ) > point_pool_total() ) );
+        const multi_pool p( u );
+        CHECK( point_pool_over_allocated( u, pool_type::MULTI_POOL ) ==
+               ( p.stat_points_left < 0 || p.trait_points_left < 0 || p.skill_points_left < 0 ) );
+    }
+
+    SECTION( "MULTI_POOL enforces a stat-pool deficit that ONE_POOL's total budget allows" ) {
+        // Small stat pool overspent, large skill pool unused: the total budget is fine
+        // (ONE_POOL ok) but the stat/trait pools stay negative after borrowing (MULTI_POOL blocks).
+        scoped_int_option opt_stat( "INITIAL_STAT_POINTS", 0 );    // stat pool 32
+        scoped_int_option opt_trait( "INITIAL_TRAIT_POINTS", 0 );
+        scoped_int_option opt_skill( "INITIAL_SKILL_POINTS", 20 ); // skill pool 20
+        u.set_str_base( 14 );                                      // stat_used 16 + 8 + 8 + 8 = 40
+
+        const multi_pool p( u );
+        REQUIRE( p.pure_stat_points == -8 );   // 32 - 40
+        REQUIRE( p.pure_skill_points == 20 );
+        CHECK( p.skill_points_left >= 0 );     // 12: the total budget covers the spend
+        CHECK( p.stat_points_left < 0 );       // -8: the stat pool itself is overspent
+
+        CHECK( point_pool_over_allocated( u, pool_type::MULTI_POOL ) );
+        CHECK_FALSE( point_pool_over_allocated( u, pool_type::ONE_POOL ) ); // 40 <= 52 total
+    }
+
+    SECTION( "MULTI_POOL borrowing lets a stat surplus cover a skill deficit" ) {
+        scoped_int_option opt_stat( "INITIAL_STAT_POINTS", 10 ); // stat pool 42, surplus 10
+        scoped_int_option opt_trait( "INITIAL_TRAIT_POINTS", 0 );
+        scoped_int_option opt_skill( "INITIAL_SKILL_POINTS", 0 ); // skill pool 0
+        REQUIRE_FALSE( Skill::skills.empty() );
+        const skill_id sk = Skill::skills.front().ident();
+        u.set_skill_level( sk, 4 );                              // skill cost 4 -> pure_skill -4
+
+        const multi_pool p( u );
+        REQUIRE( p.pure_skill_points == -4 );
+        CHECK( p.skill_points_left == 6 );                       // 10 - 4, borrowed from stats
+        CHECK_FALSE( point_pool_over_allocated( u, pool_type::MULTI_POOL ) );
+        CHECK_FALSE( point_pool_over_allocated( u, pool_type::ONE_POOL ) );
+    }
+}
+
+TEST_CASE( "char_creation_pool_type_from_int_normalization", "[char_creation][points]" )
+{
+    // Valid on-disk values map to their enum.
+    CHECK( pool_type_from_int( 0 ) == pool_type::FREEFORM );
+    CHECK( pool_type_from_int( 1 ) == pool_type::ONE_POOL );
+    CHECK( pool_type_from_int( 2 ) == pool_type::MULTI_POOL );
+    CHECK( pool_type_from_int( 3 ) == pool_type::TRANSFER );
+
+    // Every enumerator round-trips through its integer value.
+    for( const pool_type pool : {
+             pool_type::FREEFORM, pool_type::ONE_POOL,
+             pool_type::MULTI_POOL, pool_type::TRANSFER
+         } ) {
+        CAPTURE( static_cast<int>( pool ) );
+        CHECK( pool_type_from_int( static_cast<int>( pool ) ) == pool );
+    }
+
+    // Out-of-range, malformed, and future values fail closed to the unconstrained FREEFORM.
+    for( const int bad : {
+             -100, -1, 4, 5, 99, INT_MAX, INT_MIN
+             } ) {
+        CAPTURE( bad );
+        CHECK( pool_type_from_int( bad ) == pool_type::FREEFORM );
+    }
+}
+
+TEST_CASE( "char_creation_pool_selection_option_gating", "[char_creation][points]" )
+{
+    // "any" offers all three modes, in the pool-selection tab's display order.
+    const std::vector<pool_type> any_modes = pool_selection_modes_for_option( "any" );
+    REQUIRE( any_modes.size() == 3 );
+    CHECK( any_modes[0] == pool_type::FREEFORM );
+    CHECK( any_modes[1] == pool_type::MULTI_POOL );
+    CHECK( any_modes[2] == pool_type::ONE_POOL );
+
+    // "multi_pool" and "story_teller" each fix the mode to a single choice.
+    const std::vector<pool_type> multi_modes = pool_selection_modes_for_option( "multi_pool" );
+    REQUIRE( multi_modes.size() == 1 );
+    CHECK( multi_modes[0] == pool_type::MULTI_POOL );
+
+    const std::vector<pool_type> story_modes = pool_selection_modes_for_option( "story_teller" );
+    REQUIRE( story_modes.size() == 1 );
+    CHECK( story_modes[0] == pool_type::FREEFORM );
+
+    // An unrecognized value falls back to the full "any" list rather than an empty menu.
+    CHECK( pool_selection_modes_for_option( "not_a_real_value" ) == any_modes );
+}
+
+TEST_CASE( "char_creation_point_pool_discard_predicate", "[char_creation][points]" )
+{
+    // point_pool_has_unspent gates the "remaining points will be discarded" confirmation on
+    // finalize for non-FREEFORM pools; verify it against the oracle for each budget relation.
+    avatar &u = get_avatar();
+    clear_avatar();
+    set_scenario( scenario::generic() );
+    scoped_int_option opt_trait( "INITIAL_TRAIT_POINTS", 0 );
+    scoped_int_option opt_skill( "INITIAL_SKILL_POINTS", 0 );
+
+    SECTION( "unspent points remain when the pool is larger than the spend" ) {
+        scoped_int_option opt_stat( "INITIAL_STAT_POINTS", 6 );
+        REQUIRE( point_pool_total() == 38 );        // (32 + 6) + 0 + 0
+        REQUIRE( points_used_total( u ) == 32 );
+        CHECK( point_pool_has_unspent( u ) );       // 32 < 38
+        CHECK( point_pool_has_unspent( u ) == has_unspent_points( u ) );
+    }
+
+    SECTION( "no unspent points when the pool is exactly spent" ) {
+        scoped_int_option opt_stat( "INITIAL_STAT_POINTS", 0 );
+        REQUIRE( point_pool_total() == 32 );
+        REQUIRE( points_used_total( u ) == 32 );
+        CHECK_FALSE( point_pool_has_unspent( u ) ); // 32 < 32 is false
+        CHECK( point_pool_has_unspent( u ) == has_unspent_points( u ) );
+    }
+
+    SECTION( "no unspent points when over-allocated" ) {
+        scoped_int_option opt_stat( "INITIAL_STAT_POINTS", 0 );
+        u.set_str_base( 14 );
+        u.set_dex_base( 14 );
+        u.set_int_base( 14 );
+        u.set_per_base( 14 );
+        REQUIRE( points_used_total( u ) == 64 );
+        CHECK_FALSE( point_pool_has_unspent( u ) ); // 64 < 32 is false
+        CHECK( point_pool_has_unspent( u ) == has_unspent_points( u ) );
     }
 }
 
 TEST_CASE( "char_creation_template_limit_round_trip", "[char_creation][points]" )
 {
     avatar &u = get_avatar();
-    const std::string tmpl = "cata_test_point_pool_roundtrip";
+    // Unique per-run name so the test never collides with a real template; the guard removes
+    // the file on every outcome.
+    const std::string tmpl = "cata_test_point_pool_roundtrip_" +
+                             std::to_string(
+                                 static_cast<long long>(
+                                     std::chrono::steady_clock::now().time_since_epoch().count() ) );
+    const template_file_guard guard( tmpl );
 
     for( const pool_type pool : {
              pool_type::FREEFORM, pool_type::ONE_POOL,
@@ -369,12 +497,12 @@ TEST_CASE( "char_creation_template_limit_round_trip", "[char_creation][points]" 
         u.save_template( tmpl, pool );
 
         pool_type loaded = static_cast<pool_type>( 99 ); // sentinel outside the valid set
-        // load_template deserializes the saved avatar body, which calls setID(); reset
-        // the working avatar's id first so the restore does not log "already a id".
+        // load_template deserializes a saved avatar body that assigns a character id; the
+        // working avatar's id is reset first.
         u.setID( character_id(), true );
         REQUIRE( u.load_template( tmpl, loaded ) );
         CHECK( loaded == pool );
-        CHECK( static_cast<int>( loaded ) == static_cast<int>( pool ) );
+        // The serialized integer "limit" normalizes back to the same enum via the production seam.
+        CHECK( loaded == pool_type_from_int( static_cast<int>( pool ) ) );
     }
 }
-

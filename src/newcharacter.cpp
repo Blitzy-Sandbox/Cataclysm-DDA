@@ -341,6 +341,49 @@ struct multi_pool {
 };
 } // namespace
 
+// Production seam: normalizes a serialized template "limit" to a defined pool_type.
+// Any integer outside the on-disk contract 0-3 is mapped to FREEFORM so an invalid or
+// future value can never yield an undefined enum that bypasses the finalize guard.
+pool_type pool_type_from_int( int limit )
+{
+    switch( limit ) {
+        case static_cast<int>( pool_type::FREEFORM ):
+            return pool_type::FREEFORM;
+        case static_cast<int>( pool_type::ONE_POOL ):
+            return pool_type::ONE_POOL;
+        case static_cast<int>( pool_type::MULTI_POOL ):
+            return pool_type::MULTI_POOL;
+        case static_cast<int>( pool_type::TRANSFER ):
+            return pool_type::TRANSFER;
+        default:
+            return pool_type::FREEFORM;
+    }
+}
+
+// Production seam: the single over-allocation predicate shared by the creator finalize
+// guard and the regression tests, computed from the surviving point-math engine.
+bool point_pool_over_allocated( const Character &you, pool_type pool )
+{
+    switch( pool ) {
+        case pool_type::ONE_POOL:
+            return points_used_total( you ) > point_pool_total();
+        case pool_type::MULTI_POOL: {
+            const multi_pool p( you );
+            return p.stat_points_left < 0 || p.trait_points_left < 0 || p.skill_points_left < 0;
+        }
+        case pool_type::FREEFORM:
+        case pool_type::TRANSFER:
+            return false;
+    }
+    return false;
+}
+
+// Production seam: whether the character still has unspent points in the total pool.
+bool point_pool_has_unspent( const Character &you )
+{
+    return has_unspent_points( you );
+}
+
 // The skill points to consume when a skill is increased by one level from the current level.
 // If the current level is 0, it is boosted by 2 levels for 1 point.
 static int skill_increment_cost( const Character &u, const skill_id &skill )
@@ -390,16 +433,52 @@ static std::string pools_to_string( const Character &u, pool_type pool )
     return std::string();
 }
 
-// The pool modes offered by the pool-selection tab, gated by the CHARACTER_POINT_POOLS option.
-static std::vector<pool_type> pool_selection_modes()
+// Production seam (declared in player_difficulty.h): the pool modes the creator offers for a
+// given CHARACTER_POINT_POOLS value, so the option gating is exercisable without the UI.
+std::vector<pool_type> pool_selection_modes_for_option( const std::string &option )
 {
-    const std::string point_pool = get_option<std::string>( "CHARACTER_POINT_POOLS" );
-    if( point_pool == "multi_pool" ) {
+    if( option == "multi_pool" ) {
         return { pool_type::MULTI_POOL };
-    } else if( point_pool == "story_teller" ) {
+    } else if( option == "story_teller" ) {
         return { pool_type::FREEFORM };
     }
     return { pool_type::FREEFORM, pool_type::MULTI_POOL, pool_type::ONE_POOL };
+}
+
+// The pool modes offered by the pool-selection tab, gated by the CHARACTER_POINT_POOLS
+// option. The list is cached and returned by reference so repeated draw/callback calls do
+// not reallocate a fresh vector; it is recomputed only when the world option changes.
+static const std::vector<pool_type> &pool_selection_modes()
+{
+    static std::string cached_option;
+    static std::vector<pool_type> cached_modes;
+    const std::string point_pool = get_option<std::string>( "CHARACTER_POINT_POOLS" );
+    if( cached_modes.empty() || point_pool != cached_option ) {
+        cached_option = point_pool;
+        cached_modes = pool_selection_modes_for_option( point_pool );
+    }
+    return cached_modes;
+}
+
+// True when CHARACTER_POINT_POOLS fixes the mode to a single choice (multi_pool or
+// story_teller), in which case the pool-selection tab is informational and read-only.
+static bool pool_selection_is_fixed()
+{
+    const std::string point_pool = get_option<std::string>( "CHARACTER_POINT_POOLS" );
+    return point_pool == "multi_pool" || point_pool == "story_teller";
+}
+
+// Colored "(+/-N)" markup previewing the net change to the running point balance if the
+// highlighted selection is confirmed: a positive net cost spends points (red "(-N)"), a
+// negative one earns points (green "(+N)"). Returns an empty string for a zero delta.
+static std::string point_delta_markup( int net_cost )
+{
+    if( net_cost > 0 ) {
+        return string_format( " <color_light_red>(-%d)</color>", net_cost );
+    } else if( net_cost < 0 ) {
+        return string_format( " <color_light_green>(+%d)</color>", -net_cost );
+    }
+    return std::string();
 }
 
 static std::string pool_type_title( pool_type pool )
@@ -2421,7 +2500,7 @@ bool avatar::load_template( const std::string &template_name, pool_type &pool )
             jobj.get_int( "trait_points", 0 );
             jobj.get_int( "skill_points", 0 );
 
-            pool = static_cast<pool_type>( jobj.get_int( "limit" ) );
+            pool = pool_type_from_int( jobj.get_int( "limit" ) );
 
             random_start_location = jobj.get_bool( "random_start_location", true );
             const std::string jobj_start_location = jobj.get_string( "start_location", "" );
@@ -2703,14 +2782,25 @@ void character_creator_ui::update_uilist_entries()
 
     switch( cc_uistate.selected_tab ) {
         case CHARCREATOR_POINTS: {
-            const std::vector<pool_type> modes = pool_selection_modes();
+            const std::vector<pool_type> &modes = pool_selection_modes();
+            const bool fixed = pool_selection_is_fixed();
             int active_index = 0;
             for( int i = 0; i < static_cast<int>( modes.size() ); i++ ) {
-                uilist_entry entry = get_uilist_entry( pool_type_title( modes[i] ) );
+                const bool is_active = modes[i] == cc_uistate.pool;
+                std::string label = pool_type_title( modes[i] );
+                // Explicit text marker so the current/fixed mode is legible without color.
+                if( fixed ) {
+                    label += string_format( " (%s)", _( "fixed" ) );
+                } else if( is_active ) {
+                    label += string_format( " (%s)", _( "current" ) );
+                }
+                uilist_entry entry = get_uilist_entry( label );
                 entry.retval = i;
-                entry.text_color = modes[i] == cc_uistate.pool ? COL_SELECTED : COL_NOT_SELECTED;
+                // In a fixed world the mode is informational only, so the entry is disabled.
+                entry.enabled = !fixed;
+                entry.text_color = is_active ? COL_SELECTED : COL_NOT_SELECTED;
                 menu->addentry( entry );
-                if( modes[i] == cc_uistate.pool ) {
+                if( is_active ) {
                     active_index = i;
                 }
             }
@@ -2871,6 +2961,11 @@ void character_creator_ui_impl::draw_controls()
         draw_top_bar( pc );
     }
 
+    // The point-pool identity and running balance are drawn outside the collapsible
+    // "General Info" body so they stay visible on every tab and across collapse states.
+    // FREEFORM shows its "Survivor" identity; the other modes show the remaining points.
+    draw_colored_text_wrap( pools_to_string( pc, cc_uistate.pool ), c_white );
+
     if( ImGui::BeginTabBar( "CHARACTER_CREATOR_TABS" ) ) {
         if( ImGui::BeginTabItem( _( "POINTS" ), nullptr,
                                  tab_selected[static_cast<int>( CHARCREATOR_POINTS )] ) ) {
@@ -2972,10 +3067,6 @@ void character_creator_ui_impl::draw_top_bar( const avatar &u ) const
     }
     draw_colored_text_wrap( cc_uistate.rating_string, c_white );
 
-    if( cc_uistate.pool != pool_type::FREEFORM ) {
-        draw_colored_text_wrap( pools_to_string( u, cc_uistate.pool ), c_white );
-    }
-
     char_creation::draw_action_button( _( "Save Template" ), "SAVE_TEMPLATE" );
     ImGui::SameLine();
     char_creation::draw_action_button( _( "Reset Calendar" ), "RESET_CALENDAR" );
@@ -3039,10 +3130,11 @@ bool character_creator_ui::display()
 
 void character_creator_ui_impl::draw_points() const
 {
-    const std::vector<pool_type> modes = pool_selection_modes();
+    const std::vector<pool_type> &modes = pool_selection_modes();
     if( modes.empty() ) {
         return;
     }
+    const bool fixed = pool_selection_is_fixed();
     int highlighted = 0;
     std::shared_ptr<uilist> menu = ui_parent->get_current_tab_uilist();
     if( menu && menu->selected >= 0 && menu->selected < static_cast<int>( modes.size() ) ) {
@@ -3050,7 +3142,15 @@ void character_creator_ui_impl::draw_points() const
     }
 
     if( ImGui::BeginTable( "POINTS_MAIN", 2, CHARACTER_CREATOR_TABLE_FLAGS ) ) {
-        setup_list_detail_ui( pool_type_title( modes[highlighted] ) );
+        std::string title = pool_type_title( modes[highlighted] );
+        // Explicit textual state so the current/fixed mode is conveyed without relying on
+        // color alone, and is announced to screen readers.
+        if( fixed ) {
+            title += string_format( " - %s", _( "fixed by world options" ) );
+        } else if( modes[highlighted] == cc_uistate.pool ) {
+            title += string_format( " - %s", _( "active" ) );
+        }
+        setup_list_detail_ui( title );
         draw_colored_text_wrap( pool_type_description( modes[highlighted] ), c_white );
         ImGui::EndTable();
     }
@@ -3071,14 +3171,20 @@ void character_creator_ui_impl::draw_scenarios() const
             setup_list_detail_ui( string_format( _( "Scenario: %s" ), scenario_name ) );
             if( cc_uistate.pool != pool_type::FREEFORM ) {
                 const int points_for_scen = std::abs( current_scenario->point_cost() );
+                // Prospective net change to the balance if this scenario replaces the current one.
+                const int net_cost = current_scenario->point_cost() - get_scenario()->point_cost();
                 const ret_val<void> can_afford = current_scenario->can_afford(
                                                      *get_scenario(), skill_points_left( u, cc_uistate.pool ) );
                 const char *scen_msg = current_scenario->point_cost() < 0 ?
                                        n_gettext( "Scenario earns %2$d point", "Scenario earns %2$d points", points_for_scen ) :
                                        n_gettext( "Scenario costs %2$d point", "Scenario costs %2$d points", points_for_scen );
-                draw_colored_text_wrap( string_format( scen_msg,
-                                                       current_scenario->gender_appropriate_name( u.male ), points_for_scen ),
-                                        can_afford.success() ? c_green : c_light_red );
+                std::string msg = string_format( scen_msg,
+                                                 current_scenario->gender_appropriate_name( u.male ), points_for_scen );
+                msg += point_delta_markup( net_cost );
+                if( !can_afford.success() ) {
+                    msg += string_format( " - %s", can_afford.str() );
+                }
+                draw_colored_text_wrap( msg, can_afford.success() ? c_light_green : c_light_red );
             }
             char_creation::draw_scenario_details( u );
         } else {
@@ -3104,6 +3210,8 @@ void character_creator_ui_impl::draw_professions() const
             setup_list_detail_ui( string_format( _( "Profession: %s" ), profession_name ) );
             if( cc_uistate.pool != pool_type::FREEFORM ) {
                 const int points_for_prof = std::abs( selected_profession->point_cost() );
+                // Prospective net change to the balance if this profession replaces the current one.
+                const int net_cost = selected_profession->point_cost() - u.prof->point_cost();
                 const ret_val<void> can_afford = selected_profession->can_afford(
                                                      u, skill_points_left( u, cc_uistate.pool ) );
                 //~ 1s - profession name, 2d - current character points.
@@ -3112,9 +3220,13 @@ void character_creator_ui_impl::draw_professions() const
                                                   "Profession %1$s earns %2$d points", points_for_prof ) :
                                        n_gettext( "Profession %1$s costs %2$d point",
                                                   "Profession %1$s costs %2$d points", points_for_prof );
-                draw_colored_text_wrap( string_format( prof_msg,
-                                                       selected_profession->gender_appropriate_name( u.male ), points_for_prof ),
-                                        can_afford.success() ? c_green : c_light_red );
+                std::string msg = string_format( prof_msg,
+                                                 selected_profession->gender_appropriate_name( u.male ), points_for_prof );
+                msg += point_delta_markup( net_cost );
+                if( !can_afford.success() ) {
+                    msg += string_format( " - %s", can_afford.str() );
+                }
+                draw_colored_text_wrap( msg, can_afford.success() ? c_light_green : c_light_red );
             }
             char_creation::draw_profession_header( u );
             draw_spacer();
@@ -3149,18 +3261,43 @@ void character_creator_ui_impl::draw_backgrounds()
             }
             setup_list_detail_ui( string_format( _( "Background: %s" ), hobby_name ) );
             if( cc_uistate.pool != pool_type::FREEFORM ) {
-                const int points_for_hobby = std::abs( selected_hobby->point_cost() );
-                const ret_val<void> can_afford = selected_hobby->can_afford(
-                                                     u, skill_points_left( u, cc_uistate.pool ) );
-                //~ 1s - profession name, 2d - current character points.
-                const char *hobby_msg = selected_hobby->point_cost() < 0 ?
-                                        n_gettext( "Background %1$s earns %2$d point",
-                                                   "Background %1$s earns %2$d points", points_for_hobby ) :
-                                        n_gettext( "Background %1$s costs %2$d point",
-                                                   "Background %1$s costs %2$d points", points_for_hobby );
-                draw_colored_text_wrap( string_format( hobby_msg,
-                                                       selected_hobby->gender_appropriate_name( u.male ), points_for_hobby ),
-                                        can_afford.success() ? c_green : c_light_red );
+                // Backgrounds toggle: an unselected background is added (spending/earning its
+                // cost), a selected one is removed (refunding it). Affordability applies only
+                // to the add operation; removal is always available.
+                const bool taken = u.hobbies.count( &*selected_hobby ) > 0;
+                const int hobby_cost = selected_hobby->point_cost();
+                const int points_for_hobby = std::abs( hobby_cost );
+                const std::string hobby_disp_name = selected_hobby->gender_appropriate_name( u.male );
+                std::string msg;
+                nc_color color;
+                if( !taken ) {
+                    const bool affordable = hobby_cost <= skill_points_left( u, cc_uistate.pool );
+                    //~ %1$s is a background (hobby) name, %2$d is a point amount
+                    const char *hobby_msg = hobby_cost < 0 ?
+                                            n_gettext( "Background %1$s earns %2$d point",
+                                                       "Background %1$s earns %2$d points", points_for_hobby ) :
+                                            n_gettext( "Background %1$s costs %2$d point",
+                                                       "Background %1$s costs %2$d points", points_for_hobby );
+                    msg = string_format( hobby_msg, hobby_disp_name, points_for_hobby );
+                    // Adding changes the balance by +hobby_cost.
+                    msg += point_delta_markup( hobby_cost );
+                    if( !affordable ) {
+                        msg += string_format( " - %s", _( "You don't have enough points" ) );
+                    }
+                    color = affordable ? c_light_green : c_light_red;
+                } else {
+                    //~ %1$s is a background (hobby) name, %2$d is a point amount
+                    const char *hobby_msg = hobby_cost < 0 ?
+                                            n_gettext( "Removing background %1$s costs %2$d point",
+                                                       "Removing background %1$s costs %2$d points", points_for_hobby ) :
+                                            n_gettext( "Removing background %1$s refunds %2$d point",
+                                                       "Removing background %1$s refunds %2$d points", points_for_hobby );
+                    msg = string_format( hobby_msg, hobby_disp_name, points_for_hobby );
+                    // Removing changes the balance by -hobby_cost.
+                    msg += point_delta_markup( -hobby_cost );
+                    color = c_light_green;
+                }
+                draw_colored_text_wrap( msg, color );
             }
             ImGui::NewLine();
             char_creation::draw_hobby_header( u );
@@ -3183,8 +3320,35 @@ void character_creator_ui_impl::draw_backgrounds()
 
 void character_creator_ui_impl::draw_stats()
 {
+    const avatar &u = get_avatar();
     if( ImGui::BeginTable( "STATS_MAIN", 2, CHARACTER_CREATOR_TABLE_FLAGS ) ) {
         setup_list_detail_ui( char_creation::get_character_stat_header( cc_uistate.selected_stat_index ) );
+        if( cc_uistate.pool != pool_type::FREEFORM ) {
+            const int stat_value = cc_uistate.stats[cc_uistate.selected_stat_index];
+            const int points_left = skill_points_left( u, cc_uistate.pool );
+            if( stat_value >= CHARACTER_STAT_MAX ) {
+                draw_colored_text_wrap( _( "This stat is at the maximum and cannot be raised." ),
+                                        c_light_gray );
+            } else {
+                // A stat point costs double once the stat is above HIGH_STAT.
+                const int raise_cost = stat_value >= HIGH_STAT ? 2 : 1;
+                const bool affordable = raise_cost <= points_left;
+                std::string msg = string_format( n_gettext( "Raising this stat costs %d point",
+                                                 "Raising this stat costs %d points", raise_cost ), raise_cost );
+                msg += point_delta_markup( raise_cost );
+                if( !affordable ) {
+                    msg += string_format( " - %s", _( "You don't have enough points" ) );
+                }
+                draw_colored_text_wrap( msg, affordable ? c_light_green : c_light_red );
+            }
+            if( stat_value > CHARACTER_STAT_MIN ) {
+                const int refund = stat_value > HIGH_STAT ? 2 : 1;
+                std::string lower = string_format( n_gettext( "Lowering this stat refunds %d point",
+                                                   "Lowering this stat refunds %d points", refund ), refund );
+                lower += point_delta_markup( -refund );
+                draw_colored_text_wrap( lower, c_light_green );
+            }
+        }
         ImGui::NewLine();
         char_creation::draw_stat_details( get_avatar() );
         ImGui::EndTable();
@@ -3203,6 +3367,40 @@ void character_creator_ui_impl::draw_traits()
                 append_screen_reader_active( trait_name );
             }
             setup_list_detail_ui( trait_name );
+            if( cc_uistate.pool != pool_type::FREEFORM ) {
+                // Traits toggle: a positive-point trait costs points to take, a negative-point
+                // (flaw) trait earns them; removing a taken trait reverses that. Affordability
+                // applies only to adding; removal is always available.
+                const int trait_cost = selected_trait->points;
+                const int points_abs = std::abs( trait_cost );
+                const bool taken = u.has_trait( selected_trait );
+                std::string msg;
+                nc_color color;
+                if( !taken ) {
+                    const bool affordable = trait_cost <= skill_points_left( u, cc_uistate.pool );
+                    const char *tr_msg = trait_cost < 0 ?
+                                         n_gettext( "This trait earns %d point",
+                                                    "This trait earns %d points", points_abs ) :
+                                         n_gettext( "This trait costs %d point",
+                                                    "This trait costs %d points", points_abs );
+                    msg = string_format( tr_msg, points_abs );
+                    msg += point_delta_markup( trait_cost );
+                    if( !affordable ) {
+                        msg += string_format( " - %s", _( "You don't have enough points" ) );
+                    }
+                    color = affordable ? c_light_green : c_light_red;
+                } else {
+                    const char *tr_msg = trait_cost < 0 ?
+                                         n_gettext( "Removing this trait costs %d point",
+                                                    "Removing this trait costs %d points", points_abs ) :
+                                         n_gettext( "Removing this trait refunds %d point",
+                                                    "Removing this trait refunds %d points", points_abs );
+                    msg = string_format( tr_msg, points_abs );
+                    msg += point_delta_markup( -trait_cost );
+                    color = c_light_green;
+                }
+                draw_colored_text_wrap( msg, color );
+            }
             draw_spacer();
             draw_colored_text_wrap( selected_trait->desc(), c_white );
         } else {
@@ -3221,18 +3419,31 @@ void character_creator_ui_impl::draw_skills()
             const avatar &u = get_avatar();
             setup_list_detail_ui( remove_color_tags( get_skill_entry_text( selected_skill, u ) ) );
             if( cc_uistate.pool != pool_type::FREEFORM ) {
-                const int cost = skill_increment_cost( u, selected_skill );
-                const int level = u.get_skill_level( selected_skill );
-                // in pool the first level of a skill gives 2
-                const int upgrade_levels = level == 0 ? 2 : 1;
-                //~ levels here are skill levels at character creation time
-                const std::string upgrade_levels_s = string_format( n_gettext( "%d level", "%d levels",
-                                                     upgrade_levels ), upgrade_levels );
-                const nc_color color = skill_points_left( u, cc_uistate.pool ) >= cost ? c_green : c_light_red;
-                //~ Second string is e.g. "1 level" or "2 levels"
-                draw_colored_text_wrap( string_format( n_gettext( "Upgrading %s by %s costs %d point",
-                                                       "Upgrading %s by %s costs %d points", cost ),
-                                                       selected_skill->name(), upgrade_levels_s, cost ), color );
+                const int level = static_cast<int>( u.get_skill_level( selected_skill ) );
+                if( level >= MAX_SKILL ) {
+                    // At the cap the input handler rejects an increase, so no upgrade cost applies.
+                    draw_colored_text_wrap(
+                        _( "This skill is at the maximum level and cannot be raised further." ),
+                        c_light_gray );
+                } else {
+                    const int cost = skill_increment_cost( u, selected_skill );
+                    // in pool the first level of a skill gives 2
+                    const int upgrade_levels = level == 0 ? 2 : 1;
+                    //~ levels here are skill levels at character creation time
+                    const std::string upgrade_levels_s = string_format( n_gettext( "%d level", "%d levels",
+                                                         upgrade_levels ), upgrade_levels );
+                    const bool affordable = skill_points_left( u, cc_uistate.pool ) >= cost;
+                    //~ Second string is e.g. "1 level" or "2 levels"
+                    std::string msg = string_format( n_gettext( "Upgrading %s by %s costs %d point",
+                                                     "Upgrading %s by %s costs %d points", cost ),
+                                                     selected_skill->name(), upgrade_levels_s, cost );
+                    // Upgrading spends points, so the prospective balance change is -cost.
+                    msg += point_delta_markup( cost );
+                    if( !affordable ) {
+                        msg += string_format( " - %s", _( "You don't have enough points" ) );
+                    }
+                    draw_colored_text_wrap( msg, affordable ? c_light_green : c_light_red );
+                }
             }
             draw_spacer();
             draw_colored_text_wrap( selected_skill->description(), c_white );
@@ -3622,25 +3833,24 @@ bool character_creator_ui::handle_action( const std::string &action )
     } else if( action == "NEXT_TAB" ) {
         if( cc_uistate.selected_tab == CHARCREATOR_SUMMARY ) {
             bool blocked = false;
-            if( cc_uistate.pool == pool_type::ONE_POOL ) {
-                if( points_used_total( you ) > point_pool_total() ) {
+            // Both completion branches below share this single production predicate so the
+            // over-allocation guard cannot be bypassed and is exercised directly by tests.
+            if( point_pool_over_allocated( you, cc_uistate.pool ) ) {
+                blocked = true;
+                if( cc_uistate.pool == pool_type::MULTI_POOL ) {
+                    const multi_pool p( you );
+                    if( p.skill_points_left < 0 ) {
+                        popup( _( "Too many points allocated, change some features and try again." ) );
+                    } else if( p.trait_points_left < 0 ) {
+                        popup( _( "Too many trait points allocated, change some traits or lower some stats and try again." ) );
+                    } else if( p.stat_points_left < 0 ) {
+                        popup( _( "Too many stat points allocated, lower some stats and try again." ) );
+                    }
+                } else {
                     popup( _( "Too many points allocated, change some features and try again." ) );
-                    blocked = true;
-                }
-            } else if( cc_uistate.pool == pool_type::MULTI_POOL ) {
-                multi_pool p( you );
-                if( p.skill_points_left < 0 ) {
-                    popup( _( "Too many points allocated, change some features and try again." ) );
-                    blocked = true;
-                } else if( p.trait_points_left < 0 ) {
-                    popup( _( "Too many trait points allocated, change some traits or lower some stats and try again." ) );
-                    blocked = true;
-                } else if( p.stat_points_left < 0 ) {
-                    popup( _( "Too many stat points allocated, lower some stats and try again." ) );
-                    blocked = true;
                 }
             }
-            if( !blocked && has_unspent_points( you ) && cc_uistate.pool != pool_type::FREEFORM &&
+            if( !blocked && point_pool_has_unspent( you ) && cc_uistate.pool != pool_type::FREEFORM &&
                 !query_yn( _( "Remaining points will be discarded, are you sure you want to proceed?" ) ) ) {
                 blocked = true;
             }
@@ -3816,9 +4026,13 @@ void character_creator_callback::confirm( uilist *menu )
 
     switch( cc_uistate.selected_tab ) {
         case CHARCREATOR_POINTS: {
-            const std::vector<pool_type> modes = pool_selection_modes();
-            if( uilist_returned >= 0 && uilist_returned < static_cast<int>( modes.size() ) ) {
-                cc_uistate.pool = modes[uilist_returned];
+            // The pool is committed only on confirm, and only when the world option leaves the
+            // mode selectable; a fixed world keeps the seeded (option- or template-defined) pool.
+            if( !pool_selection_is_fixed() ) {
+                const std::vector<pool_type> &modes = pool_selection_modes();
+                if( uilist_returned >= 0 && uilist_returned < static_cast<int>( modes.size() ) ) {
+                    cc_uistate.pool = modes[uilist_returned];
+                }
             }
             break;
         }
@@ -4057,10 +4271,8 @@ void character_creator_callback::select( uilist *menu )
     int menu_selected = menu->selected;
     switch( cc_uistate.selected_tab ) {
         case CHARCREATOR_POINTS: {
-            const std::vector<pool_type> modes = pool_selection_modes();
-            if( menu_selected >= 0 && menu_selected < static_cast<int>( modes.size() ) ) {
-                cc_uistate.pool = modes[menu_selected];
-            }
+            // Highlighting a pool only previews its description; the pool is not committed here.
+            // It is set exclusively on confirm(), so browsing the list never mutates the mode.
             break;
         }
         case CHARCREATOR_SCENARIO:
