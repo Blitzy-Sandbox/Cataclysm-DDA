@@ -2861,7 +2861,7 @@ bool character_creator_ui::display()
 
     // setup all uilists/inputs
     character_creator_tab preserve_first_tab = cc_uistate.selected_tab;
-    cc_uistate.selected_tab = CHARCREATOR_SCENARIO;
+    cc_uistate.selected_tab = CHARCREATOR_POINTS;
     for( int i = 0; i < CHARACTER_CREATOR_TAB_COUNT; i++ ) {
         setup_new_uilist();
         ++cc_uistate.selected_tab;
