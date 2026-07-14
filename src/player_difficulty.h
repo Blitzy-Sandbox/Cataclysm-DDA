@@ -12,9 +12,13 @@ class avatar;
 // The point after which stats cost double
 constexpr int HIGH_STAT = 12;
 
-//Leftover from removing the legacy point pool character creation. TRANSFER is required to be 3 so transfer character templates dont break
+// Point pool mode for character creation. Serialized as the integer "limit" in character
+// templates, so these values are a stable on-disk contract: FREEFORM=0, ONE_POOL=1,
+// MULTI_POOL=2, TRANSFER=3 (TRANSFER must stay 3 so character-transfer templates keep working).
 enum class pool_type {
     FREEFORM = 0,
+    ONE_POOL = 1,
+    MULTI_POOL = 2,
     TRANSFER = 3,
 };
 
