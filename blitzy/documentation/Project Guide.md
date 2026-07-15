@@ -1,6 +1,7 @@
-# Blitzy Project Guide — Cataclysm: Dark Days Ahead (SDL2 Tiles Build Fix)
+# Blitzy Project Guide — Point-Buy Character Creation Restoration
+### Cataclysm: Dark Days Ahead (CDDA)
 
-> **Brand legend** — <span style="color:#5B39F3">**Completed / AI Work = Dark Blue `#5B39F3`**</span> · **Remaining / Not Completed = White `#FFFFFF`** · Headings/Accents = Violet-Black `#B23AF2` · Highlight = Mint `#A8FDD9`
+> Brand legend used throughout this guide — **Completed / AI Work = Dark Blue `#5B39F3`**, **Remaining / Not Completed = White `#FFFFFF`**, Headings/Accents = Violet-Black `#B23AF2`, Highlight = Mint `#A8FDD9`.
 
 ---
 
@@ -8,56 +9,62 @@
 
 ### 1.1 Project Overview
 
-Cataclysm: Dark Days Ahead (CDDA) is a large open-source **C++17** survival roguelike. This engagement resolved a single **build-breaking compilation failure** in the graphical *tiles* client: `src/pixel_minimap.cpp` invoked the **SDL3-only** helper `get_shared_variant_pass()` at two `scoped_render_target` constructions without the SDL-version guard that gates the symbol's declaration. Under the **SDL2 fallback** (`SDL3=0`) the identifier was undeclared, failing `obj/tiles/pixel_minimap.o` and cascading to block `cataclysm.a`, `cataclysm-tiles`, and the entire test binary. Target users are players and packagers building the SDL2 tiles client on hosts lacking SDL3 ≥ 3.4.0. The fix restores the full SDL2 tiles deliverable with **zero regression** to the default SDL3 path.
+This project restores the **point-buy (point-pool) character-creation system** of Cataclysm: Dark Days Ahead, a single-process C++17 desktop roguelike. The capability — spending a finite point budget across scenario, profession, background, stats, traits, and skills, with a live balance and a guard that blocks finalizing an over-allocated survivor — had been removed in commit `e8b832bd1d` and then orphaned when the creator was rewritten from ncurses to Dear ImGui (`1ae6881bb0`). Because a literal `git revert` is impossible (the ncurses edit sites no longer exist), the feature was **functionally re-implemented into the current ImGui creator**. Target users are CDDA players (who regain the legacy pool modes) and contributors (who receive a fully traceable restoration). Technical scope: one enum, one world option, the ImGui creator, a discovery hint, tests, and a mandated Explainability deliverable.
 
 ### 1.2 Completion Status
 
 ```mermaid
-%%{init: {'theme':'base','themeVariables':{'pie1':'#5B39F3','pie2':'#FFFFFF','pieStrokeColor':'#B23AF2','pieOuterStrokeColor':'#B23AF2','pieTitleTextColor':'#B23AF2','pieSectionTextColor':'#B23AF2','pieLegendTextColor':'#000000'}}}%%
-pie showData title Completion Status — 87.1% Complete (13.5h of 15.5h)
-    "Completed (AI)" : 13.5
-    "Remaining" : 2.0
+%%{init: {'theme':'base', 'themeVariables': {'pie1':'#5B39F3','pie2':'#FFFFFF','pieStrokeColor':'#B23AF2','pieStrokeWidth':'2px','pieOuterStrokeWidth':'2px','pieTitleTextSize':'16px','pieSectionTextColor':'#B23AF2'}}}%%
+pie showData title Completion — 83.3% Complete (130h of 156h)
+    "Completed Work (Dark Blue #5B39F3)" : 130
+    "Remaining Work (White #FFFFFF)" : 26
 ```
 
-| Metric | Value |
+| Metric | Hours |
 |---|---|
-| **Total Hours** | **15.5** |
-| **Completed Hours (AI + Manual)** | **13.5**  (AI: 13.5 · Manual: 0.0) |
-| **Remaining Hours** | **2.0** |
-| **Percent Complete** | **87.1%**  = 13.5 ÷ 15.5 × 100 |
+| **Total Hours** | **156** |
+| **Completed Hours (AI + Manual)** | **130** (AI/autonomous = 130, Manual = 0) |
+| **Remaining Hours** | **26** |
+| **Percent Complete** | **83.3%**  *(130 ÷ 156 × 100)* |
+
+**How the percentage is derived (PA1, AAP-scoped):** All 16 AAP feature deliverables and all 5 AAP validation gates are complete and passing (zero rework). The remaining 26 hours are **exclusively human path-to-production** work (review, PR integration, cross-platform verification, QA sign-off, localization). Formula: `Completion % = Completed ÷ (Completed + Remaining) = 130 ÷ (130 + 26) = 130 ÷ 156 = 83.3%`.
 
 ### 1.3 Key Accomplishments
 
-- ✅ Root cause isolated to a **single missing preprocessor guard** among 446 source files (10,251 tracked files total).
-- ✅ Two-site fix applied — `chunk_scope` (L285) and `main_scope` (L477) — **byte-exact to AAP §0.4.1**, mirroring the canonical `src/cata_tiles.cpp` idiom.
-- ✅ SDL2 tiles build compiles **warning-clean** under `-Werror -Wall -Wextra` (+ `-Wold-style-cast -Wpedantic -Wsuggest-override -Wzero-as-null-pointer-constant`); the two *"not declared in this scope"* errors are eliminated.
-- ✅ Full dependency chain restored: `cataclysm.a` archived → `cataclysm-tiles` linked → `tests/cata_test` built.
-- ✅ Full Catch2 regression suite green: **1,891 test cases / 40,498,142 assertions**, exit 0.
-- ✅ Runtime validated: `--version` reports `+tiles, +sound` and stamps `a7171eb343`; `--jsonverify` exits 0 (re-verified live this session).
-- ✅ Scope discipline maintained: exactly **1 file changed** (`+10 / -4`); all 6 explicitly-excluded files untouched; `astyle` clean; committed as `a7171eb343`.
+- ✅ Restored the `pool_type` enumeration (`ONE_POOL`, `MULTI_POOL`) with **pinned integer values** (`FREEFORM=0, ONE_POOL=1, MULTI_POOL=2, TRANSFER=3`) preserving the on-disk template contract.
+- ✅ Re-registered the `CHARACTER_POINT_POOLS` world-default option (`any` / `multi_pool` / `story_teller`, default `story_teller`).
+- ✅ Added the `CHARCREATOR_POINTS` tab to the ImGui creator (tab count **7 → 8**, POINTS first) with an option-gated pool-selection surface.
+- ✅ Restored the **always-visible points readout** (`pools_to_string`) and **per-selection cost/affordability feedback** across all six builder tabs.
+- ✅ Re-instated the **finalize-time over-allocation guard** with pool-specific "Too many points allocated…" prompts and the discard-unspent confirmation.
+- ✅ Restored the New Game discovery hint mentioning the "points pool".
+- ✅ Delivered the mandated **Explainability artifact** (`doc/POINT_POOL_RESTORATION.md`): decision log + **18-row bidirectional traceability matrix at 100% coverage**.
+- ✅ Added a **point-pool regression suite** (5 test cases, 192 assertions) and hardened a security finding (path-traversal in `save_template`).
+- ✅ **All five production-readiness gates passed**: build (0 warnings under `-Werror`), tests (1,896 cases / 40,149,483 assertions), UI render (real SDL x11), functional, and backward-compatibility.
 
 ### 1.4 Critical Unresolved Issues
 
 | Issue | Impact | Owner | ETA |
 |---|---|---|---|
-| *None* — the SDL2 tiles deliverable is validated end-to-end (build + full test suite + runtime) in the target configuration | No release blockers | — | — |
+| *None — no release-blocking defects identified* | All 5 AAP gates pass; zero unresolved compilation, test, functional, or security issues at HEAD `d21ed3b144` | — | — |
 
-> There are **no critical unresolved issues**. All items in §1.6 are standard path-to-production gates, not defects.
+> No critical unresolved issues exist. All items below in §1.6 and §2.2 are standard human path-to-production steps, not defects.
 
 ### 1.5 Access Issues
 
 | System / Resource | Type of Access | Issue Description | Resolution Status | Owner |
 |---|---|---|---|---|
-| — | — | **No access issues identified** — repository, toolchain, and SDL2 dependency stack are all accessible; the fix is committed on branch `blitzy-9967ef64-e06f-47ac-af02-ab7e782d630f`. | N/A | — |
+| SDL3 (≥ 3.4.0) dev headers | Build dependency | Environment `apt` candidate is SDL3 3.2.20, below the required 3.4.0, so the SDL3 path could not be exercised; build/validation used the supported SDL2 2.32.4 fallback (`SDL3=0`) | Open — SDL2 is a fully supported production backend; SDL3 verification tracked as remaining task M-2 | Human developer |
+| Upstream GitHub CI (34 workflows) | CI execution | Upstream CI matrix (MSVC/vcpkg, macOS, clang-tidy, emscripten, IWYU, etc.) runs only on the hosted PR, not in the sandbox | Open — runs automatically on PR open | Maintainer / CI |
 
-> **Note (not an access/permissions issue):** This build environment ships no SDL3 ≥ 3.4.0 (`pkg-config --modversion sdl3` → absent; Ubuntu 25.10 provides only 3.2.20, below the Makefile floor). This is a *toolchain-availability constraint*, tracked as Risk **T1** and task **HT-2**, not an access-permission problem.
+> No repository-permission or service-credential access issues were encountered. All in-scope source was committed successfully to branch `blitzy-9435d6be-5219-4010-a3e8-d8ece47ec278`.
 
 ### 1.6 Recommended Next Steps
 
-1. **[High]** Review and merge the fix commit `a7171eb343` to `master` (diff is `+10/-4` in one file). — *0.5h*
-2. **[Medium]** On a host with **SDL3 ≥ 3.4.0**, rebuild the default tiles path and smoke-test to empirically confirm the zero-regression claim. — *1.0h*
-3. **[Low]** Confirm CI is green across the full build matrix (curses + SDL2 + SDL3). — *0.5h*
-4. **[Low]** File a **separate ticket** for the unrelated, out-of-scope stale `debug.log` *"Option group already exists"* messages (`src/options.cpp:571`).
+1. **[High]** Perform human code review of the restoration diff (+1,195 lines; focus `src/newcharacter.cpp`), confirming CDDA conventions and no regression to the default FREEFORM flow.
+2. **[High]** Open the PR, rebase onto current upstream `master`, and drive the full upstream CI matrix to green.
+3. **[Medium]** Verify real-GPU / cross-platform rendering (Windows, macOS, Linux GPU) — validation used headless software rendering.
+4. **[Medium]** Conduct an exploratory QA playtest across all pool modes and edge-case templates, and (optionally) verify the SDL3 ≥ 3.4.0 build path.
+5. **[Low]** Confirm the 51 new translatable strings are captured by the translation/`.pot` extraction workflow.
 
 ---
 
@@ -67,89 +74,112 @@ pie showData title Completion Status — 87.1% Complete (13.5h of 15.5h)
 
 | Component | Hours | Description |
 |---|---|---|
-| Root-cause diagnosis & code examination | 3.0 | Traced the SDL2/SDL3 symbol asymmetry; located the SDL3-gated declaration (`sdltiles.h` L94–99) and definition (`sdltiles.cpp` L1220–1225); identified the canonical sibling guard (`cata_tiles.cpp` L1234–1238); confirmed `(void)vp` discard and constructor default; scope-completeness scan confirming only 2 unguarded calls. |
-| Fix implementation (2 inline SDL3 guards) | 0.5 | Applied `#if SDL_MAJOR_VERSION >= 3` leading-comma guard at Site A (`chunk_scope`) and Site B (`main_scope`); comment-free per the Explainability rule. |
-| Dependency & environment verification | 2.0 | Resolved/verified the SDL2 stack via `pkg-config` (sdl2 2.32.4, SDL2_ttf 2.24.0, SDL2_image 2.8.8, SDL2_mixer 2.8.1, freetype2 26.2.20, zlib 1.3.1), `g++-14` toolchain, and SOUND codec backends. |
-| SDL2 tiles build compile & warning-clean validation | 2.0 | Fresh ccache-free compile of the previously-failing object plus full build under the strict `-Werror` policy; archive/link chain restored. |
-| Full regression test suite execution & analysis | 3.0 | Ran the Catch2 suite (1,891 cases / 40.5M assertions, ~18.6 min) and targeted `[renderer_recovery]/[tint_overlay]/[sound_backend]`; analyzed results. |
-| Runtime validation | 1.5 | `--version` (`+tiles, +sound`), `--jsonverify` (full-core-JSON, exit 0), bounded boot to main menu, `ldd` SDL2-linkage confirmation. |
-| Style/lint check, scope verification & commit | 1.5 | `astyle` dry-run "Unchanged"; verified excluded files untouched; committed `a7171eb343`; clean working tree. |
-| **Total Completed** | **13.5** | *(all AI-autonomous; matches §1.2 Completed Hours)* |
+| `pool_type` enum restoration + backward-compat contract | 6 | Re-added `ONE_POOL`/`MULTI_POOL` with pinned integers; `pool_type_from_int()` range-checked normalizer + 64-bit narrowing guard (`src/player_difficulty.h`, `newcharacter.cpp`) |
+| `CHARACTER_POINT_POOLS` world-default option | 2 | Re-registered before `META_PROGRESS` with 3 choices, default `story_teller` (`src/options.cpp`) |
+| Creator state + `CHARCREATOR_POINTS` tab infrastructure | 6 | Added `pool` field; new enumerator; bumped `CHARACTER_CREATOR_TAB_COUNT` 7→8 and rippled through tab-indexed arrays/dispatch (`src/character_creator_ui.h`) |
+| Option read + pool seeding across generation paths | 4 | `avatar::create()` reads the option and seeds `cc_uistate.pool` on every path (CUSTOM/RANDOM/NOW/FULL_RANDOM/TEMPLATE) |
+| Pool-selection tab UI | 10 | Option-gated surface: `any` shows all 3 modes; fixed modes show read-only label + template-override annotation |
+| Persistent top-bar points readout | 6 | `pools_to_string` colored markup — MULTI_POOL stat/trait/skill breakdown, ONE_POOL total, FREEFORM "Survivor" |
+| Per-selection cost/affordability across 6 tabs | 20 | Cost/earn + net-delta + green/red affordability on scenario, profession, background, stats, traits, skills (with `n_gettext` pluralization) |
+| Finalize over-allocation guard | 6 | `handle_action` NEXT_TAB@SUMMARY: `point_pool_over_allocated()` + pool-specific popups + discard-unspent confirmation |
+| Restored point-math helper set | 8 | `skill_points_left`, `skill_increment_cost`, `point_pool_over_allocated`, `point_pool_has_unspent`, delta markup — all consuming the surviving engine |
+| Discovery hint + changelog entry | 1 | Restored "points pool" hint (`src/main_menu.cpp`); user-facing `data/changelog.txt` line |
+| Point-pool regression test suite | 16 | `tests/char_creation_points_test.cpp` — 536 lines, 5 cases, 192 assertions (enum, arithmetic, multi-pool borrowing, over-allocation, template round-trip) |
+| Explainability deliverable | 8 | `doc/POINT_POOL_RESTORATION.md` — decision log (30+ rows) + 18-row bidirectional traceability matrix (100%) |
+| Security hardening (QA F-1) | 3 | Path-traversal fix in `avatar::save_template` via `ensure_valid_file_name()`, protecting all 3 callers |
+| Test-suite stabilization | 2 | Flaky `monster_speed_description` fixed via `clear_map()` to keep the full suite deterministic |
+| Code review & QA remediation cycles | 12 | Five review rounds (doc review, code review, decision-log correction, QA findings) reflected in commit history |
+| Build hardening to zero warnings | 6 | Clean compile under `-Werror -Wall -Wextra -Wpedantic -Wold-style-cast -Wsuggest-override -Wzero-as-null-pointer-constant` |
+| Autonomous validation | 14 | Build/test/UI gates, Xvfb x11 real render, 818 screenshots, screen recordings, full in-game playtest |
+| **Total Completed** | **130** | *Matches Completed Hours in §1.2* |
 
 ### 2.2 Remaining Work Detail
 
 | Category | Hours | Priority |
 |---|---|---|
-| Human PR review & merge to `master` | 0.5 | **High** |
-| SDL3 ≥ 3.4.0 default-path regression build & smoke verification | 1.0 | **Medium** |
-| CI / build-matrix confirmation (curses + SDL2 + SDL3) | 0.5 | **Low** |
-| **Total Remaining** | **2.0** | *(matches §1.2 Remaining Hours and §7 pie "Remaining Work")* |
+| Human code review of the feature diff (+1,195 lines, esp. `src/newcharacter.cpp`) | 6 | High |
+| PR integration: rebase onto upstream `master` + full upstream CI matrix green | 5 | High |
+| Real-GPU / cross-platform (Windows, macOS, Linux GPU) render verification | 5 | Medium |
+| SDL3 (≥ 3.4.0) build & render forward-compat verification | 4 | Medium |
+| Human exploratory QA playtest sign-off (all pool modes + edge templates) | 4 | Medium |
+| Localization: route 51 new translatable strings into the `.pot` workflow | 2 | Low |
+| **Total Remaining** | **26** | *Matches Remaining Hours in §1.2 and §7* |
 
-### 2.3 Total Project Hours Reconciliation
+### 2.3 Hours Reconciliation
 
-| Line | Hours |
-|---|---|
-| Section 2.1 — Completed | 13.5 |
-| Section 2.2 — Remaining | 2.0 |
-| **Total Project Hours (2.1 + 2.2)** | **15.5** |
-| **Percent Complete** (13.5 ÷ 15.5) | **87.1%** |
-
-> **Cross-section integrity:** Remaining = **2.0h** is identical across §1.2, §2.2, and §7. Completed (13.5) + Remaining (2.0) = Total (15.5) ✓.
+| Check | Value | Status |
+|---|---|---|
+| §2.1 Completed total | 130h | ✅ |
+| §2.2 Remaining total | 26h | ✅ |
+| §2.1 + §2.2 | 156h = Total (§1.2) | ✅ |
+| §2.2 = §1.2 Remaining = §7 "Remaining Work" | 26h | ✅ |
 
 ---
 
 ## 3. Test Results
 
-All tests below originate from **Blitzy's autonomous validation logs** for this project; the targeted rendering and JSON checks were additionally **re-executed live** during this assessment.
+All tests below originate from **Blitzy's autonomous validation logs** for this project (Catch2 via `tests/cata_test`). The point-pool suite was additionally **re-run during this assessment** and passed (192 assertions / 5 cases, exit 0).
 
 | Test Category | Framework | Total Tests | Passed | Failed | Coverage % | Notes |
 |---|---|---|---|---|---|---|
-| Full regression suite (unit + integration) | Catch2 | 1,891 | 1,891 | 0 | N/A¹ | 40,498,142 assertions; exit 0; ~18.6 min; `--rng-seed time --order lex` |
-| Targeted rendering — `[renderer_recovery]` | Catch2 | 34 | 34 | 0 | N/A¹ | 243 assertions; `scoped_render_target` boundary/latch (AAP §0.6.2); **re-verified live this session** |
-| Targeted rendering — combined `[renderer_recovery]+[tint_overlay]+[sound_backend]` | Catch2 | 50 | 50 | 0 | N/A¹ | 305 assertions; subset of the full suite |
-| In-scope object compile | g++-14 / Make | 1 | 1 | 0 | N/A | Fresh ccache-free `obj/tiles/pixel_minimap.o`; **0 warnings/errors** under strict `-Werror` policy |
-| JSON database verification | `cataclysm-tiles --jsonverify` | 1 | 1 | 0 | N/A | Full core-JSON load/validate; exit 0; **re-verified live this session** |
+| Point-Pool (feature) — unit/logic | Catch2 2.13.10 | 5 cases (192 assertions) | 5 | 0 | 100% of `[points]` scope | `enum_values`, `arithmetic`, `multi_pool_borrowing`, `over_allocation`, `template_limit_round_trip` |
+| Full regression suite | Catch2 2.13.10 | 1,896 cases (40,149,483 assertions) | 1,896 | 0 | Full project suite | Ran ~1,123s; zero failures; TESTS never disabled |
+| Data integrity (`--jsonverify`) | In-engine loader | 1 run | Pass | 0 | All game JSON incl. new option | Exit 0; `CHARACTER_POINT_POOLS` loads |
 
-> ¹ Line-coverage percentage was not measured by the harness; it is not meaningful for a preprocessor-guard fix whose SDL2 path is behavior-neutral. The targeted subsets are drawn from — and included within — the 1,891-case full suite (not additive).
-
-**Summary:** 100% pass rate across every executed category. Zero failures, zero logged debug ERRORs (the harness treats any observed error as a failure).
+**Aggregate:** 1,901 test cases executed across the point-pool and full suites, **0 failures**, ~40.15M assertions. Frameworks: Catch2 (C++). Test types exercised: unit/logic (arithmetic, multi-pool borrowing), boundary (over-allocation), serialization round-trip (template `"limit"`), and data-load verification.
 
 ---
 
 ## 4. Runtime Validation & UI Verification
 
-**Runtime health (headless, SDL dummy drivers):**
+Rendered for real under the **SDL x11** path (Xvfb `:99`, 1920×1080×24, software GL) — never the dummy driver — and captured across 818 screenshots and multiple screen recordings.
 
-- ✅ **Operational** — `cataclysm-tiles` links against **libSDL2** (`ldd` confirmed: `libSDL2-2.0.so.0`, `SDL2_ttf`, `SDL2_image`, `SDL2_mixer`) — the SDL2 target configuration.
-- ✅ **Operational** — `./cataclysm-tiles --version` → exit 0, prints `+tiles, +sound` and stamps commit `a7171eb343`.
-- ✅ **Operational** — `./cataclysm-tiles --jsonverify` → exit 0 (full core-JSON load; ~97 MB RSS; cold + warm cache consistent).
-- ✅ **Operational** — Bounded launch boots through SDL2 renderer init (software / opengl / opengles2 devices enumerated), i18n, to the main-menu input loop; clean shutdown; zero errors.
+**Runtime health**
+- ✅ **Operational** — `./cataclysm-tiles --version` → `Cataclysm Dark Days Ahead: d21ed3b144 +tiles +sound`.
+- ✅ **Operational** — `--jsonverify` exits 0; the new `CHARACTER_POINT_POOLS` option loads with all game data.
+- ✅ **Operational** — Main menu renders (color-rich world-gen artwork); New Game hint advertises the points pool (traceability #18).
 
-**UI verification:**
+**UI verification — character creator**
+- ✅ **Operational** — Creator shows **8 tabs**: POINTS · SCENARIO · PROFESSION · BACKGROUND · STATS · TRAITS · SKILLS · SUMMARY (POINTS first; traceability #7). *Evidence: `blitzy/screenshots/sv_05_points_tab.png`.*
+- ✅ **Operational** — Pool-selection surface gates on the option: `story_teller` → "Survivor (fixed)"; `any` → all three modes (Survivor / Legacy: Multiple pools / Legacy: Single pool).
+- ✅ **Operational** — Live points readout: FREEFORM shows "Survivor"; MULTI_POOL shows the stat/trait/skill breakdown; ONE_POOL shows a single total (e.g. "Points left: -2" when over-allocated; traceability #9).
+- ✅ **Operational** — Per-selection cost feedback with affordability coloring on the builder tabs (e.g. STATS "Raising this stat costs 1 point"; traceability #11-15).
 
-- ⚠ **Partial** — Interactive UI on a real display was not exercised in headless CI (dummy SDL video/audio drivers). No UI regression is expected: under SDL2 the guarded argument falls back to the constructor default `nullptr`, which the SDL2 branch discards (`(void)vp`), so the pixel minimap renders exactly as before.
-- ✅ **Operational** — This is a backend C++ compile fix in the SDL rendering layer with **no UI/visual-design dimension** (AAP §0.8): no Figma frames, no component-library changes, no user-facing behavior change.
+**Functional / API-equivalent (option ↔ persistence)**
+- ✅ **Operational** — Over-allocation guard blocks finalize with "Too many points allocated, change some features and try again." *Evidence: `blitzy/screenshots/tl_08_loaded_onepool_block.png`.*
+- ✅ **Operational** — `CHARACTER_POINT_POOLS` serializes end-to-end into `worldoptions.json`.
+- ✅ **Operational** — Legacy templates (`limit` 0-3) load to the correct pool; `TRANSFER` transfer-templates load unchanged.
 
-**API integration:** ❌ **N/A** — CDDA is a local desktop application with no external API/network integration surface introduced or affected by this change.
+*No ❌ Failing or ⚠ Partial runtime items were observed under the tested (software-rendered) path. Real-GPU / cross-platform confirmation remains a human task (§2.2).*
 
 ---
 
 ## 5. Compliance & Quality Review
 
-| Benchmark / AAP Deliverable | Requirement | Status | Progress | Notes |
-|---|---|---|---|---|
-| Root-cause fix — Site A & B | AAP §0.4.1 — inline SDL3 guard at both call sites | ✅ Pass | 100% | Byte-exact; commit `a7171eb343` |
-| Guard condition | AAP §0.7 dec.4 — exactly `#if SDL_MAJOR_VERSION >= 3` | ✅ Pass | 100% | Matches declaration gate + sibling |
-| Scope discipline | AAP §0.5.2 — only `pixel_minimap.cpp`; no excluded files | ✅ Pass | 100% | Verified via `git show --name-only` |
-| No SDL2 stub / no refactor | AAP §0.5.2 | ✅ Pass | 100% | `abort_minimap_frame` literals untouched |
-| Warning-clean compile | `Makefile` L104 — `-Werror -Wall -Wextra` (+strict) | ✅ Pass | 100% | 0 warnings on `pixel_minimap.o` |
-| Regression suite green | AAP §0.6.2 — "All tests passed" | ✅ Pass | 100% | 1,891 cases, exit 0 |
-| Functional validation | AAP §0.6.1 — `--version` / `--jsonverify` | ✅ Pass | 100% | Both exit 0 |
-| Style compliance | `.astylerc` / astyle 3.1 | ✅ Pass | 100% | Dry-run "Unchanged" |
-| Explainability rule | No rationale comments in code | ✅ Pass | 100% | Rationale in commit message / decision log |
-| SDL3 default-path regression | AAP §0.6.2 — rebuild without `SDL3=0` | ⏳ Pending | Theoretical | Byte-identical preprocessed output; env lacks SDL3 ≥ 3.4.0 → **HT-2** |
+Cross-map of AAP deliverables and mandated rules to their implementation status. The **18-row bidirectional traceability matrix** (AAP §0.5.2) is delivered in full inside `doc/POINT_POOL_RESTORATION.md`.
 
-**Fixes applied during autonomous validation:** none required — the fix was already correct and complete; the validator added **zero** further source changes. **Outstanding:** empirical SDL3 default-path verification (path-to-production).
+| # | AAP Deliverable / Rule | Benchmark | Status | Progress |
+|---|---|---|---|---|
+| 1 | Restore `ONE_POOL`/`MULTI_POOL` enum | Pinned integers preserved | ✅ Pass | 100% |
+| 2 | `CHARACTER_POINT_POOLS` world option | 3 choices, default `story_teller` | ✅ Pass | 100% |
+| 3 | `CHARCREATOR_POINTS` tab + count 7→8 | Arrays/dispatch consistent | ✅ Pass | 100% |
+| 4 | Option read + pool seed in `create()` | All generation paths | ✅ Pass | 100% |
+| 5 | Live points readout | `pools_to_string` all modes | ✅ Pass | 100% |
+| 6 | Per-selection cost/affordability (6 tabs) | Cost/earn + color | ✅ Pass | 100% |
+| 7 | Finalize over-allocation guard | Pool-specific popups | ✅ Pass | 100% |
+| 8 | Discovery hint | "points pool" restored | ✅ Pass | 100% |
+| 9 | Reuse surviving point-math engine | No parallel math | ✅ Pass | 100% |
+| 10 | Backward-compat (template `"limit"`) | Round-trip test green | ✅ Pass | 100% |
+| 11 | Point-pool regression tests | 5 cases / 192 assertions | ✅ Pass | 100% |
+| 12 | Explainability: decision log | Rationale out of code comments | ✅ Pass | 100% |
+| 13 | Explainability: traceability matrix | 18 rows, 100% coverage | ✅ Pass | 100% |
+| 14 | Build gate (`TILES=1`, tests on) | 0 warnings under `-Werror` | ✅ Pass | 100% |
+| 15 | Tests gate | "All tests passed", exit 0 | ✅ Pass | 100% |
+| 16 | UI gate | Renders under SDL x11 | ✅ Pass | 100% |
+| 17 | Security: path-traversal (QA F-1) | Sanitized template path | ✅ Pass (fixed) | 100% |
+| 18 | Style: astyle / zero placeholders | astyle "Unchanged"; no TODO/stub | ✅ Pass | 100% |
+
+**Fixes applied during autonomous validation:** path-traversal hardening in `avatar::save_template` (QA F-1); flaky `monster_speed_description` stabilized via `clear_map()`; code-review and decision-log corrections. **Outstanding compliance items:** none — clang-tidy/IWYU/cross-platform lints run in upstream CI (§6, §2.2).
 
 ---
 
@@ -157,141 +187,148 @@ All tests below originate from **Blitzy's autonomous validation logs** for this 
 
 | Risk | Category | Severity | Probability | Mitigation | Status |
 |---|---|---|---|---|---|
-| SDL3 default-path not empirically re-verified locally (env lacks SDL3 ≥ 3.4.0); zero-regression rests on the preprocessor byte-identical guarantee | Technical | Low | Low | Rebuild without `SDL3=0` on an SDL3 ≥ 3.4.0 host; run smoke + `[renderer_recovery]` | Open (path-to-prod) — **HT-2** |
-| Preprocessor directive inside a constructor argument list is a visually unusual idiom | Technical | Low | Low | It is the exact in-repo idiom (mirrors `cata_tiles.cpp`); the guard is self-descriptive | Mitigated |
-| No new security surface introduced | Security | None | — | Compile-time guard around an existing argument; no inputs, I/O, network, auth, or data handling | N/A |
-| Stale out-of-scope `debug.log` "Option group already exists" messages (`options.cpp:571`, prior session) | Operational | Low | Low | Track in a separate ticket; unrelated subsystem; not reproduced in validator runs | Open (non-blocking) — **HT-N** |
-| Build-matrix coverage — SDL3/curses not locally exercised (SDL2 fully verified; curses file elided by `#if defined(TILES)`) | Integration | Low | Low | CI matrix run across curses + SDL2 + SDL3 | Partially verified — **HT-3** |
-| `ccache` stale-cache masking the compile result | Integration | Low | Low | Previously-failing object recompiled **ccache-free** | Resolved |
+| Large single-file change (`newcharacter.cpp` +514/-16) raises review & conflict burden | Technical | Medium | Medium | 5 regression tests, 100% traceability matrix, zero-warning build | Mitigated |
+| emscripten / WASM build path not exercised locally | Technical | Low | Low | Covered by upstream emscripten CI target | Open (CI-gated) |
+| clang-tidy / IWYU may flag include/style nits beyond local g++ | Technical | Low | Medium | `.clang-tidy` present; astyle dry-run clean | Open (CI-gated) |
+| Path traversal via template name in `save_template` | Security | High | Medium (pre-fix) | Fixed with `ensure_valid_file_name()`; protects all 3 callers | **Resolved** |
+| Untrusted template `"limit"` integer deserialization | Security | Medium | Low | Range-checked `pool_type_from_int` + 64-bit narrowing → FREEFORM | Mitigated |
+| Built/validated on SDL2 fallback only (SDL3 ≥ 3.4.0 unavailable) | Operational | Medium | Low | SDL2 is a supported production backend; SDL3 tracked as M-2 | Open (task) |
+| UI validated under headless software rendering, not real GPU / Win / macOS | Operational | Medium | Low | ImGui is renderer-agnostic; layout logic identical | Open (task) |
+| 51 new translatable strings must enter `.pot` workflow | Operational | Low | Medium | Route through translation extraction (task L-1) | Open (task) |
+| Merge onto fast-moving upstream `master` (`newcharacter.cpp` actively developed) | Integration | Medium | Medium | Rebase early + upstream CI | Open (task) |
+| Backward-compat of existing character / transfer templates | Integration | High (if broken) | Very Low | Pinned integers + round-trip test | Mitigated |
+| `CHARACTER_POINT_POOLS` persistence to `worldoptions.json` | Integration | Low | Low | Verified end-to-end in validation | Mitigated |
 
-**Overall risk posture:** **Low.** No High or Critical risks. Consistent with a surgical, fully-validated single-file compile fix.
+**Overall risk posture: LOW.** The one High-severity security risk was resolved; all other High-impact items are mitigated by tests and preserved contracts. Remaining open items are environmental/process, not code defects.
 
 ---
 
 ## 7. Visual Project Status
 
 ```mermaid
-%%{init: {'theme':'base','themeVariables':{'pie1':'#5B39F3','pie2':'#FFFFFF','pieStrokeColor':'#B23AF2','pieOuterStrokeColor':'#B23AF2','pieTitleTextColor':'#B23AF2','pieSectionTextColor':'#B23AF2','pieLegendTextColor':'#000000'}}}%%
-pie showData title Project Hours Breakdown (Total 15.5h)
-    "Completed Work" : 13.5
-    "Remaining Work" : 2.0
+%%{init: {'theme':'base', 'themeVariables': {'pie1':'#5B39F3','pie2':'#FFFFFF','pieStrokeColor':'#B23AF2','pieStrokeWidth':'2px','pieOuterStrokeWidth':'2px','pieTitleTextSize':'16px','pieSectionTextColor':'#B23AF2'}}}%%
+pie showData title Project Hours Breakdown (Total 156h)
+    "Completed Work" : 130
+    "Remaining Work" : 26
 ```
 
-**Remaining hours by category** (from §2.2):
+**Remaining hours by category (§2.2) — priority distribution:**
 
 ```mermaid
-xychart-beta
-    title "Remaining Hours by Category (2.0h total)"
-    x-axis ["PR Review/Merge", "SDL3 Path Verify", "CI Matrix"]
-    y-axis "Hours" 0 --> 1.5
-    bar [0.5, 1.0, 0.5]
+%%{init: {'theme':'base', 'themeVariables': {'pie1':'#5B39F3','pie2':'#A8FDD9','pie3':'#B23AF2','pieStrokeColor':'#5B39F3','pieOuterStrokeWidth':'2px'}}}%%
+pie showData title Remaining Work by Priority (26h)
+    "High" : 11
+    "Medium" : 13
+    "Low" : 2
 ```
 
-> **Integrity:** "Remaining Work" = **2.0h** equals §1.2 Remaining Hours and the sum of the §2.2 "Hours" column. "Completed Work" = **13.5h** equals §1.2 Completed Hours. Colors: Completed = Dark Blue `#5B39F3`, Remaining = White `#FFFFFF`.
+> Integrity: pie "Completed Work" = 130 (= §1.2 Completed, = §2.1 total); pie "Remaining Work" = 26 (= §1.2 Remaining, = §2.2 total). Priority split 11 + 13 + 2 = 26. Completed = Dark Blue `#5B39F3`; Remaining = White `#FFFFFF`.
 
 ---
 
 ## 8. Summary & Recommendations
 
-**Achievements.** The build-breaking SDL2 compilation failure is fully resolved. A single, surgical preprocessor guard was applied to `src/pixel_minimap.cpp` — byte-exact to the AAP specification and idiomatic to the existing `cata_tiles.cpp` sibling. The previously-broken dependency chain (`pixel_minimap.o` → `cataclysm.a` → `cataclysm-tiles` → `tests/cata_test`) is fully restored, the entire 1,891-case regression suite passes, and the binary runs correctly under the SDL2 target configuration.
+**Achievements.** The point-buy character-creation system is **fully restored** into the current Dear ImGui creator. Every one of the 16 AAP feature deliverables and all 5 AAP validation gates are complete and passing: the enum and world option are back with a preserved on-disk contract; the `CHARCREATOR_POINTS` tab, live points readout, and per-tab cost/affordability feedback are wired into the ImGui UI; the finalize over-allocation guard blocks invalid ONE_POOL/MULTI_POOL characters while FREEFORM stays unconstrained; and the mandated Explainability artifact ships with a 100%-coverage 18-row traceability matrix. The build is clean under the strictest `-Werror` flags and the full Catch2 suite passes (1,896 cases / 40.1M assertions, 0 failures).
 
-**Remaining gaps.** The project is **87.1% complete** (13.5h of 15.5h). The remaining **2.0h** are entirely **path-to-production** activities: human PR review/merge (0.5h), empirical SDL3 ≥ 3.4.0 default-path verification (1.0h) — which this environment physically cannot run — and CI build-matrix confirmation (0.5h). No AAP-scoped implementation work remains.
+**Remaining gaps.** The outstanding 26 hours are entirely **human path-to-production**, not defects: code review, PR integration with upstream CI, cross-platform / real-GPU render verification, an SDL3 ≥ 3.4.0 forward-compat check, an exploratory QA sign-off, and routing new strings through localization.
 
-**Critical path to production:** (1) merge `a7171eb343` → (2) run the default SDL3 build + smoke test on capable hardware → (3) confirm CI matrix green.
+**Critical path to production.** (1) Human code review → (2) PR + upstream CI green → (3) cross-platform render + QA sign-off → merge. SDL3 and localization can proceed in parallel and are non-blocking.
 
-**Success metrics (all met for the SDL2 target):**
-
-| Metric | Target | Result |
+| Success Metric | Target | Actual |
 |---|---|---|
-| `pixel_minimap.o` compiles under `-Werror` | 0 warnings/errors | ✅ 0 |
-| Regression suite | All tests passed | ✅ 1,891 / 1,891 |
-| Functional smoke | `--version` `+tiles`, `--jsonverify` exit 0 | ✅ Both |
-| Scope | 1 file, no excluded files touched | ✅ Confirmed |
-| Completion | AAP-scoped hours delivered | **87.1%** |
+| AAP feature deliverables complete | 16/16 | ✅ 16/16 |
+| AAP validation gates passed | 5/5 | ✅ 5/5 |
+| Traceability coverage | 100% (18 rows) | ✅ 100% |
+| Full test suite | 0 failures | ✅ 0 / 1,896 |
+| Build warnings under `-Werror` | 0 | ✅ 0 |
+| Release-blocking defects | 0 | ✅ 0 |
 
-**Production readiness assessment.** The **SDL2 tiles deliverable is production-ready** and validated end-to-end. Overall project readiness reaches production once the two human/CI gates and the SDL3-path confirmation (2.0h) are cleared. Confidence is **High**, matching the AAP's own 99% self-assessment on fix correctness.
+**Production-readiness assessment.** The autonomous deliverable is **production-ready pending standard human review and cross-platform confirmation**. AAP-scoped completion is **83.3%** (130h of 156h); the remaining 16.7% is human-in-the-loop deployment work. Recommendation: **proceed to code review and PR** with high confidence.
 
 ---
 
 ## 9. Development Guide
 
+> All commands below were **tested** in the validation environment (Ubuntu 25.10, g++ 15.2.0, SDL2 2.32.4). Run from the repository root.
+
 ### 9.1 System Prerequisites
 
-- **OS:** Linux (validated on Ubuntu 25.10; any distro with the SDL2 dev stack works).
-- **Compiler:** `g++-14` (14.3.0) — C++17.
-- **Build tools:** GNU Make 4.4.1, `pkg-config` 1.8.1, `ccache` 4.11.2 (optional but recommended), `git` + `git-lfs` 3.7.1.
-- **Hardware:** ≥ 4 GB RAM recommended for parallel builds; ~2 GB free disk for objects + binaries.
+- **OS:** Linux (Ubuntu 25.10 verified); Windows/macOS supported via upstream toolchains.
+- **Compiler:** `g++` 15.2.0 (C++17). Clang also supported upstream.
+- **Build tools:** GNU Make 4.4.1; `ccache` 4.11.2 (optional, recommended).
+- **Hardware:** ~4 GB RAM; the build produces large binaries (`cataclysm-tiles` ≈ 287 MB, `tests/cata_test` ≈ 373 MB).
 
-### 9.2 Environment Setup
+### 9.2 Environment Setup & Dependencies (SDL2 tiles stack)
 
-Install the SDL2 development stack (Debian/Ubuntu package names):
-
-```bash
-sudo apt-get update
-DEBIAN_FRONTEND=noninteractive sudo apt-get install -y \
-    g++-14 make pkg-config ccache git git-lfs \
-    libsdl2-dev libsdl2-ttf-dev libsdl2-image-dev libsdl2-mixer-dev \
-    libfreetype-dev zlib1g-dev
-```
-
-Verify the toolchain and SDL2 stack resolve:
+Verify the runtime/build libraries are present (all confirmed via `pkg-config`):
 
 ```bash
-g++-14 --version            # -> g++-14 (Ubuntu 14.3.0-...) 14.3.0
-make --version | head -1    # -> GNU Make 4.4.1
-pkg-config --modversion sdl2 SDL2_ttf SDL2_image SDL2_mixer
-# -> 2.32.4 / 2.24.0 / 2.8.8 / 2.8.1
+for p in sdl2 SDL2_ttf SDL2_image SDL2_mixer freetype2 zlib bzip2; do
+  printf '%-12s ' "$p"; pkg-config --modversion "$p"
+done
+# Expected: sdl2 2.32.4 · SDL2_ttf 2.24.0 · SDL2_image 2.8.8 · SDL2_mixer 2.8.1 · freetype2 26.2.20 · zlib 1.3.1 · bzip2 1.0.8
 ```
 
-For **headless / CI** runs, export dummy SDL drivers before launching the binary:
+> Note: SDL3 ≥ 3.4.0 is *not* required for this build. The verified path uses the SDL2 backend with `SDL3=0`.
+
+### 9.3 Build (tiles, tests enabled)
 
 ```bash
-export SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy XDG_RUNTIME_DIR=/tmp/xdg
-mkdir -p /tmp/xdg
+export CCACHE_DIR=/tmp/ccache
+ccache -M 5G
+make -j2 RELEASE=1 TILES=1 SOUND=1 SDL3=0 ASTYLE=0 LINTJSON=0 CCACHE=1
 ```
 
-### 9.3 Build (SDL2 tiles — the AAP target configuration)
+- Compiles under `-Werror -Wall -Wextra -Wpedantic -Wold-style-cast -Wsuggest-override -Wzero-as-null-pointer-constant` with **zero warnings**.
+- **Never** set `TESTS=0` — the test binary must build.
+- Produces `./cataclysm-tiles` and `./tests/cata_test`.
 
-From the repository root:
+### 9.4 Verify the Build
 
 ```bash
-make -j4 RELEASE=1 TILES=1 SOUND=1 SDL3=0 ASTYLE=0 LINTJSON=0 COMPILER=g++-14
+./cataclysm-tiles --version
+# → Cataclysm Dark Days Ahead: d21ed3b144  +tiles, +sound
+
+SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./cataclysm-tiles --jsonverify   # exit 0 = all data (incl. CHARACTER_POINT_POOLS) loads
 ```
 
-**Expected result:** every object compiles (including `obj/tiles/pixel_minimap.o`, warning-clean under `-Werror`); `cataclysm.a` is archived; `cataclysm-tiles` is linked; `tests/cata_test` is built. Build exit code `0`.
-
-### 9.4 Verification Steps
+### 9.5 Run the Tests
 
 ```bash
-# 1) Version / feature flags — confirms the binary and the fix commit
-./cataclysm-tiles --version          # exit 0; prints "+tiles, +sound" and "a7171eb343"
+# Point-pool feature suite (fast) — tested this session: "All tests passed (192 assertions in 5 test cases)"
+SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./tests/cata_test "[points]" --user-dir=test_user_dir
 
-# 2) Full core-JSON validation
-./cataclysm-tiles --jsonverify       # exit 0
+# List the point-pool cases
+./tests/cata_test --list-tests "[points]"
 
-# 3) Full regression suite (~18.6 min)
-./tests/cata_test --rng-seed time --order lex   # "All tests passed"
-
-# 4) Targeted, fix-relevant coverage (fast)
-./tests/cata_test "[renderer_recovery]" --use-colour no
-# -> "All tests passed (243 assertions in 34 test cases)"
+# Full regression suite (~1,123s): "All tests passed (40,149,483 assertions in 1896 test cases)"
+SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./tests/cata_test --user-dir=test_user_dir
 ```
 
-### 9.5 Example Usage
+### 9.6 Run the UI Headlessly (verify the creator renders)
 
 ```bash
-# Interactive play on a real display (X11/Wayland):
-./cataclysm-launcher
+Xvfb :99 -screen 0 1920x1080x24 &
+DISPLAY=:99 SDL_VIDEODRIVER=x11 SDL_AUDIODRIVER=dummy LIBGL_ALWAYS_SOFTWARE=1 \
+  XDG_RUNTIME_DIR=/tmp/xdg ./cataclysm-tiles --userdir <seeded-userdir>
+# Config seed: FULLSCREEN=no, RENDERER=software, TERMINAL_X=240, TERMINAL_Y=67, USE_LANG=en
 ```
 
-### 9.6 Troubleshooting
+### 9.7 Example Usage (exercise the feature)
 
-| Symptom | Cause | Resolution |
-|---|---|---|
-| `error: 'get_shared_variant_pass' was not declared in this scope` at `pixel_minimap.cpp:284`/`:473` | Pre-fix source built with `SDL3=0` | Ensure commit `a7171eb343` is present (the guard fix). |
-| `make` aborts citing SDL3 ≥ 3.4.0 requirement | Default (SDL3) build on a host with SDL3 < 3.4.0 | Build the SDL2 path with `SDL3=0` (as in §9.3), or install SDL3 ≥ 3.4.0. |
-| Binary aborts at startup in CI with display/audio error | No display/audio device in headless env | Export `SDL_VIDEODRIVER=dummy` and `SDL_AUDIODRIVER=dummy` (see §9.2). |
-| Stale `debug.log` "Option group … already exists" | Unrelated, out-of-scope prior-session log noise (`options.cpp:571`) | Non-blocking; track separately (**HT-N**). |
+1. **New game → Create World →** World options → set **`CHARACTER_POINT_POOLS = any`** → Finish.
+2. **New game → Custom Character.** The **POINTS** tab is first; it lists *Survivor*, *Legacy: Multiple pools*, *Legacy: Single pool*.
+3. Select **Legacy: Single pool**. The top bar shows **"Points left: N"**. Overspend on STATS/SKILLS until it goes negative.
+4. Go to **SUMMARY → Finish.** The finalize guard blocks with **"Too many points allocated, change some features and try again."**
+5. Reduce allocations until *Points left ≥ 0*, then finalize successfully.
+
+### 9.8 Troubleshooting
+
+- **`error: externally-managed-environment` (pip):** not needed for this C++ build; if required, use a `venv` or `--break-system-packages`.
+- **Blank window when headless:** ensure `SDL_VIDEODRIVER=x11`, `Xvfb` is running, and `LIBGL_ALWAYS_SOFTWARE=1`; a WM-less Xvfb needs a keyboard-focus helper for input.
+- **`patch does not apply` when attempting a git revert of the removal:** expected — this restoration is *functional into ImGui*, not a revert.
+- **SDL3 compile errors:** use `SDL3=0` unless SDL3 ≥ 3.4.0 dev headers are installed.
+- **Slow rebuilds:** enable `CCACHE=1` with `CCACHE_DIR` set.
 
 ---
 
@@ -301,68 +338,83 @@ make -j4 RELEASE=1 TILES=1 SOUND=1 SDL3=0 ASTYLE=0 LINTJSON=0 COMPILER=g++-14
 
 | Purpose | Command |
 |---|---|
-| Build (SDL2 tiles) | `make -j4 RELEASE=1 TILES=1 SOUND=1 SDL3=0 ASTYLE=0 LINTJSON=0 COMPILER=g++-14` |
-| Build (default SDL3, needs SDL3 ≥ 3.4.0) | `make -j4 RELEASE=1 TILES=1 SOUND=1 ASTYLE=0 LINTJSON=0` |
-| Isolate the previously-failing object | `make -j1 TILES=1 SDL3=0 obj/tiles/pixel_minimap.o` |
-| Version / flags | `./cataclysm-tiles --version` |
-| JSON validation | `./cataclysm-tiles --jsonverify` |
-| Full test suite | `./tests/cata_test --rng-seed time --order lex` |
-| Targeted rendering tests | `./tests/cata_test "[renderer_recovery]" --use-colour no` |
-| Style check (dry-run) | `astyle --options=.astylerc --dry-run src/pixel_minimap.cpp` |
-| Inspect the fix diff | `git show a7171eb343 -- src/pixel_minimap.cpp` |
+| Build (tiles, SDL2) | `make -j2 RELEASE=1 TILES=1 SOUND=1 SDL3=0 ASTYLE=0 LINTJSON=0 CCACHE=1` |
+| Version | `./cataclysm-tiles --version` |
+| Data verify | `SDL_VIDEODRIVER=dummy ./cataclysm-tiles --jsonverify` |
+| Point-pool tests | `SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./tests/cata_test "[points]" --user-dir=test_user_dir` |
+| Full test suite | `SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./tests/cata_test --user-dir=test_user_dir` |
+| List point tests | `./tests/cata_test --list-tests "[points]"` |
+| Feature diff | `git diff b65952abda^..HEAD --stat` |
+| Style check (dry-run) | `astyle --dry-run --options=.astylerc src/newcharacter.cpp` |
 
 ### B. Port Reference
 
-**N/A** — CDDA is a local desktop application; the fix introduces no network services, listeners, or ports.
+*Not applicable — CDDA is a single-process desktop game and opens no network ports. The only display "endpoint" is the X server (`DISPLAY=:99` in the headless setup).*
 
 ### C. Key File Locations
 
-| Path | Role |
-|---|---|
-| `src/pixel_minimap.cpp` | **The only modified file** — guarded call sites at L285 (`chunk_scope`) and L477 (`main_scope`) |
-| `src/sdltiles.h` (L94–99) | SDL3-gated **declaration** of `get_shared_variant_pass()` |
-| `src/sdltiles.cpp` (L1220–1225) | SDL3-gated **definition** |
-| `src/cata_tiles.cpp` (L1234–1238) | Canonical **sibling guard** the fix mirrors |
-| `src/sdl_wrappers.h` (L190) · `.cpp` (L416) | `scoped_render_target` ctor default `vp = nullptr`; SDL2 branch `(void)vp` discard |
-| `Makefile` (L104, L801–814, L1326) | Strict warning policy; SDL3 ≥ 3.4.0 floor; failing object rule |
-| `cataclysm-tiles`, `cataclysm.a`, `tests/cata_test` | Restored build artifacts |
+| File | Role | Change |
+|---|---|---|
+| `src/player_difficulty.h` | `pool_type` enum + `pool_type_from_int` decl | +25 / -1 |
+| `src/options.cpp` | `CHARACTER_POINT_POOLS` registration | +8 |
+| `src/character_creator_ui.h` | Creator state `pool` + `CHARCREATOR_POINTS` + count 7→8 | +7 / -2 |
+| `src/newcharacter.cpp` | Creator logic, helpers, finalize guard, per-tab cost | +514 / -16 |
+| `src/main_menu.cpp` | New Game "points pool" hint | +1 / -1 |
+| `data/changelog.txt` | User-facing changelog entry | +1 |
+| `doc/POINT_POOL_RESTORATION.md` | Explainability: decision log + traceability matrix | +121 (new) |
+| `tests/char_creation_points_test.cpp` | Point-pool regression suite | +536 (new) |
+| `tests/speed_description_test.cpp` | Flaky-test stabilization | +2 |
 
 ### D. Technology Versions
 
 | Component | Version |
 |---|---|
 | Language | C++17 |
-| Compiler | g++-14 14.3.0 |
-| Make / pkg-config / ccache | 4.4.1 / 1.8.1 / 4.11.2 |
-| SDL2 / SDL2_ttf / SDL2_image / SDL2_mixer | 2.32.4 / 2.24.0 / 2.8.8 / 2.8.1 |
-| FreeType / zlib | 26.2.20 / 1.3.1 |
-| Test framework | Catch2 |
-| astyle / git-lfs | 3.1 / 3.7.1 |
+| Compiler | g++ 15.2.0 |
+| Build | GNU Make 4.4.1, ccache 4.11.2 |
+| UI framework | Dear ImGui 1.92.8 |
+| Test framework | Catch2 2.13.10 |
+| Rendering | SDL2 2.32.4 (+ SDL2_ttf 2.24.0, SDL2_image 2.8.8, SDL2_mixer 2.8.1); SDL3 ≥ 3.4.0 supported but not used here |
+| Support libs | freetype2 26.2.20, zlib 1.3.1, bzip2 1.0.8 |
+| Build target | `cataclysm-tiles` (≈287 MB), `tests/cata_test` (≈373 MB) |
+| HEAD commit | `d21ed3b144` |
 
 ### E. Environment Variable Reference
 
-| Variable | Value | Purpose |
+| Variable | Purpose | Example |
 |---|---|---|
-| `SDL_VIDEODRIVER` | `dummy` | Headless video (no display) |
-| `SDL_AUDIODRIVER` | `dummy` | Headless audio (no device) |
-| `XDG_RUNTIME_DIR` | `/tmp/xdg` | Runtime dir for headless launch |
+| `CCACHE_DIR` | ccache cache location | `/tmp/ccache` |
+| `SDL_VIDEODRIVER` | SDL video backend | `x11` (real render) / `dummy` (headless tests) |
+| `SDL_AUDIODRIVER` | SDL audio backend | `dummy` |
+| `LIBGL_ALWAYS_SOFTWARE` | Force software GL under Xvfb | `1` |
+| `DISPLAY` | X server for headless render | `:99` |
+| `XDG_RUNTIME_DIR` | Runtime dir for the session | `/tmp/xdg` |
 
-*(Build flags such as `RELEASE`, `TILES`, `SOUND`, `SDL3`, `COMPILER`, `ASTYLE`, `LINTJSON` are Make variables, not environment variables.)*
+*In-game option (not an env var): `CHARACTER_POINT_POOLS` (world default) — `any` / `multi_pool` / `story_teller`.*
 
 ### F. Developer Tools Guide
 
-- **Compiler diagnostics:** the strict policy (`-Werror -Wall -Wextra -Wold-style-cast -Wpedantic -Wsuggest-override -Wzero-as-null-pointer-constant`) means any warning fails the build — treat all diagnostics as errors.
-- **Preprocessor inspection** (to confirm the SDL2 guard elides the argument): `g++-14 -E -DSDL_MAJOR_VERSION=2 ... src/pixel_minimap.cpp | sed -n '/scoped_render_target chunk_scope/,+3p'`.
-- **Linkage check:** `ldd cataclysm-tiles | grep -i sdl` — should list `libSDL2-*`, not SDL3.
-- **Style:** `astyle --options=.astylerc --dry-run <file>` reports "Unchanged" when compliant.
+| Tool | Use |
+|---|---|
+| `Xvfb` | Headless X server for real SDL x11 rendering |
+| `ffmpeg` / `ffprobe` | Capture/inspect UI screen recordings |
+| `xdotool`, `xwininfo` | Window focus / geometry inspection under Xvfb |
+| `imagemagick` (`convert`) | Crop/annotate verification screenshots |
+| `astyle` | CDDA C++ formatting (config: `.astylerc`) |
+| `clang-tidy` | Static analysis (config: `.clang-tidy`) — runs in upstream CI |
+| Verification artifacts | `blitzy/screenshots/` (818 PNGs), `blitzy/screen_recordings/` (recordings + survivor dossier/journal) |
 
 ### G. Glossary
 
 | Term | Definition |
 |---|---|
-| **SDL2 / SDL3** | Simple DirectMedia Layer — the cross-platform rendering/audio library. `SDL3=0` selects the SDL2 fallback. |
-| **`SDL_MAJOR_VERSION`** | Preprocessor macro equal to the SDL major version (2 or 3); gates SDL3-only code. |
-| **`get_shared_variant_pass()`** | SDL3-only helper returning a `cata_shader::variant_pass*` for the GPU fragment-shader path (SDL 3.4.0 GPU render-state API). |
-| **`scoped_render_target`** | RAII wrapper that redirects the SDL renderer to a texture; its 3rd (variant-pass) parameter defaults to `nullptr` and is discarded under SDL2. |
-| **tiles / curses** | Graphical (SDL) vs. text (ncurses) client builds. The defect affected only `TILES=1`. |
-| **AAP** | Agent Action Plan — the authoritative specification for this fix. |
+| **Point buy / point pool** | Character-creation mode with a finite point budget spent across scenario/profession/background/stats/traits/skills |
+| **FREEFORM** | "Survivor" mode — no point limit (the current default) |
+| **ONE_POOL** | "Legacy: Single pool" — one shared point budget |
+| **MULTI_POOL** | "Legacy: Multiple pools" — separate stat/trait/skill pools with cross-pool borrowing |
+| **TRANSFER** | Character-transfer template mode (`limit == 3`); no edits allowed |
+| **`pool_type`** | Enum serialized as the integer `"limit"` in character templates (contract: 0/1/2/3) |
+| **`CHARACTER_POINT_POOLS`** | World-default option gating which pool modes the creator offers |
+| **`CHARCREATOR_POINTS`** | The restored pool-selection tab (creator tab count 7→8) |
+| **Explainability artifact** | User-mandated decision log + bidirectional traceability matrix (`doc/POINT_POOL_RESTORATION.md`) |
+| **Traceability matrix** | 18-row removed⇄restored mapping at 100% coverage |
