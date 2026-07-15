@@ -8,6 +8,7 @@
 
 #include "avatar.h"
 #include "cata_catch.h"
+#include "cata_utility.h"
 #include "character.h"
 #include "character_id.h"
 #include "filesystem.h"
@@ -56,8 +57,8 @@ struct template_file_guard {
 // Local re-derivation of the file-local point-math engine formulas in
 // src/newcharacter.cpp (the engine functions there have internal linkage). Used here as an
 // exact-arithmetic oracle. The over-allocation, unspent-points, limit-normalization and
-// option-gating pass/fail decisions are taken from the production seam declared in
-// player_difficulty.h and are cross-checked against this oracle below.
+// option-gating decisions come from the functions declared in player_difficulty.h and are
+// cross-checked against this oracle below.
 // ---------------------------------------------------------------------------
 int stat_point_pool()
 {
@@ -169,12 +170,60 @@ pool_left points_left_from_pure( int pure_stat, int pure_trait, int pure_skill )
 
 TEST_CASE( "char_creation_point_pool_enum_values", "[char_creation][points]" )
 {
-    // pool_type is serialized to character templates as the integer "limit".
-    // These values are a backward-compatibility contract and must never change.
-    CHECK( static_cast<int>( pool_type::FREEFORM ) == 0 );
-    CHECK( static_cast<int>( pool_type::ONE_POOL ) == 1 );
-    CHECK( static_cast<int>( pool_type::MULTI_POOL ) == 2 );
-    CHECK( static_cast<int>( pool_type::TRANSFER ) == 3 );
+    SECTION( "serialized integer values are the backward-compatibility contract" ) {
+        // pool_type is serialized to character templates as the integer "limit".
+        // These values are a backward-compatibility contract and must never change.
+        CHECK( static_cast<int>( pool_type::FREEFORM ) == 0 );
+        CHECK( static_cast<int>( pool_type::ONE_POOL ) == 1 );
+        CHECK( static_cast<int>( pool_type::MULTI_POOL ) == 2 );
+        CHECK( static_cast<int>( pool_type::TRANSFER ) == 3 );
+    }
+
+    SECTION( "pool_type_from_int normalizes on-disk values and maps others to FREEFORM" ) {
+        // Valid on-disk values map to their enum.
+        CHECK( pool_type_from_int( 0 ) == pool_type::FREEFORM );
+        CHECK( pool_type_from_int( 1 ) == pool_type::ONE_POOL );
+        CHECK( pool_type_from_int( 2 ) == pool_type::MULTI_POOL );
+        CHECK( pool_type_from_int( 3 ) == pool_type::TRANSFER );
+
+        // Every enumerator round-trips through its integer value.
+        for( const pool_type pool : {
+                 pool_type::FREEFORM, pool_type::ONE_POOL,
+                 pool_type::MULTI_POOL, pool_type::TRANSFER
+             } ) {
+            CAPTURE( static_cast<int>( pool ) );
+            CHECK( pool_type_from_int( static_cast<int>( pool ) ) == pool );
+        }
+
+        // Out-of-range, malformed, and future values map to the unconstrained FREEFORM.
+        for( const int bad : {
+                 -100, -1, 4, 5, 99, INT_MAX, INT_MIN
+                 } ) {
+            CAPTURE( bad );
+            CHECK( pool_type_from_int( bad ) == pool_type::FREEFORM );
+        }
+    }
+
+    SECTION( "pool_selection_modes_for_option gates the offered modes" ) {
+        // "any" offers all three modes, in the pool-selection tab's display order.
+        const std::vector<pool_type> any_modes = pool_selection_modes_for_option( "any" );
+        REQUIRE( any_modes.size() == 3 );
+        CHECK( any_modes[0] == pool_type::FREEFORM );
+        CHECK( any_modes[1] == pool_type::MULTI_POOL );
+        CHECK( any_modes[2] == pool_type::ONE_POOL );
+
+        // "multi_pool" and "story_teller" each fix the mode to a single choice.
+        const std::vector<pool_type> multi_modes = pool_selection_modes_for_option( "multi_pool" );
+        REQUIRE( multi_modes.size() == 1 );
+        CHECK( multi_modes[0] == pool_type::MULTI_POOL );
+
+        const std::vector<pool_type> story_modes = pool_selection_modes_for_option( "story_teller" );
+        REQUIRE( story_modes.size() == 1 );
+        CHECK( story_modes[0] == pool_type::FREEFORM );
+
+        // An unrecognized value falls back to the full "any" list rather than an empty menu.
+        CHECK( pool_selection_modes_for_option( "not_a_real_value" ) == any_modes );
+    }
 }
 
 TEST_CASE( "char_creation_point_pool_arithmetic", "[char_creation][points]" )
@@ -203,7 +252,7 @@ TEST_CASE( "char_creation_point_pool_arithmetic", "[char_creation][points]" )
     CHECK( has_unspent_points( u ) );
     CHECK( ( points_used_total( u ) < point_pool_total() ) == has_unspent_points( u ) );
 
-    // The production seam agrees with the oracle for this balanced, in-budget survivor.
+    // point_pool_has_unspent agrees with the oracle for this balanced, in-budget survivor.
     CHECK( point_pool_has_unspent( u ) == has_unspent_points( u ) );
     CHECK_FALSE( point_pool_over_allocated( u, pool_type::ONE_POOL ) );
     CHECK_FALSE( point_pool_over_allocated( u, pool_type::MULTI_POOL ) );
@@ -237,7 +286,7 @@ TEST_CASE( "char_creation_point_pool_arithmetic", "[char_creation][points]" )
         REQUIRE( point_pool_total() == 32 );
         REQUIRE( points_used_total( u ) == 32 );
         CHECK_FALSE( has_unspent_points( u ) );        // 32 < 32 is false
-        CHECK_FALSE( point_pool_has_unspent( u ) );    // production seam agrees
+        CHECK_FALSE( point_pool_has_unspent( u ) );    // agrees with the oracle
     }
 }
 
@@ -323,7 +372,7 @@ TEST_CASE( "char_creation_point_pool_over_allocation", "[char_creation][points]"
         REQUIRE( point_pool_total() == 32 ); // 4*8 + 0 + 0 + 0
         REQUIRE( points_used_total( u ) == 32 );
 
-        // Production predicate: nothing is over-allocated when used == total.
+        // Nothing is over-allocated when used == total.
         CHECK_FALSE( point_pool_over_allocated( u, pool_type::ONE_POOL ) );
         CHECK_FALSE( point_pool_over_allocated( u, pool_type::MULTI_POOL ) );
         CHECK_FALSE( point_pool_over_allocated( u, pool_type::FREEFORM ) );
@@ -340,13 +389,13 @@ TEST_CASE( "char_creation_point_pool_over_allocation", "[char_creation][points]"
         u.set_per_base( 14 );
         REQUIRE( points_used_total( u ) == 64 ); // 4 * (14 + 2), pool total 32
 
-        // The finalize guard's production predicate blocks the constrained pools.
+        // point_pool_over_allocated (used by the finalize guard) blocks the constrained pools.
         CHECK( point_pool_over_allocated( u, pool_type::ONE_POOL ) );
         CHECK( point_pool_over_allocated( u, pool_type::MULTI_POOL ) );
         CHECK_FALSE( point_pool_over_allocated( u, pool_type::FREEFORM ) );  // unconstrained
         CHECK_FALSE( point_pool_over_allocated( u, pool_type::TRANSFER ) );  // unconstrained
 
-        // The production predicate agrees with the oracle for each constrained mode.
+        // point_pool_over_allocated agrees with the oracle for each constrained mode.
         CHECK( point_pool_over_allocated( u, pool_type::ONE_POOL ) ==
                ( points_used_total( u ) > point_pool_total() ) );
         const multi_pool p( u );
@@ -386,67 +435,12 @@ TEST_CASE( "char_creation_point_pool_over_allocation", "[char_creation][points]"
         CHECK_FALSE( point_pool_over_allocated( u, pool_type::MULTI_POOL ) );
         CHECK_FALSE( point_pool_over_allocated( u, pool_type::ONE_POOL ) );
     }
-}
 
-TEST_CASE( "char_creation_pool_type_from_int_normalization", "[char_creation][points]" )
-{
-    // Valid on-disk values map to their enum.
-    CHECK( pool_type_from_int( 0 ) == pool_type::FREEFORM );
-    CHECK( pool_type_from_int( 1 ) == pool_type::ONE_POOL );
-    CHECK( pool_type_from_int( 2 ) == pool_type::MULTI_POOL );
-    CHECK( pool_type_from_int( 3 ) == pool_type::TRANSFER );
-
-    // Every enumerator round-trips through its integer value.
-    for( const pool_type pool : {
-             pool_type::FREEFORM, pool_type::ONE_POOL,
-             pool_type::MULTI_POOL, pool_type::TRANSFER
-         } ) {
-        CAPTURE( static_cast<int>( pool ) );
-        CHECK( pool_type_from_int( static_cast<int>( pool ) ) == pool );
-    }
-
-    // Out-of-range, malformed, and future values fail closed to the unconstrained FREEFORM.
-    for( const int bad : {
-             -100, -1, 4, 5, 99, INT_MAX, INT_MIN
-             } ) {
-        CAPTURE( bad );
-        CHECK( pool_type_from_int( bad ) == pool_type::FREEFORM );
-    }
-}
-
-TEST_CASE( "char_creation_pool_selection_option_gating", "[char_creation][points]" )
-{
-    // "any" offers all three modes, in the pool-selection tab's display order.
-    const std::vector<pool_type> any_modes = pool_selection_modes_for_option( "any" );
-    REQUIRE( any_modes.size() == 3 );
-    CHECK( any_modes[0] == pool_type::FREEFORM );
-    CHECK( any_modes[1] == pool_type::MULTI_POOL );
-    CHECK( any_modes[2] == pool_type::ONE_POOL );
-
-    // "multi_pool" and "story_teller" each fix the mode to a single choice.
-    const std::vector<pool_type> multi_modes = pool_selection_modes_for_option( "multi_pool" );
-    REQUIRE( multi_modes.size() == 1 );
-    CHECK( multi_modes[0] == pool_type::MULTI_POOL );
-
-    const std::vector<pool_type> story_modes = pool_selection_modes_for_option( "story_teller" );
-    REQUIRE( story_modes.size() == 1 );
-    CHECK( story_modes[0] == pool_type::FREEFORM );
-
-    // An unrecognized value falls back to the full "any" list rather than an empty menu.
-    CHECK( pool_selection_modes_for_option( "not_a_real_value" ) == any_modes );
-}
-
-TEST_CASE( "char_creation_point_pool_discard_predicate", "[char_creation][points]" )
-{
     // point_pool_has_unspent gates the "remaining points will be discarded" confirmation on
-    // finalize for non-FREEFORM pools; verify it against the oracle for each budget relation.
-    avatar &u = get_avatar();
-    clear_avatar();
-    set_scenario( scenario::generic() );
-    scoped_int_option opt_trait( "INITIAL_TRAIT_POINTS", 0 );
-    scoped_int_option opt_skill( "INITIAL_SKILL_POINTS", 0 );
-
-    SECTION( "unspent points remain when the pool is larger than the spend" ) {
+    // finalize for non-FREEFORM pools; verified against the oracle for each budget relation.
+    SECTION( "discard predicate: unspent points remain when the pool exceeds the spend" ) {
+        scoped_int_option opt_trait( "INITIAL_TRAIT_POINTS", 0 );
+        scoped_int_option opt_skill( "INITIAL_SKILL_POINTS", 0 );
         scoped_int_option opt_stat( "INITIAL_STAT_POINTS", 6 );
         REQUIRE( point_pool_total() == 38 );        // (32 + 6) + 0 + 0
         REQUIRE( points_used_total( u ) == 32 );
@@ -454,7 +448,9 @@ TEST_CASE( "char_creation_point_pool_discard_predicate", "[char_creation][points
         CHECK( point_pool_has_unspent( u ) == has_unspent_points( u ) );
     }
 
-    SECTION( "no unspent points when the pool is exactly spent" ) {
+    SECTION( "discard predicate: no unspent points when the pool is exactly spent" ) {
+        scoped_int_option opt_trait( "INITIAL_TRAIT_POINTS", 0 );
+        scoped_int_option opt_skill( "INITIAL_SKILL_POINTS", 0 );
         scoped_int_option opt_stat( "INITIAL_STAT_POINTS", 0 );
         REQUIRE( point_pool_total() == 32 );
         REQUIRE( points_used_total( u ) == 32 );
@@ -462,7 +458,9 @@ TEST_CASE( "char_creation_point_pool_discard_predicate", "[char_creation][points
         CHECK( point_pool_has_unspent( u ) == has_unspent_points( u ) );
     }
 
-    SECTION( "no unspent points when over-allocated" ) {
+    SECTION( "discard predicate: no unspent points when over-allocated" ) {
+        scoped_int_option opt_trait( "INITIAL_TRAIT_POINTS", 0 );
+        scoped_int_option opt_skill( "INITIAL_SKILL_POINTS", 0 );
         scoped_int_option opt_stat( "INITIAL_STAT_POINTS", 0 );
         u.set_str_base( 14 );
         u.set_dex_base( 14 );
@@ -477,32 +475,62 @@ TEST_CASE( "char_creation_point_pool_discard_predicate", "[char_creation][points
 TEST_CASE( "char_creation_template_limit_round_trip", "[char_creation][points]" )
 {
     avatar &u = get_avatar();
-    // Unique per-run name so the test never collides with a real template; the guard removes
-    // the file on every outcome.
-    const std::string tmpl = "cata_test_point_pool_roundtrip_" +
-                             std::to_string(
-                                 static_cast<long long>(
-                                     std::chrono::steady_clock::now().time_since_epoch().count() ) );
-    const template_file_guard guard( tmpl );
 
-    for( const pool_type pool : {
-             pool_type::FREEFORM, pool_type::ONE_POOL,
-             pool_type::MULTI_POOL, pool_type::TRANSFER
-         } ) {
-        CAPTURE( static_cast<int>( pool ) );
+    SECTION( "every pool_type round-trips through a saved template" ) {
+        // Unique per-run name so the test never collides with a real template; the guard removes
+        // the file on every outcome.
+        const std::string tmpl = "cata_test_point_pool_roundtrip_" +
+                                 std::to_string(
+                                     static_cast<long long>(
+                                         std::chrono::steady_clock::now().time_since_epoch().count() ) );
+        const template_file_guard guard( tmpl );
 
-        clear_avatar();
-        set_scenario( scenario::generic() );
+        for( const pool_type pool : {
+                 pool_type::FREEFORM, pool_type::ONE_POOL,
+                 pool_type::MULTI_POOL, pool_type::TRANSFER
+             } ) {
+            CAPTURE( static_cast<int>( pool ) );
 
-        u.save_template( tmpl, pool );
+            clear_avatar();
+            set_scenario( scenario::generic() );
 
-        pool_type loaded = static_cast<pool_type>( 99 ); // sentinel outside the valid set
-        // load_template deserializes a saved avatar body that assigns a character id; the
-        // working avatar's id is reset first.
-        u.setID( character_id(), true );
-        REQUIRE( u.load_template( tmpl, loaded ) );
-        CHECK( loaded == pool );
-        // The serialized integer "limit" normalizes back to the same enum via the production seam.
-        CHECK( loaded == pool_type_from_int( static_cast<int>( pool ) ) );
+            u.save_template( tmpl, pool );
+
+            pool_type loaded = static_cast<pool_type>( 99 ); // sentinel outside the valid set
+            // load_template deserializes a saved avatar body that assigns a character id; the
+            // working avatar's id is reset first.
+            u.setID( character_id(), true );
+            REQUIRE( u.load_template( tmpl, loaded ) );
+            CHECK( loaded == pool );
+            // The serialized integer "limit" normalizes back to the same enum via pool_type_from_int.
+            CHECK( loaded == pool_type_from_int( static_cast<int>( pool ) ) );
+        }
+    }
+
+    SECTION( "a crafted 64-bit \"limit\" that narrows onto a valid enum loads as FREEFORM" ) {
+        // QA-SEC-002: load_template reads "limit" as a 64-bit value. Values that overflow 32 bits
+        // but whose low 32 bits land in 0-3 must not be accepted as that enum; they map to FREEFORM.
+        const std::string tmpl = "cata_test_point_pool_crafted_" +
+                                 std::to_string(
+                                     static_cast<long long>(
+                                         std::chrono::steady_clock::now().time_since_epoch().count() ) );
+        const template_file_guard guard( tmpl );
+
+        // Each value equals 3 (TRANSFER) in its low 32 bits but is out of range as a 64-bit value.
+        for( const long long crafted : {
+                 4294967299LL,    // 2^32 + 3
+                 -4294967293LL,   // -(2^32) + 3
+                 12884901891LL    // 3 * 2^32 + 3
+             } ) {
+            CAPTURE( crafted );
+            write_to_file( PATH_INFO::templatedir() + tmpl + ".template",
+            [&]( std::ostream & fout ) {
+                fout << "[{\"limit\":" << crafted << "}]";
+            } );
+
+            pool_type loaded = static_cast<pool_type>( 99 ); // sentinel outside the valid set
+            REQUIRE( u.load_template( tmpl, loaded ) );
+            CHECK( loaded == pool_type::FREEFORM );
+        }
     }
 }

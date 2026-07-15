@@ -14,8 +14,8 @@ class avatar;
 constexpr int HIGH_STAT = 12;
 
 // Point pool mode for character creation. Serialized as the integer "limit" in character
-// templates, so these values are a stable on-disk contract: FREEFORM=0, ONE_POOL=1,
-// MULTI_POOL=2, TRANSFER=3 (TRANSFER must stay 3 so character-transfer templates keep working).
+// templates. The integer values are a fixed on-disk contract: FREEFORM=0, ONE_POOL=1,
+// MULTI_POOL=2, TRANSFER=3. Changing these integers breaks loading of existing templates.
 enum class pool_type {
     FREEFORM = 0,
     ONE_POOL = 1,

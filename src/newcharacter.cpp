@@ -342,9 +342,8 @@ struct multi_pool {
 };
 } // namespace
 
-// Production seam: normalizes a serialized template "limit" to a defined pool_type.
-// Any integer outside the on-disk contract 0-3 is mapped to FREEFORM so an invalid or
-// future value can never yield an undefined enum that bypasses the finalize guard.
+// Maps a serialized template "limit" integer to a pool_type. Values outside the
+// on-disk range 0-3 map to FREEFORM.
 pool_type pool_type_from_int( int limit )
 {
     switch( limit ) {
@@ -361,8 +360,8 @@ pool_type pool_type_from_int( int limit )
     }
 }
 
-// Production seam: the single over-allocation predicate shared by the creator finalize
-// guard and the regression tests, computed from the surviving point-math engine.
+// Returns whether the given pool is over-allocated, computed from the point-math engine.
+// Used by the creator finalize guard and the regression tests.
 bool point_pool_over_allocated( const Character &you, pool_type pool )
 {
     switch( pool ) {
@@ -379,7 +378,7 @@ bool point_pool_over_allocated( const Character &you, pool_type pool )
     return false;
 }
 
-// Production seam: whether the character still has unspent points in the total pool.
+// Returns whether the character still has unspent points in the total pool.
 bool point_pool_has_unspent( const Character &you )
 {
     return has_unspent_points( you );
@@ -434,8 +433,8 @@ static std::string pools_to_string( const Character &u, pool_type pool )
     return std::string();
 }
 
-// Production seam (declared in player_difficulty.h): the pool modes the creator offers for a
-// given CHARACTER_POINT_POOLS value, so the option gating is exercisable without the UI.
+// The pool modes the creator offers for a given CHARACTER_POINT_POOLS value.
+// Declared in player_difficulty.h.
 std::vector<pool_type> pool_selection_modes_for_option( const std::string &option )
 {
     if( option == "multi_pool" ) {
@@ -447,8 +446,7 @@ std::vector<pool_type> pool_selection_modes_for_option( const std::string &optio
 }
 
 // The pool modes offered by the pool-selection tab, gated by the CHARACTER_POINT_POOLS
-// option. The list is cached and returned by reference so repeated draw/callback calls do
-// not reallocate a fresh vector; it is recomputed only when the world option changes.
+// option. The cached list is recomputed only when the world option changes.
 static const std::vector<pool_type> &pool_selection_modes()
 {
     static std::string cached_option;
@@ -467,6 +465,22 @@ static bool pool_selection_is_fixed()
 {
     const std::string point_pool = get_option<std::string>( "CHARACTER_POINT_POOLS" );
     return point_pool == "multi_pool" || point_pool == "story_teller";
+}
+
+// The pool modes to present on the POINTS surface. Normally these are the modes offered by
+// the CHARACTER_POINT_POOLS option. When the option fixes the mode but the working pool
+// (cc_uistate.pool, e.g. set from a loaded template) is not among the offered modes, the
+// working pool is returned instead and out_is_template_override is set to true.
+static std::vector<pool_type> pool_display_modes( bool &out_is_template_override )
+{
+    const std::vector<pool_type> &modes = pool_selection_modes();
+    out_is_template_override = false;
+    if( pool_selection_is_fixed() &&
+        std::find( modes.begin(), modes.end(), cc_uistate.pool ) == modes.end() ) {
+        out_is_template_override = true;
+        return { cc_uistate.pool };
+    }
+    return modes;
 }
 
 // Colored "(+/-N)" markup previewing the net change to the running point balance if the
@@ -976,6 +990,11 @@ bool avatar::create( character_type type, const std::string &tempname )
             //tabs.position.last();
             break;
     }
+
+    // Seed the creator's working pool for every generation path (CUSTOM/RANDOM/NOW/
+    // FULL_RANDOM/TEMPLATE) before any draw or validation reads it.
+    cc_uistate.pool = pool;
+
     // Don't apply the default backgrounds on a template or scenario with SKIP_DEFAULT_BACKGROUND
     if( type != character_type::TEMPLATE &&
         !get_scenario()->has_flag( flag_SKIP_DEFAULT_BACKGROUND ) ) {
@@ -1007,7 +1026,6 @@ bool avatar::create( character_type type, const std::string &tempname )
         }
         character_creator_ui ccui;
         cc_uistate.generation_type = type;
-        cc_uistate.pool = pool;
         ccui.display();
         if( cc_uistate.quit_to_main_menu ) {
             return false;
@@ -2462,10 +2480,8 @@ void Character::add_default_background()
 
 void avatar::save_template( const std::string &name, pool_type pool )
 {
-    // Strip path separators and other filesystem-invalid characters from the
-    // caller-supplied name before building the path, so the file cannot escape
-    // the template directory (e.g. a name containing "../"). Legitimate names
-    // contain no such characters and are left unchanged.
+    // Sanitize the caller-supplied name to filesystem-valid characters before building
+    // the path. Legitimate names contain no such characters and are left unchanged.
     const std::string safe_name = ensure_valid_file_name( name );
     write_to_file( PATH_INFO::templatedir() + safe_name + ".template", [&]( std::ostream & fout ) {
         JsonOut jsout( fout, true );
@@ -2506,7 +2522,13 @@ bool avatar::load_template( const std::string &template_name, pool_type &pool )
             jobj.get_int( "trait_points", 0 );
             jobj.get_int( "skill_points", 0 );
 
-            pool = pool_type_from_int( jobj.get_int( "limit" ) );
+            // Read the serialized "limit" as a 64-bit value and map only the on-disk
+            // range 0-3; any other value (including a 64-bit value that would narrow onto
+            // a valid enum) maps to FREEFORM.
+            const int64_t limit_value = jobj.get_int64( "limit" );
+            pool = ( limit_value >= 0 && limit_value <= 3 )
+                   ? pool_type_from_int( static_cast<int>( limit_value ) )
+                   : pool_type::FREEFORM;
 
             random_start_location = jobj.get_bool( "random_start_location", true );
             const std::string jobj_start_location = jobj.get_string( "start_location", "" );
@@ -2788,22 +2810,25 @@ void character_creator_ui::update_uilist_entries()
 
     switch( cc_uistate.selected_tab ) {
         case CHARCREATOR_POINTS: {
-            const std::vector<pool_type> &modes = pool_selection_modes();
+            bool is_template_override = false;
+            const std::vector<pool_type> modes = pool_display_modes( is_template_override );
             const bool fixed = pool_selection_is_fixed();
             int active_index = 0;
             for( int i = 0; i < static_cast<int>( modes.size() ); i++ ) {
                 const bool is_active = modes[i] == cc_uistate.pool;
                 std::string label = pool_type_title( modes[i] );
-                // Explicit text marker so the current/fixed mode is legible without color.
-                if( fixed ) {
+                // Append a text marker describing why the mode cannot be changed.
+                if( is_template_override ) {
+                    label += string_format( " (%s)", _( "template override" ) );
+                } else if( fixed ) {
                     label += string_format( " (%s)", _( "fixed" ) );
                 } else if( is_active ) {
                     label += string_format( " (%s)", _( "current" ) );
                 }
                 uilist_entry entry = get_uilist_entry( label );
                 entry.retval = i;
-                // In a fixed world the mode is informational only, so the entry is disabled.
-                entry.enabled = !fixed;
+                // The entry is selectable only when the world option leaves the mode open.
+                entry.enabled = !fixed && !is_template_override;
                 entry.text_color = is_active ? COL_SELECTED : COL_NOT_SELECTED;
                 menu->addentry( entry );
                 if( is_active ) {
@@ -2968,8 +2993,8 @@ void character_creator_ui_impl::draw_controls()
     }
 
     // The point-pool identity and running balance are drawn outside the collapsible
-    // "General Info" body so they stay visible on every tab and across collapse states.
-    // FREEFORM shows its "Survivor" identity; the other modes show the remaining points.
+    // "General Info" body. FREEFORM shows its "Survivor" identity; the other modes show
+    // the remaining points.
     draw_colored_text_wrap( pools_to_string( pc, cc_uistate.pool ), c_white );
 
     if( ImGui::BeginTabBar( "CHARACTER_CREATOR_TABS" ) ) {
@@ -3136,7 +3161,8 @@ bool character_creator_ui::display()
 
 void character_creator_ui_impl::draw_points() const
 {
-    const std::vector<pool_type> &modes = pool_selection_modes();
+    bool is_template_override = false;
+    const std::vector<pool_type> modes = pool_display_modes( is_template_override );
     if( modes.empty() ) {
         return;
     }
@@ -3149,9 +3175,10 @@ void character_creator_ui_impl::draw_points() const
 
     if( ImGui::BeginTable( "POINTS_MAIN", 2, CHARACTER_CREATOR_TABLE_FLAGS ) ) {
         std::string title = pool_type_title( modes[highlighted] );
-        // Explicit textual state so the current/fixed mode is conveyed without relying on
-        // color alone, and is announced to screen readers.
-        if( fixed ) {
+        // Append a textual state describing whether the mode can be changed.
+        if( is_template_override ) {
+            title += string_format( " - %s", _( "template override" ) );
+        } else if( fixed ) {
             title += string_format( " - %s", _( "fixed by world options" ) );
         } else if( modes[highlighted] == cc_uistate.pool ) {
             title += string_format( " - %s", _( "active" ) );
@@ -3816,12 +3843,23 @@ bool character_creator_ui::handle_action( const std::string &action )
     };
     auto mod_skill = [&you]( int mod_value ) {
         const skill_id selected_skill = cc_uistate.get_selected_skill();
-        if( ( you.get_skill_level( selected_skill ) == MIN_SKILL && mod_value < 0 ) ||
-            ( you.get_skill_level( selected_skill ) == MAX_SKILL && mod_value > 0 ) ) {
+        const int level = static_cast<int>( you.get_skill_level( selected_skill ) );
+        if( ( level == MIN_SKILL && mod_value < 0 ) ||
+            ( level == MAX_SKILL && mod_value > 0 ) ) {
             return;
         }
-        you.mod_skill_level( selected_skill, mod_value );
-        you.mod_knowledge_level( selected_skill, mod_value );
+        // In pool modes the first increment moves a skill from level 0 to level 2, and the
+        // matching decrement moves it from level 2 to level 0, for a single point of cost.
+        int level_delta = mod_value;
+        if( cc_uistate.pool != pool_type::FREEFORM ) {
+            if( mod_value > 0 && level == 0 ) {
+                level_delta = 2;
+            } else if( mod_value < 0 && level == 2 ) {
+                level_delta = -2;
+            }
+        }
+        you.mod_skill_level( selected_skill, level_delta );
+        you.mod_knowledge_level( selected_skill, level_delta );
     };
 
     if( action == "QUIT" && query_yn( _( "Return to main menu?" ) ) ) {
@@ -3839,8 +3877,8 @@ bool character_creator_ui::handle_action( const std::string &action )
     } else if( action == "NEXT_TAB" ) {
         if( cc_uistate.selected_tab == CHARCREATOR_SUMMARY ) {
             bool blocked = false;
-            // Both completion branches below share this single production predicate so the
-            // over-allocation guard cannot be bypassed and is exercised directly by tests.
+            // Both completion branches below use point_pool_over_allocated() to decide
+            // whether finalizing is blocked.
             if( point_pool_over_allocated( you, cc_uistate.pool ) ) {
                 blocked = true;
                 if( cc_uistate.pool == pool_type::MULTI_POOL ) {
@@ -4032,8 +4070,8 @@ void character_creator_callback::confirm( uilist *menu )
 
     switch( cc_uistate.selected_tab ) {
         case CHARCREATOR_POINTS: {
-            // The pool is committed only on confirm, and only when the world option leaves the
-            // mode selectable; a fixed world keeps the seeded (option- or template-defined) pool.
+            // The pool is committed on confirm only when the world option leaves the mode
+            // selectable; when fixed, the seeded pool is kept.
             if( !pool_selection_is_fixed() ) {
                 const std::vector<pool_type> &modes = pool_selection_modes();
                 if( uilist_returned >= 0 && uilist_returned < static_cast<int>( modes.size() ) ) {
@@ -4277,8 +4315,8 @@ void character_creator_callback::select( uilist *menu )
     int menu_selected = menu->selected;
     switch( cc_uistate.selected_tab ) {
         case CHARCREATOR_POINTS: {
-            // Highlighting a pool only previews its description; the pool is not committed here.
-            // It is set exclusively on confirm(), so browsing the list never mutates the mode.
+            // Highlighting a pool previews its description; the pool is committed in confirm(),
+            // not here.
             break;
         }
         case CHARCREATOR_SCENARIO:
