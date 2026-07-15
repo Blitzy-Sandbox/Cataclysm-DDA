@@ -34,6 +34,7 @@
 #include "debug.h"
 #include "enum_conversions.h"
 #include "enum_traits.h"
+#include "filesystem.h"
 #include "flexbuffer_json.h"
 #include "game_constants.h"
 #include "imgui/imgui.h"
@@ -2461,7 +2462,12 @@ void Character::add_default_background()
 
 void avatar::save_template( const std::string &name, pool_type pool )
 {
-    write_to_file( PATH_INFO::templatedir() + name + ".template", [&]( std::ostream & fout ) {
+    // Strip path separators and other filesystem-invalid characters from the
+    // caller-supplied name before building the path, so the file cannot escape
+    // the template directory (e.g. a name containing "../"). Legitimate names
+    // contain no such characters and are left unchanged.
+    const std::string safe_name = ensure_valid_file_name( name );
+    write_to_file( PATH_INFO::templatedir() + safe_name + ".template", [&]( std::ostream & fout ) {
         JsonOut jsout( fout, true );
 
         jsout.start_array();
