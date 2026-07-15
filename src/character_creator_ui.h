@@ -5,8 +5,9 @@
 #include "input_context.h"
 #include "uilist.h"
 #include "scenario.h"
+#include "player_difficulty.h"
 
-const int CHARACTER_CREATOR_TAB_COUNT = 7;
+const int CHARACTER_CREATOR_TAB_COUNT = 8;
 const int CHARACTER_CREATOR_SUMMARY_LINES = 5;
 const ImGuiTableFlags_ CHARACTER_CREATOR_TABLE_FLAGS = ImGuiTableFlags_ScrollY;
 const translation CHARACTER_CREATOR_UILIST_ALL = to_translation( "ALL" );
@@ -16,6 +17,7 @@ const translation CHARACTER_CREATOR_TRAITS_NEGATIVE = to_translation( "NEGATIVE"
 const translation CHARACTER_CREATOR_TRAITS_NEUTRAL = to_translation( "NEUTRAL" );
 
 enum character_creator_tab : int {
+    CHARCREATOR_POINTS,
     CHARCREATOR_SCENARIO,
     CHARCREATOR_PROFESSION,
     CHARCREATOR_BACKGROUND,
@@ -30,7 +32,7 @@ class character_creator_ui;
 
 template<>
 struct enum_traits<character_creator_tab> {
-    static constexpr character_creator_tab first = character_creator_tab::CHARCREATOR_SCENARIO;
+    static constexpr character_creator_tab first = character_creator_tab::CHARCREATOR_POINTS;
     static constexpr character_creator_tab last = character_creator_tab::character_creator_tab_LAST;
 };
 
@@ -80,6 +82,8 @@ struct character_creator_uistate {
     // for circumventing ImGui inputs; set when you need to switch the tab by key
     character_creator_tab switched_tab = character_creator_tab_LAST;
     character_creator_tab previous_tab = character_creator_tab_LAST;
+    // the point pool the character is being built under
+    pool_type pool = pool_type::FREEFORM;
 
     std::array<int, 4> stats = { 8, 8, 8, 8 };
 
@@ -158,6 +162,7 @@ class character_creator_ui_impl : public cataimgui::window
         explicit character_creator_ui_impl( character_creator_ui *parent );
 
         void draw_top_bar( const avatar &u ) const;
+        void draw_points() const;
         void draw_scenarios() const;
         void draw_professions() const;
         void draw_backgrounds();

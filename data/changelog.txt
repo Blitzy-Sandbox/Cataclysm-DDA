@@ -521,6 +521,7 @@ support selecting all npcs
 Change: Container for X -> Pour X into
 Show actual real-world distance to mission objective
 Add selection menu for cosmetic traits in character creation
+Restore legacy point pool character creation modes (Multipool and Single pool) and the CHARACTER_POINT_POOLS world option
 Adds message for NPCs completing crafting so it doesn't reference the player incorrectly.
 Add the 12-bit rainbow as color palette option
 NPC follower rules can now be viewed and modified in a dedicated, mouse-supported window (imgui)

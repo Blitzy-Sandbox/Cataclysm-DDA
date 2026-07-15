@@ -3,6 +3,7 @@
 #define CATA_SRC_PLAYER_DIFFICULTY_H
 
 #include <string>
+#include <vector>
 
 #include "npc.h"
 
@@ -12,11 +13,34 @@ class avatar;
 // The point after which stats cost double
 constexpr int HIGH_STAT = 12;
 
-//Leftover from removing the legacy point pool character creation. TRANSFER is required to be 3 so transfer character templates dont break
+// Point pool mode for character creation. Serialized as the integer "limit" in character
+// templates. The integer values are a fixed on-disk contract: FREEFORM=0, ONE_POOL=1,
+// MULTI_POOL=2, TRANSFER=3. Changing these integers breaks loading of existing templates.
 enum class pool_type {
     FREEFORM = 0,
+    ONE_POOL = 1,
+    MULTI_POOL = 2,
     TRANSFER = 3,
 };
+
+// Convert a serialized integer "limit" (from a character template) into a pool_type,
+// accepting only the defined values 0-3 and normalizing anything else to FREEFORM.
+pool_type pool_type_from_int( int limit );
+
+// True when the given pool constrains the character to a finite point budget and the
+// character has overspent it: ONE_POOL when total points used exceed the total pool;
+// MULTI_POOL when any of the stat/trait/skill pools is still negative after cross-pool
+// borrowing. FREEFORM and TRANSFER are unconstrained and always return false. This is the
+// single production predicate consumed by the creator's finalize guard.
+bool point_pool_over_allocated( const Character &you, pool_type pool );
+
+// True when the character has not yet spent the entire point pool (used < total).
+bool point_pool_has_unspent( const Character &you );
+
+// The point-pool modes the creator offers for a given CHARACTER_POINT_POOLS option value:
+// "multi_pool" -> {MULTI_POOL}; "story_teller" -> {FREEFORM}; any other value (i.e. "any")
+// -> {FREEFORM, MULTI_POOL, ONE_POOL}. A single-element result means the world fixes the mode.
+std::vector<pool_type> pool_selection_modes_for_option( const std::string &option );
 
 class player_difficulty
 {
