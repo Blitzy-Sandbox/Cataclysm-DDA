@@ -15,6 +15,8 @@
 *.sh      text
 *.txt     text
 *.yml     text
+*.jsonl   text
+*.srt     text
 
 # Visual Studio project files, leave them alone.
 *.cmd     -text
@@ -36,4 +38,8 @@
 *.ico     binary
 *.png     binary
 *.ttf     binary
+*.gsav    binary
+*.mp4     binary
+*.sav     binary
+*.zzip    binary
 
