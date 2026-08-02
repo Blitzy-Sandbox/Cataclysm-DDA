@@ -1,0 +1,99 @@
+# Python dependencies for the Cataclysm-DDA playthrough capture and
+# cinematography pipeline (playthrough/tooling/).
+#
+# This declaration deliberately lives outside the game's source tree.
+# The C++ engine under src/ carries no dependency declaration of any
+# kind and none is ever added there; playthrough/tooling/ is that
+# separation.  The repository's only other requirements file,
+# tools/json_tools/requirements.txt, is left untouched.  See
+# playthrough/README.md for the artifact inventory and how to re-run
+# the pipeline.
+#
+# Install into an isolated interpreter, never the system one, which is
+# PEP 668 externally-managed:
+#
+#     python3 -m venv --without-pip .venv   # bootstrap pip: see below
+#     .venv/bin/pip install -r playthrough/tooling/requirements.txt
+#
+# Pins are exact "==" rather than the floating lower bound used by
+# tools/json_tools/requirements.txt.  The deviation is deliberate: this
+# pipeline emits a byte-level media artifact (playthrough/cata-play.mp4)
+# and its own acceptance evidence, so the effect and encoder stack has
+# to be reproducible.  A floating bound would let a future release
+# silently change the rendered movie while every gate still reported
+# green.  Every version below was read back from the provisioned
+# environment with `pip list --format=freeze`, never assumed.
+
+moviepy==2.2.1  # fade/card/fade transition unit: make_transitions.py
+pillow==11.3.0  # PNG inspection, title card, MoviePy 2 image backend
+pytesseract==0.3.13  # sidebar clock OCR wrapper: ocr_clock.py
+numpy==2.5.1  # frame luminance statistics and MoviePy arrays
+
+# "imageio" is lowercase on purpose.  `pip list --format=freeze` prints
+# "ImageIO==2.37.4" because that casing is the distribution's declared
+# Name metadata, verified on this host, while the canonical install and
+# import name is lowercase.  Do not "correct" it.
+imageio==2.37.4  # frame and video IO used by MoviePy
+
+# imageio-ffmpeg is the one entry not named in the original request.  It
+# is declared because it is genuinely required rather than optional: it
+# is the ffmpeg bridge MoviePy and imageio encode through, and the
+# render stage fails without it.
+imageio-ffmpeg==0.6.0  # encoder bridge for MoviePy and imageio
+
+# ---------------------------------------------------------------------
+# System packages (apt) the pipeline also requires
+# ---------------------------------------------------------------------
+# These cannot be expressed as pip requirements but are equally
+# load-bearing: without them the capture, OCR and render stages fail at
+# run time.  The versions are those installed and read back on the host
+# this pipeline was verified on (Ubuntu 25.10 "questing", x86_64) with
+# `dpkg-query -W` plus each tool's own --version output.
+#
+#   ffmpeg         7:7.1.1-1ubuntu4.2
+#       Concat-demuxer base render, mov_text caption mux and ffprobe
+#       verification.  Self-reports "ffmpeg version 7.1.1-1ubuntu4.2".
+#   imagemagick    8:7.1.2.3+dfsg1-1ubuntu0.1
+#       `import -window root` capture, `convert` crop and preprocess,
+#       `identify` inspection.  Self-reports "ImageMagick 7.1.2-3 Q16".
+#   tesseract-ocr  5.5.0-1
+#       Sidebar clock OCR behind pytesseract; self-reports "tesseract
+#       5.5.0".  Depends on tesseract-ocr-eng, the English traineddata
+#       the pipeline reads, so that arrives with it.
+#   xdotool        1:3.20160805.1-5.1
+#       Window focus and single-keystroke delivery.  The window is
+#       found by --class cataclysm-tiles; --name matching misses it.
+#   xvfb           2:21.1.18-1ubuntu1.1
+#       The headless X server, run as :99 at 1920x1080x24.
+#   x11-utils      7.7+7
+#       xdpyinfo and xwininfo, for display and window geometry checks.
+#   openbox        3.6.1-12ubuntu2
+#       Minimal window manager, so that focus and keyboard delivery
+#       behave under Xvfb.
+#   scrot          1.12.1-1
+#       Fallback screen capturer.
+#
+#   apt-get install -y ffmpeg imagemagick tesseract-ocr xdotool xvfb \
+#       x11-utils openbox scrot
+
+# ---------------------------------------------------------------------
+# Host notes, verified on this machine rather than assumed
+# ---------------------------------------------------------------------
+# * Interpreter: CPython 3.12.13 in an isolated virtual environment.
+#   The system interpreter here is 3.13.7 and PEP 668
+#   externally-managed, so nothing is installed into it.
+# * `python3 -m venv <dir>` fails on this host at the ensurepip step.
+#   The working sequences are `python3 -m venv --without-pip <dir>`
+#   followed by bootstrapping pip from get-pip.py, or `uv venv`.
+# * ImageMagick here is 7.1.2 and provides both the unified `magick`
+#   entry point and the legacy `import`, `convert` and `identify`
+#   commands.  The tooling calls only the legacy names: they exist on
+#   both the 6.x and 7.x branches, so the scripts also run against
+#   ImageMagick 6, which has no `magick` entry point at all.
+# * No pip options appear above on purpose: no --index-url, no
+#   --extra-index-url, no --find-links, no hashes, no -r includes and
+#   no environment markers.  The pipeline opens no network connection
+#   of any kind and targets one verified Linux/X11 host.
+# * flake8 and its plugins are deliberately absent.  They gate this
+#   tooling during development but are not runtime dependencies of the
+#   pipeline, so they are installed separately, never declared here.
