@@ -69,10 +69,11 @@ the time of day came back the same.  Inferring a day counter from the
 clock alone therefore invents a day in the first case and loses one in
 the second.
 
-So the sidebar DATE line is read as well.  capture.sh records it per
-frame in playthrough/build/observations.jsonl -- the telemetry sidecar,
-NOT the manifest, whose schema is exactly six fields and does not
-change -- and this module uses it as the authority for the DAY while
+So the sidebar DATE line is read as well.  capture.sh reports it per
+frame and session.py records it in
+playthrough/build/observations.jsonl -- the telemetry sidecar, NOT the
+manifest, whose schema is exactly six fields and does not change -- and
+this module uses it as the authority for the DAY while
 the clock remains the authority for the time of day.  That is the
 engine's own division: display::date_string (src/display.cpp:194-205)
 renders the day and display::time_string (src/display.cpp:207-218)
@@ -110,15 +111,16 @@ rollover invents 22 hours of game time that nobody played -- which then
 paces 22 hours of film and captions to match, undetectably, because the
 artifact would be internally consistent.
 
-So the day advances ONLY when the sidebar's own date line
-(display::date_string, src/display.cpp:193-205) is observed to have
-CHANGED across the pair.  That evidence is not a manifest field -- the
-six-field schema is fixed, and a seventh would create the second source
-of truth this pipeline exists to avoid -- so it comes from the per-frame
-audit sidecar ocr_clock.py writes as it reads each frame,
-playthrough/build/frame_dates.jsonl.  The captured date is the ONLY
-authority for the day counter; no arithmetic test can overrule it,
-because no bound on the implied advance is defensible.  A single sleep
+So WHERE A DATE WAS CAPTURED the day advances only when the sidebar's
+own date line (display::date_string, src/display.cpp:193-205) is
+observed to have CHANGED across the pair.  That evidence is not a
+manifest field -- the six-field schema is fixed, and a seventh would
+create the second source of truth this pipeline exists to avoid -- so it
+comes from the per-frame audit sidecar ocr_clock.py writes as it reads
+each frame, playthrough/build/frame_dates.jsonl.  A captured date is
+then the ONLY authority for the day counter and no arithmetic test
+overrules it, because no bound on the implied advance is defensible
+against real evidence.  A single sleep
 keystroke asks the engine for up to a full day -- try_sleep_dur is
 24_hours (src/handle_action.cpp:1464), narrowed to 3-9 h only when the
 survivor sets an alarm -- so an evidenced crossing of midnight implying
@@ -127,7 +129,10 @@ is under a day by construction, which is exactly the range one keystroke
 can produce.  A frame with NO date evidence is UNKNOWN, never
 "unchanged": a missing record means nothing was observed, and treating
 that as proof the day did not turn would be the same invention in the
-other direction.
+other direction.  Such a frame falls to the bounded clock-only rule
+above -- a wrap within MAX_WRAP_ADVANCE is believed, anything larger is
+reconciled -- and the decision it produces is recorded as unverified,
+never as confirmed.
 
 USE
     python3 -B playthrough/tooling/timeline.py
@@ -368,6 +373,10 @@ DATE_UNRECOGNISED = "unrecognised"
 #   conflict    the date evidence could not be reconciled at all -- it
 #               moved backwards, or it disagreed with itself -- and the
 #               reading was refused rather than believed
+#   none        the timeline was computed with no date evidence at all,
+#               so there was nothing for any frame's day decision to be
+#               checked against.  Distinct from "unverified", which
+#               says evidence WAS consulted and did not cover this pair
 AGREE_CONFIRMED = "confirmed"
 AGREE_CORRECTED = "corrected"
 AGREE_UNVERIFIED = "unverified"
@@ -956,11 +965,11 @@ def absolutise_clocks(
     the delta of the frame after it.
 
     THE DAY COUNTER PREFERS EVIDENCE OVER INFERENCE.  When `dates`
-    supplies the sidebar date line for the frames -- capture.sh records
-    it in the telemetry sidecar -- the number of whole days between two
-    frames is taken from the DATE, and the clock supplies only the time
-    within that day.  Three things follow, and each one fixes a defect
-    the clock alone cannot avoid:
+    supplies the sidebar date line for the frames -- capture.sh reports
+    it and session.py records it in the telemetry sidecar -- the number
+    of whole days between two frames is taken from the DATE, and the
+    clock supplies only the time within that day.  Three things follow,
+    and each one fixes a defect the clock alone cannot avoid:
 
     * a clock that went backwards while the date did not change is a
       MISREAD, refused and flagged clock-contradicted-by-date, instead
@@ -971,29 +980,36 @@ def absolutise_clocks(
       missing whole days ADDED, so an action spanning 24 hours is
       86400 seconds rather than the 0 the time of day implies.
 
-    Where no usable date evidence exists for a pair of frames, the
-    clock-only rule at MAX_WRAP_ADVANCE still applies and the decision
-    is recorded as unverified on the reading, so the artifact
-    distinguishes a day that was established from one that was merely
-    inferred.
-    Walks the readings once, carrying a day counter that increments at
-    a crossing of midnight, so that 23:59:58 -> 00:00:04 yields a
-    POSITIVE six-second step rather than a negative one -- BUT ONLY
-    where `dates` shows the sidebar's date line changed across that
-    pair.  `dates` is a sequence of date lines parallel to `readings`,
-    each the verbatim reading for that frame or None where none was
+    `dates` is a sequence of date lines parallel to `readings`, each
+    the verbatim reading for that frame or None where none was
     observed; ocr_clock.py records them per frame and
-    date_lines_for_rows() lines them up.  With no `dates` at all
-    nothing can evidence a rollover, so every backwards clock is
-    reconciled -- which is the honest result, not a degraded one: see
-    the module docstring for why inferring the day from the clock alone
-    invents time.
+    date_lines_for_rows() lines them up.  A sequence SHORTER than
+    `readings` reads as None for the frames it does not reach -- a
+    session whose date evidence stops partway is a real case.  A LONGER
+    one is REFUSED with TimelineError rather than truncated: a surplus
+    means the evidence was lined up against some other frame list, so
+    the entries that do get used may belong to different frames
+    entirely, and the timeline built from them would look perfectly
+    plausible.
 
-    A reading that cannot be parsed, or that moves time backwards
-    without evidence that the day turned, is reconciled against the
-    last trusted reading and flagged; the day counter and the trusted
-    time of day stay anchored to that last good reading, so a single
-    misread frame cannot corrupt the delta of the frame after it.
+    WHERE NO USABLE DATE EVIDENCE EXISTS for a pair of frames the
+    clock-only rule applies, and that rule is BOUNDED rather than
+    absolute: a wrap is believed only where what it implies is small
+    enough to be a crossing rather than a phantom day.  23:59:58 ->
+    00:00:04 implies six seconds and is believed; 08:00:00 -> 06:00:00
+    implies twenty-two hours of game time from a single keystroke,
+    which nothing here can tell apart from a misread digit, so it is
+    reconciled against the last trusted reading and flagged instead.
+    MAX_WRAP_ADVANCE is that bound.  Believed or reconciled, the
+    decision is recorded as UNVERIFIED wherever date evidence was
+    supplied but none was usable for that pair, and as NONE where the
+    caller passed no dates at all, so the artifact distinguishes a day
+    that was established from one that was merely inferred, and both
+    from a run that had no date evidence to consult -- and a bound is a
+    weaker instrument than the date, since
+    a genuinely long sleep across midnight falls the wrong side of it,
+    which is why the capture reads the date for every frame and why the
+    evidenced path above never consults it.
 
     Readings before the first trusted one -- the language prompt, the
     main menu, character creation, all of which are captured before a
@@ -1010,6 +1026,14 @@ def absolutise_clocks(
     """
     values = list(readings)
     date_values = list(dates) if dates is not None else []
+    if len(date_values) > len(values):
+        raise TimelineError(
+            "%d date lines were supplied for %d readings; `dates` is "
+            "parallel to `readings`, so a longer sequence means the "
+            "evidence was assembled against a different frame list.  "
+            "Ignoring the surplus would silently pair frames with "
+            "other frames' dates and still return a plausible "
+            "timeline." % (len(date_values), len(values)))
     day = 0
     previous_time_of_day: Optional[int] = None
     previous_absolute: Optional[int] = None
@@ -1121,8 +1145,9 @@ def _absolutise_one(
             if previous_date is not None else None)
     if days is None:
         # No usable date evidence for THIS PAIR: the clock-only rule
-        # stands -- which refuses a rollover it cannot evidence -- and
-        # the artifact records that it was not verified.
+        # stands -- which believes a wrap only within MAX_WRAP_ADVANCE
+        # and reconciles anything larger -- and the artifact records
+        # that the decision was not verified against a date.
         return (clock_only, clock_only_day, clock_only_trusted,
                 AGREE_UNVERIFIED, clock_only_reason, None)
 
@@ -1722,8 +1747,10 @@ def build_timeline(
     # exist the telemetry is taken first and the audit fills any frame
     # the telemetry had no date for, so a gap in one record does not
     # become an unevidenced rollover.  With neither, `resolved` stays
-    # None and absolutise_clocks reconciles every backwards clock
-    # instead of inferring a day that may never have passed.
+    # None and absolutise_clocks falls back to its BOUNDED clock-only
+    # rule: a wrap within MAX_WRAP_ADVANCE is believed, anything larger
+    # is reconciled rather than inflated into a day that may never have
+    # passed.
     audit_dates = list(dates) if dates is not None else []
     resolved: Optional[List[Any]] = None
     if observations is not None or dates is not None:
@@ -2608,9 +2635,13 @@ def load_observations(
 ) -> Optional[Dict[int, Dict[str, Any]]]:
     """Read the capture telemetry sidecar, keyed by frame index.
 
-    capture.sh appends one JSON object per captured frame to
+    One JSON object per captured frame is appended to
     playthrough/build/observations.jsonl, carrying the sidebar DATE
-    line this module cross-checks its day decisions against.  The file
+    line this module cross-checks its day decisions against.  capture.sh
+    REPORTS each row on its machine payload and session.py appends it
+    beside the manifest row for the same frame, so one record has one
+    writer and the capture's own write surface stays the frame.  The
+    file
     is APPEND-ONLY, so a frame captured twice has two rows: the LAST
     row for a frame wins, which is the same last-occurrence rule the
     engine applies to duplicated option entries and the only rule that
@@ -2644,8 +2675,9 @@ def load_observations(
             raise TimelineError(
                 "no capture telemetry at %s, so no rollover or "
                 "day-count decision can be checked against the "
-                "sidebar date line.  capture.sh writes it as the "
-                "session runs; drop --require-date to pace the film "
+                "sidebar date line.  session.py writes it as the "
+                "session runs, from what capture.sh reports for each "
+                "frame; drop --require-date to pace the film "
                 "from whatever evidence there is, and every frame no "
                 "date was read for is then recorded '%s'"
                 % (path, AGREE_NONE))

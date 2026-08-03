@@ -67,10 +67,15 @@
 #      expansion, so an unvalidated timeout is code execution, not a
 #      number (playthrough_validate_int).
 #
-# Two documented escape hatches exist for diagnosis, both loud and both
-# off by default: PLAYTHROUGH_ALLOW_UNAUTHENTICATED_X=1 and
-# PLAYTHROUGH_ALLOW_UNVERIFIED_EXECUTABLES=1.  Neither belongs in a
-# recorded session.
+# Documented escape hatches exist for diagnosis -- an unverifiable
+# toolchain, an X server this pipeline did not start, a pack on an
+# untrustworthy path -- and every one of them is off by default, loud
+# when used, and ENFORCED rather than merely deprecated: they are
+# enumerated in PLAYTHROUGH_TRUST_BYPASS_VARS below, any one of them
+# being set moves PLAYTHROUGH_TRUST_STATE to "diagnostic", and a
+# production launch or a production capture then REFUSES to run.  A
+# warning telling an operator not to record a session is not a control;
+# the state is.  See THE TRUST STATE beside playthrough_trust_refresh.
 # ---------------------------------------------------------------------
 # PROCESS LIFETIME -- THE HONEST CONTRACT
 #
@@ -927,10 +932,13 @@ export PLAYTHROUGH_TIMELINE="${PLAYTHROUGH_DIR}/timeline.json"
 #
 # So the date is recorded HERE, keyed by frame, and timeline.py
 # cross-checks its rollover and day-count decisions against it.  One
-# JSON object per line, append-only, written by capture.sh as it reads
-# each frame; a frame that was captured twice therefore has two rows
-# and the LAST one wins, which is the same last-occurrence rule the
-# engine itself applies to duplicated option entries.
+# JSON object per line, append-only.  capture.sh REPORTS the row on its
+# machine payload and names this path in it; the row is appended by
+# session.py, which already owns the frame counter and the manifest row
+# for the same frame, so one logical record has one writer.  A frame
+# that was captured twice therefore has two rows and the LAST one wins,
+# which is the same last-occurrence rule the engine itself applies to
+# duplicated option entries.
 #
 # It lives under playthrough/build/ because it is an intermediate,
 # recomputable observation record rather than a delivered artifact,
@@ -1205,7 +1213,10 @@ case "${_playthrough_python}" in
                 playthrough_warn "using the unverified interpreter" \
                     "'${_playthrough_python}' because" \
                     "PLAYTHROUGH_ALLOW_UNVERIFIED_EXECUTABLES=1." \
-                    "Do not record a session under this setting."
+                    "The trust state is therefore diagnostic: a" \
+                    "capture launch and a production capture will both" \
+                    "refuse to run while it is set (see THE TRUST" \
+                    "STATE below)."
             else
                 playthrough_die "refusing to run the pipeline's" \
                     "Python through '${_playthrough_python}'." \
@@ -1220,6 +1231,67 @@ case "${_playthrough_python}" in
                 return 1 2>/dev/null || exit 1
             fi
         fi
+        ;;
+esac
+
+# ---------------------------------------------------------------------
+# AND THEN CHECK WHICH PYTHON IT IS.
+#
+# playthrough/tooling/requirements.lock pins CPython 3.12 wheels for
+# manylinux x86_64, because numpy and Pillow ship per-interpreter
+# binaries and there is no such thing as a version-agnostic wheel for
+# either.  So "an interpreter was found and it is trustworthy" is still
+# not enough: the resolved interpreter has to be the one the lock was
+# built for, or the environment an operator provisioned is not the
+# environment the pipeline is about to run.  The failure without this
+# check is quiet in exactly the way this pipeline cannot afford --
+# `python3 -m venv .venv` under a host whose python3 is 3.13 installs
+# into ONE interpreter while the pipeline runs another, or refuses the
+# lock's hashes with a message about the wheel rather than about the
+# interpreter.
+#
+# The version is REPORTED as well as checked, so the committed record
+# of a session says which interpreter produced it: env_summary prints
+# PLAYTHROUGH_PYTHON_VERSION beside the path.
+#
+# A mismatch WARNS rather than refuses, and the distinction is
+# deliberate: a lock regenerated for another interpreter is perfectly
+# legitimate (the lock says so itself, and says to regenerate rather
+# than relax), so this cannot be a hard failure without breaking a
+# supported workflow.  What it must not be is silent.
+# ---------------------------------------------------------------------
+export PLAYTHROUGH_PYTHON_ABI="3.12"
+_playthrough_python_version=""
+if [ -x "${_playthrough_python}" ]; then
+    _playthrough_python_version="$(
+        "${_playthrough_python}" -c \
+            'import sys
+print("%d.%d.%d" % sys.version_info[:3])' 2>/dev/null || true)"
+fi
+export PLAYTHROUGH_PYTHON_VERSION="${_playthrough_python_version}"
+case "${_playthrough_python_version}" in
+    "${PLAYTHROUGH_PYTHON_ABI}".*)
+        ;;
+    '')
+        playthrough_warn "could not ask" \
+            "'${_playthrough_python}' for its version, so it cannot be" \
+            "confirmed to be the CPython ${PLAYTHROUGH_PYTHON_ABI} that" \
+            "playthrough/tooling/requirements.lock pins wheels for." \
+            "Check that PLAYTHROUGH_PYTHON names a working interpreter."
+        ;;
+    *)
+        playthrough_warn "the resolved interpreter" \
+            "'${_playthrough_python}' is Python" \
+            "${_playthrough_python_version}, but" \
+            "playthrough/tooling/requirements.lock pins CPython" \
+            "${PLAYTHROUGH_PYTHON_ABI} wheels -- numpy and Pillow are" \
+            "per-interpreter binaries, so that lock cannot be installed" \
+            "into this one.  Point PLAYTHROUGH_VENV or" \
+            "PLAYTHROUGH_PYTHON at a CPython" \
+            "${PLAYTHROUGH_PYTHON_ABI} environment" \
+            "(/opt/playthrough-venv is the provisioned one), or" \
+            "regenerate the lock for this interpreter as its own header" \
+            "describes."
         ;;
 esac
 
@@ -1245,6 +1317,159 @@ playthrough_assert_video_driver() {
         return 1
     fi
     return 0
+}
+
+# ---------------------------------------------------------------------
+# THE TRUST STATE -- ONE CONTRACT, DEFINED HERE, ENFORCED DOWNSTREAM
+#
+# Several checks in this pipeline can be relaxed for diagnosis: an
+# interpreter or tool that cannot be verified, a display this pipeline
+# did not start and cannot prove is authenticated, a tileset pack on a
+# world-writable path, artwork other than the required MSXotto+, a
+# Pillow older than the pin, a compiler the project does not sanction.
+# Each of those exists for a real reason -- without them this pipeline
+# cannot be debugged on a host it does not own -- and each was, until
+# now, enforced only by a WARNING that said not to record a session
+# under it.
+#
+# THAT IS NOT A CONTROL.  A warning on stderr does not stop the very
+# next command from capturing a frame, committing it, and presenting it
+# as evidence of an unobserved session played in the required artwork
+# through a verified toolchain.  Operator discipline is not a security
+# boundary, and this pipeline's whole output is an integrity claim.
+#
+# So the state is authoritative and there is exactly one of it:
+#
+#   PLAYTHROUGH_TRUST_BYPASS_VARS  every variable that relaxes a check
+#   PLAYTHROUGH_TRUST_BYPASSES     those of them currently active
+#   PLAYTHROUGH_TRUST_STATE        trusted | diagnostic
+#
+# and two consumers act on it without discretion: launch_game.sh
+# refuses to start or accept an instance that will be captured, and
+# capture.sh refuses a production capture -- both BEFORE anything is
+# created, so a diagnostic run produces nothing that could be mistaken
+# for evidence.  Diagnosis stays fully available: capture.sh's
+# diagnostic mode withdraws its frame out of the working tree and never
+# exits 0, so a relaxed run is structurally uncommittable rather than
+# forbidden.
+#
+# RECOMPUTED AT EVERY CALL, never memoised.  A caller can export one of
+# these variables after sourcing this file -- a test harness does
+# exactly that -- so an answer cached at source time would be a
+# statement about the past.  The cost is a loop over six names.
+#
+# ANY VALUE OTHER THAN EMPTY OR "0" COUNTS AS ACTIVE, which is stricter
+# than the individual check sites (they act only on "1").  That is
+# deliberate: `PLAYTHROUGH_ALLOW_UNAUTHENTICATED_X=true` does not
+# actually relax the X check, but it is unambiguous evidence that
+# somebody meant to relax it, and a recorded session is not the place to
+# be generous about a security-relevant variable whose spelling is
+# wrong.  Fail closed.
+# ---------------------------------------------------------------------
+export PLAYTHROUGH_TRUST_BYPASS_VARS="\
+PLAYTHROUGH_ALLOW_UNVERIFIED_EXECUTABLES \
+PLAYTHROUGH_ALLOW_UNAUTHENTICATED_X \
+PLAYTHROUGH_ALLOW_UNVERIFIED_TILESET_PACK \
+PLAYTHROUGH_ALLOW_TILESET_FALLBACK \
+PLAYTHROUGH_ALLOW_VULNERABLE_PILLOW \
+PLAYTHROUGH_ALLOW_ANY_COMPILER"
+
+# playthrough_trust_reason NAME
+#   What NAME endangers, in one sentence, so a refusal explains itself
+#   instead of naming a variable and stopping.
+playthrough_trust_reason() {
+    case "${1-}" in
+        PLAYTHROUGH_ALLOW_UNVERIFIED_EXECUTABLES)
+            printf '%s' "a tool or interpreter that another account \
+can replace decides every reading in the film"
+            ;;
+        PLAYTHROUGH_ALLOW_UNAUTHENTICATED_X)
+            printf '%s' "any local account can read the screen being \
+captured and inject keystrokes into the session"
+            ;;
+        PLAYTHROUGH_ALLOW_UNVERIFIED_TILESET_PACK)
+            printf '%s' "the artwork ingested into gfx/ came from a \
+path this host cannot vouch for"
+            ;;
+        PLAYTHROUGH_ALLOW_TILESET_FALLBACK)
+            printf '%s' "the run may render artwork other than the \
+required MSXotto+, which no other check would notice"
+            ;;
+        PLAYTHROUGH_ALLOW_VULNERABLE_PILLOW)
+            printf '%s' "frames are decoded by a Pillow older than \
+the pinned, reviewed one"
+            ;;
+        PLAYTHROUGH_ALLOW_ANY_COMPILER)
+            printf '%s' "the binary may have been built by a compiler \
+the project does not sanction"
+            ;;
+        *)
+            printf '%s' "an unrecognised trust override is set"
+            ;;
+    esac
+}
+
+# playthrough_trust_refresh
+#   Recompute the trust state from the environment as it is NOW, export
+#   it, and report it: 0 when trusted, 1 when any bypass is active.
+#   Silent -- the messages belong to the caller that refuses.
+playthrough_trust_refresh() {
+    local name value active=""
+    local -a names=()
+    read -r -a names <<<"${PLAYTHROUGH_TRUST_BYPASS_VARS}"
+    for name in "${names[@]}"; do
+        value="${!name-}"
+        case "${value}" in
+            ''|0)
+                ;;
+            *)
+                active="${active}${active:+ }${name}"
+                ;;
+        esac
+    done
+    export PLAYTHROUGH_TRUST_BYPASSES="${active}"
+    if [ -n "${active}" ]; then
+        export PLAYTHROUGH_TRUST_STATE="diagnostic"
+        return 1
+    fi
+    export PLAYTHROUGH_TRUST_STATE="trusted"
+    return 0
+}
+
+# playthrough_trust_explain
+#   One warning per active bypass, naming the variable, its value and
+#   what it endangers.  Prints nothing when the state is trusted.
+playthrough_trust_explain() {
+    playthrough_trust_refresh && return 0
+    local name
+    local -a names=()
+    read -r -a names <<<"${PLAYTHROUGH_TRUST_BYPASSES}"
+    for name in "${names[@]}"; do
+        playthrough_warn "${name}=${!name-} is set: $(
+            playthrough_trust_reason "${name}")"
+    done
+    return 1
+}
+
+# playthrough_assert_trusted [CONTEXT]
+#   THE GATE.  Call it from anything that is about to produce evidence.
+#   Returns 0 when no bypass is active; otherwise explains every active
+#   one and refuses, returning 1 (this file is sourced, so it cannot
+#   exit -- the caller turns the refusal into its own exit code).
+playthrough_assert_trusted() {
+    local context="${1:-an action that produces evidence}"
+    if playthrough_trust_refresh; then
+        return 0
+    fi
+    playthrough_trust_explain
+    playthrough_die "refusing ${context} while the trust state is" \
+        "diagnostic (${PLAYTHROUGH_TRUST_BYPASSES// /, }).  Evidence" \
+        "produced under a relaxed check is not evidence: unset the" \
+        "variable(s) above and fix what each one was hiding, or keep" \
+        "diagnosing with PLAYTHROUGH_CAPTURE_MODE=diagnostic, whose" \
+        "frames are withdrawn out of the working tree and can never be" \
+        "committed as part of the record."
+    return 1
 }
 
 # ---------------------------------------------------------------------
@@ -1338,7 +1563,9 @@ playthrough_resolve_tool() {
         fi
         playthrough_warn "using the unverified '${name}' at" \
             "'${path}' because" \
-            "PLAYTHROUGH_ALLOW_UNVERIFIED_EXECUTABLES=1"
+            "PLAYTHROUGH_ALLOW_UNVERIFIED_EXECUTABLES=1, which holds" \
+            "the trust state at diagnostic and makes a capture launch" \
+            "and a production capture refuse"
     fi
     var="$(playthrough_tool_var "${name}")"
     export "${var}=${path}"
@@ -1961,8 +2188,10 @@ playthrough_assert_x_access_control() {
             "with no cookie, so any local account can read the" \
             "screen being captured and send keystrokes into the" \
             "session.  Continuing only because" \
-            "PLAYTHROUGH_ALLOW_UNAUTHENTICATED_X=1; the frames this" \
-            "run produces are NOT evidence of an unobserved session."
+            "PLAYTHROUGH_ALLOW_UNAUTHENTICATED_X=1, which holds the" \
+            "trust state at diagnostic: no frame this run captures can" \
+            "join the record, because a capture launch and a" \
+            "production capture both refuse while it is set."
         return 0
     fi
     playthrough_die "${PLAYTHROUGH_DISPLAY} has no access control: a" \
@@ -2370,6 +2599,11 @@ playthrough_env_summary() {
     # memoised and warns at most once, and a strict-mode refusal is the
     # caller's business rather than the summary's, hence `|| true`.
     playthrough_check_platform >/dev/null 2>&1 || true
+    # The trust state is recomputed here for the same reason: this is
+    # the record of what a session ran under, and "diagnostic" is the
+    # single most important thing it can say.  Refusing is the launch's
+    # and the capture's business, not the summary's.
+    playthrough_trust_refresh || true
     printf '%s\n' "playthrough environment contract"
     printf '  %-26s %s\n' \
         "DISPLAY" "${DISPLAY}" \
@@ -2402,16 +2636,20 @@ playthrough_env_summary() {
         "PLAYTHROUGH_SUPERVISOR_XVFB" \
         "${PLAYTHROUGH_SUPERVISOR_XVFB}" \
         "PLAYTHROUGH_SUPERVISOR_WM" "${PLAYTHROUGH_SUPERVISOR_WM}" \
-        "PLAYTHROUGH_PYTHON" "${PLAYTHROUGH_PYTHON}"
         "PLAYTHROUGH_PYTHON" "${PLAYTHROUGH_PYTHON}" \
-        "PLAYTHROUGH_RUNTIME_DIR" "${PLAYTHROUGH_RUNTIME_DIR}" \
+        "PLAYTHROUGH_PYTHON_VERSION" \
+        "${PLAYTHROUGH_PYTHON_VERSION:-<unknown>}" \
+        "PLAYTHROUGH_PYTHON_ABI" "${PLAYTHROUGH_PYTHON_ABI}" \
         "XAUTHORITY" "${XAUTHORITY:-<unset>}" \
         "PLAYTHROUGH_XAUTHORITY_ORIGIN" \
         "${PLAYTHROUGH_XAUTHORITY_ORIGIN}" \
         "IMAGEIO_FFMPEG_EXE" "${IMAGEIO_FFMPEG_EXE:-<unset>}" \
         "PLAYTHROUGH_PLATFORM" "${PLAYTHROUGH_PLATFORM:-<unchecked>}" \
         "PLAYTHROUGH_PLATFORM_SUPPORTED" \
-        "${PLAYTHROUGH_PLATFORM_SUPPORTED:-<unchecked>}"
+        "${PLAYTHROUGH_PLATFORM_SUPPORTED:-<unchecked>}" \
+        "PLAYTHROUGH_TRUST_STATE" "${PLAYTHROUGH_TRUST_STATE}" \
+        "PLAYTHROUGH_TRUST_BYPASSES" \
+        "${PLAYTHROUGH_TRUST_BYPASSES:-<none>}"
 }
 
 # ---------------------------------------------------------------------
@@ -2463,8 +2701,30 @@ if ! playthrough_assert_video_driver; then
     return 1 2>/dev/null || exit 1
 fi
 
+# The trust state is published at source time so that every consumer --
+# including the Python stages, which read it out of the environment --
+# starts from a computed answer rather than an absent one.  A bypass is
+# NOT fatal here: sourcing this file is not producing evidence, and the
+# refusal belongs to the launch and the capture, which recompute it.
+playthrough_trust_refresh || true
+
+# THE SUMMARY'S STATUS IS THE DIRECT RUN'S STATUS.
+#
+# `bash playthrough/tooling/env.sh` exists to PRINT the contract, so a
+# summary that could not be written is a failed run and has to say so
+# with its exit code.  The status is carried across the unsets below
+# rather than being taken from them, because `unset` always succeeds:
+# reporting whatever the last one returned is how a broken summary used
+# to exit 0 while the error sat in the output.
+_playthrough_summary_status=0
 if [ "${_playthrough_executed}" = "1" ]; then
-    playthrough_env_summary
+    playthrough_env_summary || _playthrough_summary_status="$?"
+    if [ "${_playthrough_summary_status}" -ne 0 ]; then
+        playthrough_warn "the environment summary could not be" \
+            "written in full (status ${_playthrough_summary_status});" \
+            "the contract itself is unaffected, but this run's record" \
+            "of it is incomplete"
+    fi
 fi
 
 # Leave no scratch names behind in the caller's shell.  Only the
@@ -2475,8 +2735,15 @@ fi
 # survives the source: the ownership checks in playthrough_secure_dir
 # and playthrough_secure_file call it, so it has to outlive this file
 # just as they do.  The underscore marks it as internal.
-unset _playthrough_executed _playthrough_script_dir
+unset _playthrough_script_dir
 unset _playthrough_repo_root _playthrough_index _playthrough_index_raw
 unset _playthrough_suffix _playthrough_runtime_dir _playthrough_python
 unset _playthrough_kbjson _playthrough_display_base
-unset _playthrough_scratch_dir
+unset _playthrough_scratch_dir _playthrough_python_version
+
+if [ "${_playthrough_executed}" = "1" ]; then
+    _playthrough_status="${_playthrough_summary_status}"
+    unset _playthrough_executed _playthrough_summary_status
+    exit "${_playthrough_status}"
+fi
+unset _playthrough_executed _playthrough_summary_status

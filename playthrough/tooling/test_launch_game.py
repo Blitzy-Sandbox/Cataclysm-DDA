@@ -49,9 +49,11 @@ touched.
 
 import atexit
 import hashlib
+import json
 import os
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -66,6 +68,75 @@ sys.dont_write_bytecode = True
 TOOLING = os.path.dirname(os.path.abspath(__file__))
 PLAYTHROUGH = os.path.dirname(TOOLING)
 REPO_ROOT = os.path.dirname(PLAYTHROUGH)
+
+
+def _is_private(path):
+    """True when PATH and every directory above it are trustworthy.
+
+    The same rule env.sh's playthrough_verify_executable and
+    launch_game.sh's verify_pack_provenance apply: every component is
+    owned by root or by this user and none of them is group- or
+    world-writable, so nobody else can substitute a file between a check
+    and the run that follows it.
+    """
+    euid = os.geteuid()
+    current = os.path.abspath(path)
+    while True:
+        try:
+            info = os.stat(current)
+        except OSError:
+            return False
+        if info.st_uid not in (0, euid):
+            return False
+        if info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+            return False
+        parent = os.path.dirname(current)
+        if parent == current:
+            return True
+        current = parent
+
+
+def _sandbox_base():
+    """Where this suite's sandboxes live, and why not the temp dir.
+
+    THE SANDBOX HAS TO BE TRUSTWORTHY, because launch_game.sh now
+    refuses to start or accept an instance that will be captured while
+    any of env.sh's trust bypasses is set.  A suite that declared those
+    bypasses would exercise only the relaxed path and would assert
+    nothing about the enforced one.
+
+    /tmp cannot be the base: this host has it at mode 2777 --
+    world-writable with no sticky bit -- so the ancestor walk fails
+    there however the sandbox itself is built.  $HOME serves on an
+    ordinary host and /run on a root one, and $PLAYTHROUGH_TEST_TMPDIR
+    overrides both.  With none available the suite skips, naming that
+    variable, rather than quietly testing something weaker.
+    """
+    candidates = []
+    nominated = os.environ.get("PLAYTHROUGH_TEST_TMPDIR")
+    if nominated:
+        candidates.append(nominated)
+    home = os.environ.get("HOME")
+    if home:
+        candidates.append(
+            os.path.join(home, ".cache", "playthrough-tooling-tests"))
+    if os.geteuid() == 0:
+        candidates.append("/run/playthrough-tooling-tests")
+    for candidate in candidates:
+        try:
+            os.makedirs(candidate, mode=0o700, exist_ok=True)
+        except OSError:
+            continue
+        if _is_private(candidate):
+            return candidate
+    return None
+
+
+SANDBOX_BASE = _sandbox_base()
+NO_SANDBOX_BASE = (
+    "no private directory is available for the sandbox: set "
+    "PLAYTHROUGH_TEST_TMPDIR to one that only root or this user can "
+    "write, with no group- or world-writable directory above it")
 
 # The documented exit codes, named as launch_game.sh names them.
 EX_OK = 0
@@ -206,7 +277,8 @@ def fake_game_binary():
     if compiler is None:
         _FAKE_GAME["why"] = "no C compiler on PATH"
         return None
-    holder = tempfile.mkdtemp(prefix="blitzy_fakegame_")
+    holder = tempfile.mkdtemp(prefix="blitzy_fakegame_",
+                              dir=SANDBOX_BASE)
     atexit.register(shutil.rmtree, holder, True)
     source = os.path.join(holder, "fake_game.c")
     binary = os.path.join(holder, "fake_game")
@@ -227,7 +299,10 @@ class LaunchFixture(unittest.TestCase):
     """A sandbox checkout with a stubbed build and display toolchain."""
 
     def setUp(self):
-        self.root = tempfile.mkdtemp(prefix="blitzy_launch_")
+        if SANDBOX_BASE is None:
+            self.skipTest(NO_SANDBOX_BASE)
+        self.root = tempfile.mkdtemp(prefix="blitzy_launch_",
+                                     dir=SANDBOX_BASE)
         self.addCleanup(shutil.rmtree, self.root, True)
         self.checkout = os.path.join(self.root, "checkout")
         self.tooling = os.path.join(self.checkout, "playthrough",
@@ -361,7 +436,17 @@ class LaunchFixture(unittest.TestCase):
             "    *-dumpversion*) printf \"15.2.0\\n\" ;;\n"
             "esac\n"
             "exit 0\n"))
+        # A COOKIELESS CLIENT IS REFUSED, as a real authenticated
+        # server refuses one: env.sh proves access control NEGATIVELY,
+        # by requiring xdpyinfo with an empty authority file to FAIL.
+        # STUB_XDPYINFO_OPEN=1 answers anyway, for the test that asserts
+        # the refusal of an open display.
         self.stub("xdpyinfo", (
+            'if [ "${STUB_XDPYINFO_OPEN:-0}" != "1" ]; then\n'
+            '    case "${XAUTHORITY:-}" in\n'
+            '        ""|/dev/null) exit 1 ;;\n'
+            "    esac\n"
+            "fi\n"
             'if [ "${STUB_XDPYINFO_RC:-0}" != "0" ]; then\n'
             '    exit "${STUB_XDPYINFO_RC}"\n'
             "fi\n"
@@ -491,7 +576,12 @@ class LaunchFixture(unittest.TestCase):
             "        exit 0\n"
             "        ;;\n"
             "esac\n"
-            'if [ -n "${PLAYTHROUGH_OPTIONS_JSON-}" ]; then\n'
+            # CREATES the options file, never clobbers a seeded one:
+            # the engine writes it on first run, and a stub that
+            # truncated an existing one would erase the very values the
+            # capture launch is about to verify.
+            'if [ -n "${PLAYTHROUGH_OPTIONS_JSON-}" ] &&\n'
+            '   [ ! -f "${PLAYTHROUGH_OPTIONS_JSON}" ]; then\n'
             '    mkdir -p "$(dirname "${PLAYTHROUGH_OPTIONS_JSON}")"\n'
             '    printf "[]\\n" >"${PLAYTHROUGH_OPTIONS_JSON}"\n'
             "fi\n"
@@ -579,6 +669,55 @@ class LaunchFixture(unittest.TestCase):
             lines.append("VIEW: %s" % view)
         return self.write(conf, "\n".join(lines) + "\n")
 
+    def install_seeder(self):
+        """Put the REAL seed_options.py in the sandbox.
+
+        The launcher delegates the option contract to it before every
+        capture launch, and these tests exercise that handoff for real
+        rather than through a stub's opinion of it -- the suite's
+        interpreter is the host's python3, so the module that owns the
+        contract is the module that answers.
+        """
+        seeder = os.path.join(self.tooling, "seed_options.py")
+        if not os.path.isfile(seeder):
+            shutil.copyfile(
+                os.path.join(TOOLING, "seed_options.py"), seeder)
+        # seed_options.py proves it is inside a checkout before it reads
+        # anything, and data/json/ui is half of that proof (the other
+        # half, src/path_info.cpp, setUp already writes).
+        os.makedirs(os.path.join(self.checkout, "data", "json", "ui"),
+                    exist_ok=True)
+        return seeder
+
+    def seed_config(self, **overrides):
+        """An options file that HOLDS the seeded contract.
+
+        A sandbox whose options file merely EXISTS is no longer enough,
+        which is the whole point of the launcher's verification: these
+        are the eight values it checks, and an override makes exactly one
+        of them wrong.
+        """
+        self.install_seeder()
+        values = {
+            "24_HOUR": "24h",
+            "SOUND_ENABLED": "false",
+            "USE_TILES": "true",
+            "TILES": MSX_ID,
+            "TERMINAL_X": "240",
+            "TERMINAL_Y": "67",
+            "CHARACTER_POINT_POOLS": "any",
+            "WORLD_COMPRESSION2": "false",
+            "FONT_WIDTH": "8",
+            "FONT_HEIGHT": "16",
+            "SIDEBAR_POSITION": "right",
+        }
+        values.update(overrides)
+        entries = [{"info": "what %s does" % name, "default": value,
+                    "name": name, "value": value}
+                   for name, value in values.items()]
+        return self.write(os.path.join(self.config, "options.json"),
+                          json.dumps(entries, indent=2) + "\n")
+
     def install_pack(self, directory, ident, view=None, manifest=True):
         """Write one pre-placed pack entry outside the checkout.
 
@@ -656,38 +795,18 @@ class LaunchFixture(unittest.TestCase):
             "PATH": self.bin,
             "HOME": self.root,
             "PLAYTHROUGH_RUNTIME_DIR": scratch,
-            # THE SANDBOX IS DELIBERATELY UNVERIFIABLE, AND SAYS SO.
+            # NO TRUST BYPASS IS DECLARED HERE, DELIBERATELY.
             #
-            # Every tool this suite exercises is a stub under
-            # <tmpdir>/bin, and /tmp is mode 2777 on this host, so
-            # env.sh's playthrough_resolve_tool correctly reports each
-            # one as replaceable by another account and refuses it.
-            # That refusal is the right behaviour for a recorded
-            # session and it is covered on its own account by
-            # test_an_unverifiable_toolchain_is_refused_by_default
-            # below -- which is why it is declared here rather than
-            # worked around by relaxing the check itself.
-            "PLAYTHROUGH_ALLOW_UNVERIFIED_EXECUTABLES": "1",
-            # AND THE DISPLAY IS A STUB, WHICH SAYS SO TOO.  There is
-            # no X server here at all: xdpyinfo and xprop are scripts
-            # that print the geometry this suite wants tested, so no
-            # cookie exists and env.sh correctly reports the display as
-            # having no access control.  Refusing that is right for a
-            # recorded session -- any local account could otherwise
-            # read the captured screen or inject keystrokes -- and it
-            # is covered on its own account by
-            # test_an_unauthenticated_display_is_refused_by_default.
-            "PLAYTHROUGH_ALLOW_UNAUTHENTICATED_X": "1",
-            # AND THE PACK IS STAGED UNDER /tmp, WHICH IS MODE 2777 ON
-            # THIS HOST -- world-writable with no sticky bit, so any
-            # account really can replace an entry there and the
-            # ingestion gate is right to refuse it.  Only that half is
-            # declared: the pack's sha256 manifest is still written by
-            # install_pack and still verified, so what is accepted here
-            # is the host's layout and never unverified bytes.  The
-            # refusal itself is covered by
-            # test_a_pack_on_an_untrustworthy_path_is_refused.
-            "PLAYTHROUGH_ALLOW_UNVERIFIED_TILESET_PACK": "1",
+            # launch_game.sh refuses to start or accept an instance that
+            # will be captured while any of them is set, so a fixture
+            # that declared one would only ever exercise the diagnostic
+            # path.  The sandbox is instead built to PASS the real
+            # checks: it lives under a private base (see
+            # _sandbox_base), so the stubs, the fake engine and the
+            # staged pack all verify, and the xdpyinfo stub refuses a
+            # cookieless client exactly as an authenticated server does.
+            # Each refusal keeps its own test, which arranges the
+            # untrustworthy condition on purpose.
             "PLAYTHROUGH_STUB_LOG": self.stub_log,
             "PLAYTHROUGH_PYTHON": interpreter,
             "PLAYTHROUGH_WINDOW_TIMEOUT": "10",
@@ -1613,15 +1732,17 @@ class TestTheTilesetResolution(LaunchFixture):
                 self.assertIn("neither 0 nor 1", err)
 
     def test_a_pack_on_an_untrustworthy_path_is_refused(self):
-        """The ingestion gate, with nothing declared.
+        """The ingestion gate, with the condition arranged.
 
-        This is the check the suite's own fixture declares away, so it
-        is asserted here on its own account: a pack staged where another
-        account can replace it is not copied into the tree the game
-        loads.
+        The sandbox is private, so the untrustworthy state is created
+        rather than inherited: the staged pack is made world-writable,
+        which is exactly the state in which another account can replace
+        an entry between the check and the copy.  Artwork from such a
+        path is not copied into the tree the game loads.
         """
         self.install_pack("MShockXotto+", MSX_ID, MSX_VIEW)
         self.install_tileset("ASCIITileset", ASCII_ID, "ASCII")
+        os.chmod(self.pack, 0o777)
         status, _, err = self.run_launch(
             "tileset", PLAYTHROUGH_ALLOW_UNVERIFIED_TILESET_PACK=None)
         self.assertEqual(status, EX_TILESET)
@@ -1736,16 +1857,16 @@ class TestTheStatusReport(LaunchFixture):
     def test_an_unverifiable_toolchain_is_refused_by_default(self):
         """The check the fixture declares away, asserted on its own.
 
-        Every tool here is a stub under /tmp, which is mode 2777 on this
-        host -- world-writable with no sticky bit -- so env.sh is right
-        that another account could replace one between the check and the
-        run.  A recorded session must not run a binary it cannot vouch
-        for, and this proves the refusal rather than trusting it.
+        The sandbox is private, so the condition is arranged: its root
+        is made world-writable, which is the state in which another
+        account could replace the interpreter or a tool between the
+        check and the run.  A recorded session must not run a binary it
+        cannot vouch for, and this proves the refusal rather than
+        trusting it.
         """
         self.install_game()
-        status, _, err = self.run_launch(
-            "headless",
-            PLAYTHROUGH_ALLOW_UNVERIFIED_EXECUTABLES=None)
+        os.chmod(self.root, 0o777)
+        status, _, err = self.run_launch("headless")
         self.assertEqual(status, EX_PREREQ)
         self.assertIn("rejected as untrustworthy", err)
         self.assertIn("group- or world-writable", err)
@@ -1757,15 +1878,16 @@ class TestTheStatusReport(LaunchFixture):
     def test_an_unauthenticated_display_is_refused_by_default(self):
         """A display with no cookie is a display anyone can read.
 
-        The other half of what the fixture declares: there is no real X
-        server in this sandbox, so no cookie exists.  On a real host
-        that state means any local account can photograph the screen
-        being captured and inject keystrokes into the session, which is
+        The stub display normally refuses a client with an empty
+        authority file, as an authenticated server does; here it is told
+        to answer one, which is what an open display looks like.  On a
+        real host that state means any local account can photograph the
+        screen being captured and inject keystrokes into the session --
         both a privacy problem and a route to fabricated frames.
         """
         self.install_game()
         status, _, err = self.run_launch(
-            "headless", PLAYTHROUGH_ALLOW_UNAUTHENTICATED_X=None)
+            "headless", STUB_XDPYINFO_OPEN="1")
         self.assertEqual(status, EX_DISPLAY)
         self.assertIn("no access control", err)
         self.assertIn("PLAYTHROUGH_ALLOW_UNAUTHENTICATED_X=1", err)
@@ -1899,19 +2021,132 @@ class TestTheTunableValidators(LaunchFixture):
         self.assertEqual(out.split(), ["TILES=1", "TILES=0"])
 
 
+class TestTheTrustState(LaunchFixture):
+    """An instance that will be captured needs a trusted environment."""
+
+    # env.sh's registry, which is the one list the gate consults.
+    BYPASSES = (
+        "PLAYTHROUGH_ALLOW_UNVERIFIED_EXECUTABLES",
+        "PLAYTHROUGH_ALLOW_UNAUTHENTICATED_X",
+        "PLAYTHROUGH_ALLOW_UNVERIFIED_TILESET_PACK",
+        "PLAYTHROUGH_ALLOW_TILESET_FALLBACK",
+        "PLAYTHROUGH_ALLOW_VULNERABLE_PILLOW",
+        "PLAYTHROUGH_ALLOW_ANY_COMPILER",
+    )
+
+    def seeded(self):
+        """A checkout whose options file exists, so a capture is next."""
+        self.ready_to_launch()
+        self.seed_config()
+
+    def test_the_registry_is_the_one_env_sh_publishes(self):
+        status, out, _ = self.run_sourced(
+            'printf "%s\\n" "${PLAYTHROUGH_TRUST_BYPASS_VARS}"')
+        self.assertEqual(status, EX_OK)
+        self.assertEqual(
+            sorted(out.split()), sorted(self.BYPASSES),
+            msg=("this class asserts the gate over env.sh's own list, "
+                 "so a bypass added there without a test here fails"))
+
+    def test_every_bypass_refuses_the_capture_launch(self):
+        # One sandbox for all six: each attempt is refused before
+        # anything is created, so nothing accumulates between them --
+        # which the frames-and-config assertion at the end proves.
+        self.seeded()
+        for name in self.BYPASSES:
+            with self.subTest(bypass=name):
+                environment = {name: "1", "STUB_WINDOW_IDS": "",
+                               "PLAYTHROUGH_WINDOW_TIMEOUT": "1"}
+                status, _, err = self.run_launch("launch", **environment)
+                self.assertEqual(
+                    status, EX_USAGE,
+                    msg="%s must refuse, not warn:\n%s" % (name, err))
+                self.assertIn("trust state", err)
+                self.assertIn(name, err)
+                self.assertNotIn(
+                    "CAPTURE LAUNCH", err,
+                    msg=("the refusal precedes the launch: an engine "
+                         "started and then objected to has already "
+                         "produced the thing being refused"))
+        self.assertFalse(
+            os.path.exists(os.path.join(
+                self.checkout, "playthrough", "frames")),
+            msg="six refusals created nothing at all")
+
+    def test_the_refusal_names_what_the_bypass_endangers(self):
+        self.seeded()
+        status, _, err = self.run_launch(
+            "launch", STUB_WINDOW_IDS="",
+            PLAYTHROUGH_WINDOW_TIMEOUT="1",
+            PLAYTHROUGH_ALLOW_TILESET_FALLBACK="1")
+        self.assertEqual(status, EX_USAGE)
+        self.assertIn("other than the required MSXotto+", err)
+        self.assertIn("PLAYTHROUGH_CAPTURE_MODE=diagnostic", err)
+
+    def test_a_calibration_launch_is_deliberately_exempt(self):
+        """Diagnosis is separated from the record, not blocked.
+
+        The calibration launch produces no frame -- it exists only so
+        the engine writes its config tree -- and the options it leaves
+        behind are verified again before the capture launch that follows.
+        Refusing it would make an unverifiable host undiagnosable while
+        protecting nothing.
+        """
+        self.ready_to_launch()
+        status, _, err = self.run_launch(
+            "launch", STUB_WINDOW_IDS="",
+            PLAYTHROUGH_WINDOW_TIMEOUT="1",
+            PLAYTHROUGH_ALLOW_TILESET_FALLBACK="1")
+        self.assertIn("CALIBRATION LAUNCH", err)
+        self.assertNotIn("trust state", err)
+
+    def test_the_subcommands_that_capture_nothing_are_unaffected(self):
+        self.install_game()
+        self.install_tileset("MShockXotto+", MSX_ID, MSX_VIEW)
+        for subcommand in ("tileset", "status", "headless"):
+            with self.subTest(subcommand=subcommand):
+                status, _, err = self.run_launch(
+                    subcommand, STUB_WINDOW_IDS="",
+                    PLAYTHROUGH_ALLOW_VULNERABLE_PILLOW="1")
+                self.assertEqual(status, EX_OK, msg=err)
+                self.assertNotIn("trust state", err)
+
+
 class TestTheSeedingBoundary(LaunchFixture):
     """Seeding the options file is a separate, explicit step."""
 
-    def test_the_launcher_never_patches_the_options_file(self):
+    def test_the_launcher_verifies_the_options_and_never_writes_them(
+            self):
+        """Two halves of one boundary, and only one of them is a no.
+
+        SEEDING stays a separate, explicit step: the engine rewrites
+        options.json when it exits, so patching it from inside a launch
+        would be silently discarded.  VERIFYING is not seeding, and it
+        has to happen here -- the launcher is the last thing that runs
+        before a session is captured, and by then the values are what
+        decide whether the session is usable at all.  So the launcher
+        delegates to the module that owns the contract, in --verify-only
+        mode, and the file it verifies comes out byte for byte unchanged.
+        """
         with open(self.script, encoding="utf-8") as handle:
             source = handle.read()
-        self.assertNotIn(
-            "seed_options.py --verify-only", source,
-            msg=("the launcher does not delegate to seed_options.py: "
-                 "the engine rewrites options.json when it exits, so "
-                 "seeding underneath a live instance would be silently "
-                 "discarded.  The calibration launch stops the "
-                 "instance and tells the operator to seed next"))
+        self.assertIn("--verify-only", source)
+        self.assertIn("seed_options.py", source)
+        self.ready_to_launch()
+        path = self.seed_config()
+        with open(path, "rb") as handle:
+            before = handle.read()
+        status, out, err = self.run_launch(
+            "launch", STUB_WINDOW_IDS="",
+            PLAYTHROUGH_WINDOW_TIMEOUT="1")
+        self.assertEqual(
+            self.emitted(out)["PLAYTHROUGH_OPTIONS_VERIFIED"], "1",
+            msg="the contract is reported as verified:\n%s" % err)
+        self.assertIn("CAPTURE LAUNCH", err)
+        with open(path, "rb") as handle:
+            self.assertEqual(
+                handle.read(), before,
+                msg="verification reads; it never patches")
 
     def test_a_first_run_is_announced_as_a_calibration_launch(self):
         self.ready_to_launch()
@@ -1934,7 +2169,7 @@ class TestTheSeedingBoundary(LaunchFixture):
 
     def test_a_seeded_checkout_takes_the_capture_launch(self):
         self.ready_to_launch()
-        self.write(os.path.join(self.config, "options.json"), "[]\n")
+        self.seed_config()
         status, out, err = self.run_launch(
             "launch", STUB_WINDOW_IDS="",
             PLAYTHROUGH_WINDOW_TIMEOUT="1")
@@ -1947,6 +2182,7 @@ class TestTheSeedingBoundary(LaunchFixture):
 
     def test_a_resumable_save_takes_the_capture_launch_too(self):
         self.ready_to_launch()
+        self.seed_config()
         self.install_world("Sunnyside", ("#a.sav",))
         status, out, err = self.run_launch(
             "launch", STUB_WINDOW_IDS="",
@@ -1956,6 +2192,97 @@ class TestTheSeedingBoundary(LaunchFixture):
             msg=("a save exists, so there is nothing to calibrate and "
                  "nothing to create: the world is loaded"))
         self.assertIn("do not create a new one", err)
+
+    def test_a_resume_with_no_seeded_options_is_refused(self):
+        """The one state that reaches a capture launch unseeded.
+
+        A save with no options.json skips the calibration branch
+        entirely -- there is nothing to calibrate and nothing to create
+        -- so it used to walk straight into the captured launch with the
+        engine's compiled defaults: a 12h clock, an 80x24 grid and
+        whatever tileset was left.  Every count would still tally.
+        """
+        self.ready_to_launch()
+        self.install_seeder()
+        self.install_world("Sunnyside", ("#a.sav",))
+        status, _, err = self.run_launch(
+            "launch", STUB_WINDOW_IDS="",
+            PLAYTHROUGH_WINDOW_TIMEOUT="1")
+        self.assertEqual(status, EX_LAYOUT)
+        self.assertIn("nothing has seeded the option values", err)
+        self.assertIn("seed_options.py", err)
+        self.assertNotIn("CAPTURE LAUNCH", err)
+
+    def test_every_seeded_value_is_actually_verified(self):
+        """One wrong value in eight refuses the launch.
+
+        The defect this closes treated the EXISTENCE of options.json as
+        proof that seeding had happened, so a seed that failed halfway,
+        ran against another userdir, or was overwritten by an engine
+        exiting afterwards reached the captured session unnoticed.  Each
+        of these eight decides whether the session is usable evidence:
+        the clock's width, the artwork, the grid the crop is computed
+        from, the creator's point-buy tab, the audio device, and the
+        character file's own name.
+        """
+        wrong = {
+            "24_HOUR": "12h",
+            "SOUND_ENABLED": "true",
+            "USE_TILES": "false",
+            "TILES": "UltimateCataclysm",
+            "TERMINAL_X": "80",
+            "TERMINAL_Y": "24",
+            "CHARACTER_POINT_POOLS": "story_teller",
+            "WORLD_COMPRESSION2": "true",
+        }
+        for name, value in wrong.items():
+            with self.subTest(option=name):
+                self.ready_to_launch()
+                self.seed_config(**{name: value})
+                status, out, err = self.run_launch(
+                    "launch", STUB_WINDOW_IDS="",
+                    PLAYTHROUGH_WINDOW_TIMEOUT="1")
+                self.assertEqual(
+                    status, EX_LAYOUT,
+                    msg="%s=%s must refuse the launch:\n%s"
+                        % (name, value, err))
+                self.assertIn(name, err)
+                self.assertIn(
+                    self.emitted(out).get(
+                        "PLAYTHROUGH_OPTIONS_VERIFIED"), ("0",),
+                    msg="and the failure is reported as a fact too")
+                self.assertNotIn(
+                    "CAPTURE LAUNCH", err,
+                    msg="the refusal precedes the launch entirely")
+
+    def test_the_refusal_says_how_to_put_it_right(self):
+        self.ready_to_launch()
+        self.seed_config(**{"24_HOUR": "12h"})
+        status, _, err = self.run_launch(
+            "launch", STUB_WINDOW_IDS="",
+            PLAYTHROUGH_WINDOW_TIMEOUT="1")
+        self.assertEqual(status, EX_LAYOUT)
+        self.assertIn("seed_options.py", err)
+        self.assertIn(
+            "while no engine is running", err,
+            msg=("seeding underneath a live instance is discarded when "
+                 "it exits, which is the mistake most likely to have "
+                 "produced this state"))
+        self.assertIn(
+            "every duration fall to the floor", err,
+            msg="the cost of ignoring this is stated, not implied")
+
+    def test_a_missing_seeder_is_a_prerequisite_failure(self):
+        """The verifier is part of the pipeline, not an optional extra."""
+        self.ready_to_launch()
+        self.seed_config()
+        os.unlink(os.path.join(self.tooling, "seed_options.py"))
+        status, _, err = self.run_launch(
+            "launch", STUB_WINDOW_IDS="",
+            PLAYTHROUGH_WINDOW_TIMEOUT="1")
+        self.assertEqual(status, EX_PREREQ)
+        self.assertIn("cannot be verified", err)
+        self.assertNotIn("CAPTURE LAUNCH", err)
 
     def test_no_handover_without_a_confirmed_stopped_instance(self):
         # A scripted game is correctly judged not to be the game, so
@@ -2050,7 +2377,7 @@ class TestALiveInstance(LaunchFixture):
 
     def test_a_capture_launch_confirms_the_pid_from_the_window(self):
         self.ready_live()
-        self.write(os.path.join(self.config, "options.json"), "[]\n")
+        self.seed_config()
         status, out, err = self.run_launch(
             "launch", STUB_WINDOW_IDS="4194305")
         self.assertEqual(status, EX_OK, msg=err)
@@ -2065,7 +2392,7 @@ class TestALiveInstance(LaunchFixture):
 
     def test_the_capture_launch_verifies_the_capture_surface(self):
         self.ready_live()
-        self.write(os.path.join(self.config, "options.json"), "[]\n")
+        self.seed_config()
         status, out, err = self.run_launch(
             "launch", STUB_WINDOW_IDS="4194305")
         self.assertEqual(status, EX_OK)
@@ -2076,7 +2403,7 @@ class TestALiveInstance(LaunchFixture):
 
     def test_an_unseeded_window_fails_the_capture_launch(self):
         self.ready_live()
-        self.write(os.path.join(self.config, "options.json"), "[]\n")
+        self.seed_config()
         status, out, err = self.run_launch(
             "launch", STUB_WINDOW_IDS="4194305",
             STUB_WINDOW_WIDTH="640", STUB_WINDOW_HEIGHT="384")
@@ -2088,7 +2415,7 @@ class TestALiveInstance(LaunchFixture):
 
     def test_an_engine_that_dies_after_its_window_is_caught(self):
         self.ready_live()
-        self.write(os.path.join(self.config, "options.json"), "[]\n")
+        self.seed_config()
         # Alive long enough to be confirmed, gone before the settle
         # elapses -- which is the shape of a data-load abort.
         status, out, err = self.run_launch(
@@ -2121,7 +2448,7 @@ class TestALiveInstance(LaunchFixture):
         # search from the third makes the window vanish at exactly the
         # liveness re-check.
         self.ready_live()
-        self.write(os.path.join(self.config, "options.json"), "[]\n")
+        self.seed_config()
         status, _, err = self.run_launch(
             "launch", STUB_WINDOW_IDS="4194305",
             STUB_SEARCH_EMPTY_FROM="3")
@@ -2143,7 +2470,7 @@ class TestALiveInstance(LaunchFixture):
         # window -- and the recovery for a vanished window is to STOP
         # the process, so a healthy engine was killed by a diagnostic.
         self.ready_live()
-        self.write(os.path.join(self.config, "options.json"), "[]\n")
+        self.seed_config()
         status, out, err = self.run_launch(
             "launch", STUB_WINDOW_IDS="4194305",
             STUB_WINDOW_PID_FAIL_NTH=READ_GAME_PID_CALL)
@@ -2157,7 +2484,7 @@ class TestALiveInstance(LaunchFixture):
 
     def test_a_second_launch_reuses_the_first_instance(self):
         self.ready_live()
-        self.write(os.path.join(self.config, "options.json"), "[]\n")
+        self.seed_config()
         first = self.run_launch("launch", STUB_WINDOW_IDS="4194305")
         self.assertEqual(first[0], EX_OK, msg=first[2])
         pid = self.live_pid(timeout=1.0)
@@ -2187,7 +2514,7 @@ class TestALiveInstance(LaunchFixture):
         timeout would still be the bug.
         """
         self.ready_live()
-        self.write(os.path.join(self.config, "options.json"), "[]\n")
+        self.seed_config()
         first = self.run_launch("launch", STUB_WINDOW_IDS="4194305")
         self.assertEqual(first[0], EX_OK, msg=first[2])
         lock = os.path.join(self.scratch, "lock", "session.lock")
@@ -2207,9 +2534,29 @@ class TestALiveInstance(LaunchFixture):
                  "on a lock the first launch's engine was still "
                  "holding" % elapsed))
 
+    def test_a_reused_instance_is_refused_under_a_trust_bypass(self):
+        """Accepting an instance is starting one, for this purpose.
+
+        The reuse branch is the one path where no launch happens in this
+        run, so nothing else would ever check the environment the
+        instance is about to be captured in.
+        """
+        self.ready_live()
+        self.seed_config()
+        first = self.run_launch("launch", STUB_WINDOW_IDS="4194305")
+        self.assertEqual(first[0], EX_OK, msg=first[2])
+        status, _, err = self.run_launch(
+            "launch", STUB_WINDOW_IDS="4194305",
+            PLAYTHROUGH_ALLOW_UNAUTHENTICATED_X="1")
+        self.assertEqual(status, EX_USAGE)
+        self.assertIn("trust state", err)
+        self.assertNotIn(
+            "reusing it rather than starting a second", err,
+            msg="the instance is not adopted before it is refused")
+
     def test_a_reused_instance_is_held_to_the_same_standard(self):
         self.ready_live()
-        self.write(os.path.join(self.config, "options.json"), "[]\n")
+        self.seed_config()
         self.run_launch("launch", STUB_WINDOW_IDS="4194305")
         status, _, err = self.run_launch(
             "launch", STUB_WINDOW_IDS="4194305",
@@ -2223,7 +2570,7 @@ class TestALiveInstance(LaunchFixture):
 
     def test_status_sees_a_running_instance(self):
         self.ready_live()
-        self.write(os.path.join(self.config, "options.json"), "[]\n")
+        self.seed_config()
         self.run_launch("launch", STUB_WINDOW_IDS="4194305")
         pid = self.live_pid(timeout=1.0)
         status, out, err = self.run_launch("status",
@@ -2235,7 +2582,7 @@ class TestALiveInstance(LaunchFixture):
 
     def test_stop_confirms_the_death_it_reports(self):
         self.ready_live()
-        self.write(os.path.join(self.config, "options.json"), "[]\n")
+        self.seed_config()
         self.run_launch("launch", STUB_WINDOW_IDS="4194305")
         pid = self.live_pid(timeout=1.0)
         self.assertTrue(os.path.exists("/proc/%d" % pid))
@@ -2251,7 +2598,7 @@ class TestALiveInstance(LaunchFixture):
 
     def test_stop_says_plainly_that_it_does_not_save(self):
         self.ready_live()
-        self.write(os.path.join(self.config, "options.json"), "[]\n")
+        self.seed_config()
         self.run_launch("launch", STUB_WINDOW_IDS="4194305")
         status, _, err = self.run_launch(
             "stop", STUB_WINDOW_IDS="4194305",
@@ -2264,7 +2611,7 @@ class TestALiveInstance(LaunchFixture):
 
     def test_the_pid_file_records_the_confirmed_pid(self):
         self.ready_live()
-        self.write(os.path.join(self.config, "options.json"), "[]\n")
+        self.seed_config()
         pidfile = os.path.join(self.scratch, "game.pid")
         self.run_launch("launch", STUB_WINDOW_IDS="4194305")
         with open(pidfile, encoding="utf-8") as handle:
@@ -2289,7 +2636,7 @@ class TestALiveInstance(LaunchFixture):
 
     def test_a_window_owned_by_a_stranger_is_not_usable(self):
         self.ready_live()
-        self.write(os.path.join(self.config, "options.json"), "[]\n")
+        self.seed_config()
         status, out, err = self.run_launch(
             "launch", STUB_WINDOW_IDS="4194305",
             STUB_WINDOW_PID=str(os.getpid()),
@@ -2307,7 +2654,7 @@ class TestALiveInstance(LaunchFixture):
 
     def test_a_window_with_no_pid_at_all_is_not_usable(self):
         self.ready_live()
-        self.write(os.path.join(self.config, "options.json"), "[]\n")
+        self.seed_config()
         status, _, err = self.run_launch(
             "launch", STUB_WINDOW_IDS="4194305",
             STUB_WINDOW_PID_FAIL="1",
@@ -2354,7 +2701,7 @@ class TestALiveInstance(LaunchFixture):
         # differs.  A pipeline that adopted it would drive, and later
         # signal, another checkout's session.
         self.ready_live()
-        self.write(os.path.join(self.config, "options.json"), "[]\n")
+        self.seed_config()
         elsewhere = os.path.join(self.root, "other-checkout",
                                  "cataclysm-tiles")
         os.makedirs(os.path.dirname(elsewhere))
@@ -2381,7 +2728,7 @@ class TestALiveInstance(LaunchFixture):
         # and this pipeline would then drive a session writing to a
         # different save.
         self.ready_live()
-        self.write(os.path.join(self.config, "options.json"), "[]\n")
+        self.seed_config()
         stranger = self.spawn_impostor(self.game,
                                        "./playthrough/userdir2/")
         self.await_exec(stranger.pid)
@@ -2402,7 +2749,7 @@ class TestALiveInstance(LaunchFixture):
         # pipeline exists to refuse: a full-length film of a screen
         # nothing was happening on.
         self.ready_live()
-        self.write(os.path.join(self.config, "options.json"), "[]\n")
+        self.seed_config()
         stranger = self.spawn_impostor(self.game,
                                        "./playthrough/userdir/",
                                        display=":98")
@@ -2416,7 +2763,7 @@ class TestALiveInstance(LaunchFixture):
 
     def test_two_instances_of_this_checkout_are_refused(self):
         self.ready_live()
-        self.write(os.path.join(self.config, "options.json"), "[]\n")
+        self.seed_config()
         first = self.run_launch("launch", STUB_WINDOW_IDS="4194305")
         self.assertEqual(first[0], EX_OK, msg=first[2])
         one = self.live_pid(timeout=1.0)
@@ -2445,7 +2792,7 @@ class TestALiveInstance(LaunchFixture):
 
     def test_the_userdir_argument_is_the_repository_relative_one(self):
         self.ready_live()
-        self.write(os.path.join(self.config, "options.json"), "[]\n")
+        self.seed_config()
         self.run_launch("launch", STUB_WINDOW_IDS="4194305")
         pid = self.live_pid(timeout=1.0)
         with open("/proc/%d/cmdline" % pid, "rb") as handle:
@@ -2460,7 +2807,7 @@ class TestALiveInstance(LaunchFixture):
 
     def test_the_game_runs_from_the_repository_root(self):
         self.ready_live()
-        self.write(os.path.join(self.config, "options.json"), "[]\n")
+        self.seed_config()
         self.run_launch("launch", STUB_WINDOW_IDS="4194305")
         pid = self.live_pid(timeout=1.0)
         self.assertEqual(
@@ -2477,7 +2824,7 @@ class TestALiveInstance(LaunchFixture):
         # rather than swallow it, so an engine that dies mid-session
         # ends the guard with a diagnosis instead of a silence.
         self.ready_live()
-        self.write(os.path.join(self.config, "options.json"), "[]\n")
+        self.seed_config()
         started = time.time()
         status, out, err = self.run_launch(
             "guard", STUB_WINDOW_IDS="4194305",
@@ -2503,7 +2850,7 @@ class TestALiveInstance(LaunchFixture):
         # from a vanished window -- which is how a healthy engine gets
         # diagnosed as dead and signalled.
         self.ready_live()
-        self.write(os.path.join(self.config, "options.json"), "[]\n")
+        self.seed_config()
         status, out, err = self.run_launch(
             "launch", STUB_WINDOW_IDS="4194305",
             STUB_SETSID_FORKS="1",
@@ -2568,7 +2915,7 @@ class TestALiveInstance(LaunchFixture):
 
     def test_the_userdir_tree_is_created_before_the_launch(self):
         self.ready_live()
-        self.write(os.path.join(self.config, "options.json"), "[]\n")
+        self.seed_config()
         self.run_launch("launch", STUB_WINDOW_IDS="4194305")
         for relative in ("playthrough/frames", "playthrough/build",
                          "playthrough/build/transitions",

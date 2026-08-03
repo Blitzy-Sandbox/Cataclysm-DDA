@@ -139,6 +139,10 @@ HELPERS = (
     "playthrough_mkdirs",
     "playthrough_python",
     "playthrough_env_summary",
+    "playthrough_trust_reason",
+    "playthrough_trust_refresh",
+    "playthrough_trust_explain",
+    "playthrough_assert_trusted",
 )
 
 
@@ -871,6 +875,60 @@ class TestSourcingIsInert(EnvFixture):
         self.assertIn("SDL_VIDEODRIVER", text)
         self.assertIn("x11", text)
 
+    def test_the_whole_summary_is_one_printf_and_nothing_else(self):
+        """A broken continuation ran a LABEL as a command.
+
+        The summary is one `printf` over a long argument list, so a
+        missing trailing backslash does not fail loudly: it ends the
+        argument list early -- silently truncating every key after that
+        point -- and then executes the next line, whose first word is a
+        variable NAME, as a command.  That is the defect this asserts is
+        gone, from both sides: nothing is reported as a command, and the
+        keys that used to be lost are present.
+        """
+        result = subprocess.run(
+            ["/usr/bin/env", "-i", "PATH=" + BASE_PATH,
+             "/bin/bash", "--noprofile", "--norc", ENV_SH],
+            cwd=REPO_ROOT, capture_output=True, timeout=120)
+        self.assertEqual(result.returncode, 0)
+        stderr = result.stderr.decode("utf-8", "replace")
+        self.assertNotIn("command not found", stderr)
+        text = result.stdout.decode("utf-8", "replace")
+        for key in ("PLAYTHROUGH_PYTHON", "PLAYTHROUGH_PYTHON_VERSION",
+                    "XAUTHORITY", "PLAYTHROUGH_XAUTHORITY_ORIGIN",
+                    "IMAGEIO_FFMPEG_EXE", "PLAYTHROUGH_PLATFORM"):
+            with self.subTest(key=key):
+                self.assertIn(key, text)
+        labels = [line.split()[0] for line in text.splitlines()
+                  if line.startswith("  ")]
+        self.assertEqual(
+            sorted(set(labels)), sorted(labels),
+            msg=("every key is reported once; a repeated label is the "
+                 "signature of a copied continuation line"))
+
+    @unittest.skipUnless(os.path.exists("/dev/full"),
+                         "needs /dev/full to fail a write")
+    def test_a_summary_that_cannot_be_written_exits_non_zero(self):
+        """The direct run exists to print, so a failed print fails.
+
+        stdout is a sink that refuses every write, so the summary's
+        printf cannot land.  The status used to be whatever the trailing
+        `unset` returned -- always 0 -- which reported success for a run
+        whose record was truncated or absent.
+        """
+        result = subprocess.run(
+            ["/usr/bin/env", "-i", "PATH=" + BASE_PATH,
+             "/bin/bash", "--noprofile", "--norc", "-c",
+             '"$1" >/dev/full', "bash", ENV_SH],
+            cwd=REPO_ROOT, capture_output=True, timeout=120)
+        self.assertNotEqual(
+            result.returncode, 0,
+            msg="a run whose record did not land must not report "
+                "success")
+        self.assertIn(
+            "summary could not be written",
+            result.stderr.decode("utf-8", "replace"))
+
 
 class TestSourcingTwiceIsSafe(EnvFixture):
     """Every assignment is absolute and recomputed from scratch."""
@@ -975,6 +1033,172 @@ class TestThePythonInterpreter(EnvFixture):
         self.assertEqual(
             result.get("RAN"), "yes",
             msg="so no sibling has to rediscover the interpreter")
+
+    def versioned_python(self, version, name="versioned"):
+        """An interpreter stand-in that reports ``version``."""
+        holder = os.path.join(self.root, name + "-home", "bin")
+        os.makedirs(holder, exist_ok=True)
+        path = os.path.join(holder, "python")
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("#!/bin/sh\nprintf '%s\\n' " + version + "\n")
+        os.chmod(path, 0o755)
+        return path
+
+    def test_the_interpreter_version_is_observed_and_reported(self):
+        """Which Python ran is part of the record, not an assumption."""
+        path = self.versioned_python("3.12.13", "matching")
+        result = self.sourced(preset={
+            "PLAYTHROUGH_PYTHON": path,
+            "PLAYTHROUGH_ALLOW_UNVERIFIED_EXECUTABLES": "1"})
+        self.assertEqual(result["PLAYTHROUGH_PYTHON_VERSION"], "3.12.13")
+        self.assertEqual(result["PLAYTHROUGH_PYTHON_ABI"], "3.12")
+        self.assertNotIn("pins CPython", result.stderr,
+                         msg="the contracted interpreter is silent")
+
+    def test_an_interpreter_of_the_wrong_series_is_named(self):
+        """The provisioning mistake this catches is a quiet one.
+
+        `python3 -m venv .venv` on a host whose python3 is 3.13 installs
+        into one interpreter while the pipeline runs another, and
+        requirements.lock's cp312 wheels cannot go into it at all.  The
+        version is therefore checked as well as the trust of the file.
+        """
+        path = self.versioned_python("3.13.7", "mismatched")
+        result = self.sourced(preset={
+            "PLAYTHROUGH_PYTHON": path,
+            "PLAYTHROUGH_ALLOW_UNVERIFIED_EXECUTABLES": "1"})
+        self.assertEqual(result["PLAYTHROUGH_PYTHON_VERSION"], "3.13.7")
+        self.assertIn("pins CPython", result.stderr)
+        self.assertIn("3.12", result.stderr)
+        self.assertIn("PLAYTHROUGH_VENV", result.stderr)
+
+    def test_an_interpreter_that_answers_nothing_is_reported_unknown(self):
+        path = self.fake_python("silent")
+        result = self.sourced(preset={
+            "PLAYTHROUGH_PYTHON": path,
+            "PLAYTHROUGH_ALLOW_UNVERIFIED_EXECUTABLES": "1"})
+        self.assertEqual(
+            result["PLAYTHROUGH_PYTHON_VERSION"], "",
+            msg="an unanswered probe is empty, never a guessed version")
+        self.assertIn("could not ask", result.stderr)
+
+    def test_the_declared_abi_matches_the_lock_file(self):
+        """One interpreter series, named in both places."""
+        abi = self.sourced()["PLAYTHROUGH_PYTHON_ABI"]
+        path = os.path.join(TOOLING, "requirements.lock")
+        with open(path, encoding="utf-8") as handle:
+            text = handle.read()
+        self.assertIn(
+            "CPython %s" % abi, text,
+            msg=("env.sh checks the interpreter against the series "
+                 "requirements.lock builds its wheels for"))
+
+
+class TestTheTrustState(EnvFixture):
+    """One computed answer about the environment, not six warnings."""
+
+    BYPASSES = (
+        "PLAYTHROUGH_ALLOW_UNVERIFIED_EXECUTABLES",
+        "PLAYTHROUGH_ALLOW_UNAUTHENTICATED_X",
+        "PLAYTHROUGH_ALLOW_UNVERIFIED_TILESET_PACK",
+        "PLAYTHROUGH_ALLOW_TILESET_FALLBACK",
+        "PLAYTHROUGH_ALLOW_VULNERABLE_PILLOW",
+        "PLAYTHROUGH_ALLOW_ANY_COMPILER",
+    )
+
+    def test_the_registry_lists_every_bypass_this_pipeline_has(self):
+        """The list is the contract; a missing name is a hole in it.
+
+        Every variable that relaxes a check anywhere in the pipeline has
+        to appear here, because this list is the only thing the launch
+        and the capture consult before producing evidence.
+        """
+        published = self.sourced()["PLAYTHROUGH_TRUST_BYPASS_VARS"]
+        self.assertEqual(sorted(published.split()),
+                         sorted(self.BYPASSES))
+
+    def test_a_clean_environment_is_trusted(self):
+        result = self.sourced()
+        self.assertEqual(result["PLAYTHROUGH_TRUST_STATE"], "trusted")
+        self.assertEqual(result["PLAYTHROUGH_TRUST_BYPASSES"], "")
+
+    def test_each_bypass_moves_the_state_to_diagnostic(self):
+        for name in self.BYPASSES:
+            with self.subTest(bypass=name):
+                result = self.sourced(preset={name: "1"})
+                self.assertEqual(
+                    result["PLAYTHROUGH_TRUST_STATE"], "diagnostic")
+                self.assertEqual(
+                    result["PLAYTHROUGH_TRUST_BYPASSES"], name)
+
+    def test_a_value_of_zero_is_not_a_bypass(self):
+        result = self.sourced(preset={
+            "PLAYTHROUGH_ALLOW_TILESET_FALLBACK": "0",
+            "PLAYTHROUGH_ALLOW_ANY_COMPILER": ""})
+        self.assertEqual(result["PLAYTHROUGH_TRUST_STATE"], "trusted")
+
+    def test_any_other_value_is_treated_as_set(self):
+        """Fail closed: a misspelt override is still an intention."""
+        result = self.sourced(preset={
+            "PLAYTHROUGH_ALLOW_ANY_COMPILER": "true"})
+        self.assertEqual(result["PLAYTHROUGH_TRUST_STATE"], "diagnostic")
+
+    def test_the_state_is_recomputed_at_every_call(self):
+        """A bypass exported AFTER sourcing still counts.
+
+        A state memoised at source time would be a statement about the
+        past, and a caller can export one of these variables at any
+        point -- so the answer is recomputed, and the assertion below is
+        what proves it rather than the comment.
+        """
+        result = self.sourced(
+            after='export PLAYTHROUGH_ALLOW_TILESET_FALLBACK=1\n'
+                  'playthrough_trust_refresh || true\n'
+                  'export LATE="${PLAYTHROUGH_TRUST_STATE}"\n'
+                  'unset PLAYTHROUGH_ALLOW_TILESET_FALLBACK\n'
+                  'playthrough_trust_refresh || true\n'
+                  'export AGAIN="${PLAYTHROUGH_TRUST_STATE}"')
+        self.assertEqual(result.get("LATE"), "diagnostic")
+        self.assertEqual(result.get("AGAIN"), "trusted")
+
+    def test_the_assertion_refuses_and_explains(self):
+        result = self.sourced(
+            after='export PLAYTHROUGH_ALLOW_UNAUTHENTICATED_X=1\n'
+                  'if playthrough_assert_trusted "to capture"; then\n'
+                  '    export GATE=passed\nelse\n'
+                  '    export GATE=refused\nfi')
+        self.assertEqual(result.get("GATE"), "refused")
+        self.assertIn("inject keystrokes", result.stderr)
+        self.assertIn("PLAYTHROUGH_ALLOW_UNAUTHENTICATED_X", result.stderr)
+        self.assertIn("refusing to capture", result.stderr)
+
+    def test_the_assertion_passes_a_clean_environment_silently(self):
+        result = self.sourced(
+            after='if playthrough_assert_trusted "to capture"; then\n'
+                  '    export GATE=passed\nfi')
+        self.assertEqual(result.get("GATE"), "passed")
+        self.assertNotIn("refusing", result.stderr)
+
+    def test_every_bypass_says_what_it_endangers(self):
+        for name in self.BYPASSES:
+            with self.subTest(bypass=name):
+                result = self.sourced(
+                    after='playthrough_trust_reason "%s" >&2' % name)
+                self.assertGreater(
+                    len(result.stderr.strip()), 20,
+                    msg=("a refusal that names a variable and stops is "
+                         "a dead end for whoever hits it"))
+
+    def test_the_summary_records_the_state(self):
+        result = subprocess.run(
+            ["/usr/bin/env", "-i", "PATH=" + BASE_PATH,
+             "PLAYTHROUGH_ALLOW_ANY_COMPILER=1",
+             "/bin/bash", "--noprofile", "--norc", ENV_SH],
+            cwd=REPO_ROOT, capture_output=True, timeout=120)
+        text = result.stdout.decode("utf-8", "replace")
+        self.assertIn("PLAYTHROUGH_TRUST_STATE", text)
+        self.assertIn("diagnostic", text)
+        self.assertIn("PLAYTHROUGH_ALLOW_ANY_COMPILER", text)
 
 
 class TestTheToolPackageTable(EnvFixture):

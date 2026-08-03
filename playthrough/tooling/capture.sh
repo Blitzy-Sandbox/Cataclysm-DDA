@@ -101,20 +101,28 @@
 #                      cannot tell a crossing of midnight from a misread
 #                      going backwards, nor a 24-hour action from a
 #                      zero-second one.  Never derived from the clock
-#     DATE             the same line under the telemetry row's own name,
-#                      so the sidecar row and this payload cannot drift
+#     DATE             the same line under the telemetry row's own field
+#                      name, so a row built from this payload and this
+#                      payload itself cannot drift
 #     DATE_STATUS      read | unreadable | fault | unavailable | skipped
 #     DATE_AUDIT       yes | no | off -- whether this frame's date
 #                      evidence reached ocr_clock.py's audit.  "no" is
 #                      not a failure, but timeline.py must then treat
 #                      this frame's date as UNKNOWN, never as unchanged
-#     OBSERVATIONS     the telemetry sidecar this frame's row was
-#                      appended to, or empty when no row was appended
+#     OBSERVATIONS     the canonical telemetry sidecar this frame's row
+#                      BELONGS IN -- env.sh's PLAYTHROUGH_OBSERVATIONS.
+#                      This file does not append it: it reports the
+#                      destination and the row's fields, and session.py
+#                      persists them alongside the manifest row.  Empty
+#                      when no row is owed, which is any capture no
+#                      manifest will mention
 #
 # EXIT CODES
 #     0  one frame captured and this invocation's output is complete
 #     1  usage error -- a missing, malformed or out-of-range index, or a
-#        production run that tried to relax one of the four safeguards
+#        production run that tried to relax one of the six safeguards
+#        (the fifth being the date-audit destination and the sixth a
+#        trusted environment: see THE MODE)
 #     2  layout error -- not inside a checkout, or env.sh is missing
 #     3  the capture failed, or produced something that is not a frame
 #     4  the frame is blank -- the black-movie guard fired
@@ -148,11 +156,11 @@
 # was found: a frame this invocation wrote is withdrawn to a diagnostic
 # directory outside the working tree, and a pre-existing frame moved
 # aside is put back.  The frame is committed -- KEPT=1 -- as the LAST
-# statement before exit 0, after the payload has been written and the
-# telemetry row appended, so a failure to deliver the contract withdraws
-# the frame instead of leaving one nobody was told about; and because a
-# shell killed by a signal never reaches its EXIT trap, PIPE, INT, TERM
-# and HUP are trapped as well.  session.py therefore cannot append a
+# statement before exit 0, after the whole payload has been written and
+# every fallible step is behind it, so a failure to deliver the contract
+# withdraws the frame instead of leaving one nobody was told about; and
+# because a shell killed by a signal never reaches its EXIT trap, PIPE,
+# INT, TERM and HUP are trapped as well.  session.py cannot append a
 # manifest row for a frame that does not exist, nor miss one that does,
 # and the frames-count == manifest-line-count identity that
 # verify_artifacts.sh asserts cannot be broken by a failed capture.
@@ -181,25 +189,25 @@
 #
 # WHAT THIS FILE WRITES, EXHAUSTIVELY
 #   1. exactly one PNG in playthrough/frames/;
-#   2. exactly one JSON row appended to the telemetry sidecar
-#      playthrough/build/observations.jsonl -- the frame's clock AND
-#      the sidebar DATE line, which timeline.py cross-checks its
-#      midnight-rollover and day-count decisions against.  The manifest
-#      schema is exactly six fields and is NOT changed to carry the
-#      date; see THE TELEMETRY SIDECAR below for why the evidence has
-#      to be persisted somewhere and why that somewhere is here;
-#   3. a withdrawn frame into the reject directory, outside the tree,
+#   2. a withdrawn frame into the reject directory, outside the tree,
 #      when a capture fails;
-#   4. a private scratch file for the inline reader's stderr, inside the
+#   3. a private scratch file for the inline reader's stderr, inside the
 #      mode-0700 per-clone runtime directory env.sh creates, removed on
 #      exit.
-# The date audit is REQUESTED rather than written here: ocr_clock.py
-# owns that sidecar append (--audit) and this file only reports whether
-# the record was made.  Nothing else, anywhere.  It sends no keystroke,
-# writes no manifest row, touches no save data, starts no server, makes
-# no network call, and never runs a command through a shell string:
-# every external call is an argument list, there is no eval, and there
-# is no unquoted glob.
+# playthrough/frames/ is therefore the ONLY path inside the working tree
+# this file writes, which is exactly the surface its contract assigns
+# it.  The telemetry row is REPORTED, not written: every field of it
+# leaves on stdout and session.py -- which already owns the frame
+# counter and the manifest row -- persists it beside that row, so one
+# logical record is no longer appended by two processes.  See THE
+# TELEMETRY HANDOFF below.  The date audit is likewise REQUESTED rather
+# than written here: ocr_clock.py owns that append (--audit) under the
+# canonical destination and this file only reports whether the record
+# was made.  Nothing else, anywhere.  It sends no keystroke, writes no
+# manifest row, touches no save data, starts no server, makes no
+# network call, and never runs a command through a shell string: every
+# external call is an argument list, there is no eval, and there is no
+# unquoted glob.
 # ---------------------------------------------------------------------
 
 set -euo pipefail
@@ -355,23 +363,37 @@ readonly DEFAULT_LUMA_TIMEOUT=60
 readonly DEFAULT_GEOMETRY_TIMEOUT=60
 readonly DEFAULT_OCR_TIMEOUT=300
 
-# The crop the computation YIELDS for the contracted configuration,
-# recorded here as documentation and quoted in the diagnostics that
-# explain why it is not substituted.  IT IS NEVER USED AS A VALUE.
+# TWO WORKED EXAMPLES OF THE CROP, AND NEITHER IS A FALLBACK.
 #
-# It was previously a last-resort fallback, which was wrong: it is
-# correct for one configuration only -- the 240x67 grid with a 36-cell
-# right-hand sidebar -- and the moment it would be reached is precisely
-# the moment nothing has confirmed that this run is that configuration.
-# Twelve widgets across data/json/ui declare "style": "sidebar" at
-# eight distinct widths (nine of the twelve files sit at the top level),
-# so the wrong column is a real possibility, and cropping it
-# reads as an unreadable clock rather than as an error: every duration
-# falls to the 0.25 s floor while every count still tallies, and the
-# movie is plausible and meaningless.  A crop that cannot be computed is
+# Both are recorded here as documentation and quoted in the diagnostics
+# that explain why neither is substituted.  THEY ARE NEVER USED AS A
+# VALUE.  There are two because the rectangle depends on which sidebar
+# layout the engine is drawing, and a fresh userdir and a userdir that
+# has selected another preset do not agree:
+#
+#   * a FRESH userdir renders the engine's constructor default,
+#     legacy_labels_sidebar at 44 cells [src/panels.cpp:412-418;
+#     data/json/ui/sidebar-legacy-labels.json], giving
+#     352x1072+1568+4 -- that is the example describing a run against a
+#     userdir with no config/panel_options.json, which is this
+#     pipeline's own starting state;
+#   * a userdir whose panel options select custom_sidebar renders 36
+#     cells [data/json/ui/sidebar.json:7], giving 288x1072+1632+4.
+#
+# A single literal was previously carried here as a last-resort
+# fallback, which was wrong twice over: it is correct for ONE layout
+# only, and the moment it would be reached is precisely the moment
+# nothing has confirmed which layout this run is drawing.  Twelve
+# widgets across data/json/ui declare "style": "sidebar" at eight
+# distinct widths (nine of the twelve files sit at the top level), so
+# the wrong column is a real possibility, and cropping it reads as an
+# unreadable clock rather than as an error: every duration falls to the
+# 0.25 s floor while every count still tallies, and the movie is
+# plausible and meaningless.  A crop that cannot be computed is
 # therefore fatal (EX_GEOMETRY), and an operator who wants a fixed
 # rectangle asks for one by name with PLAYTHROUGH_CAPTURE_RECT.
-readonly FALLBACK_RECT='288x1072+1632+4'
+readonly EXAMPLE_RECT_DEFAULT='352x1072+1568+4'
+readonly EXAMPLE_RECT_CUSTOM='288x1072+1632+4'
 
 # An ImageMagick geometry, and a bare non-negative decimal number as
 # ImageMagick's fx: operators print one.  The numeric guard matters:
@@ -419,8 +441,11 @@ RECT_OVERRIDE="${PLAYTHROUGH_CAPTURE_RECT:-}"
 # a variable that is set but EMPTY is an operator mistake, and
 # defaulting it silently would hide the mistake behind a working run.
 #
-# on | off -- append this frame's date evidence to the sidecar
-# timeline.py reads, and where that sidecar lives.
+# on | off -- ask ocr_clock.py to append this frame's date evidence to
+# the sidecar timeline.py reads, and where that sidecar lives.  The
+# path is nominated here but written by the delegate, and a production
+# capture accepts ONLY the canonical destination: see THE DATE AUDIT
+# GOES WHERE timeline.py LOOKS.
 AUDIT_MODE="${PLAYTHROUGH_CAPTURE_AUDIT:-on}"
 AUDIT_PATH="${PLAYTHROUGH_CAPTURE_AUDIT_PATH:-${PLAYTHROUGH_DATE_AUDIT}}"
 GRAB_TIMEOUT="${PLAYTHROUGH_CAPTURE_GRAB_TIMEOUT-${DEFAULT_GRAB_TIMEOUT}}"
@@ -436,32 +461,42 @@ OCR_TIMEOUT="${PLAYTHROUGH_CAPTURE_OCR_TIMEOUT-${DEFAULT_OCR_TIMEOUT}}"
 # reader, rather than being called once per field to fail twice.
 OCR_PREFLIGHT_FAILED=0
 
-# The telemetry sidecar this file appends one row to, and the only
-# thing it writes outside playthrough/frames/.  env.sh owns the path.
-OBSERVATIONS="${PLAYTHROUGH_CAPTURE_OBSERVATIONS:-\
-${PLAYTHROUGH_OBSERVATIONS}}"
+# The telemetry sidecar this frame's row BELONGS IN, reported to the
+# caller that appends it.  This file does not write it -- see THE
+# TELEMETRY HANDOFF below -- and there is deliberately NO override: the
+# destination is env.sh's canonical path, which is where timeline.py
+# looks, and a redirectable evidence path is a way to write a row
+# nothing downstream will ever read (or to grow some other file).
+OBSERVATIONS="${PLAYTHROUGH_OBSERVATIONS}"
 
 # THE MODE, and why one exists at all.
 #
-# Four properties of this script are what make its output evidence
+# Six properties of this script are what make its output evidence
 # rather than merely a picture: the full settle, an attempted clock
-# read, a fault treated as fatal, and an index that is never reused.
-# All four had correct defaults and all four were reachable through the
-# environment, which means a production run could be made to produce an
-# apparently successful, non-compliant frame -- a stale screenshot with
-# no reading, or a replacement for a frame already counted -- with every
-# downstream count still tallying.  Correct-by-default is not the same
-# as enforced, and a guard that can be switched off is not a guard.
+# read, a fault treated as fatal, an index that is never reused, a date
+# audit that lands where timeline.py reads it, and a TRUSTED
+# environment -- env.sh's PLAYTHROUGH_TRUST_STATE, which says whether
+# any check that stands behind the frame has been relaxed.  All six had
+# correct defaults and all six were reachable through the environment,
+# which means a production run could be made to produce an apparently
+# successful, non-compliant frame -- a stale screenshot with no
+# reading, a replacement for a frame already counted, real date
+# evidence filed where nothing reads it, or a photograph taken through
+# a tool another account can rewrite -- with every downstream count
+# still tallying.  Correct-by-default is not the same as enforced, and
+# a guard that can be switched off is not a guard.
 #
-# So the four are now HARD-ENFORCED whenever this script is producing a
+# So the six are now HARD-ENFORCED whenever this script is producing a
 # frame for the record, and relaxing any of them requires
 # PLAYTHROUGH_CAPTURE_MODE=diagnostic, which cannot produce one:
 #
-#   production  (default)  the four safeguards are unconditional; any
+#   production  (default)  the six safeguards are unconditional; any
 #                          attempt to relax one is a usage error naming
 #                          this variable.  exit 0 means exactly one new
 #                          frame is in playthrough/frames/.
-#   diagnostic             the four are tunable, and in exchange the
+#   diagnostic             the first four are tunable, the audit may be
+#                          nominated elsewhere and a trust bypass is
+#                          tolerated, and in exchange the
 #                          captured PNG is WITHDRAWN out of the working
 #                          tree before this script returns, FRAME_FILE
 #                          and FRAME_PATH are emitted EMPTY, and the
@@ -514,7 +549,7 @@ die() {
 
 # The machine-readable channel is assembled by `line KEY VALUE` and
 # written in ONE printf at the very end of this file -- see OUTPUT,
-# THEN TELEMETRY, THEN THE COMMIT POINT.  There is deliberately no
+# THEN THE LOG, THEN THE COMMIT POINT.  There is deliberately no
 # per-key writer: writing keys as they were computed is what allowed a
 # half-delivered contract to sit beside a frame this script had already
 # decided to keep.
@@ -534,12 +569,14 @@ FRAME_INDEX is required and must be a plain decimal integer from 1 to
 supplied by session.py, which owns the frame counter; this script never
 derives one.
 
-Writes exactly one playthrough/frames/frame_%05d.png and appends one
-telemetry row -- the clock and the sidebar date line -- to
-playthrough/build/observations.jsonl, which timeline.py cross-checks
-its rollover decisions against.  Prints KEY=value lines on stdout and
-everything else on stderr.  See the header of this file for the full
-output contract, the exit codes and the tunables.
+Writes exactly one playthrough/frames/frame_%05d.png -- the only path
+inside the working tree it writes at all -- and REPORTS this frame's
+telemetry row, the clock and the sidebar date line that timeline.py
+cross-checks its rollover decisions against, for session.py to persist
+to playthrough/build/observations.jsonl beside the manifest row it
+already owns.  Prints KEY=value lines on stdout and everything else on
+stderr.  See the header of this file for the full output contract, the
+exit codes and the tunables.
 
 The default mode is production, in which the 0.3s settle, the clock
 read, fatal fault handling and the refusal to reuse an index are all
@@ -909,7 +946,7 @@ if [ "${AUDIT_MODE}" = "on" ]; then
 fi
 
 # ---------------------------------------------------------------------
-# HARD-ENFORCE THE FOUR SAFEGUARDS ON THE PRODUCTION PATH.
+# HARD-ENFORCE THE SIX SAFEGUARDS ON THE PRODUCTION PATH.
 #
 # Each refusal names the property, the consequence of relaxing it, and
 # the one mode in which it is legal.  Refusing here -- before the
@@ -962,6 +999,45 @@ working tree -- so a keystroke that was photographed and committed \
 would silently lose its frame while the counts still matched.  Take \
 the next index, or investigate with \
 PLAYTHROUGH_CAPTURE_MODE=diagnostic."
+    fi
+    # THE DATE AUDIT GOES WHERE timeline.py LOOKS, and nowhere else.
+    #
+    # This is the one destination a capture still nominates: ocr_clock.py
+    # appends the frame's date evidence to it through a hardened
+    # descriptor.  The PATH, though, was settable from the environment to
+    # any regular file under the tree, which is a way to write real
+    # evidence where nothing downstream reads it -- and every count would
+    # still tally, because the audit's absence is recorded as
+    # DATE_AUDIT=no rather than as an error.  A production capture
+    # therefore accepts only the canonical path; nominating another is a
+    # diagnostic action, like every other relaxation here.
+    if [ "${AUDIT_PATH}" != "${PLAYTHROUGH_DATE_AUDIT}" ]; then
+        die "${EX_USAGE}" "PLAYTHROUGH_CAPTURE_AUDIT_PATH=\
+'${AUDIT_PATH}' is not the sidecar timeline.py reads \
+(${PLAYTHROUGH_DATE_AUDIT}).  A frame's date evidence recorded \
+elsewhere is evidence nothing consults: the rollover guard then treats \
+this frame's date as UNKNOWN while every count still tallies.  Use \
+PLAYTHROUGH_CAPTURE_MODE=diagnostic to write an audit somewhere else."
+    fi
+    # AND THE TRUST STATE, which is the fifth thing that decides whether
+    # this frame is evidence.  env.sh's diagnostic escape hatches -- an
+    # unverifiable tool, an unauthenticated display, a pack from an
+    # untrustworthy path, artwork other than the required MSXotto+, an
+    # older Pillow, an unsanctioned compiler -- were each enforced by a
+    # warning saying not to record a session, which left the decision to
+    # whoever read stderr.  A frame captured through a tool another
+    # account can replace, off a display any account can inject
+    # keystrokes into, is not evidence of anything, however sound every
+    # other check was.  So the state refuses here, before the display is
+    # touched and before any file exists, and diagnosis moves to the
+    # mode whose frame is withdrawn out of the working tree.
+    if ! playthrough_assert_trusted \
+            "to capture a frame for the record"; then
+        die "${EX_USAGE}" "the trust state is \
+'${PLAYTHROUGH_TRUST_STATE}' (${PLAYTHROUGH_TRUST_BYPASSES}), so this \
+capture would not be evidence.  Unset the override(s) listed above, or \
+look at the frame with PLAYTHROUGH_CAPTURE_MODE=diagnostic, which \
+withdraws it out of the working tree and exits ${EX_DIAGNOSTIC}."
     fi
 fi
 
@@ -1420,9 +1496,17 @@ fi
 #     width  = sidebar_width_cells * FONT_WIDTH  * SCALING_FACTOR
 #     height = TERMINAL_Y          * FONT_HEIGHT * SCALING_FACTOR
 #     x      = window.x + window.width - width   (SIDEBAR_POSITION right)
-# from data/json/ui/sidebar.json and the game-written options.json, and
-# prints nothing but the geometry on stdout.  It evaluates to
-# 288x1072+1632+4 for the configuration this pipeline runs under.
+# from the game's own widget JSON and the game-written options.json,
+# and prints nothing but the geometry on stdout.  Which widget it reads
+# is decided by the ACTIVE layout, taken from the game-written
+# <userdir>/config/panel_options.json and falling back to the engine's
+# own constructor default [src/panels.cpp:412-418, :492-503], so the
+# rectangle differs between userdirs: it evaluates to 352x1072+1568+4
+# on a fresh userdir, whose default layout is legacy_labels_sidebar at
+# 44 cells, and to 288x1072+1632+4 on a userdir whose panel options
+# select the 36-cell custom_sidebar.  The first is the one this
+# pipeline starts from; NEITHER is assumed, and both appear here as
+# expected results and on no code path.
 #
 # Computing it matters because the sidebar is one of many presets.
 # Counted in this checkout: nine files match data/json/ui/sidebar*.json
@@ -1439,17 +1523,17 @@ fi
 #
 # It also returns the WHOLE sidebar column, never a fixed band: the
 # clock is drawn by the time_desc_label widget bound to time_text
-# [data/json/ui/time.json:2-8] at whatever row the enclosing
-# custom_sidebar widgets array puts it, so its y cannot be known from
-# configuration.  The clock is located BY PATTERN inside the OCR text.
+# [data/json/ui/time.json:2-8] at whatever row the ACTIVE layout's
+# widgets array puts it, so its y cannot be known from configuration.
+# The clock is located BY PATTERN inside the OCR text.
 # ---------------------------------------------------------------------
 #
 # AND A COMPUTATION THAT FAILS IS FATAL -- IT DOES NOT FALL BACK.
 #
-# Substituting the documented literal when the computation cannot be run
-# is the one response that cannot be right here, because the literal is
-# only correct for one configuration and nothing has checked that this
-# run is that configuration -- the check is precisely what just failed.
+# Substituting either documented example when the computation cannot be
+# run is the one response that cannot be right here, because each is
+# correct for ONE layout only and nothing has checked which layout this
+# run is drawing -- the check is precisely what just failed.
 # The wrong column then reads as an unreadable clock rather than as an
 # error, so every duration collapses to the 0.25 s floor and the
 # finished movie is plausible and meaningless: the exact silent
@@ -1483,13 +1567,15 @@ elif [ -n "${RECT_OVERRIDE}" ]; then
 else
     if [ ! -f "${GEOMETRY_SCRIPT}" ]; then
         die "${EX_GEOMETRY}" "missing ${GEOMETRY_SCRIPT}, which is \
-where the sidebar crop is computed.  It is not substituted with the \
-documented ${FALLBACK_RECT}: that literal is correct for one \
-configuration only, and nothing has confirmed this run is it.  Cropping \
-the wrong column reads as an unreadable clock rather than as an error, \
-so every duration would fall to the floor while every count still \
-tallied.  Restore the script, or set PLAYTHROUGH_CAPTURE_RECT \
-explicitly to accept a fixed rectangle."
+where the sidebar crop is computed.  It is not substituted with either \
+documented example (${EXAMPLE_RECT_DEFAULT} for the engine's default \
+44-cell legacy_labels_sidebar, ${EXAMPLE_RECT_CUSTOM} for a 36-cell \
+custom_sidebar): each literal is correct for one layout only, and \
+nothing has confirmed which one this run draws.  Cropping the wrong \
+column reads as an unreadable clock rather than as an error, so every \
+duration would fall to the floor while every count still tallied.  \
+Restore the script, or set PLAYTHROUGH_CAPTURE_RECT explicitly to \
+accept a fixed rectangle."
     fi
     _cap_rc=0
     # stdout carries the geometry and NOTHING else, which is why stderr
@@ -1509,8 +1595,10 @@ ${FRAME_FILE} is unknown.  stderr: ${_cap_detail:-<none>}"
     elif [ "${_cap_rc}" -ne 0 ]; then
         die "${EX_GEOMETRY}" "sidebar_geometry.py could not compute \
 the sidebar crop for ${FRAME_FILE} (exit ${_cap_rc}): \
-${_cap_detail:-<no diagnostic>}.  The documented ${FALLBACK_RECT} is \
-NOT substituted -- it is right for one configuration only and this \
+${_cap_detail:-<no diagnostic>}.  The crop is NOT substituted from \
+either documented example (${EXAMPLE_RECT_DEFAULT} for the engine's \
+default 44-cell legacy_labels_sidebar, ${EXAMPLE_RECT_CUSTOM} for a \
+36-cell custom_sidebar) -- each is right for one layout only and this \
 run's configuration is exactly what could not be read.  Fix the \
 configuration, or set PLAYTHROUGH_CAPTURE_RECT explicitly to accept a \
 fixed rectangle."
@@ -1590,8 +1678,9 @@ fi
 # back the same.
 #
 # The manifest schema is exactly six fields and does not change, so the
-# date leaves this file on stdout and is persisted to the telemetry
-# sidecar and to ocr_clock.py's own date audit instead.  It is reported
+# date leaves this file on stdout -- for session.py to persist to the
+# telemetry sidecar -- and reaches ocr_clock.py's own date audit
+# through the delegate call below instead.  It is reported
 # VERBATIM or not at all -- never converted into a time, never inferred
 # from the clock.  DATE_TEXT and DATE_STATUS below are derived from the
 # single OCR pass ocr_readings performs; nothing re-reads the frame.
@@ -1801,7 +1890,7 @@ elif [ "${OCR_PREFLIGHT_FAILED}" -eq 0 ] && [ -f "${OCR_SCRIPT}" ] &&
     READER_RC="${OCR_RC}"
     # ocr_clock.py writes the audit record before it prints anything, so
     # a clean read (0) or an honest "nothing there" (1) both mean the
-    # record reached the sidecar; a fault means it did not.
+    # record reached the DATE AUDIT; a fault means it did not.
     if [ "${AUDIT_MODE}" = "on" ] && [ "${READER_RC}" -le 1 ]; then
         AUDIT_RECORDED="yes"
     fi
@@ -1911,185 +2000,57 @@ PLAYTHROUGH_CAPTURE_STRICT_CLOCK=0), and such a capture is withdrawn \
 rather than kept: a frame whose clock could not be read has no \
 duration to derive."
     fi
+    # STRICT_CLOCK=0 IS DIAGNOSTIC-ONLY, so this is not a frame being
+    # kept: the fault is RETAINED in the payload (CLOCK_STATUS=fault,
+    # no reading) for whoever is diagnosing it, and the PNG is withdrawn
+    # out of the working tree at the commit point below, which exits
+    # EX_DIAGNOSTIC.  Saying "kept" here would describe an outcome this
+    # mode cannot produce -- a frame with no readable clock has no
+    # duration to derive, so it can never join the record.
     playthrough_warn "the clock read faulted on ${FRAME_FILE} and" \
-        "PLAYTHROUGH_CAPTURE_STRICT_CLOCK=0, so the frame is kept with" \
-        "CLOCK_STATUS=fault and no reading"
+        "PLAYTHROUGH_CAPTURE_STRICT_CLOCK=0, so the fault is recorded" \
+        "as CLOCK_STATUS=fault with no reading and this DIAGNOSTIC" \
+        "capture continues; the frame itself is withdrawn to" \
+        "${REJECT_DIR} rather than added to" \
+        "${PLAYTHROUGH_FRAMES_DIR}"
 fi
 
 # ---------------------------------------------------------------------
-# THE TELEMETRY SIDECAR
+# THE TELEMETRY HANDOFF -- REPORTED HERE, PERSISTED BY THE ORCHESTRATOR
 #
-# One JSON object per captured frame, appended to
-# playthrough/build/observations.jsonl (env.sh's
-# PLAYTHROUGH_OBSERVATIONS).  Together with the date audit ocr_clock.py
-# appends as it reads, it is the only thing this invocation records
-# outside playthrough/frames/, and the exception is deliberate and
-# narrow rather than incidental:
+# Every per-frame observation this invocation made -- the clock, the
+# coarse phrase, the sidebar DATE line, the crop they were read from,
+# the luminance, the geometry, the capture tool and the instant of the
+# grab -- leaves through the machine payload below, and NOTHING is
+# appended to the telemetry sidecar from here.
 #
-#   * timeline.py is required to cross-check its midnight-rollover and
-#     day-count decisions against the sidebar DATE line, because a
-#     clock alone cannot distinguish a real wrap from a misread going
-#     backwards, nor a 24-hour action from a zero-second one;
-#   * the manifest schema is exactly six fields -- frame, file,
-#     real_ts, ingame_clock, action, commentary -- and is not being
-#     changed to carry a seventh;
-#   * so the date is persisted HERE, keyed by frame, in a file that is
-#     an intermediate observation record rather than a delivered
-#     artifact.
+# THAT IS A WRITE-SURFACE DECISION, not a convenience.  This file's
+# contract is exactly one PNG in playthrough/frames/ per keystroke;
+# session.py owns the frame counter, the manifest row and the sidecar
+# that accompanies it.  Appending the sidecar here split ONE logical
+# transaction -- publish the frame, record the row -- across two
+# processes with no coordinator, and gave this script a second,
+# redirectable destination inside the working tree: a path settable from
+# the environment, appended to through a plain open(), with no
+# O_NOFOLLOW, no lock and no fsync, plus a no-interpreter fallback that
+# wrote one JSON record through six separate redirections and could
+# therefore interleave or leave a permanent half-row.  None of that is
+# fixable while the writer is here, because the orchestrator has to
+# append the manifest row for the same frame anyway: one owner, one
+# append, one atomic decision.
 #
-# This row carries the WHOLE per-frame observation -- the clock, the
-# phrase, the date, the crop it was read from, the luminance and the
-# geometry -- from values already in memory.  It performs no OCR of its
-# own, so recording it costs one append and cannot disagree with the
-# reading it describes.  ocr_clock.py's audit (DATE_AUDIT) is the same
-# evidence recorded by the module that produced it; timeline.py reads
-# both and treats a disagreement as unobserved rather than as fact.
-#
-# APPEND-ONLY, and a frame captured twice therefore has two rows: the
-# LAST row for a frame key wins, which is the same last-occurrence rule
-# the engine applies to duplicated option entries.  Nothing is ever
-# rewritten -- the record of what was observed is evidence.
-#
-# JSON is built with python's own encoder through the resolved
-# interpreter, never by string-concatenating quotes: a commentary
-# string, an OCR misread or a path could otherwise carry a quote or a
-# backslash and produce a file that is not JSON.  The fallback path,
-# used only when no interpreter is available, escapes the four
-# characters JSON requires and is documented as the weaker route.
+# The evidence is not weakened by moving it.  Every field the sidecar
+# row carried is in the payload below under its own key (DATE is the
+# row's own spelling of CLOCK_DATE, reported beside it so a reader can
+# see the derivation), and the DATE AUDIT is untouched: ocr_clock.py
+# still appends it as it reads, through a hardened
+# O_APPEND|O_CREAT|O_NOFOLLOW descriptor with an fsync, so the date
+# evidence timeline.py cross-checks against is persisted by the module
+# that produced it whatever the orchestrator does.  OBSERVATIONS names
+# the canonical destination -- env.sh's PLAYTHROUGH_OBSERVATIONS, with
+# no override -- so the caller appends where timeline.py will look.
 # ---------------------------------------------------------------------
-write_observation() {
-    local dir
-    dir="$(dirname "${OBSERVATIONS}")"
-    if ! mkdir -p "${dir}"; then
-        playthrough_warn "cannot create ${dir} for the telemetry" \
-            "sidecar"
-        return 1
-    fi
-    # THE SECOND DESTINATION IS PROVED TOO.
-    #
-    # The frames directory is checked above for containment and for a
-    # symlinked component; this file is the other thing this script
-    # writes, it is APPENDED to, and its path is settable from the
-    # environment -- so it gets the same two proofs.  A link planted at
-    # playthrough/build/ or at the sidecar itself would otherwise append
-    # a row of telemetry to whatever it pointed at, and the append would
-    # report success.
-    playthrough_assert_inside "${OBSERVATIONS}" \
-        "${PLAYTHROUGH_REPO_ROOT}" "telemetry sidecar" || return 1
-    playthrough_assert_no_symlink "${OBSERVATIONS}" \
-        "${PLAYTHROUGH_REPO_ROOT}" "telemetry sidecar" || return 1
-    if [ -L "${OBSERVATIONS}" ]; then
-        playthrough_warn "${OBSERVATIONS} is a symbolic link; the" \
-            "telemetry row is evidence and is not appended through" \
-            "a link"
-        return 1
-    fi
-    if command -v "${PLAYTHROUGH_PYTHON}" >/dev/null 2>&1; then
-        # The values arrive as ARGUMENTS, not as interpolated source:
-        # there is no eval here and no code built from a reading.
-        "${PLAYTHROUGH_PYTHON}" -c '
-import json
-import sys
 
-keys = sys.argv[2::2]
-values = sys.argv[3::2]
-row = dict(zip(keys, values))
-row["frame"] = int(row["frame"])
-with open(sys.argv[1], "a", encoding="utf-8") as handle:
-    handle.write(json.dumps(row, sort_keys=True) + "\n")
-    handle.flush()
-' "${OBSERVATIONS}" \
-            frame "${FRAME_INDEX}" \
-            file "${FRAME_FILE}" \
-            real_ts "${REAL_TS}" \
-            ingame_clock "${CLOCK}" \
-            clock_status "${CLOCK_STATUS}" \
-            clock_source "${CLOCK_SOURCE}" \
-            clock_rect "${CLOCK_RECT}" \
-            clock_rect_from "${CLOCK_RECT_FROM}" \
-            time_phrase "${TIME_PHRASE}" \
-            date "${DATE_TEXT}" \
-            date_status "${DATE_STATUS}" \
-            frame_geometry "${FRAME_GEOMETRY}" \
-            luma_mean "${LUMA_MEAN}" \
-            luma_stddev "${LUMA_STDDEV}" \
-            capture_tool "${CAPTURE_TOOL}" || return 1
-        observation_recorded
-        return "$?"
-    fi
-    playthrough_warn "no ${PLAYTHROUGH_PYTHON} is available, so the" \
-        "telemetry row is written with the shell's own JSON escaping," \
-        "which is the weaker route"
-    local clock phrase date_text
-    clock="$(json_escape "${CLOCK}")"
-    phrase="$(json_escape "${TIME_PHRASE}")"
-    date_text="$(json_escape "${DATE_TEXT}")"
-    printf '{"capture_tool":"%s","clock_rect":"%s",' \
-        "$(json_escape "${CAPTURE_TOOL}")" \
-        "$(json_escape "${CLOCK_RECT}")" >>"${OBSERVATIONS}" || return 1
-    printf '"clock_rect_from":"%s","clock_source":"%s",' \
-        "$(json_escape "${CLOCK_RECT_FROM}")" \
-        "$(json_escape "${CLOCK_SOURCE}")" \
-        >>"${OBSERVATIONS}" || return 1
-    printf '"clock_status":"%s","date":"%s","date_status":"%s",' \
-        "$(json_escape "${CLOCK_STATUS}")" "${date_text}" \
-        "$(json_escape "${DATE_STATUS}")" \
-        >>"${OBSERVATIONS}" || return 1
-    printf '"file":"%s","frame":%s,"frame_geometry":"%s",' \
-        "$(json_escape "${FRAME_FILE}")" "${FRAME_INDEX}" \
-        "$(json_escape "${FRAME_GEOMETRY}")" \
-        >>"${OBSERVATIONS}" || return 1
-    printf '"ingame_clock":"%s","luma_mean":"%s",' \
-        "${clock}" "$(json_escape "${LUMA_MEAN}")" \
-        >>"${OBSERVATIONS}" || return 1
-    printf '"luma_stddev":"%s","real_ts":"%s","time_phrase":"%s"}\n' \
-        "$(json_escape "${LUMA_STDDEV}")" \
-        "$(json_escape "${REAL_TS}")" "${phrase}" \
-        >>"${OBSERVATIONS}" || return 1
-    observation_recorded
-    return "$?"
-}
-
-# observation_recorded -- prove the row for THIS frame is really there.
-#
-# Verified rather than assumed, because a writer that exits 0 without
-# writing is a real possibility: PLAYTHROUGH_PYTHON is resolved by
-# env.sh from whatever is available, `command -v` only proves the file
-# is executable, and an executable that is not a Python interpreter
-# would return 0 and record nothing.  The check is one tail: this
-# frame's own filename is unique to its row, so finding it on the last
-# line proves the append landed and landed last.
-observation_recorded() {
-    local last=""
-    last="$(tail -n 1 "${OBSERVATIONS}" 2>/dev/null || true)"
-    case "${last}" in
-        *"${FRAME_NAME}"*"}")
-            return 0
-            ;;
-    esac
-    playthrough_warn "the telemetry row for ${FRAME_NAME} is not the" \
-        "last line of ${OBSERVATIONS}; the writer reported success" \
-        "without recording anything, so nothing about the date" \
-        "evidence for this frame can be believed"
-    return 1
-}
-
-# json_escape TEXT -- the four escapes a JSON string requires.
-#
-# Backslash first, so that the backslashes introduced by the other
-# three are not escaped a second time.  Control characters are not
-# expected in any of these values -- every one of them is either a path
-# this pipeline built, a fixed status word, or OCR output already
-# constrained to a pattern -- and a literal newline cannot reach here
-# because manifest.py and this file both refuse one.
-json_escape() {
-    local text="$1"
-    text="${text//\\/\\\\}"
-    text="${text//\"/\\\"}"
-    text="${text//$'\t'/\\t}"
-    text="${text//$'\n'/\\n}"
-    printf '%s' "${text}"
-}
 
 # The coarse phrase and the date come back from the SAME read as the
 # clock, so there is nothing left to fetch here -- one OCR pass per
@@ -2136,7 +2097,7 @@ else
 fi
 
 # ---------------------------------------------------------------------
-# OUTPUT, THEN TELEMETRY, THEN -- LAST OF ALL -- THE COMMIT POINT.
+# OUTPUT, THEN THE LOG, THEN -- LAST OF ALL -- THE COMMIT POINT.
 #
 # The order below is the whole of this file's atomicity guarantee, and
 # it is deliberate to the line.
@@ -2207,10 +2168,10 @@ line DATE_AUDIT "${AUDIT_RECORDED}"
 if [ "${CAPTURE_MODE}" = "production" ]; then
     line OBSERVATIONS "${OBSERVATIONS}"
 else
-    # No row is appended for a frame that is being withdrawn, so there
-    # is no sidecar to name.  A telemetry row for a frame no manifest
-    # will ever mention is an orphan record, and the sidecar's whole
-    # value to timeline.py is that it lines up with the rows one for one.
+    # A withdrawn frame is owed no row at all, so no destination is
+    # named for one.  A telemetry row for a frame no manifest will ever
+    # mention is an orphan record, and the sidecar's whole value to
+    # timeline.py is that it lines up with the rows one for one.
     line OBSERVATIONS ""
 fi
 
@@ -2223,19 +2184,26 @@ stdout for ${FRAME_FILE}; the frame is withdrawn so that no frame \
 exists without a caller that knows about it"
 fi
 
-# The telemetry row, appended after the payload is out and before the
-# frame is committed.  See OBSERVATIONS above and env.sh's
-# PLAYTHROUGH_OBSERVATIONS for why the date cannot live in the manifest.
-# A diagnostic capture appends nothing: its frame never joins the record,
-# and a row for a frame no manifest mentions would be an orphan in a
-# sidecar whose value is that it lines up with the rows one for one.
+# ---------------------------------------------------------------------
+# THE LAST FALLIBLE STATEMENT, and it is deliberately BEFORE the commit
+# point rather than after it.
+#
+# This log line is the human-readable record of the capture, and writing
+# it can fail: stderr may be closed, full, or a pipe whose reader has
+# gone -- in which case, under `set -e` or a PIPE trap, this script ends
+# non-zero.  While it sat after KEPT=1 that was exactly the orphan the
+# 1:1 invariant cannot tolerate: the EXIT trap saw a frame it had been
+# told to keep, left the PNG in playthrough/frames/, and the caller --
+# seeing a non-zero status -- correctly declined to append a manifest
+# row for it.  One frame, no row, and every later count off by one.
+#
+# So everything that can fail happens here, while the frame is still
+# withdrawable, and the commit below is nothing but assignments.
+# ---------------------------------------------------------------------
 if [ "${CAPTURE_MODE}" = "production" ]; then
-    if ! write_observation; then
-        die "${EX_CAPTURE}" "the telemetry row for ${FRAME_FILE} \
-could not be appended to ${OBSERVATIONS}; the frame is withdrawn \
-rather than kept without the date evidence timeline.py cross-checks \
-against"
-    fi
+    playthrough_log "captured ${FRAME_FILE} (${FRAME_GEOMETRY}," \
+        "${FRAME_BYTES} bytes) clock=${CLOCK:-<none>}" \
+        "status=${CLOCK_STATUS} date=${DATE_TEXT:-<none>}"
 fi
 
 # ---------------------------------------------------------------------
@@ -2244,10 +2212,10 @@ fi
 # to keep: the EXIT trap will no longer withdraw it, and a superseded
 # frame moved aside stays aside.
 #
-# These two assignments are the last statements before `exit 0` for
-# exactly that reason.  Neither can fail: they are shell assignments,
-# not commands, so nothing between the commit and the exit can leave an
-# unaccounted frame in the capture directory.
+# THESE THREE STATEMENTS ARE CONSECUTIVE, and that is the whole of the
+# guarantee: two assignments and an exit.  No command runs between the
+# commit and the exit, so nothing after the commit can fail -- there is
+# no code path that leaves a kept frame behind a non-zero status.
 #
 # DIAGNOSTIC: the frame is NOT ours to keep, and KEPT deliberately stays
 # 0.  The script exits EX_DIAGNOSTIC, which sends the EXIT trap down the
@@ -2262,9 +2230,6 @@ fi
 if [ "${CAPTURE_MODE}" = "production" ]; then
     KEPT=1
     BACKUP=""
-    playthrough_log "captured ${FRAME_FILE} (${FRAME_GEOMETRY}," \
-        "${FRAME_BYTES} bytes) clock=${CLOCK:-<none>}" \
-        "status=${CLOCK_STATUS} date=${DATE_TEXT:-<none>}"
     exit "${EX_OK}"
 fi
 
@@ -2272,7 +2237,7 @@ playthrough_warn "DIAGNOSTIC capture of index ${FRAME_INDEX}" \
     "(${FRAME_GEOMETRY}, ${FRAME_BYTES} bytes)" \
     "clock=${CLOCK:-<none>} status=${CLOCK_STATUS}.  The frame is" \
     "being withdrawn to ${REJECT_DIR}/${FRAME_NAME}; no frame was" \
-    "added to ${PLAYTHROUGH_FRAMES_DIR}, no telemetry row was" \
-    "appended, and this invocation exits ${EX_DIAGNOSTIC} so it" \
+    "added to ${PLAYTHROUGH_FRAMES_DIR}, no telemetry row is owed or" \
+    "reported, and this invocation exits ${EX_DIAGNOSTIC} so it" \
     "cannot be mistaken for a capture that belongs to the record."
 exit "${EX_DIAGNOSTIC}"

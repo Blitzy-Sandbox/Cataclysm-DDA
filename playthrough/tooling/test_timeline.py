@@ -213,6 +213,14 @@ REFERENCE_CLOCKS = (
 # -- and would be reconciled as a misread if it were not.  Both forms
 # display::date_string can render are legal (src/display.cpp:193-205);
 # the season form is used here.
+#
+# EXACTLY SEVEN VALUES, one per reading, and the count is asserted
+# rather than eyeballed (see the reference-sequence tests).  An eighth
+# value sat here previously: absolutise_clocks() used to ignore a
+# surplus silently, so the headline fixture claimed a one-date-per-frame
+# cardinality it did not have, and the extra day-4 line proved nothing
+# about the crossing it appeared to evidence.  The reader now refuses a
+# longer sequence outright, and this tuple is the length it says it is.
 REFERENCE_DATES = (
     "Spring, day 3",
     "Spring, day 3",
@@ -220,7 +228,6 @@ REFERENCE_DATES = (
     "Spring, day 3",
     "Spring, day 3",
     "Spring, day 3",
-    "Spring, day 4",
     "Spring, day 4",
 )
 
@@ -427,7 +434,7 @@ def observations_of(pairs, status=timeline.DATE_STATUS_READ):
     """Return a sidecar mapping shaped like load_observations()'s.
 
     Keyed by frame index from 1, carrying the date and the status
-    capture.sh records beside it, which is the only part of the row
+    capture.sh reports beside it, which is the only part of the row
     this module reads.
     """
     return {
@@ -1653,7 +1660,7 @@ class TestDateCrossCheck(unittest.TestCase):
                  "frame, and the artifact says so"))
 
     def test_a_faulted_read_is_not_treated_as_evidence(self):
-        # capture.sh records its own account of the read.  A row whose
+        # capture.sh reports its own account of the read.  A row whose
         # status is not "read" carries no date this module may use,
         # even when the field is non-empty.
         pairs = (("08:00:00", "Thursday, Mar 8"),
@@ -1770,6 +1777,43 @@ class TestDateCrossCheck(unittest.TestCase):
             [True, False, False],
             msg=("the whole day the date supplied is capped and given "
                  "a transition, exactly as a long clock delta is"))
+
+    def test_more_dates_than_readings_is_refused_not_truncated(self):
+        """Evidence that does not line up is not evidence.
+
+        `dates` is parallel to `readings`, so a longer sequence means
+        the evidence was assembled against some other frame list -- and
+        truncating it pairs frames with other frames' dates while still
+        returning a perfectly plausible timeline.  That is exactly how
+        this suite's own reference fixture came to carry eight date
+        lines for seven readings without a single test noticing.
+        """
+        with self.assertRaises(timeline.TimelineError) as caught:
+            timeline.absolutise_clocks(
+                ["08:00:00", "08:00:01"],
+                ["Spring, day 3", "Spring, day 3", "Spring, day 4"])
+        message = str(caught.exception)
+        self.assertIn("3 date lines", message)
+        self.assertIn("2 readings", message)
+
+    def test_fewer_dates_than_readings_is_an_ordinary_case(self):
+        """Date evidence that stops partway is real, and tolerated.
+
+        A session whose sidecar ends early -- the last frames withdrawn,
+        the audit lost -- still has to produce a timeline; the frames it
+        does not reach simply have no date, which is what the
+        clock-only rule is for.
+        """
+        readings = timeline.absolutise_clocks(
+            ["08:00:00", "08:00:01", "08:00:02"],
+            ["Spring, day 3"])
+        self.assertEqual(len(readings), 3)
+        self.assertEqual(
+            [reading.date_agreement for reading in readings],
+            [timeline.AGREE_CONFIRMED, timeline.AGREE_UNVERIFIED,
+             timeline.AGREE_UNVERIFIED],
+            msg=("the frames the evidence did not reach are recorded "
+                 "as unverified rather than silently confirmed"))
 
 
 class TestObservationSidecar(unittest.TestCase):
@@ -2259,6 +2303,33 @@ class TestSrtTimecodeFormatter(unittest.TestCase):
 
 class TestReferenceSequence(unittest.TestCase):
     """The whole computation, end to end and in memory."""
+
+    def test_the_fixture_carries_one_date_line_per_reading(self):
+        """The headline fixture must be the shape it claims to be.
+
+        REFERENCE_DATES once held eight values for seven readings, and
+        nothing said so: absolutise_clocks() ignored the surplus, every
+        assertion below still passed, and the fixture that documents
+        one-date-per-frame cardinality did not have it.  A published
+        table nobody checks the shape of is a table that can drift, so
+        the shape is asserted here alongside the numbers it produces --
+        and every derived expectation is held to the same count, since
+        a table with the wrong number of rows would otherwise assert
+        the wrong thing about the right sequence.
+        """
+        self.assertEqual(
+            len(REFERENCE_DATES), len(REFERENCE_CLOCKS),
+            msg=("the date evidence is parallel to the readings: one "
+                 "sidebar date line per captured frame"))
+        for name, values in (
+                ("REFERENCE_RAW_DELTAS", REFERENCE_RAW_DELTAS),
+                ("REFERENCE_DURATIONS", REFERENCE_DURATIONS),
+                ("REFERENCE_TRANSITIONS", REFERENCE_TRANSITIONS),
+                ("REFERENCE_CUES", REFERENCE_CUES)):
+            with self.subTest(table=name):
+                self.assertEqual(
+                    len(values), len(REFERENCE_CLOCKS),
+                    msg="%s must have one row per reading" % name)
 
     def test_one_entry_per_row_nothing_dropped(self):
         document = reference_document()

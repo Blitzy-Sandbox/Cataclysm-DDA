@@ -150,8 +150,9 @@ and the binary and every directory above it are checked for
 third-party ownership and group- or world-writability; one that fails
 is treated as absent rather than run, which for ``convert`` means the
 Pillow engine takes over loudly.  And the installed Pillow must be at
-least PILLOW_MIN_VERSION, since every frame is decoded by Pillow and no
-earlier release is free of published advisories.  Both refusals have a
+least PILLOW_MIN_VERSION -- the version requirements.txt pins -- since
+every frame is decoded by Pillow and an older release is a different
+decoder than the one this pipeline reviewed.  Both refusals have a
 documented, per-invocation override for diagnosis
 (``$PLAYTHROUGH_ALLOW_UNVERIFIED_EXECUTABLES=1``,
 ``$PLAYTHROUGH_ALLOW_VULNERABLE_PILLOW=1``); neither is ever the
@@ -384,18 +385,29 @@ OPT_24_HOUR_12H = "12h"
 CONVERT_BIN = "convert"
 TESSERACT_BIN = "tesseract"
 
-# The lowest Pillow this module will decode a captured frame with.
+# The lowest Pillow this module will decode a captured frame with, and
+# it is exactly the version playthrough/tooling/requirements.txt pins.
 #
 # Every frame goes through Pillow -- the convert path decodes convert's
 # output with it, the Pillow path does the whole chain in it, and
-# _assert_rect_fits() opens the PNG with it -- so Pillow parses
-# attacker-shaped input on the pipeline's ONLY hot path.  Pillow 12.3.0
-# is pinned in playthrough/tooling/requirements.txt because it is the
-# first release with no open advisory against it: queried against OSV,
-# 11.3.0 answers 36 records, 12.0.0 answers 38, 12.1.1 answers 36,
-# 12.2.0 answers 26 and 12.3.0 answers none.  11.3.0 is the last 11.x,
-# so there is no in-series patch to move to instead.
-PILLOW_MIN_VERSION = (12, 3, 0)
+# _assert_rect_fits() opens the PNG with it -- so the decoder is the
+# one component every reading in the finished movie depends on, and it
+# is held to the reviewed pin rather than to whatever happens to be
+# installed.  11.3.0 is that pin: the last release of the 11 line, so
+# it carries every fix published in the series, and inside the range
+# moviepy 2.2.1 declares (`pillow<12.0`), which is what keeps the
+# pipeline's six pins one resolvable set with a silent `pip check`.
+# requirements.txt records that trade-off in full.
+#
+# THIS TUPLE AND THAT PIN ARE ONE DECISION.  The diagnostics below
+# quote this constant rather than a literal version, so a remediation
+# message can never name a release this check would then refuse.
+PILLOW_MIN_VERSION = (11, 3, 0)
+
+# The pinned version as a requirement specifier, for the diagnostics
+# that tell an operator what to install.  Derived, never repeated.
+PILLOW_PIN_SPEC = "pillow==%s" % ".".join(
+    str(part) for part in PILLOW_MIN_VERSION)
 
 # The documented, deliberate override, for diagnosing on a host that
 # cannot yet be moved to the pinned release.  It is loud, it is
@@ -590,9 +602,9 @@ def _require_pillow() -> None:
         raise BootstrapError(
             "Pillow (PIL) is not importable (%s), so no frame can be "
             "decoded at all.  This is a FAULT, not an unreadable "
-            "clock: install playthrough/tooling/requirements.txt "
-            "(pillow==11.3.0) into the interpreter running this "
-            "module" % PILLOW_IMPORT_ERROR)
+            "clock: install playthrough/tooling/requirements.lock "
+            "(%s) into the interpreter running this module"
+            % (PILLOW_IMPORT_ERROR, PILLOW_PIN_SPEC))
 
 
 def _require_sidebar_geometry() -> None:
@@ -1460,17 +1472,19 @@ def pillow_complaint() -> Optional[str]:
                 % (PILLOW_VERSION, wanted))
     if not _at_least(found, PILLOW_MIN_VERSION):
         return ("Pillow %s is installed, but %s or newer is required: "
-                "every captured frame is decoded by Pillow, and no "
-                "release below %s is free of published advisories.  "
-                "Install playthrough/tooling/requirements.lock."
-                % (PILLOW_VERSION, wanted, wanted))
+                "every captured frame is decoded by Pillow, %s is the "
+                "version this pipeline pins and reviewed, and it is "
+                "the last release of its series -- so anything older "
+                "is a decoder missing fixes that one carries.  "
+                "Install playthrough/tooling/requirements.lock (%s)."
+                % (PILLOW_VERSION, wanted, wanted, PILLOW_PIN_SPEC))
     return None
 
 
 def assert_pillow_supported(
     notes: Optional[List[str]] = None,
 ) -> None:
-    """Refuse to decode a frame with a Pillow that has advisories.
+    """Refuse to decode a frame with a Pillow older than the pin.
 
     :raises ToolchainError: unless
         ``$PLAYTHROUGH_ALLOW_VULNERABLE_PILLOW=1``, which downgrades the

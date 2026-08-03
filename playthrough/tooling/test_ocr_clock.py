@@ -994,6 +994,58 @@ class TestTheToolchain(OcrFixture):
                 self.assertEqual(
                     len(log.messages(logging.WARNING)), 2)
 
+    def test_the_pillow_minimum_is_the_pin_requirements_declares(self):
+        """One version, in one place, for the check and the advice.
+
+        The remediation an operator is given has to be a version this
+        module would then ACCEPT.  When the two were written out
+        separately they disagreed -- the diagnostic said to install
+        11.3.0 while the check refused anything below 12.3.0 -- so
+        following the advice reproduced the failure it was answering.
+        The specifier is now derived from the constant, and the constant
+        is compared against the declaration here.
+        """
+        wanted = ".".join(
+            str(part) for part in ocr_clock.PILLOW_MIN_VERSION)
+        self.assertEqual(ocr_clock.PILLOW_PIN_SPEC,
+                         "pillow==%s" % wanted)
+        declared = None
+        path = os.path.join(TOOLING, "requirements.txt")
+        with open(path, encoding="utf-8") as handle:
+            for line in handle:
+                stripped = line.strip()
+                if stripped.startswith("pillow=="):
+                    declared = stripped.split("#", 1)[0].strip()
+                    break
+        self.assertEqual(
+            declared, ocr_clock.PILLOW_PIN_SPEC,
+            msg=("playthrough/tooling/requirements.txt pins the Pillow "
+                 "this module decodes frames with; the two cannot "
+                 "disagree"))
+
+    def test_every_pillow_diagnostic_quotes_the_accepted_pin(self):
+        with _patched(ocr_clock, Image=None):
+            problems = ocr_clock.bootstrap_problems()
+        self.assertEqual(len(problems), 1)
+        self.assertIn(ocr_clock.PILLOW_PIN_SPEC, problems[0])
+        with _patched(ocr_clock, PILLOW_VERSION="9.0.0"):
+            complaint = ocr_clock.pillow_complaint()
+        self.assertIsNotNone(complaint)
+        self.assertIn(ocr_clock.PILLOW_PIN_SPEC, complaint)
+        self.assertIn("requirements.lock", complaint)
+
+    def test_the_installed_pillow_satisfies_the_pin(self):
+        """The environment this suite runs in is the pinned one.
+
+        Not a tautology: it fails when an interpreter carrying some
+        other Pillow is used, which is exactly the provisioning mistake
+        the pin exists to catch.
+        """
+        self.assertIsNone(
+            ocr_clock.pillow_complaint(),
+            msg=("install playthrough/tooling/requirements.lock into "
+                 "the interpreter running this suite"))
+
 
 class TestTheReadingRecord(unittest.TestCase):
     """The evidence travels beside the answer."""

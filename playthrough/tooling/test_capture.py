@@ -21,7 +21,12 @@ Every test runs the REAL capture.sh inside a temporary SANDBOX CHECKOUT
 -- a directory carrying data/, src/path_info.cpp and copies of env.sh
 and capture.sh, so env.sh's BASH_SOURCE resolution points the whole
 artifact layout at the sandbox and nothing can touch the committed
-frames.  The shell is started with `env -i` and a PATH holding ONLY a
+frames.  That sandbox lives under a PRIVATE base rather than under /tmp
+(see _sandbox_base): capture.sh refuses a production capture while any
+trust bypass is set, so the harness has to SATISFY the ownership and
+access-control checks rather than declare them away -- otherwise every
+test here would exercise the diagnostic path and assert nothing about
+the enforced one.  The shell is started with `env -i` and a PATH holding ONLY a
 purpose-built tool directory: symlinks to the coreutils the script
 genuinely needs, plus recording stubs for import, scrot, convert,
 identify, tesseract, xdpyinfo and sleep.  Each stub appends its argv to
@@ -29,7 +34,8 @@ a log, which is how "exactly one root-window grab" and "the settle was
 honoured" become assertions rather than hopes.  PLAYTHROUGH_PYTHON
 points at a dispatching stub that answers ocr_clock.py's --preflight and
 --field calls with a status this suite chooses, and hands `-c` through to
-the real interpreter so the telemetry row is genuine JSON.
+the real interpreter so env.sh's own interpreter-version probe answers
+truthfully.
 
 WHAT IS ASSERTED
 * ONE FRAME PER KEYSTROKE -- exit 0 leaves exactly one PNG; every one of
@@ -47,17 +53,27 @@ WHAT IS ASSERTED
 * NOTHING IS INVENTED -- an impossible or malformed reading from the
   delegate is refused rather than emitted, and no reading is carried
   between invocations.
-* THE COMMIT POINT IS LAST -- the payload is written, the telemetry row
-  is appended and verified, and only then is the frame kept.
+* THE COMMIT POINT IS LAST -- the payload is written, the human-readable
+  log line is taken, and only THEN is the frame kept, so nothing that
+  can fail runs after the decision to keep it.
+* THE WRITE SURFACE IS THE FRAME AND NOTHING ELSE -- the telemetry row
+  is REPORTED on the payload for session.py to persist beside the
+  manifest row it already owns; this script appends nothing, and the
+  destination it names cannot be redirected from the environment.
+* A RELAXED CHECK CANNOT BECOME EVIDENCE -- every trust bypass in
+  env.sh's registry refuses a production capture outright, before the
+  display is touched, and the diagnostic mode that tolerates one
+  withdraws its frame out of the working tree.
 
 Standard library only.  Nothing outside the temporary directory is
-written: the reject directory and the telemetry sidecar are both
-redirected into it.
+written: the reject directory is redirected into it, and the only path
+inside the sandbox checkout a capture writes is its own frame.
 """
 
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -71,6 +87,76 @@ sys.dont_write_bytecode = True
 TOOLING = os.path.dirname(os.path.abspath(__file__))
 PLAYTHROUGH = os.path.dirname(TOOLING)
 REPO_ROOT = os.path.dirname(PLAYTHROUGH)
+
+
+def _is_private(path):
+    """True when PATH and every directory above it are trustworthy.
+
+    The same rule env.sh's playthrough_verify_executable applies: every
+    component is owned by root or by this user, and none of them is
+    group- or world-writable, so nobody else can substitute a file
+    between a check and the run that follows it.
+    """
+    euid = os.geteuid()
+    current = os.path.abspath(path)
+    while True:
+        try:
+            info = os.stat(current)
+        except OSError:
+            return False
+        if info.st_uid not in (0, euid):
+            return False
+        if info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+            return False
+        parent = os.path.dirname(current)
+        if parent == current:
+            return True
+        current = parent
+
+
+def _sandbox_base():
+    """Where this suite's sandboxes live, and why not the temp dir.
+
+    THE SANDBOX HAS TO BE TRUSTWORTHY, because capture.sh now refuses a
+    production capture while any of env.sh's trust bypasses is set --
+    and that refusal is the point: a frame taken through a tool another
+    account can replace is not evidence.  A suite that declared those
+    bypasses to make itself work would be testing the relaxed path and
+    asserting nothing about the enforced one.
+
+    So the sandbox goes somewhere private.  /tmp cannot be it: this host
+    has it at mode 2777, world-writable with no sticky bit, so every
+    ancestor walk fails there no matter what the sandbox itself looks
+    like.  $HOME serves on an ordinary host and /run on a root one, and
+    $PLAYTHROUGH_TEST_TMPDIR overrides both for anywhere else.  None
+    available means the suite skips with that named as the remedy,
+    rather than quietly testing something weaker.
+    """
+    candidates = []
+    nominated = os.environ.get("PLAYTHROUGH_TEST_TMPDIR")
+    if nominated:
+        candidates.append(nominated)
+    home = os.environ.get("HOME")
+    if home:
+        candidates.append(
+            os.path.join(home, ".cache", "playthrough-tooling-tests"))
+    if os.geteuid() == 0:
+        candidates.append("/run/playthrough-tooling-tests")
+    for candidate in candidates:
+        try:
+            os.makedirs(candidate, mode=0o700, exist_ok=True)
+        except OSError:
+            continue
+        if _is_private(candidate):
+            return candidate
+    return None
+
+
+SANDBOX_BASE = _sandbox_base()
+NO_SANDBOX_BASE = (
+    "no private directory is available for the sandbox: set "
+    "PLAYTHROUGH_TEST_TMPDIR to one that only root or this user can "
+    "write, with no group- or world-writable directory above it")
 
 # The documented exit codes, named as capture.sh names them.
 EX_OK = 0
@@ -99,15 +185,22 @@ CLOCK = "13:45:27"
 IMPOSSIBLE_CLOCK = "88:15:32"
 PHRASE = "Around dawn"
 DATE_LINE = "Thursday, Mar 8"
-CROP = "288x1072+1632+4"
-FALLBACK_CROP = "288x1072+1632+4"
+# The crop the geometry stub answers with.  It is the rectangle a FRESH
+# userdir really produces -- the engine's constructor default layout is
+# legacy_labels_sidebar at 44 cells [src/panels.cpp:412-418], not
+# custom_sidebar's 36 -- so the harness's example is the one a first
+# session computes.  Both worked examples are quoted in capture.sh's
+# refusal to substitute either, and both are asserted below.
+CROP = "352x1072+1568+4"
+EXAMPLE_CROP_DEFAULT = "352x1072+1568+4"
+EXAMPLE_CROP_CUSTOM = "288x1072+1632+4"
 
 # The twenty-two keys the payload must carry, in order.  CLOCK_DATE is
 # the date exactly as the delegate read it and DATE is the value this
 # file stands behind, which is why both are reported: the second is
 # derived from the first and a reader can see the derivation rather
 # than take it on trust.  DATE_AUDIT says whether the date evidence
-# reached the sidecar timeline.py cross-checks its rollover guard
+# reached the date audit timeline.py cross-checks its rollover guard
 # against, because a frame whose evidence was lost must be treated as
 # UNKNOWN and never as a day that did not turn.
 # CAPTURE_MODE comes first because it decides what the rest of the
@@ -126,13 +219,32 @@ PAYLOAD_KEYS = (
     "OBSERVATIONS",
 )
 
-# The fifteen keys the telemetry row must carry.
-OBSERVATION_KEYS = (
-    "frame", "file", "real_ts", "ingame_clock", "clock_status",
-    "clock_source", "clock_rect", "clock_rect_from", "time_phrase",
-    "date", "date_status", "frame_geometry", "luma_mean",
-    "luma_stddev", "capture_tool",
-)
+# The fifteen fields the telemetry row must carry, each mapped to the
+# payload key that DELIVERS it.
+#
+# capture.sh no longer appends that row: it reports every field and
+# session.py -- which already owns the frame counter and the manifest
+# row for the same frame -- persists it.  This mapping is what proves
+# the evidence was not weakened by the move: if a field the row needs
+# had no key to arrive on, the handoff would be lossy, and the test
+# below would say so.
+OBSERVATION_FIELDS = {
+    "frame": "FRAME_INDEX",
+    "file": "FRAME_FILE",
+    "real_ts": "REAL_TS",
+    "ingame_clock": "CLOCK",
+    "clock_status": "CLOCK_STATUS",
+    "clock_source": "CLOCK_SOURCE",
+    "clock_rect": "CLOCK_RECT",
+    "clock_rect_from": "CLOCK_RECT_FROM",
+    "time_phrase": "TIME_PHRASE",
+    "date": "DATE",
+    "date_status": "DATE_STATUS",
+    "frame_geometry": "FRAME_GEOMETRY",
+    "luma_mean": "LUMA_MEAN",
+    "luma_stddev": "LUMA_STDDEV",
+    "capture_tool": "CAPTURE_TOOL",
+}
 
 # The coreutils the script really runs.  Nothing else is on PATH, so a
 # tool this suite does not list is genuinely absent -- which is how the
@@ -160,7 +272,10 @@ class CaptureFixture(unittest.TestCase):
     """A sandbox checkout, a stubbed toolchain, and one capture run."""
 
     def setUp(self):
-        self.root = tempfile.mkdtemp(prefix="blitzy_capture_")
+        if SANDBOX_BASE is None:
+            self.skipTest(NO_SANDBOX_BASE)
+        self.root = tempfile.mkdtemp(prefix="blitzy_capture_",
+                                     dir=SANDBOX_BASE)
         self.addCleanup(shutil.rmtree, self.root, True)
         self.checkout = os.path.join(self.root, "checkout")
         self.tooling = os.path.join(self.checkout, "playthrough",
@@ -190,12 +305,11 @@ class CaptureFixture(unittest.TestCase):
         os.makedirs(self.build)
         self.audit = os.path.join(self.build, "frame_dates.jsonl")
         self.reject = os.path.join(self.root, "rejected")
-        # INSIDE the sandbox checkout, where a real sidecar lives.
-        # capture.sh proves the telemetry destination the same way it
-        # proves the frames directory -- contained, no symlinked
-        # component -- so a fixture that put it beside the checkout
-        # instead of inside it would be exercising a path production
-        # refuses.
+        # Where env.sh puts the telemetry sidecar for THIS sandbox, and
+        # therefore the destination capture.sh must NAME on its payload.
+        # It is deliberately never created by the fixture: capture.sh
+        # reports this path and appends nothing to it, so its absence
+        # after a successful capture is itself an assertion.
         self.observations = os.path.join(
             self.build, "observations.jsonl")
         self.stub_log = os.path.join(self.root, "stub.log")
@@ -311,7 +425,19 @@ class CaptureFixture(unittest.TestCase):
             "esac\n"
             'printf "%s\\n" "${STUB_TESSERACT:-}"\n'
             'exit "${STUB_TESSERACT_RC:-0}"\n'))
+        # A COOKIELESS CLIENT IS REFUSED, as a real authenticated server
+        # refuses one.  env.sh proves access control NEGATIVELY -- it
+        # runs xdpyinfo with an empty authority file and requires that
+        # to FAIL -- so a stub that answered every caller would report
+        # this sandbox's display as open to every local account, which
+        # is not what is being tested here.  STUB_XDPYINFO_OPEN=1 makes
+        # it answer anyway, for the test that asserts the refusal.
         self.stub("xdpyinfo", (
+            'if [ "${STUB_XDPYINFO_OPEN:-0}" != "1" ]; then\n'
+            '    case "${XAUTHORITY:-}" in\n'
+            '        ""|/dev/null) exit 1 ;;\n'
+            "    esac\n"
+            "fi\n"
             'if [ "${STUB_XDPYINFO_RC:-0}" != "0" ]; then\n'
             '    exit "${STUB_XDPYINFO_RC}"\n'
             "fi\n"
@@ -417,35 +543,38 @@ class CaptureFixture(unittest.TestCase):
 
     # -- running it --------------------------------------------------
 
-    def run_capture(self, index="1", args=(), **environment):
-        """Run capture.sh in the sandbox and report the result."""
+    def run_capture(self, index="1", args=(), stderr_to=None,
+                    **environment):
+        """Run capture.sh in the sandbox and report the result.
+
+        stderr_to names a file the diagnostics are sent to instead of
+        being captured, which is how a script whose stderr FAILS mid-run
+        is exercised: /dev/full accepts a descriptor and refuses every
+        write.
+        """
         env = {
             "PATH": self.bin,
             "PLAYTHROUGH_STUB_LOG": self.stub_log,
             "PLAYTHROUGH_PYTHON": self.python_stub,
             "PLAYTHROUGH_CAPTURE_REJECT_DIR": self.reject,
-            "PLAYTHROUGH_CAPTURE_OBSERVATIONS": self.observations,
+            # THE TELEMETRY DESTINATION IS NOT NOMINATED HERE.  There is
+            # no override left to set: env.sh derives the canonical path
+            # inside this sandbox and capture.sh reports that, which is
+            # what a test below proves by trying to redirect it.
             "STUB_CLOCK": CLOCK,
             "STUB_CLOCK_RC": "0",
-            # THE SANDBOX IS DELIBERATELY UNVERIFIABLE, AND SAYS SO.
+            # NO TRUST BYPASS IS DECLARED HERE, DELIBERATELY.
             #
-            # Every tool this suite drives is a stub under <tmpdir>/bin,
-            # and /tmp is mode 2777 on this host -- world-writable with
-            # no sticky bit -- so env.sh's playthrough_resolve_tool
-            # correctly reports each one as replaceable by another
-            # account and refuses it.  That refusal is the right
-            # behaviour for a recorded session: the tool that crops the
-            # sidebar decides every clock reading in the film.  It is
-            # covered on its own account by
-            # test_an_unverifiable_toolchain_is_refused_by_default
-            # below, which is why it is declared here rather than
-            # worked around by relaxing the check itself.
-            "PLAYTHROUGH_ALLOW_UNVERIFIED_EXECUTABLES": "1",
-            # AND THERE IS NO X SERVER HERE AT ALL: xdpyinfo is a script
-            # that prints the geometry under test, so no cookie exists
-            # and the display is correctly reported as having no access
-            # control.  See test_env.py for that check's own coverage.
-            "PLAYTHROUGH_ALLOW_UNAUTHENTICATED_X": "1",
+            # capture.sh refuses a production capture while any of them
+            # is set, so a fixture that declared one would only ever
+            # exercise the diagnostic path and would assert nothing
+            # about the enforced one.  Instead the sandbox is built to
+            # PASS the real checks: it lives under a private base (see
+            # _sandbox_base), so every stub under <base>/bin verifies,
+            # and the xdpyinfo stub refuses a cookieless client exactly
+            # as an authenticated server does.  Each refusal still has
+            # its own test, which arranges the untrustworthy condition
+            # on purpose rather than switching the check off.
         }
         if index is not None:
             env["FRAME_INDEX"] = str(index)
@@ -459,12 +588,19 @@ class CaptureFixture(unittest.TestCase):
         command.extend("%s=%s" % item for item in env.items())
         command.extend(["/bin/bash", "--noprofile", "--norc", script])
         command.extend(args)
-        result = subprocess.run(
-            command, cwd=self.checkout, capture_output=True,
-            timeout=180)
+        if stderr_to is None:
+            result = subprocess.run(
+                command, cwd=self.checkout, capture_output=True,
+                timeout=180)
+            return (result.returncode,
+                    result.stdout.decode("utf-8", "replace"),
+                    result.stderr.decode("utf-8", "replace"))
+        with open(stderr_to, "wb", 0) as sink:
+            result = subprocess.run(
+                command, cwd=self.checkout, stdout=subprocess.PIPE,
+                stderr=sink, timeout=180)
         return (result.returncode,
-                result.stdout.decode("utf-8", "replace"),
-                result.stderr.decode("utf-8", "replace"))
+                result.stdout.decode("utf-8", "replace"), "")
 
     def capture(self, index="1", **environment):
         """Run a capture that is expected to succeed."""
@@ -538,11 +674,19 @@ class CaptureFixture(unittest.TestCase):
             return []
         return sorted(os.listdir(self.reject))
 
-    def rows(self):
-        """Every telemetry row, decoded."""
-        if not os.path.isfile(self.observations):
+    def audit_rows(self):
+        """Every DATE AUDIT record, decoded.
+
+        This is the one evidence file a capture still causes to grow,
+        and ocr_clock.py -- not capture.sh -- appends it, through a
+        hardened O_APPEND|O_CREAT|O_NOFOLLOW descriptor of its own.  The
+        interpreter stub stands in for that write, so what these rows
+        prove here is that the delegate was ASKED, with this frame's
+        index, for the destination capture.sh nominated.
+        """
+        if not os.path.isfile(self.audit):
             return []
-        with open(self.observations, encoding="utf-8") as handle:
+        with open(self.audit, encoding="utf-8") as handle:
             return [json.loads(line) for line in handle
                     if line.strip()]
 
@@ -692,21 +836,23 @@ class TestTheHappyPath(CaptureFixture):
             "1", PLAYTHROUGH_CAPTURE_SETTLE="0.01")
         self.assertEqual(payload["CAPTURE_MODE"], "diagnostic")
 
-    def test_a_diagnostic_capture_appends_no_telemetry_row(self):
+    def test_a_diagnostic_capture_is_owed_no_telemetry_row(self):
         """No frame in the record means no row about one.
 
         The sidecar's whole value to timeline.py is that it lines up
         with the manifest rows one for one, so a row describing a frame
-        no manifest will ever mention would be an orphan in it.
+        no manifest will ever mention would be an orphan in it.  A
+        withdrawn frame is therefore owed no row, and the payload says
+        so by naming no destination for one.
         """
         payload, _ = self.diagnostic(
             "1", PLAYTHROUGH_CAPTURE_CLOCK="off")
         self.assertEqual(
             payload["OBSERVATIONS"], "",
-            msg="there is no sidecar to name when no row was appended")
+            msg="there is no destination to name when no row is owed")
         self.assertFalse(
             os.path.exists(self.observations),
-            msg="and none was written")
+            msg="and nothing was appended anywhere")
         self.assertEqual(self.frame_files(), [])
 
     def test_the_settle_is_overridable_for_a_faster_host(self):
@@ -723,11 +869,17 @@ class TestTheHappyPath(CaptureFixture):
             msg="the rectangle comes from the geometry module")
 
     def test_a_second_capture_appends_rather_than_replaces(self):
-        self.capture("1")
-        self.capture("2")
+        first, _ = self.capture("1")
+        second, _ = self.capture("2")
         self.assertEqual(self.frame_files(),
                          ["frame_00001.png", "frame_00002.png"])
-        self.assertEqual([row["frame"] for row in self.rows()], [1, 2])
+        self.assertEqual(
+            [first["FRAME_INDEX"], second["FRAME_INDEX"]], ["1", "2"],
+            msg="each invocation reports the index it was given")
+        self.assertEqual(
+            [row["frame"] for row in self.audit_rows()], [1, 2],
+            msg=("and each frame's date evidence is recorded under its "
+                 "own index rather than over the previous one"))
 
     def test_help_is_the_only_argument_and_writes_no_frame(self):
         status, out, _ = self.run_capture("1", args=("--help",))
@@ -838,16 +990,18 @@ class TestThePrerequisites(CaptureFixture):
     """A missing tool is a prerequisite failure, before anything runs."""
 
     def test_an_unverifiable_toolchain_is_refused_by_default(self):
-        """The check this suite's own fixture declares away.
+        """A tool another account can replace is not run.
 
-        Every tool here is a stub under /tmp, which is mode 2777 on this
-        host -- world-writable with no sticky bit -- so another account
-        really can replace one between the check and the run.  The tool
-        that crops the sidebar decides every clock reading in the film,
-        so a recorded session must not run one it cannot vouch for.
+        The sandbox is private, so the condition is arranged rather than
+        inherited: the sandbox root is made world-writable, which is
+        precisely the state in which another account can substitute the
+        interpreter or a tool between env.sh's check and the run that
+        follows.  The tool that crops the sidebar decides every clock
+        reading in the film, so a recorded session must not run one it
+        cannot vouch for.
         """
-        status, _, err = self.run_capture(
-            "1", PLAYTHROUGH_ALLOW_UNVERIFIED_EXECUTABLES=None)
+        os.chmod(self.root, 0o777)
+        status, _, err = self.run_capture("1")
         self.assertNotEqual(status, EX_OK)
         self.assertIn("world-writable", err)
         self.assertIn(
@@ -856,6 +1010,33 @@ class TestThePrerequisites(CaptureFixture):
         self.assertEqual(
             self.frame_files(), [],
             msg="nothing is captured with an unverified toolchain")
+
+    def test_declaring_the_unverifiable_toolchain_still_refuses(self):
+        """The declaration buys a diagnosis, never a frame.
+
+        This is the half a warning could not enforce.  Setting the
+        override used to produce an ordinary, apparently successful
+        production capture with nothing but a line on stderr to say the
+        toolchain was untrustworthy -- and that frame then counted as
+        evidence.  Now the trust state refuses the production capture and
+        offers the diagnostic mode, whose frame is withdrawn out of the
+        working tree.
+        """
+        os.chmod(self.root, 0o777)
+        status, _, err = self.run_capture(
+            "1", PLAYTHROUGH_ALLOW_UNVERIFIED_EXECUTABLES="1")
+        self.assertEqual(status, EX_USAGE)
+        self.assertIn("trust state is 'diagnostic'", err)
+        self.assertIn("PLAYTHROUGH_ALLOW_UNVERIFIED_EXECUTABLES", err)
+        self.assertEqual(
+            self.frame_files(), [],
+            msg="the refusal happens before anything is captured")
+        payload, _ = self.diagnostic(
+            "1", PLAYTHROUGH_ALLOW_UNVERIFIED_EXECUTABLES="1")
+        self.assertEqual(payload["CAPTURE_MODE"], "diagnostic")
+        self.assertEqual(
+            self.frame_files(), [],
+            msg="and the diagnostic frame never joins the record")
 
     def test_no_capturer_at_all_is_a_prerequisite_failure(self):
         os.unlink(os.path.join(self.bin, "import"))
@@ -1304,22 +1485,31 @@ class TestTheClockRead(CaptureFixture):
 class TestTheCropResolution(CaptureFixture):
     """Computed or explicitly overridden -- and never substituted.
 
-    THE DOCUMENTED RECTANGLE IS NOT A FALLBACK.  288x1072+1632+4 is
-    right for ONE configuration -- a 36-cell sidebar at 8x16 on the
-    right of a 240x67 grid -- and ten alternative sidebar presets ship
-    in data/json/ui/.  Cropping the wrong column does not look like an
-    error: it reads as an unreadable clock, so every duration falls to
-    the 0.25 s floor while every count still tallies and the finished
-    film is plausible and meaningless.  A crop that could not be
-    computed is therefore a stop, and an operator who genuinely wants a
-    fixed rectangle asks for one by name.
+    A DOCUMENTED RECTANGLE IS NOT A FALLBACK, AND THERE ARE TWO OF THEM.
+    352x1072+1568+4 is right for the layout a FRESH userdir draws --
+    legacy_labels_sidebar, 44 cells at 8x16 on the right of a 240x67
+    grid -- and 288x1072+1632+4 is right for a userdir whose panel
+    options select the 36-cell custom_sidebar.  Twelve widgets across
+    data/json/ui declare "style": "sidebar" at eight distinct widths,
+    so each literal describes one configuration out of many.  Cropping
+    the wrong column does not look like an error: it reads as an
+    unreadable clock, so every duration falls to the 0.25 s floor while
+    every count still tallies and the finished film is plausible and
+    meaningless.  A crop that could not be computed is therefore a
+    stop, and an operator who genuinely wants a fixed rectangle asks
+    for one by name.
     """
 
     def test_a_geometry_module_that_fails_is_not_papered_over(self):
         status, _, err = self.run_capture("1", STUB_GEOMETRY_RC="1")
         self.assertEqual(status, EX_GEOMETRY)
         self.assertIn("is NOT substituted", err)
-        self.assertIn(FALLBACK_CROP, err)
+        self.assertIn(EXAMPLE_CROP_DEFAULT, err)
+        self.assertIn(
+            EXAMPLE_CROP_CUSTOM, err,
+            msg=("both worked examples are quoted, because naming one "
+                 "as THE rectangle is how a reader comes to believe a "
+                 "literal describes their run"))
         self.assertIn("PLAYTHROUGH_CAPTURE_RECT", err)
         self.assertEqual(
             self.frame_files(), [],
@@ -1333,6 +1523,8 @@ class TestTheCropResolution(CaptureFixture):
         self.assertEqual(status, EX_GEOMETRY)
         self.assertIn("missing", err)
         self.assertIn("is not substituted", err)
+        self.assertIn(EXAMPLE_CROP_DEFAULT, err)
+        self.assertIn(EXAMPLE_CROP_CUSTOM, err)
         self.assertEqual(self.frame_files(), [])
 
     def test_the_sanctioned_way_past_it_is_an_explicit_rectangle(self):
@@ -1368,133 +1560,355 @@ class TestTheCropResolution(CaptureFixture):
         self.assertEqual(self.frame_files(), [])
 
 
-class TestTheTelemetrySidecar(CaptureFixture):
-    """One row per captured frame, append-only, and verified."""
+class TestTheTelemetryHandoff(CaptureFixture):
+    """Reported here, persisted by the orchestrator.
 
-    def test_one_row_is_appended_per_capture(self):
-        self.capture("1", STUB_DATE=DATE_LINE, STUB_DATE_RC="0")
-        rows = self.rows()
-        self.assertEqual(len(rows), 1)
-        for key in OBSERVATION_KEYS:
-            with self.subTest(key=key):
-                self.assertIn(key, rows[0])
-        self.assertEqual(rows[0]["frame"], 1)
-        self.assertIsInstance(
-            rows[0]["frame"], int,
-            msg="the frame key is a number, as timeline.py reads it")
-        self.assertEqual(rows[0]["ingame_clock"], CLOCK)
-        self.assertEqual(rows[0]["date"], DATE_LINE)
-        self.assertEqual(rows[0]["date_status"], "read")
-        self.assertEqual(rows[0]["clock_rect"], CROP)
+    capture.sh used to append the telemetry row itself, which split ONE
+    logical transaction -- publish the frame, record the row -- across
+    two processes with no coordinator, and gave a script whose whole
+    contract is "one PNG in playthrough/frames/" a second, redirectable
+    destination inside the working tree.  The row now leaves on the
+    machine payload and session.py, which already owns the frame counter
+    and the manifest row for the same frame, appends it.
 
-    def test_the_sidecar_is_append_only(self):
-        """The file only ever grows, byte for byte.
+    So what is asserted here is a WRITE SURFACE and a HANDOFF: that
+    every field the row needs arrives, that the destination named is the
+    canonical one, that no environment variable can move it, and that
+    the frame really is the only thing inside the checkout a capture
+    writes.
+    """
 
-        Demonstrated across two DIFFERENT indices, which is the only
-        sequence a production run can produce: a repeated index is the
-        counter having repeated, and capture.sh refuses to record over a
-        frame that is kept rather than treating it as a correction.
+    def test_every_field_the_row_needs_arrives_on_the_payload(self):
+        """The evidence is not weakened by moving the writer.
+
+        Fifteen fields made up the row.  Each one is checked against
+        the payload key that now carries it, so a field that lost its
+        way in the handoff fails here rather than going missing from a
+        session record nobody re-reads.
+        """
+        payload, _ = self.capture(
+            "1", STUB_DATE=DATE_LINE, STUB_DATE_RC="0")
+        for field, key in sorted(OBSERVATION_FIELDS.items()):
+            with self.subTest(field=field, key=key):
+                self.assertIn(
+                    key, payload,
+                    msg="%s has no key to arrive on" % field)
+                if field == "time_phrase":
+                    # Empty BY CONTRACT here, and that is the reading
+                    # rather than a gap: the sidebar shows a coarse
+                    # phrase INSTEAD of a time when the survivor has no
+                    # watch [src/display.cpp:207-218], so beside a clock
+                    # a phrase is noise and is dropped.  The populated
+                    # case is asserted immediately below.
+                    continue
+                self.assertNotEqual(
+                    payload[key], "",
+                    msg=("%s arrived empty, so the row session.py "
+                         "builds would carry nothing for it" % field))
+        watchless, _ = self.capture(
+            "2", STUB_CLOCK="", STUB_CLOCK_RC="1",
+            STUB_PHRASE=PHRASE, STUB_PHRASE_RC="0")
+        self.assertEqual(
+            watchless["TIME_PHRASE"], PHRASE,
+            msg=("and when the phrase IS the reading it arrives "
+                 "verbatim, so the row carries what the frame showed"))
+        self.assertEqual(payload["FRAME_INDEX"], "1")
+        self.assertEqual(payload["FRAME_FILE"],
+                         "playthrough/frames/frame_00001.png")
+        self.assertEqual(payload["CLOCK"], CLOCK)
+        self.assertEqual(payload["DATE"], DATE_LINE)
+        self.assertEqual(payload["DATE_STATUS"], "read")
+        self.assertEqual(payload["CLOCK_RECT"], CROP)
+
+    def test_the_payload_names_the_canonical_destination(self):
+        payload, _ = self.capture("1")
+        self.assertEqual(
+            payload["OBSERVATIONS"], self.observations,
+            msg=("the destination reported is env.sh's own "
+                 "PLAYTHROUGH_OBSERVATIONS, which is where timeline.py "
+                 "looks -- naming anything else would hand the caller "
+                 "a path nothing downstream reads"))
+
+    def test_the_capture_appends_nothing_to_it(self):
+        """The row is reported, and the file stays absent.
+
+        Two captures, and the sidecar still does not exist: the only
+        thing that could have created it was the writer this file no
+        longer carries.
         """
         self.capture("1")
-        with open(self.observations, "rb") as handle:
-            first = handle.read()
         self.capture("2")
-        with open(self.observations, "rb") as handle:
-            both = handle.read()
-        self.assertEqual(
-            both[:len(first)], first,
-            msg=("the first row is untouched: the record of a captured "
-                 "session is evidence, and evidence is not rewritten"))
-        rows = self.rows()
-        self.assertEqual(len(rows), 2)
-        self.assertEqual([row["frame"] for row in rows], [1, 2])
+        self.assertFalse(
+            os.path.exists(self.observations),
+            msg=("capture.sh writes into playthrough/frames/ and "
+                 "nowhere else inside the tree; the row belongs to the "
+                 "process that appends the manifest row beside it"))
 
-    def test_a_row_that_did_not_land_withdraws_the_frame(self):
-        # AN INTERPRETER THAT LIES ABOUT THE ROW, AND ONLY ABOUT THE
-        # ROW.  `-c` is how the row is written, so this answers 0 and
-        # records nothing there while delegating every other call to the
-        # ordinary stub.  That keeps the capture itself a PRODUCTION
-        # one -- the clock is read, the crop is computed, no safeguard
-        # is relaxed -- so what is under test is the tail check and
-        # nothing else.
-        liar = self.write(
-            os.path.join(self.root, "liar"),
-            "#!/bin/bash\n"
-            'case "$1" in\n'
-            "    -c) exit 0 ;;\n"
-            "esac\n"
-            'exec "%s" "$@"\n' % self.python_stub, mode=0o755)
-        status, _, err = self.run_capture(
-            "1", PLAYTHROUGH_PYTHON=liar)
-        self.assertEqual(status, EX_CAPTURE)
-        self.assertIn("reported success without recording", err)
-        self.assertEqual(
-            self.frame_files(), [],
-            msg=("the frame is withdrawn rather than kept without the "
-                 "date evidence timeline.py cross-checks against"))
+    def test_the_destination_cannot_be_redirected(self):
+        """There is no override left, and that is the point.
 
-    def test_an_unwritable_sidecar_withdraws_the_frame(self):
-        status, _, err = self.run_capture(
-            "1", PLAYTHROUGH_CAPTURE_OBSERVATIONS="/proc/no/rows.jsonl")
-        self.assertEqual(status, EX_CAPTURE)
-        self.assertEqual(self.frame_files(), [])
+        PLAYTHROUGH_CAPTURE_OBSERVATIONS used to move the append to any
+        regular file under the checkout, which is a way to write real
+        evidence where nothing reads it while every count still
+        tallies.  Setting it now changes nothing: the payload still
+        names the canonical path, and no file appears at the nominated
+        one.
+        """
+        elsewhere = os.path.join(self.build, "elsewhere.jsonl")
+        payload, _ = self.capture(
+            "1", PLAYTHROUGH_CAPTURE_OBSERVATIONS=elsewhere)
+        self.assertEqual(payload["OBSERVATIONS"], self.observations)
+        self.assertFalse(
+            os.path.exists(elsewhere),
+            msg="a nominated destination is not honoured, or created")
 
-    def test_the_sidecar_is_the_only_thing_written_outside_frames(self):
+    def test_the_frame_is_the_only_thing_added_inside_the_checkout(self):
         # playthrough/build/ is created by playthrough_mkdirs, not by
         # this file, so it is already there: what is asserted is what a
-        # capture ADDS.  The blast radius is exactly three paths -- one
-        # directory of its own, frames/, and the two evidence sidecars
-        # appended inside a directory another stage owns.  Both
-        # sidecars sit inside the checkout, because capture.sh proves
-        # containment for each of them and refuses one nominated
-        # outside the tree.
+        # capture ADDS.  The blast radius is now exactly its own frames
+        # directory and the frame in it, plus the DATE AUDIT -- which
+        # ocr_clock.py appends through a hardened descriptor of its own,
+        # standing in here as the interpreter stub.  capture.sh asks for
+        # that record; it does not write it.
         before = self.tree()
         self.capture("1")
         added = sorted(set(self.tree()) - set(before))
         self.assertEqual(
             added,
             ["playthrough/build/frame_dates.jsonl",
-             "playthrough/build/observations.jsonl",
              "playthrough/frames",
              "playthrough/frames/frame_00001.png"],
             msg=("nothing else is created, moved or truncated: the "
+                 "telemetry sidecar belongs to session.py, and the "
                  "transition frames, the concat list and the movie all "
                  "belong to later stages"))
 
-    def test_a_sidecar_outside_the_checkout_is_refused(self):
-        # The frames directory has been contained since the security
-        # pass; this file is the OTHER thing a capture writes, it is
-        # appended to, and its path comes from the environment -- so it
-        # is held to the same proof.  A row of telemetry appended to
-        # something outside the tree is evidence written where nothing
-        # downstream will ever look for it.
-        outside = os.path.join(self.root, "elsewhere.jsonl")
-        status, _, err = self.run_capture(
-            "1", PLAYTHROUGH_CAPTURE_OBSERVATIONS=outside)
-        self.assertEqual(status, EX_CAPTURE)
-        self.assertFalse(
-            os.path.exists(outside),
-            msg="the refusal happens before anything is appended")
-        self.assertIn("telemetry sidecar", err)
-        self.assertEqual(
-            self.frame_files(), [],
-            msg=("a frame whose telemetry row could not be recorded is "
-                 "withdrawn, exactly as an unwritable sidecar is"))
+    def test_the_date_audit_still_goes_where_timeline_py_reads_it(self):
+        """The evidence that DOES get persisted, and by whom.
 
-    def test_a_symlinked_sidecar_is_refused_and_not_followed(self):
-        victim = os.path.join(self.build, "victim.jsonl")
-        self.write(victim, "another artifact\n")
-        link = os.path.join(self.build, "linked.jsonl")
-        os.symlink(victim, link)
+        The date line is the only thing that tells a crossing of
+        midnight from a misread clock, so its record survives the
+        handoff untouched: ocr_clock.py is asked for it, per frame, at
+        env.sh's canonical audit path.
+        """
+        payload, _ = self.capture(
+            "1", STUB_DATE=DATE_LINE, STUB_DATE_RC="0")
+        self.assertEqual(payload["DATE_AUDIT"], "yes")
+        rows = self.audit_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["frame"], 1)
+        self.assertEqual(rows[0]["date"], DATE_LINE)
+        self.assertTrue(
+            any("--audit %s" % self.audit in call
+                for call in self.calls("python")),
+            msg="the delegate was asked for the canonical destination")
+
+    def test_a_production_audit_elsewhere_is_refused(self):
+        """The one destination a capture still nominates is fixed.
+
+        A frame's date evidence filed where timeline.py does not look is
+        evidence nothing consults, and its absence reads as
+        DATE_AUDIT=no rather than as an error -- so every count would
+        still tally while the rollover guard treated the frame's date as
+        unknown.  Nominating another path is a diagnostic action.
+        """
+        elsewhere = os.path.join(self.build, "audit-elsewhere.jsonl")
         status, _, err = self.run_capture(
-            "1", PLAYTHROUGH_CAPTURE_OBSERVATIONS=link)
-        self.assertEqual(status, EX_CAPTURE)
-        self.assertIn("telemetry sidecar", err)
-        with open(victim, encoding="utf-8") as handle:
+            "1", PLAYTHROUGH_CAPTURE_AUDIT_PATH=elsewhere)
+        self.assertEqual(status, EX_USAGE)
+        self.assertIn("PLAYTHROUGH_CAPTURE_AUDIT_PATH", err)
+        self.assertIn(self.audit, err)
+        self.assertIn("PLAYTHROUGH_CAPTURE_MODE=diagnostic", err)
+        self.assertFalse(
+            os.path.exists(elsewhere),
+            msg="the refusal precedes the display and every write")
+        self.assertEqual(self.frame_files(), [])
+        payload, _ = self.diagnostic(
+            "1", PLAYTHROUGH_CAPTURE_AUDIT_PATH=elsewhere)
+        self.assertEqual(
+            payload["DATE_AUDIT"], "yes",
+            msg=("a diagnostic capture may file it elsewhere, and its "
+                 "frame is withdrawn out of the working tree in "
+                 "exchange"))
+
+
+class TestTheCommitPoint(CaptureFixture):
+    """Nothing that can fail runs after the frame is kept.
+
+    `exit 0` means "one new frame AND the whole output contract", so the
+    two halves have to be decided in that order.  A fallible statement
+    AFTER `KEPT=1` breaks it in the one direction the 1:1 invariant
+    cannot absorb: the statement fails, the script ends non-zero, the
+    EXIT trap sees a frame it was told to keep and leaves the PNG, and
+    the caller -- correctly reading a non-zero status -- declines to
+    append a manifest row.  One frame, no row, and every later count off
+    by one.  A `playthrough_log` writing the human-readable record used
+    to sit there, and stderr can be closed, full, or a pipe whose reader
+    has gone.
+
+    So the commit is TWO ASSIGNMENTS AND AN EXIT, consecutively, and
+    that is asserted structurally here as well as behaviourally: an
+    ordering guarantee is a property of the source, and a test that can
+    only observe it through a race would not hold anyone to it.
+    """
+
+    def statements(self):
+        """capture.sh's executable lines, comments and blanks removed."""
+        with open(os.path.join(TOOLING, "capture.sh"),
+                  encoding="utf-8") as handle:
+            body = handle.read()
+        found = []
+        for line in body.splitlines():
+            stripped = line.strip()
+            if stripped and not stripped.startswith("#"):
+                found.append(stripped)
+        return found
+
+    def test_the_commit_is_two_assignments_and_an_exit(self):
+        statements = self.statements()
+        self.assertIn("KEPT=1", statements)
+        at = statements.index("KEPT=1")
+        self.assertEqual(
+            statements[at:at + 3],
+            ["KEPT=1", 'BACKUP=""', 'exit "${EX_OK}"'],
+            msg=("no command may run between the commit and the exit: "
+                 "there must be no code path that leaves a kept frame "
+                 "behind a non-zero status"))
+        self.assertEqual(
+            statements.count("KEPT=1"), 1,
+            msg="one commit point, so there is one thing to reason about")
+
+    def test_the_human_readable_log_is_taken_before_the_commit(self):
+        statements = self.statements()
+        logs = [at for at, line in enumerate(statements)
+                if line.startswith('playthrough_log "captured')]
+        self.assertEqual(
+            len(logs), 1,
+            msg="the capture is logged once, and in one place")
+        self.assertLess(
+            logs[0], statements.index("KEPT=1"),
+            msg=("the log is the LAST fallible statement, deliberately "
+                 "before the commit: while it sat after KEPT=1 a closed "
+                 "or full stderr produced exactly the orphan frame the "
+                 "invariant cannot tolerate"))
+
+    def test_a_stderr_that_refuses_every_write_leaves_no_orphan(self):
+        """The invariant holds however the diagnostics fail.
+
+        /dev/full accepts the descriptor and fails every write, so the
+        script's own logging is what breaks.  Either outcome is
+        acceptable -- a clean capture, or a refusal -- but the pairing of
+        a non-zero status with a frame still in playthrough/frames/ is
+        not, because that is the state a caller cannot account for.
+        """
+        if not os.path.exists("/dev/full"):
+            self.skipTest("/dev/full is not present on this host")
+        status, out, _ = self.run_capture("1", stderr_to="/dev/full")
+        frames = self.frame_files()
+        if status == EX_OK:
             self.assertEqual(
-                handle.read(), "another artifact\n",
-                msg=("appending through a link would grow whatever the "
-                     "link pointed at"))
+                frames, ["frame_00001.png"],
+                msg="a zero status means exactly one new frame")
+            self.assertIn("FRAME_INDEX=1", out)
+        else:
+            self.assertEqual(
+                frames, [],
+                msg=("a non-zero status means the frame was withdrawn: "
+                     "no frame exists that no caller was told about"))
+
+
+class TestTheTrustState(CaptureFixture):
+    """A relaxed check cannot produce a frame for the record."""
+
+    # env.sh's registry, which is the single list this gate reads.  Two
+    # of these -- the Pillow floor and the compiler -- are nothing to do
+    # with capture.sh's own work, and that is the point: the state is one
+    # answer about the whole environment the evidence came out of, not a
+    # per-script opinion.
+    BYPASSES = (
+        "PLAYTHROUGH_ALLOW_UNVERIFIED_EXECUTABLES",
+        "PLAYTHROUGH_ALLOW_UNAUTHENTICATED_X",
+        "PLAYTHROUGH_ALLOW_UNVERIFIED_TILESET_PACK",
+        "PLAYTHROUGH_ALLOW_TILESET_FALLBACK",
+        "PLAYTHROUGH_ALLOW_VULNERABLE_PILLOW",
+        "PLAYTHROUGH_ALLOW_ANY_COMPILER",
+    )
+
+    def test_the_registry_is_the_one_env_sh_publishes(self):
+        result = subprocess.run(
+            ["/bin/bash", "--noprofile", "--norc", "-c",
+             '. "$1" >/dev/null 2>&1; printf "%s" '
+             '"$PLAYTHROUGH_TRUST_BYPASS_VARS"',
+             "bash", os.path.join(TOOLING, "env.sh")],
+            cwd=REPO_ROOT, capture_output=True, timeout=120)
+        published = result.stdout.decode("utf-8", "replace").split()
+        self.assertEqual(
+            sorted(published), sorted(self.BYPASSES),
+            msg=("this suite asserts the gate over env.sh's own list, "
+                 "so a bypass added there without a test here fails"))
+
+    def test_every_bypass_refuses_a_production_capture(self):
+        for name in self.BYPASSES:
+            with self.subTest(bypass=name):
+                environment = {name: "1"}
+                status, out, err = self.run_capture("1", **environment)
+                self.assertEqual(
+                    status, EX_USAGE,
+                    msg="%s must refuse, not warn:\n%s" % (name, err))
+                self.assertIn("trust state is 'diagnostic'", err)
+                self.assertIn(name, err)
+                self.assertEqual(
+                    self.frame_files(), [],
+                    msg="the refusal precedes the grab entirely")
+                self.assertEqual(
+                    out, "",
+                    msg=("and precedes the payload, so no caller can "
+                         "read a contract for a frame that was never "
+                         "taken"))
+
+    def test_a_bypass_names_what_it_endangers(self):
+        status, _, err = self.run_capture(
+            "1", PLAYTHROUGH_ALLOW_UNAUTHENTICATED_X="1")
+        self.assertEqual(status, EX_USAGE)
+        self.assertIn("inject keystrokes", err)
+        self.assertIn(
+            "PLAYTHROUGH_CAPTURE_MODE=diagnostic", err,
+            msg="a refusal that leaves no way forward is a dead end")
+
+    def test_a_misspelt_bypass_is_treated_as_set(self):
+        """Fail closed on a value the check sites would ignore.
+
+        `=true` does not actually relax anything -- every site tests for
+        "1" -- but it is unambiguous evidence that somebody meant to, and
+        a recorded session is not the place to be generous about a
+        security-relevant variable whose spelling is wrong.
+        """
+        status, _, err = self.run_capture(
+            "1", PLAYTHROUGH_ALLOW_TILESET_FALLBACK="true")
+        self.assertEqual(status, EX_USAGE)
+        self.assertIn("PLAYTHROUGH_ALLOW_TILESET_FALLBACK", err)
+
+    def test_an_explicit_zero_is_not_a_bypass(self):
+        payload, _ = self.capture(
+            "1", PLAYTHROUGH_ALLOW_TILESET_FALLBACK="0",
+            PLAYTHROUGH_ALLOW_UNVERIFIED_EXECUTABLES="0")
+        self.assertEqual(payload["CAPTURE_MODE"], "production")
+        self.assertEqual(self.frame_files(), ["frame_00001.png"])
+
+    def test_a_diagnostic_capture_may_run_under_a_bypass(self):
+        """Diagnosis is separated from the record, not forbidden.
+
+        This is what makes the refusal above acceptable: an operator on a
+        host that cannot satisfy a check can still look at a frame, and
+        what they get is structurally unusable as evidence -- withdrawn
+        out of the working tree, no repository-relative path in the
+        payload, and a non-zero status.
+        """
+        payload, _ = self.diagnostic(
+            "1", PLAYTHROUGH_ALLOW_UNAUTHENTICATED_X="1")
+        self.assertEqual(payload["FRAME_FILE"], "")
+        self.assertEqual(self.frame_files(), [])
+        self.assertEqual(self.rejected(), ["frame_00001.png"])
 
 
 class TestTheSuiteTouchesNoEvidence(CaptureFixture):

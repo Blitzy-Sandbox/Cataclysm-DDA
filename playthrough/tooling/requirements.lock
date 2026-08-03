@@ -24,17 +24,16 @@
 #     here, and refuses to build anything from source -- no setup.py
 #     from an unreviewed sdist ever executes.
 #   * --no-deps is REQUIRED, and it is a deliberate, documented
-#     override rather than a shortcut.  Every dependency of every
+#     decision rather than a shortcut.  Every dependency of every
 #     package below is already pinned and hashed here -- the closure is
-#     complete, which is what makes disabling resolution safe -- and
-#     resolution has to be disabled because moviepy 2.2.1 declares
-#     `pillow<12.0` while the only Pillow release with no outstanding
-#     advisory is 12.3.0.  requirements.txt records the evidence for
-#     that decision in full, including the measurement that moviepy's
-#     fade, title-card and concatenate path works correctly under
-#     Pillow 12.3.0.  Nothing is being hidden from the resolver: the
-#     conflict is stated, the override is named, and the reason is
-#     written down where an operator reads it.
+#     complete, which is both what makes disabling resolution safe and
+#     what makes --require-hashes satisfiable at all, since pip refuses
+#     a hash-checking install in which anything is unpinned.  Nothing
+#     is being hidden from the resolver: these pins satisfy every
+#     requirement the packages themselves declare, so `pip check` on
+#     the resulting interpreter is silent and installing
+#     requirements.txt WITH resolution reaches the same versions.  The
+#     lock exists to fix the bytes, not to escape a conflict.
 #
 # THE CLOSURE, AND WHY EACH ENTRY IS HERE
 #   Direct (declared in requirements.txt): moviepy, pillow,
@@ -77,10 +76,14 @@ moviepy==2.2.1 \
  --hash=sha256:6b56803fec2ac54b557404126ac1160e65448e03798fa282bd23e8fab3795060
 
 # PNG inspection, title-card composition, MoviePy's image backend and
-# the OCR module's decoder.  12.3.0 is the first release with no
-# outstanding advisory; see requirements.txt.
-pillow==12.3.0 \
- --hash=sha256:78cb2c6865a35ab8ff8b75fd122f6033b92a62c82801110e48ddd6c936a45d91
+# the OCR module's decoder.  11.3.0 is the last release of the 11 line
+# and the newest Pillow inside the range moviepy 2.2.1 declares, which
+# is what keeps this closure resolvable; see requirements.txt for the
+# trade-off that pin records.  The hash is the cp312 manylinux_2_28
+# x86_64 wheel, i.e. the artifact the regeneration command above
+# selects on this platform.
+pillow==11.3.0 \
+ --hash=sha256:676b2815362456b5b3216b4fd5bd89d362100dc6f4945154ff172e206a22c024
 
 # Sidebar clock OCR wrapper around the tesseract binary.
 pytesseract==0.3.13 \

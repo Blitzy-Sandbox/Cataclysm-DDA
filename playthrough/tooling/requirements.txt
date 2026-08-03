@@ -18,20 +18,49 @@
 # specific wheel, and it sets --require-hashes and --only-binary :all:
 # itself.  That is the supply-chain trust anchor: exact versions stop
 # drift, hashes stop substitution, and binary-only means no unreviewed
-# sdist ever executes a setup.py.  Install into an isolated
-# interpreter, never the system one, which is PEP 668
-# externally-managed:
+# sdist ever executes a setup.py.
 #
-#     python3 -m venv .venv
-#     .venv/bin/python -m pip install --no-deps \
+# THE INTERPRETER IS CPython 3.12, and that is part of the contract
+# rather than a detail: numpy and Pillow ship per-interpreter binaries,
+# so the wheels the lock names are cp312 manylinux x86_64 and no other
+# interpreter can install them.  Create the environment with a 3.12
+# interpreter BY NAME, OUTSIDE the working tree -- a virtualenv under
+# playthrough/ would be re-included by the terminal `!/playthrough/**`
+# negation in .gitignore and committed -- and hand its path to the
+# pipeline in the same breath, because env.sh resolves the interpreter
+# from $PLAYTHROUGH_PYTHON, then $PLAYTHROUGH_VENV, then
+# /opt/playthrough-venv, then whatever python3 is on PATH -- and that
+# last candidate is the system interpreter this file must never install
+# into: it is PEP 668 externally-managed, and on this host it is 3.13,
+# which no wheel in the lock matches.
+#
+#     python3.12 -m venv /opt/playthrough-venv
+#     /opt/playthrough-venv/bin/python -m pip install --no-deps \
 #         -r playthrough/tooling/requirements.lock
+#     export PLAYTHROUGH_VENV=/opt/playthrough-venv
+#     # or, equivalently and more explicitly:
+#     export PLAYTHROUGH_PYTHON=/opt/playthrough-venv/bin/python
 #
-# --no-deps is required, and it is a documented override rather than a
-# shortcut: the closure in the lock is complete, and resolution has to
-# be off because moviepy declares an upper bound this file's Pillow pin
-# deliberately exceeds.  See "the Pillow pin" below for the evidence.
-# Installing THIS file directly with pip is still meaningful as a
-# declaration check, but it is not how the environment is provisioned.
+# /opt/playthrough-venv is the path env.sh already looks for, so the
+# export is belt and braces at that location and load-bearing at any
+# other.  env.sh then VERIFIES what it resolved -- ownership and
+# writability of the interpreter and of every directory above it -- and
+# reports the version it observed as $PLAYTHROUGH_PYTHON_VERSION,
+# warning when that is not the 3.12 these wheels are built for.  Where
+# a distribution carries no 3.12 at all, install one with a pinned
+# installer whose own artifact is verified (uv, for instance) rather
+# than with an unverified bootstrap script; see the provisioning rules
+# at the end of this file.
+#
+# --no-deps is required, and it is a documented decision rather than a
+# shortcut: every dependency of every pin below is itself pinned and
+# hashed in the lock, so the closure is complete and resolution has
+# nothing left to decide -- and --require-hashes needs exactly that
+# completeness in order to be satisfiable at all.  Installing THIS file
+# directly with pip is still meaningful as a declaration check: it
+# resolves cleanly and `pip check` on the result is silent.  It is just
+# not how the environment is provisioned, because it fetches whatever
+# the index serves rather than the wheels that were reviewed.
 #
 # Pins are exact "==" rather than the floating lower bound used by
 # tools/json_tools/requirements.txt.  The deviation is deliberate: this
@@ -39,61 +68,62 @@
 # and its own acceptance evidence, so the effect and encoder stack has
 # to be reproducible.  A floating bound would let a future release
 # silently change the rendered movie while every gate still reported
-# green.  One of the six pins deliberately exceeds a declared upper
-# bound of moviepy's; that override is measured and recorded under "the
-# Pillow pin" below rather than left to be discovered by `pip check`.
+# green.  The six pins describe ONE resolvable environment: every one
+# of them sits inside every declared requirement of the others, so
+# `pip check` on the provisioned interpreter is silent and no resolver
+# override is needed anywhere.  See "the Pillow pin" below, which is
+# the pin where that property had to be chosen deliberately.
 
 moviepy==2.2.1  # fade/card/fade transition unit: make_transitions.py
-pillow==12.3.0  # PNG inspection, title card, MoviePy 2 image backend
+pillow==11.3.0  # PNG inspection, title card, MoviePy 2 image backend
 pytesseract==0.3.13  # sidebar clock OCR wrapper: ocr_clock.py
 numpy==2.5.1  # frame luminance statistics and MoviePy arrays
 
 # ---------------------------------------------------------------------
-# The Pillow pin, and the one dependency conflict this file overrides
+# The Pillow pin
 # ---------------------------------------------------------------------
-# Pillow decodes every frame this pipeline reads, so it is the one
-# package here that parses attacker-shaped input in the general case
-# and it is pinned to the release with nothing outstanding against it.
-# Measured against the OSV database on 2026-08-03, querying the exact
-# pinned version rather than a range:
+# Pillow decodes every frame this pipeline reads -- ocr_clock.py's
+# decoder, the title card, MoviePy 2's image backend -- so its version
+# is a security decision as much as a compatibility one, and it is the
+# one pin here where the two pull in different directions.  11.3.0 is
+# the pin, for three reasons that agree:
 #
-#     pillow 11.3.0   36 advisory records   <- previously pinned here
-#     pillow 12.0.0   38
-#     pillow 12.1.1   36
-#     pillow 12.2.0   26
-#     pillow 12.3.0    0                    <- pinned now
+#   * it is the version the frozen dependency contract for this work
+#     names, and that contract is the authority these files implement;
+#   * it is the last release of the 11 line, so it is the newest
+#     version available inside that series;
+#   * it is inside the range moviepy 2.2.1 actually declares
+#     (`pillow<12.0,>=9.2.0`), which is what makes the six pins in this
+#     file ONE resolvable environment.
 #
-# No 11.x release clears them: 11.3.0 is the last of that series, so
-# there is no patch release to move to inside the 11 line.
+# THAT LAST PROPERTY IS A REQUIREMENT, NOT A CONVENIENCE.  A dependency
+# set that only installs with resolution switched off is a set nobody
+# can verify afterwards: `pip check` then reports a conflict on every
+# single run, and the one line an operator would read to notice a REAL
+# problem is permanently occupied by an expected one.  So the rule for
+# this file is that `pip check` on the provisioned interpreter must be
+# SILENT, and a pin that cannot satisfy that is not adopted here.
 #
-# moviepy 2.2.1 declares `pillow<12.0,>=9.2.0`, and 2.2.1 is the newest
-# moviepy release there is -- so that cap is an untested upper bound,
-# not a measured incompatibility, and honouring it would mean shipping
-# 36 known advisories.  The cap is therefore overridden deliberately,
-# with --no-deps over the lock file, and the override is verified
-# rather than assumed: on this host, under Pillow 12.3.0, moviepy
-# 2.2.1's transition path -- ImageClip + vfx.FadeOut, TextClip over
-# data/font/Terminus.ttf, vfx.FadeIn, concatenate_videoclips, then
-# iter_frames(fps=12) -- produced the expected twelve 1920x1080 frames
-# with the fade arithmetic correct end to end (grayscale mean 86.7 at
-# the fade's start, 0.24 across the card, 68.0 at the fade-in's end)
-# and the card's text present (max channel value 255).
+# The trade-off is recorded rather than hidden.  Queried against the
+# OSV database on 2026-08-03, for the exact versions rather than for a
+# range, 11.3.0 answers 36 advisory records and 12.3.0 answers none --
+# but every 12.x release is outside moviepy's declared cap, so taking
+# one costs the `pip check` signal above, and 11.3.0 is the last 11.x
+# there is, so no in-series patch release clears those records either.
+# What decides it is the exposure: this pipeline decodes only the PNGs
+# it captured itself, from its own X server, on its own host -- Pillow
+# is not parsing attacker-supplied input anywhere in it -- so a
+# resolvable, independently checkable environment is worth more here
+# than advisory records against decoders this pipeline never reaches.
 #
-# One consequence to expect rather than be surprised by: `pip check`
-# reports exactly one line for this environment --
-#
-#     moviepy 2.2.1 has requirement pillow<12.0,>=9.2.0,
-#     but you have pillow 12.3.0.
-#
-# That line is the override, visible on purpose.  It is not a broken
-# environment and it is not to be "fixed" by downgrading Pillow or by
-# editing moviepy's installed metadata: the first reintroduces 36
-# advisories, the second hides the conflict instead of recording it.
-# `pip check` reporting anything ELSE is a real problem.
-#
-# Re-measure both halves before changing either pin: if a moviepy
-# release ever lifts the cap, the override should go away rather than
-# be kept out of habit.
+# Review both halves together, and move them together.  If a moviepy
+# release lifts the `<12.0` cap, this pin and that one go up in the
+# same change and the set stays resolvable; if an advisory lands
+# against 11.3.0 that this pipeline's own decode path can actually
+# reach, that is the moment to reconsider rather than a reason to
+# switch resolution off.  ocr_clock.py holds this same version as
+# PILLOW_MIN_VERSION and refuses to decode a frame with anything older,
+# so the declaration and the runtime check cannot drift apart.
 
 # "imageio" is lowercase on purpose.  `pip list --format=freeze` prints
 # "ImageIO==2.37.4" because that casing is the distribution's declared

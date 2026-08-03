@@ -27,7 +27,17 @@
 #      this checkout's binary -- found by class, accepted by identity.
 #      Long work is then followed by POLLING a pid file and a status
 #      sentinel, so `status` reports what is observably true rather than
-#      what was started.
+#      what was started.  A launch the session will be CAPTURED FROM --
+#      a fresh capture, a resume, or a running instance being reused --
+#      first has to pass assert_capture_preconditions: the trust state
+#      must be clean (no diagnostic override anywhere in env.sh's
+#      registry) and the seeded option contract must VERIFY, through
+#      seed_options.py --verify-only, because the existence of
+#      options.json proves only that an engine once started and says
+#      nothing about the clock format, the artwork or the grid inside it.
+#      The throwaway calibration launch is exempt from both by design: it
+#      captures nothing, and the file it produces is verified before the
+#      capture launch that follows it.
 #
 # SECURITY POSTURE (the parts that live here rather than in env.sh)
 #   * The X display this launches onto is authenticated: env.sh starts
@@ -270,7 +280,9 @@ cd "${PLAYTHROUGH_REPO_ROOT}"
 # ---------------------------------------------------------------------
 readonly EX_OK=0
 # Bad subcommand, or a tunable that is non-numeric, out of range, or
-# names a scratch path outside the verified runtime directory.
+# names a scratch path outside the verified runtime directory -- or a
+# trust bypass that an instance being captured may not run under
+# (assert_capture_preconditions).
 readonly EX_USAGE=1
 # Not being run from inside a Cataclysm-DDA checkout, or the calibration
 # launch produced no readable options.json.
@@ -1524,11 +1536,20 @@ game_is_tiles() {
 # through the SDL tiles path satisfies the tiles-versus-curses rule
 # whatever artwork is selected -- which is precisely why it cannot be
 # allowed to stand in for the artwork requirement.  MSXotto+
-# (TILES=MshockXottoplus, menu label "MSXotto+") is required, STEP 3
-# fails closed if it cannot be resolved, and ASCIITiles is not a
-# fallback: it is reachable only when an operator names a different
-# tileset explicitly through PLAYTHROUGH_TILESET, which is a diagnostic
-# override and never a production run.
+# (TILES=MshockXottoplus, menu label "MSXotto+") is required and
+# resolve_tileset() fails closed if it cannot be installed or hydrated.
+#
+# ASCIITiles IS NOT A FALLBACK.  PLAYTHROUGH_TILESET_FALLBACK only NAMES
+# which tileset a substitution would use (it defaults to ASCIITiles, the
+# one pack this checkout always carries); nothing consults it unless
+# PLAYTHROUGH_ALLOW_TILESET_FALLBACK=1 AUTHORISES a substitution, which
+# resolve_tileset() announces on stderr and records as origin=fallback.
+# That pair is a diagnostic path and never a recorded session: the
+# authorisation is one of env.sh's trust bypasses, so a capture launch
+# refuses outright while it is set (assert_capture_preconditions).  An
+# operator who wants a different tileset ALTOGETHER exports
+# PLAYTHROUGH_TILESET, which is validated against what is installed just
+# as strictly and is likewise not a substitution behind anyone's back.
 assert_tiles_binary() {
     if [ ! -f "${PLAYTHROUGH_GAME_BIN}" ]; then
         die "${EX_PREREQ}" "no binary at ${PLAYTHROUGH_GAME_BIN}" \
@@ -3059,6 +3080,15 @@ stop_instance() {
 # is the one that comes up at full size on the main menu.  Calibration
 # is skipped when a save already exists, so a resumable session is
 # never interrupted for it.
+#
+# AND THE PATCH IS VERIFIED BEFORE THE CAPTURE, never assumed from the
+# file's existence: assert_seeded_options runs seed_options.py
+# --verify-only on the capture path, including the resume path that
+# skipped calibration altogether.  A seed that was never run, ran against
+# another userdir, failed partway, or was overwritten by an engine
+# exiting afterwards leaves a file that exists and is wrong -- and a 12h
+# clock reads as one long series of unreadable clocks, collapsing every
+# duration onto the floor while every count still tallies.
 # ---------------------------------------------------------------------
 
 # launch_instance -- start one detached game process and wait for its
@@ -3431,6 +3461,113 @@ check_capture_geometry() {
     return 0
 }
 
+# assert_capture_preconditions -- what must hold before an instance the
+# session will be CAPTURED FROM is started or accepted.
+#
+# THE TRUST STATE IS A GATE HERE, NOT A FOOTNOTE.  env.sh's diagnostic
+# escape hatches each exist for a real reason -- an unverifiable
+# toolchain, a display this pipeline did not start, a pack on a
+# world-writable path, artwork other than MSXotto+ -- and each used to
+# be enforced by nothing but a warning saying not to record a session
+# under it.  That left the actual decision to operator memory: the next
+# command could still start the instance, capture it, and present the
+# result as evidence of an unobserved session in the required artwork
+# through a verified toolchain.  So the state decides instead, and it
+# decides here, BEFORE an engine is started or a running one is
+# accepted -- a refusal after the fact would already have produced the
+# thing it was refusing.
+#
+# Diagnosis is not blocked, only separated: every subcommand that does
+# not lead to a captured instance ('build', 'headless', 'tileset',
+# 'probe', 'status', 'stop') is untouched, and the calibration launch is
+# deliberately exempt because it produces no frame and its options are
+# re-verified before the capture launch that follows it.
+assert_capture_preconditions() {
+    if ! playthrough_assert_trusted \
+            "to bring up the instance this session is captured from"; then
+        die "${EX_USAGE}" "refusing the capture launch while the" \
+            "trust state is '${PLAYTHROUGH_TRUST_STATE}'; the active" \
+            "override(s) and what each one endangers are listed above."
+    fi
+    assert_seeded_options
+}
+
+# assert_seeded_options -- prove the option contract, never assume it.
+#
+# THE EXISTENCE OF options.json PROVES ONLY THAT AN ENGINE STARTED ONCE.
+# It says nothing about what is IN it, and every value that decides
+# whether a session is usable evidence lives in there: 24_HOUR=24h is
+# what makes the sidebar clock fixed-width and therefore readable at
+# all; TILES/USE_TILES are the required MSXotto+ artwork; TERMINAL_X/Y
+# are the 240x67 grid the crop geometry is computed from;
+# CHARACTER_POINT_POOLS is what leaves the creator's point-buy tab live;
+# SOUND_ENABLED=false matches the dummy audio driver; WORLD_COMPRESSION2
+# decides the character file's name, which the resume probe reads.
+#
+# A seed that failed halfway, was never run, was run against a different
+# userdir, or was overwritten by an engine exiting afterwards leaves a
+# file that exists and is wrong -- and every downstream count still
+# tallies.  A 12h clock in particular reads as one long series of
+# unreadable clocks: every duration collapses onto the 0.25 s floor and
+# the finished movie is plausible and meaningless.  That failure is
+# invisible at capture time and unfixable afterwards, because the
+# session cannot be replayed.
+#
+# So the contract is VERIFIED here, by the module that owns it, through
+# the interpreter env.sh already verified, under the production
+# no-fallback rules (seed_options.py exposes no flag that relaxes the
+# installed-tileset check, so a command-line verification is always the
+# strong one).  Its stdout is captured rather than passed through: this
+# script's stdout is its own KEY=value contract, and the observed values
+# belong in the log beside the launch they describe.
+assert_seeded_options() {
+    local seeder="${PLAYTHROUGH_TOOLING_DIR}/seed_options.py"
+    if [ ! -f "${seeder}" ]; then
+        die "${EX_PREREQ}" "no ${seeder}, so the option values this" \
+            "capture depends on cannot be verified.  It is part of" \
+            "this pipeline: restore it before launching."
+    fi
+    if [ ! -f "${PLAYTHROUGH_OPTIONS_JSON}" ]; then
+        die "${EX_LAYOUT}" "no ${PLAYTHROUGH_OPTIONS_JSON}, so" \
+            "nothing has seeded the option values this capture" \
+            "depends on.  Take the calibration launch first (it is" \
+            "what makes the engine write that file), then run" \
+            "'${PLAYTHROUGH_PYTHON} ${seeder}'."
+    fi
+    local observed=""
+    local report="${PLAYTHROUGH_RUNTIME_DIR}/seed-verify.$$.err"
+    if observed="$("${PLAYTHROUGH_PYTHON}" -B "${seeder}" \
+            --verify-only \
+            --options-json "${PLAYTHROUGH_OPTIONS_JSON}" \
+            --repo-root "${PLAYTHROUGH_REPO_ROOT}" \
+            --tileset "${TILESET_ID:-${PLAYTHROUGH_TILESET}}" \
+            --terminal-x "${PLAYTHROUGH_TERMINAL_X}" \
+            --terminal-y "${PLAYTHROUGH_TERMINAL_Y}" \
+            2>"${report}")"; then
+        # The observed values are the record of what this launch ran
+        # under, so they are logged rather than discarded.
+        local line
+        while IFS= read -r line; do
+            [ -n "${line}" ] || continue
+            playthrough_log "verified ${line}"
+        done <<<"${observed}"
+        emit PLAYTHROUGH_OPTIONS_VERIFIED 1
+        rm -f "${report}" 2>/dev/null || true
+        return 0
+    fi
+    emit PLAYTHROUGH_OPTIONS_VERIFIED 0
+    tail_log "${report}" 20
+    rm -f "${report}" 2>/dev/null || true
+    die "${EX_LAYOUT}" "${PLAYTHROUGH_OPTIONS_JSON} does not hold the" \
+        "values this capture depends on -- the mismatches are listed" \
+        "above.  Seed them with '${PLAYTHROUGH_PYTHON} ${seeder}'" \
+        "while no engine is running (a live one rewrites the file when" \
+        "it exits) and launch again.  Capturing a session against an" \
+        "off-contract options file wastes the whole session: a 12h" \
+        "clock alone makes every duration fall to the floor while" \
+        "every count still tallies."
+}
+
 launch_game() {
     ensure_headless
 
@@ -3463,6 +3600,11 @@ launch_game() {
     # save and make the window search ambiguous.
     if find_game_window; then
         LAUNCH_PHASE="reused"
+        # A REUSED INSTANCE IS AN INSTANCE THAT WILL BE CAPTURED, so it
+        # is held to the capture preconditions exactly as a fresh one
+        # is.  Checked before anything is reported about it, because
+        # accepting it is what this branch does.
+        assert_capture_preconditions
         read_game_pid || true
         read_window_geometry || true
         playthrough_log "a window of class" \
@@ -3581,6 +3723,7 @@ launch_game() {
     fi
 
     LAUNCH_PHASE="capture"
+    assert_capture_preconditions
     if [ "${SESSION_MODE}" = "resume" ]; then
         playthrough_log "CAPTURE LAUNCH (resume): load world" \
             "'${SAVE_WORLD}' and continue the existing character;" \
