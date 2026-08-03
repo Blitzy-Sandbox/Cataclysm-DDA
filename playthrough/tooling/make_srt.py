@@ -1,0 +1,1462 @@
+#!/usr/bin/env python3
+"""Write playthrough/transcript.srt and playthrough/transcript.md.
+
+Both artifacts, from ONE read of playthrough/timeline.json, in one pass
+over one derived list of cues.  The human-readable record and the
+machine-readable cue file therefore cannot disagree: they are rendered
+from the SAME Cue objects, so the Nth timestamp in the Markdown is
+literally the same string as the Nth cue's start in the SubRip file
+rather than a number that happens to match it.  The Markdown is never
+parsed out of the SRT and the SRT is never parsed out of the Markdown,
+because either would put a second source of truth back in.
+
+NO TIMING ARITHMETIC HAPPENS HERE
+cue_start and cue_end are READ from the timeline.  timeline.py walked
+the video cursor once and charged the transition seconds to it, which
+is why the cue after the reference sequence's first transition begins
+at 00:00:17,250 and not at 00:00:16,250.  A caption generator that
+walked the frame durations itself would emit cues that are right at
+the start of the film and further out of step with every transition
+after it -- monotonic, plausible, and wrong, which is the worst shape
+a defect can take.  So there is no cursor in this module, nothing is
+accumulated, and format_srt_timecode is IMPORTED from timeline.py
+rather than written a second time: one formatter, one implementation,
+one set of tests (test_timeline.py holds it to 3661.5 s ->
+01:01:01,500).
+
+`duration` and `transition_after` are read too, but only as evidence to
+check the cues against -- a window that does not last its frame's
+duration, an unexplained gap between windows, or a flagged frame with
+no gap after it are all reported rather than rendered.  The expected
+gap comes from the document's own `transition` field, so no transition
+constant is written down here either.
+
+THE SUBRIP CONTRACT, which downstream code asserts literally
+One cue per frame -- the cue count, the frame count and the Markdown
+entry count are three numbers that must agree, and verify_artifacts.sh
+compares them.  Sequence numbers from 1, contiguous.  Timecodes as
+HH:MM:SS,mmm with a COMMA: this is SubRip, not WebVTT, and the arrow
+is " --> " with one space each side.  Cue text of at most two lines of
+about forty-two columns, wrapped at word boundaries and never through
+the middle of a word.  Plain text: no override codes, no positioning,
+no markup, because the track is muxed as mov_text and must stay a
+clean, selectable English caption stream rather than anything burned
+into the picture.  UTF-8 with LF endings and NO byte-order mark -- a
+BOM would sit in front of the first cue's sequence number and stop it
+matching.
+
+ONE MEASURED FACT ABOUT COUNTING THE CUES AFTERWARDS, so nobody loses
+time to it: MP4 timed text has to cover the container contiguously, so
+the muxer PADS THE GAPS this transcript leaves for the transitions with
+empty two-byte samples of its own.  Measured on the reference sequence,
+a container muxed from seven cues carries NINE subtitle packets -- the
+two extra ones occupying exactly 16.250-17.250 s and 27.250-28.250 s,
+which are the two transitions.  So the cue count is `grep -c " --> "`
+on this file, or the count of cues extracted back out of the container
+(seven, deviating from the timeline by 0.000000 s), and it is NOT the
+number of subtitle packets ffprobe reports.
+
+THE MARKDOWN CONTRACT, which is checked just as literally
+Every entry begins at column one with **HH:MM:SS,mmm** followed by the
+survivor's own sentence.  EXACTLY ONE timestamp-shaped string per
+entry and none anywhere else, so the header carries no example
+timestamp and no entry carries a cue range.  The pattern that counts
+them accepts a full stop as well as a comma, so neither form may
+appear outside an entry stamp.  And every word THIS module contributes
+-- the header, and nothing else -- has to survive the out-of-character
+vocabulary gate that keeps engineering language out of the survivor's
+voice; assert_in_character() holds the module to that before a byte is
+written, so the gate cannot be tripped by an edit to a string constant
+here.
+
+THE SURVIVOR'S VOICE IS COPIED, NEVER EDITED
+`commentary` is the in-character record.  It is written to the
+Markdown verbatim -- not summarised, not rephrased, not annotated, and
+never wrapped in engineering language.  The caption is the same
+sentence fitted to two short lines, which is a presentational
+constraint of the caption format and the only transformation this
+module performs; where a sentence genuinely will not fit, the CAPTION
+is shortened at a word boundary with an ellipsis and the Markdown
+keeps the whole of it.
+
+THE STAMPS ARE VIDEO TIME, AND ONLY VIDEO TIME
+Neither artifact carries an in-game clock reading.  That is deliberate
+rather than an omission: a reading the capture could not resolve is
+carried forward from its neighbour and flagged `reconciled` in the
+timeline, and printing it here would present a borrowed number in the
+same confident form as a read one, with the flag left behind in a file
+nobody reads beside it.  So the audit trail stays where it was
+recorded, the transcript says only where the film has got to, and no
+frame's cue is invented, merged or dropped because its clock was
+unreadable -- it still gets exactly one cue, at the floor if that is
+what its window came to.
+
+Out-of-character wording inside a commentary is REPORTED and left
+alone, exactly as manifest.py reports it at write time: the sentence
+belongs to whoever wrote it.  Two things are refused rather than
+reported, because both would break a downstream count while looking
+fine locally -- a commentary carrying a timestamp-shaped string, which
+would add a match the Markdown gate counts, and one carrying " --> ",
+which would add a line the cue-count gate counts.
+
+WHAT IS REFUSED OUTRIGHT
+An empty frames array, a frame index that is not the position it sits
+in, a cue that does not end after it starts, a cue that starts before
+its predecessor ended, a first cue that does not start at zero, a
+final cue that does not end where the timeline's own total says the
+film ends, and an empty commentary.  Nothing is repaired and nothing
+is invented: one captured frame makes exactly one cue and one entry,
+so a missing sentence is a hole in the record and is reported as one.
+For the document form the sibling's own validate_timeline() is run as
+well, so the invariant sum(durations) + sum(transitions) == total ==
+final cue end is checked here too rather than assumed from the fact
+that it was checked when the file was written.
+
+USE
+    python3 -B playthrough/tooling/make_srt.py
+    python3 -B playthrough/tooling/make_srt.py --dry-run
+    python3 -B playthrough/tooling/make_srt.py --timeline PATH
+
+    import make_srt
+    srt, markdown, cues = make_srt.build_transcripts(document)
+
+Both files are validated, then built entirely in memory, then written:
+a failure cannot leave one of them updated against a stale other.
+Each write is atomic -- a private temporary file in the destination
+directory, fsynced, then os.replace()d over the artifact -- so a
+reader sees the whole old file or the whole new one.  Every path is
+held inside the playthrough/ tree derived from this module's own
+location, so neither artifact can be redirected out of the record.
+
+Nothing here varies from run to run: no timestamp, no host name, no
+absolute path and no set iteration reaches either output, so the same
+timeline always produces byte-identical files.  Standard library only,
+plus the sibling timeline module -- nothing from
+playthrough/tooling/requirements.txt -- so a transcript can be
+regenerated and audited in any checkout without provisioning a render
+toolchain.  There is no shell, no eval and no network surface of any
+kind.
+"""
+
+import argparse
+import math
+import os
+import re
+import sys
+import tempfile
+import textwrap
+
+from typing import (Any, Dict, List, NamedTuple, Optional, Sequence,
+                    Tuple)
+
+# Set BEFORE the sibling import below, which is the only import here
+# that can write into the repository working tree.  env.sh exports
+# PYTHONDONTWRITEBYTECODE=1, but this module is documented as runnable
+# on its own, and a standalone `python3 playthrough/tooling/make_srt.py`
+# without that environment would compile the sibling to
+# playthrough/tooling/__pycache__/ -- which .gitignore's terminal
+# `!/playthrough/**` negation then makes COMMITTABLE.  A stray .pyc in
+# a committed evidence tree is an artifact nobody authored.  The flag
+# has to precede the import it protects, because the interpreter
+# consults it at compile time; every documented command also passes -B.
+sys.dont_write_bytecode = True
+
+try:
+    # The timecode formatter, the hardened reader, the artifact layout,
+    # the containment root, the document validator and the comparison
+    # tolerance all live in the sibling module.  Importing them is what
+    # keeps the timecode, the tolerance and the rules about where an
+    # artifact may live from existing twice and drifting apart.
+    from timeline import (EPSILON, TimelineError, approved_root,
+                          default_timeline_path, format_srt_timecode,
+                          read_timeline, validate_timeline)
+except ImportError:
+    # Imported from somewhere other than this directory: put the
+    # tooling directory on the path and try once more.  A second
+    # failure is a genuinely broken checkout and is allowed to raise.
+    sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
+    from timeline import (EPSILON, TimelineError, approved_root,
+                          default_timeline_path, format_srt_timecode,
+                          read_timeline, validate_timeline)
+
+
+# The caption geometry.  Two lines of about forty-two columns is the
+# SubRip convention and roughly what a reader takes in at a glance; it
+# is a presentational limit on the CAPTION only, never on the sentence
+# in playthrough/transcript.md.
+CUE_LINE_WIDTH = 42
+CUE_MAX_LINES = 2
+
+# What marks a caption that had to be shortened to fit two lines.  One
+# character rather than three full stops, so it costs the sentence as
+# little room as possible, and the same ellipsis the transition card
+# uses so the film reads consistently.  It carries no digits, so it
+# cannot add a match to the Markdown's timestamp count.
+ELLIPSIS = "\u2026"
+
+# The Markdown's only generated line, and it is deliberately the plain
+# sanctioned sentence.  It carries no timestamp-shaped string, because
+# the gate counts every one of those and requires exactly one per
+# entry; it carries no out-of-character word, because the gate greps
+# the whole file for them; and it is not embellished, because every
+# word added here is another word that has to pass both.
+MARKDOWN_HEADER = "Timestamps are cumulative video time."
+
+# The SubRip cue separator, spelled once.  It is also what the
+# cue-count gate greps for, which is why a commentary containing it is
+# refused rather than rendered.
+SRT_ARROW = " --> "
+
+# The timestamp shape the Markdown gate counts.  A FULL STOP is
+# accepted in place of the comma, exactly as the gate accepts it, so
+# that neither form can slip into the file outside an entry stamp.
+TIMESTAMP_RE = re.compile(r"[0-9]{2}:[0-9]{2}:[0-9]{2}[,.][0-9]{3}")
+
+# The Markdown entry shape, anchored at column one, as the gate anchors
+# it.  Used to count what was generated rather than to trust that it
+# was generated correctly.
+MARKDOWN_ENTRY_RE = re.compile(
+    r"(?m)^\*\*[0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3}\*\*")
+
+# The SubRip cue line, anchored at both ends exactly as the sibling
+# validation anchors it: two-digit hours even at zero, a comma before
+# the milliseconds, and one space each side of the arrow.  Every line
+# this module writes is measured against it before the file is written,
+# so a malformed timecode is caught here rather than by a player
+# silently dropping a cue.
+TIMECODE_LINE_RE = re.compile(
+    r"^[0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3}"
+    r" --> [0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3}$")
+
+# The out-of-character vocabulary, mirroring the substring grep the
+# transcript gate applies -- bluntness included, so that a report here
+# predicts a failure there.  It is held against every word THIS module
+# generates, and reported (never rewritten) for the survivor's own.
+META_GATE_WORDS = (
+    "frame", "screenshot", "capture", "ocr", "tesseract",
+    "imagemagick", "ffmpeg", "moviepy", "manifest", "timeline",
+    "duration", "keystroke", "xdotool", "pipeline", "tileset",
+    "sidebar", "option", "commit", "git ", "debug", "requirement",
+)
+
+# The two patterned members of the same gate: a bare requirement
+# number.  Spelled as the gate spells them, including that the first
+# has no trailing word boundary.
+META_GATE_PATTERNS = (r"R1[0-3]", r"R[1-9]\b")
+
+META_GATE_RE = re.compile(
+    "|".join([re.escape(word) for word in META_GATE_WORDS] +
+             list(META_GATE_PATTERNS)),
+    re.IGNORECASE)
+
+# Styling and positioning codes.  mov_text is a minimal format and the
+# track has to be a clean selectable caption stream, so an override
+# code, an HTML tag or an ASS block reaching the cue text is refused
+# rather than passed to the muxer.
+STYLE_RE = re.compile(r"\{\\|</?(?:font|i|b|u|s)\b", re.IGNORECASE)
+
+# Characters no single-line caption or Markdown entry may carry.  A
+# line break would split one cue into two blocks and one entry into
+# two lines; every other control character is invisible in the file and
+# unpredictable in a player.
+CONTROL_RE = re.compile(r"[\x00-\x08\x0a-\x1f\x7f]")
+
+# The artifact layout, which env.sh is the single definition of:
+# PLAYTHROUGH_TRANSCRIPT_SRT and PLAYTHROUGH_TRANSCRIPT_MD (env.sh:986
+# and env.sh:987).  The relative names are the fallback for a module
+# imported without that environment, as by a test.
+ENV_SRT = "PLAYTHROUGH_TRANSCRIPT_SRT"
+ENV_MARKDOWN = "PLAYTHROUGH_TRANSCRIPT_MD"
+SRT_NAME = "transcript.srt"
+MARKDOWN_NAME = "transcript.md"
+
+
+class TranscriptError(Exception):
+    """The timeline cannot be turned into an honest transcript.
+
+    Raised in place of writing either file, because a transcript that
+    is wrong is worse than no transcript: the cues would be muxed as a
+    caption track and read as the record of what happened, and a
+    plausible-looking one is not questioned.
+    """
+
+
+class Cue(NamedTuple):
+    """One captured frame's cue, in both of its rendered forms.
+
+    `start` and `end` are the timecodes as they appear in the file --
+    formatted once, from the timeline's own cue_start and cue_end, and
+    shared by both outputs.  That is what makes the Nth stamp in the
+    Markdown the same characters as the Nth cue's start in the SubRip
+    file rather than a second formatting of the same number.
+
+    `lines` is the caption, wrapped to the cue geometry; `commentary`
+    is the survivor's sentence exactly as the timeline carries it, for
+    the Markdown.  Immutable because a cue is a record of a frame that
+    was captured.
+    """
+
+    index: int
+    frame: int
+    start: str
+    end: str
+    lines: Sequence[str]
+    commentary: str
+
+
+class Summary(NamedTuple):
+    """The evidence a run prints instead of asserting success.
+
+    Three counts that must agree -- one entry, one cue and one stamp
+    per captured frame -- beside the two numbers whose equality is the
+    timeline invariant's last term: where the final cue ends and what
+    the timeline says the film totals.  `total_declared` records
+    whether that second number came from the timeline itself or was
+    simply read back off the last cue, so a run never reports an
+    agreement it had nothing to compare against.
+    """
+
+    entry_count: int
+    cue_count: int
+    stamp_count: int
+    final_cue_end: float
+    total: float
+    total_declared: bool
+
+    @property
+    def counts_agree(self) -> bool:
+        """Return whether the three per-frame counts are equal."""
+        return self.entry_count == self.cue_count == self.stamp_count
+
+    @property
+    def total_agrees(self) -> bool:
+        """Return whether the final cue ends at the timeline total."""
+        return abs(self.final_cue_end - self.total) <= EPSILON
+
+
+# ---------------------------------------------------------------------
+# Reading the timeline.  Everything below this line and above the
+# filesystem section is PURE: it takes a document and returns text, so
+# a transcript can be built and held to every one of its contracts
+# without a file on disk and without writing anything.
+# ---------------------------------------------------------------------
+
+
+def timeline_entries(document: Any) -> List[Dict[str, Any]]:
+    """Return the frames array of a timeline document.
+
+    The artifact timeline.py writes is an object whose `frames` key
+    holds the array.  A bare array is accepted as well, because a
+    caller that already has the entries in memory is a legitimate way
+    to render a transcript and refusing it would only invite a
+    hand-rolled reimplementation of this module -- which is exactly the
+    second source of truth the shared timeline exists to prevent.
+    """
+    if isinstance(document, dict):
+        if "frames" not in document:
+            raise TranscriptError(
+                "the timeline carries no frames array; a transcript "
+                "is one cue per captured frame and there is nothing "
+                "here to write one from")
+        entries = document["frames"]
+    else:
+        entries = document
+    if not isinstance(entries, list):
+        raise TranscriptError(
+            "the frames are a %s; they are a JSON array, one object "
+            "per captured frame" % type(entries).__name__)
+    return entries
+
+
+def transition_gap(document: Any) -> Optional[float]:
+    """Return the video seconds a transition is charged, if declared.
+
+    Read from the document's own `transition` field rather than written
+    down here, so this module carries no transition constant of its own
+    and cannot disagree with the one the cues were walked under.  None
+    means the input did not declare it -- the bare-array form -- and
+    the gap after a flagged frame is then only required to be positive
+    rather than to be an exact length.
+    """
+    if not isinstance(document, dict):
+        return None
+    return _finite_number(document.get("transition"))
+
+
+def declared_total(
+    document: Any,
+    entries: Sequence[Any],
+) -> Tuple[float, bool]:
+    """Return the film's total and whether the timeline declared it.
+
+    The timeline carries `total` -- the cue cursor's final value -- and
+    `final_cue_end`, computed by different routes so that comparing
+    them checks something.  Either is an INDEPENDENT statement of where
+    the film ends and is what the last cue is held against.  A bare
+    array declares neither, and the total is then the last cue's end
+    with nothing to compare it to; the flag says so rather than letting
+    a run report an agreement it never tested.
+    """
+    if isinstance(document, dict):
+        for key in ("total", "final_cue_end"):
+            value = _finite_number(document.get(key))
+            if value is not None:
+                return value, True
+    last = entries[-1] if entries else None
+    if isinstance(last, dict):
+        value = _finite_number(last.get("cue_end"))
+        if value is not None:
+            return value, False
+    return 0.0, False
+
+
+def _finite_number(value: Any) -> Optional[float]:
+    """Return `value` as a finite float, or None if it is not one.
+
+    Booleans are rejected on purpose: True is 1.0 to Python's
+    arithmetic, and a cue boundary that arrived as a boolean is a
+    defect in whatever produced it rather than a one-second offset.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    if not math.isfinite(number):
+        return None
+    return number
+
+
+def frame_index(entry: Dict[str, Any], position: int) -> int:
+    """Return an entry's frame index, or its position if it has none.
+
+    session.py owns the counter and every real entry carries it; an
+    entry that does not is numbered by where it sits, which is what an
+    index means.  This mirrors timeline.py's own rule so that a
+    transcript and a timeline never number the same capture
+    differently.
+    """
+    value = entry.get("frame")
+    if isinstance(value, bool) or not isinstance(value, int):
+        return position
+    return value
+
+
+def meta_gate_words(text: Any) -> List[str]:
+    """Return the out-of-character words `text` would be caught by.
+
+    Mirrors the substring gate the transcript is held to downstream,
+    bluntness included -- `option` inside "options", `frame` inside
+    "framework" -- so that a report here predicts a failure there.
+    Sorted and deduplicated, lowercased, so the report is stable.
+    """
+    if not isinstance(text, str):
+        return []
+    return sorted({match.group(0).lower()
+                   for match in META_GATE_RE.finditer(text)})
+
+
+def assert_in_character(text: str, label: str) -> None:
+    """Refuse text THIS module generates if it carries meta language.
+
+    Held against the header and against nothing else, because the
+    header is the only sentence this module contributes to the
+    in-character record.  It exists so that an edit to a string
+    constant here can never be what trips the gate: the failure
+    arrives at the moment of generation, naming the word, instead of
+    arriving later as an unexplained hit in a grep over the artifact.
+    """
+    hits = meta_gate_words(text)
+    if hits:
+        raise TranscriptError(
+            "%s carries out-of-character wording (%s): %r -- the "
+            "record stays in the survivor's voice, and engineering "
+            "observations belong in playthrough/TECHNICAL_NOTES.md"
+            % (label, ", ".join(hits), text))
+    stamps = TIMESTAMP_RE.findall(text)
+    if stamps:
+        raise TranscriptError(
+            "%s carries a timestamp-shaped string (%s): %r -- exactly "
+            "one such string may appear per entry and none anywhere "
+            "else, so a stamp here would be counted as an entry that "
+            "does not exist" % (label, ", ".join(stamps), text))
+
+
+# ---------------------------------------------------------------------
+# Verification.  entry_problems() is TOTAL: it never raises, whatever
+# it is handed, and returns every problem it found rather than the
+# first.  An operator fixing a hand-edited timeline should see the
+# whole list, and a test asserting one check should not have its
+# assertion masked by an earlier one aborting the pass.
+# ---------------------------------------------------------------------
+
+
+def entry_problems(
+    entries: Any,
+    gap: Optional[float] = None,
+) -> List[str]:
+    """Return every reason `entries` cannot become a transcript.
+
+    An empty list means one cue per entry can be written honestly: the
+    indices run 1..n, every window opens before it closes, the windows
+    run forward without overlapping, the first opens the film at zero,
+    each lasts exactly as long as its frame is on screen, a gap between
+    two windows is present when and only when a transition was charged
+    for it, and every entry carries a sentence in the survivor's voice
+    that a caption can be made from.
+
+    `gap` is the video seconds a transition is charged, from
+    :func:`transition_gap`.  When it is known the gap after a flagged
+    frame must be exactly that long; when it is not, it must merely be
+    positive.
+    """
+    if not isinstance(entries, list):
+        return ["the frames are a %s, not an array"
+                % type(entries).__name__]
+    if not entries:
+        return ["the timeline records no frames at all; a transcript "
+                "is one cue per captured frame, and there is no "
+                "honest transcript of nothing"]
+    problems: List[str] = []
+    previous_end: Optional[float] = None
+    previous_flag: Optional[bool] = None
+    previous_position = 0
+    for position, entry in enumerate(entries, start=1):
+        if not isinstance(entry, dict):
+            problems.append(
+                "entry %d is a %s; every frame is a JSON object"
+                % (position, type(entry).__name__))
+            # Nothing to compare the next window against, so the three
+            # carried values move together rather than leaving a stale
+            # position paired with a cleared boundary.
+            previous_end = None
+            previous_flag = None
+            previous_position = position
+            continue
+        problems.extend(_index_problems(entry, position))
+        problems.extend(_commentary_problems(entry, position))
+        start = _finite_number(entry.get("cue_start"))
+        end = _finite_number(entry.get("cue_end"))
+        problems.extend(_window_problems(entry, position, start, end))
+        flag = entry.get("transition_after")
+        if flag is not None and not isinstance(flag, bool):
+            problems.append(
+                "entry %d records %r as its transition flag; it is "
+                "true or false" % (position, flag))
+            flag = None
+        problems.extend(_gap_problems(
+            position, start, previous_position, previous_end,
+            previous_flag, gap))
+        previous_end = end
+        previous_flag = flag
+        previous_position = position
+    opening = entries[0]
+    first = (_finite_number(opening.get("cue_start"))
+             if isinstance(opening, dict) else None)
+    if first is not None and abs(first) > EPSILON:
+        problems.append(
+            "the first cue opens at %rs; the film starts at zero, and "
+            "a caption track that starts late is out of step with the "
+            "picture for its whole length" % first)
+    return problems
+
+
+def _index_problems(entry: Dict[str, Any], position: int) -> List[str]:
+    """Report a frame index that is not the position it sits in."""
+    value = entry.get("frame")
+    if value is None:
+        return []
+    if isinstance(value, bool) or not isinstance(value, int):
+        return ["entry %d records a %s as its frame index; the index "
+                "is an integer from 1"
+                % (position, type(value).__name__)]
+    if value != position:
+        return ["entry %d records frame %d; one capture per keystroke "
+                "numbers the frames 1..n, so a transcript cannot pair "
+                "them with cues while the two disagree"
+                % (position, value)]
+    return []
+
+
+def _window_problems(
+    entry: Dict[str, Any],
+    position: int,
+    start: Optional[float],
+    end: Optional[float],
+) -> List[str]:
+    """Report a cue window that cannot be shown as it stands.
+
+    A boundary that is not a finite number, a window that closes before
+    it opens, and -- where the entry declares its on-screen seconds -- a
+    window that does not last exactly as long as the picture it belongs
+    to.  That last one is the check that catches a cue rewritten by
+    hand: the caption would be shown for a different length of time
+    than the frame it describes.
+    """
+    problems: List[str] = []
+    if start is None:
+        problems.append(
+            "entry %d records %r as its cue start; a cue boundary is "
+            "a finite number of seconds"
+            % (position, entry.get("cue_start")))
+    elif start < 0.0:
+        problems.append(
+            "entry %d opens at %rs; video time does not run before "
+            "zero" % (position, start))
+    if end is None:
+        problems.append(
+            "entry %d records %r as its cue end; a cue boundary is a "
+            "finite number of seconds"
+            % (position, entry.get("cue_end")))
+    if start is None or end is None:
+        return problems
+    if end <= start:
+        problems.append(
+            "entry %d opens at %rs and closes at %rs; a cue has to "
+            "end after it starts, or no player will show it"
+            % (position, start, end))
+        return problems
+    if entry.get("duration") is None:
+        return problems
+    on_screen = _finite_number(entry["duration"])
+    if on_screen is None:
+        problems.append(
+            "entry %d records %r as its on-screen seconds; they are a "
+            "finite number" % (position, entry["duration"]))
+    elif abs((end - start) - on_screen) > EPSILON:
+        problems.append(
+            "entry %d is on screen for %rs but its cue spans %rs; the "
+            "caption is shown for exactly as long as the picture it "
+            "belongs to" % (position, on_screen, end - start))
+    return problems
+
+
+def _gap_problems(
+    position: int,
+    start: Optional[float],
+    previous_position: int,
+    previous_end: Optional[float],
+    previous_flag: Optional[bool],
+    gap: Optional[float],
+) -> List[str]:
+    """Report cues that overlap, or a gap nothing was charged for.
+
+    This is where caption drift would show up.  A gap in video time
+    exists only because a transition was inserted, so a gap after an
+    unflagged frame means seconds appeared from nowhere, and a flagged
+    frame with no gap after it means the transition seconds were never
+    charged to the cursor -- the exact defect that puts the captions
+    increasingly ahead of the picture as the film goes on.
+    """
+    if start is None or previous_end is None:
+        return []
+    measured = start - previous_end
+    if measured < -EPSILON:
+        return ["entry %d opens at %rs but entry %d had not closed "
+                "until %rs; cues cannot overlap"
+                % (position, start, previous_position, previous_end)]
+    if previous_flag is None:
+        return []
+    if not previous_flag:
+        if abs(measured) > EPSILON:
+            return ["entry %d opens %rs after entry %d closed, but "
+                    "entry %d is not flagged for a transition, so "
+                    "nothing was charged for that gap"
+                    % (position, measured, previous_position,
+                       previous_position)]
+        return []
+    if gap is None:
+        if measured <= EPSILON:
+            return ["entry %d is flagged for a transition but entry "
+                    "%d opens the instant it closed; the transition "
+                    "seconds were never charged to video time"
+                    % (previous_position, position)]
+        return []
+    if abs(measured - gap) > EPSILON:
+        return ["entry %d is flagged for a transition of %rs but "
+                "entry %d opens %rs after it closed; the captions and "
+                "the picture would not agree from here on"
+                % (previous_position, gap, position, measured)]
+    return []
+
+
+def _commentary_problems(
+    entry: Dict[str, Any],
+    position: int,
+) -> List[str]:
+    """Report a sentence that cannot honestly become a cue.
+
+    An absent or blank one is a hole in the record, not something to
+    fill in: one keystroke made one capture, and the reason for it is
+    either written down or it is not.  A line break or a control
+    character would split one cue into two blocks.  A timestamp-shaped
+    string or a cue arrow would each add a match to a count the
+    artifacts are checked by, so both are refused here where the
+    message can name the entry, rather than surfacing later as an
+    arithmetic mismatch in a gate.  Styling and positioning codes are
+    refused because the track is a plain selectable caption stream.
+    """
+    value = entry.get("commentary")
+    if value is None:
+        return ["entry %d carries no commentary; every captured frame "
+                "records why the survivor acted, and an empty caption "
+                "is not a record of anything" % position]
+    if not isinstance(value, str):
+        return ["entry %d records a %s as its commentary; it is text"
+                % (position, type(value).__name__)]
+    if not value.strip():
+        return ["entry %d carries a blank commentary; every captured "
+                "frame records why the survivor acted" % position]
+    problems: List[str] = []
+    if CONTROL_RE.search(value):
+        problems.append(
+            "entry %d's commentary carries a line break or a control "
+            "character; one captured frame is one cue of one "
+            "sentence" % position)
+    stamps = TIMESTAMP_RE.findall(value)
+    if stamps:
+        problems.append(
+            "entry %d's commentary carries a timestamp-shaped string "
+            "(%s); one such string appears per entry and it is the "
+            "entry's own, so this would be counted as an extra entry "
+            "-- please say the time another way"
+            % (position, ", ".join(stamps)))
+    if SRT_ARROW in value:
+        problems.append(
+            "entry %d's commentary carries %r, which is the cue "
+            "separator the cue count is measured with; please say it "
+            "another way" % (position, SRT_ARROW))
+    if STYLE_RE.search(value):
+        problems.append(
+            "entry %d's commentary carries markup or an override "
+            "code; the caption track is plain selectable text and is "
+            "never styled or positioned" % position)
+    return problems
+
+
+def document_problems(
+    document: Any,
+    entries: Sequence[Any],
+) -> List[str]:
+    """Return the document-level reasons a transcript is not honest.
+
+    Two checks the entries alone cannot make.  The first is the
+    sibling's OWN validator, run here rather than trusted from the fact
+    that it ran when the file was written: it holds the document to the
+    clamp bounds, the strictly-greater transition rule and the
+    invariant sum(durations) + sum(transitions) == total == final cue
+    end, so a hand-edited timeline is caught before its numbers become
+    a caption track.  The second is the one the caption file is
+    ultimately judged by -- the last cue must close exactly where the
+    timeline says the film ends, because that single equality is what
+    keeps the container and the subtitle stream the same length.
+
+    A bare array declares neither a document nor a total, so only the
+    entry-level checks apply to it and this returns nothing.
+    """
+    problems: List[str] = []
+    if isinstance(document, dict):
+        problems.extend(validate_timeline(document))
+    total, was_declared = declared_total(document, entries)
+    if not was_declared:
+        return problems
+    last = entries[-1] if entries else None
+    closes = (_finite_number(last.get("cue_end"))
+              if isinstance(last, dict) else None)
+    if closes is not None and abs(closes - total) > EPSILON:
+        problems.append(
+            "the last cue closes at %rs but the timeline totals %rs; "
+            "the caption track and the container have to end together"
+            % (closes, total))
+    return problems
+
+
+# ---------------------------------------------------------------------
+# The caption.  Fitting the sentence to two short lines is the ONLY
+# transformation this module performs on the survivor's words, and it
+# is presentational: playthrough/transcript.md keeps the whole
+# sentence, whatever the caption had room for.
+# ---------------------------------------------------------------------
+
+
+def wrap_cue_text(
+    text: str,
+    width: int = CUE_LINE_WIDTH,
+    max_lines: int = CUE_MAX_LINES,
+) -> List[str]:
+    """Return `text` as at most `max_lines` lines of about `width`.
+
+    Wrapped at word boundaries only: neither long words nor hyphens are
+    broken through, so a caption never shows half a word.  A single
+    word longer than the width therefore overruns it rather than being
+    cut, which is the right trade for a format whose width is a
+    readability convention and not a hard limit.
+
+    A sentence that needs more lines than there is room for is
+    SHORTENED, at a word boundary, with an ellipsis marking where it
+    was cut -- and only in the caption.  Nothing is summarised or
+    reworded: the words that remain are the survivor's own, in order,
+    and the Markdown carries the sentence entire.
+    """
+    if not isinstance(text, str):
+        raise TranscriptError(
+            "a caption is made from text, got %s" % type(text).__name__)
+    # Runs of whitespace collapse to single spaces so that the measured
+    # width is the width a player will show.  The manifest already
+    # refuses line breaks and control characters in a commentary, so on
+    # real input this only ever tidies a double space.
+    collapsed = " ".join(text.split())
+    if not collapsed:
+        raise TranscriptError(
+            "a caption cannot be made from blank text; every captured "
+            "frame records why the survivor acted")
+    if width < 1 or max_lines < 1:
+        raise TranscriptError(
+            "a caption needs at least one line of at least one "
+            "column, got %d line(s) of %d" % (max_lines, width))
+    lines = textwrap.wrap(collapsed, width=width,
+                          break_long_words=False,
+                          break_on_hyphens=False)
+    if len(lines) <= max_lines:
+        return lines
+    kept = lines[:max_lines]
+    kept[-1] = _shortened(kept[-1], width)
+    return kept
+
+
+def _shortened(line: str, width: int) -> str:
+    """Return `line` marked as cut short, dropping whole words to fit.
+
+    Trailing words come off one at a time until the ellipsis fits
+    inside the width; a line of one long word keeps that word and
+    overruns, because cutting through it would show half a word.
+    """
+    words = line.split(" ")
+    while len(words) > 1 and len(" ".join(words)) + len(ELLIPSIS) > width:
+        words.pop()
+    return " ".join(words) + ELLIPSIS
+
+
+# ---------------------------------------------------------------------
+# The single pass.  build_cues() formats each timecode ONCE, and both
+# renderers below read those same strings, so the Nth stamp in the
+# Markdown is the same characters as the Nth cue's start in the SubRip
+# file by construction rather than by coincidence.
+# ---------------------------------------------------------------------
+
+
+def _timecode(value: Any, position: int, key: str) -> str:
+    """Return one cue boundary as a SubRip timecode.
+
+    The formatter is timeline.py's, so the captions, the film and the
+    tests share one implementation of the timecode; its complaint is
+    re-raised as this module's error so a caller has one exception type
+    to catch.
+    """
+    try:
+        return format_srt_timecode(value)
+    except TimelineError as err:
+        raise TranscriptError(
+            "entry %d's %s cannot be written as a timecode: %s"
+            % (position, key, err)) from err
+
+
+def build_cues(entries: Any, gap: Optional[float] = None) -> List[Cue]:
+    """Return one cue per entry, in order.  Nothing is dropped.
+
+    The entries are held to :func:`entry_problems` first and refused
+    whole rather than in part: a transcript missing one frame's cue
+    would still look like a transcript, so there is no partial
+    success here.
+    """
+    problems = entry_problems(entries, gap)
+    if problems:
+        raise TranscriptError(
+            "refusing to write a transcript from frames that fail "
+            "their own checks: %s" % "; ".join(problems))
+    cues = []
+    for position, entry in enumerate(entries, start=1):
+        commentary = entry["commentary"]
+        cues.append(Cue(
+            index=position,
+            frame=frame_index(entry, position),
+            start=_timecode(entry["cue_start"], position, "cue start"),
+            end=_timecode(entry["cue_end"], position, "cue end"),
+            lines=tuple(wrap_cue_text(commentary)),
+            commentary=commentary,
+        ))
+    return cues
+
+
+def render_srt(cues: Sequence[Cue]) -> str:
+    """Return the exact text playthrough/transcript.srt holds.
+
+    SubRip, to the letter: a sequence number from 1, a timecode line
+    measured against TIMECODE_LINE_RE before it is accepted, one or two
+    lines of plain text, a blank line between cues, and a single
+    trailing newline after the last cue's text with no empty block
+    behind it.  UTF-8 without a byte-order mark, which
+    :func:`write_text` guarantees -- a mark would sit in front of cue
+    one's sequence number and stop it being read as one.
+    """
+    if not cues:
+        raise TranscriptError(
+            "there are no cues to write; a caption track with no cues "
+            "is not a transcript of anything")
+    blocks = []
+    for position, cue in enumerate(cues, start=1):
+        if cue.index != position:
+            raise TranscriptError(
+                "cue %d is numbered %d; SubRip sequence numbers run "
+                "from 1 without a gap" % (position, cue.index))
+        if not cue.lines:
+            raise TranscriptError(
+                "cue %d has no text; every captured frame records why "
+                "the survivor acted" % position)
+        if len(cue.lines) > CUE_MAX_LINES:
+            raise TranscriptError(
+                "cue %d is %d lines; a caption is at most %d"
+                % (position, len(cue.lines), CUE_MAX_LINES))
+        timing = cue.start + SRT_ARROW + cue.end
+        if not TIMECODE_LINE_RE.match(timing):
+            raise TranscriptError(
+                "cue %d's timing line is %r; SubRip wants "
+                "HH:MM:SS,mmm --> HH:MM:SS,mmm with a comma"
+                % (position, timing))
+        for line in cue.lines:
+            if STYLE_RE.search(line) or CONTROL_RE.search(line):
+                raise TranscriptError(
+                    "cue %d's text carries markup, an override code "
+                    "or a control character: %r" % (position, line))
+        blocks.append("\n".join([str(cue.index), timing] +
+                                list(cue.lines)))
+    return "\n\n".join(blocks) + "\n"
+
+
+def markdown_counts(text: str) -> Tuple[int, int]:
+    """Return a Markdown body's entry count and timestamp count.
+
+    Measured with the same two patterns the artifact is checked by, so
+    what this module reports is what a reader grepping the file will
+    find.  The two numbers must be equal -- one stamp per entry and
+    none anywhere else -- and both must equal the frame count.
+    """
+    return (len(MARKDOWN_ENTRY_RE.findall(text)),
+            len(TIMESTAMP_RE.findall(text)))
+
+
+def render_markdown(cues: Sequence[Cue]) -> str:
+    """Return the exact text playthrough/transcript.md holds.
+
+    One line per captured frame, uniform: the cue's start in bold at
+    column one, a space, and the survivor's sentence exactly as it was
+    written.  Nothing else is added -- no headings between entries, no
+    bullets, no table, no images, no links, and no machine-readable
+    block at the end, because playthrough/timeline.json is the machine
+    artifact and this is the human one.
+
+    The only sentence this module contributes is the header, and it is
+    held to the out-of-character gate and to the timestamp count before
+    it is used.  The rendered body is then MEASURED rather than
+    trusted: exactly one timestamp-shaped string per entry, and an
+    entry for every cue.
+    """
+    if not cues:
+        raise TranscriptError(
+            "there are no entries to write; a transcript with no "
+            "entries is not a record of anything")
+    assert_in_character(MARKDOWN_HEADER, "the transcript header")
+    entries = ["**%s** %s" % (cue.start, cue.commentary)
+               for cue in cues]
+    text = "%s\n\n%s\n" % (MARKDOWN_HEADER, "\n\n".join(entries))
+    counted, stamps = markdown_counts(text)
+    if counted != len(cues):
+        raise TranscriptError(
+            "the transcript rendered %d entr(ies) for %d cue(s); one "
+            "captured frame makes exactly one entry"
+            % (counted, len(cues)))
+    if stamps != len(cues):
+        raise TranscriptError(
+            "the transcript carries %d timestamp-shaped string(s) for "
+            "%d entr(ies); exactly one appears per entry and none "
+            "anywhere else" % (stamps, len(cues)))
+    return text
+
+
+def build_transcripts(document: Any) -> Tuple[str, str, List[Cue]]:
+    """Return the SubRip text, the Markdown text and the cues.
+
+    The whole of this module's work, in the order it has to happen:
+    take the frames from ONE document, hold the document and its frames
+    to every check, derive the cues ONCE, and render both bodies from
+    those same cues.  Neither output is derived from the other and the
+    input is read once, so the human record and the machine cues cannot
+    disagree about a single number.
+
+    Returns the cues as well because the caller prints the evidence: it
+    is the same list both bodies were rendered from, not a second walk
+    over the timeline.
+    """
+    entries = timeline_entries(document)
+    problems = document_problems(document, entries)
+    if problems:
+        raise TranscriptError(
+            "refusing to write a transcript from a timeline that "
+            "fails its own checks: %s" % "; ".join(problems))
+    cues = build_cues(entries, transition_gap(document))
+    return render_srt(cues), render_markdown(cues), cues
+
+
+def summarise(
+    document: Any,
+    entries: Sequence[Any],
+    cues: Sequence[Cue],
+    markdown: str,
+) -> Summary:
+    """Return the counts and totals a run reports as its evidence.
+
+    Every number is measured from what was actually produced -- the
+    stamps are counted in the rendered Markdown, not assumed from the
+    cue list -- so the summary is evidence rather than an assertion
+    that the module did what it meant to.
+    """
+    total, was_declared = declared_total(document, entries)
+    last = entries[-1] if entries else None
+    closes = (_finite_number(last.get("cue_end"))
+              if isinstance(last, dict) else None)
+    return Summary(
+        entry_count=len(entries),
+        cue_count=len(cues),
+        stamp_count=markdown_counts(markdown)[1],
+        final_cue_end=closes if closes is not None else 0.0,
+        total=total,
+        total_declared=was_declared,
+    )
+
+
+def summary_line(summary: Summary, destination: str) -> str:
+    """Return the one line a successful run prints."""
+    if summary.total_declared:
+        against = ("the timeline's own total of %s s"
+                   % format(summary.total, ".3f"))
+    else:
+        against = ("%s s, which the frames alone gave nothing to "
+                   "check it against" % format(summary.total, ".3f"))
+    return ("transcript ok: %d entr(ies), %d cue(s), %d stamp(s), "
+            "last cue closes at %s = %s -> %s"
+            % (summary.entry_count, summary.cue_count,
+               summary.stamp_count,
+               _timecode(summary.final_cue_end, summary.entry_count,
+                         "final cue end"),
+               against, destination))
+
+
+def summary_problems(summary: Summary) -> List[str]:
+    """Return the reasons a run's own evidence does not add up.
+
+    The three counts have to be one number -- one captured frame, one
+    cue, one entry -- and the last cue has to close where the timeline
+    says the film ends.  Checked after both bodies exist, from what was
+    actually rendered, because that is the point at which a mismatch
+    still costs nothing and after which it becomes a caption track that
+    drifts.
+    """
+    problems = []
+    if not summary.counts_agree:
+        problems.append(
+            "%d frame(s) produced %d cue(s) and %d transcript "
+            "entr(ies); one captured frame makes exactly one of each"
+            % (summary.entry_count, summary.cue_count,
+               summary.stamp_count))
+    if summary.total_declared and not summary.total_agrees:
+        problems.append(
+            "the last cue closes at %rs but the timeline totals %rs; "
+            "the captions and the container have to end together"
+            % (summary.final_cue_end, summary.total))
+    return problems
+
+
+def commentary_advisories(cues: Sequence[Cue]) -> List[str]:
+    """Report out-of-character wording in the survivor's own words.
+
+    ADVISORY, exactly as manifest.py is advisory about the same
+    vocabulary at write time: the sentence belongs to whoever wrote it,
+    so a hit is reported and the text is copied through untouched.  It
+    is worth reporting because the same words are what the transcript
+    gate greps for downstream, so this is the earliest place the
+    problem can be seen and the cheapest place to fix it.
+    """
+    advisories = []
+    for cue in cues:
+        hits = meta_gate_words(cue.commentary)
+        if hits:
+            advisories.append(
+                "entry %d carries out-of-character wording (%s): %r "
+                "-- the record stays in the survivor's voice, and "
+                "engineering observations belong in "
+                "playthrough/TECHNICAL_NOTES.md"
+                % (cue.index, ", ".join(hits), cue.commentary))
+    return advisories
+
+
+# ---------------------------------------------------------------------
+# Filesystem.  Both artifacts must land inside the playthrough/ tree
+# derived from THIS MODULE'S own location: they are the record of a
+# captured session, and a caption file written somewhere else would be
+# muxed into the film as though it were the record.  Nothing here uses
+# a shell, an eval or a path it has not validated, so the new tooling
+# adds no alert to the repository's CodeQL gate, and there is no
+# network surface of any kind.
+# ---------------------------------------------------------------------
+
+
+def _warn(message: str) -> None:
+    """Report a non-fatal problem on stderr and carry on.
+
+    The prefix matches playthrough_warn() in
+    playthrough/tooling/env.sh and the sibling modules' own reporting,
+    so every stage of the pipeline is recognisable in one session log.
+    """
+    print("playthrough: WARNING: make_srt.py: %s" % message,
+          file=sys.stderr, flush=True)
+
+
+def _module_dir() -> str:
+    """Return the absolute directory holding this module."""
+    return os.path.abspath(os.path.dirname(__file__))
+
+
+def _playthrough_dir() -> str:
+    """Return the absolute playthrough/ directory.
+
+    Derived from this module's own location rather than from the
+    working directory, exactly as timeline.py and manifest.py derive
+    it, so a helper is correct even when it is invoked from somewhere
+    else.
+    """
+    return os.path.dirname(_module_dir())
+
+
+def _default_path(variable: str, name: str) -> str:
+    """Return an artifact path from env.sh, or the layout default.
+
+    env.sh is the single definition of where the artifacts live, so it
+    is honoured first; the fallback keeps the module correct when
+    nothing has been sourced, as when it is imported by a test.
+    """
+    from_env = os.environ.get(variable)
+    if from_env and from_env.strip():
+        return os.path.abspath(from_env)
+    return os.path.join(_playthrough_dir(), name)
+
+
+def default_srt_path() -> str:
+    """Return the caption file this module writes."""
+    return _default_path(ENV_SRT, SRT_NAME)
+
+
+def default_markdown_path() -> str:
+    """Return the transcript this module writes."""
+    return _default_path(ENV_MARKDOWN, MARKDOWN_NAME)
+
+
+def _refuse_symlink(resolved: str, root: str, label: str) -> None:
+    """Refuse `resolved` if it or a component below `root` is a link.
+
+    Containment alone is not enough: a link inside the tree still
+    points at something else inside the tree, and one planted link
+    could make a write land on the manifest, a captured image or the
+    film while the write itself reported success.
+    """
+    if os.path.islink(resolved):
+        raise TranscriptError(
+            "%s is a symbolic link: %s.  This module writes files, it "
+            "does not follow links to them." % (label, resolved))
+    if not _within(resolved, root):
+        # Reached through a symlinked ancestor ABOVE the root -- a
+        # checkout under a linked directory.  Containment is already
+        # proved, and components above the root are not ours to police.
+        return
+    current = root
+    for part in os.path.relpath(resolved, root).split(os.sep):
+        if part in ("", os.curdir):
+            continue
+        current = os.path.join(current, part)
+        if os.path.islink(current):
+            raise TranscriptError(
+                "%s has a symlinked component at %s; a link there "
+                "could redirect the transcript inside %s"
+                % (label, current, root))
+
+
+def _within(path: str, root: str) -> bool:
+    """Return whether `path` is `root` itself or lies beneath it."""
+    return path == root or path.startswith(root + os.sep)
+
+
+def validated_output_path(
+    value: Any,
+    label: str,
+    root: Optional[str] = None,
+) -> str:
+    """Return an absolute path this module may write, or raise.
+
+    Shape first -- a non-empty string or os.PathLike with no NUL byte,
+    naming a file rather than a directory -- then canonical containment
+    inside the approved root, then no symbolic link on the path or on
+    any component below that root, then no existing non-regular file
+    where the artifact goes.  A FIFO, a device node, /etc/anything and
+    a path outside playthrough/ are all refused here rather than
+    opened.
+
+    `root` is a call site's argument and nothing else: no environment
+    variable reaches it.  It exists so that a test can hold these
+    rules against a temporary directory it owns instead of writing
+    into the committed record of a session.
+    """
+    if value is None:
+        raise TranscriptError("%s is required" % label)
+    if isinstance(value, os.PathLike):
+        value = os.fspath(value)
+    if not isinstance(value, str):
+        raise TranscriptError(
+            "%s must be a string path, got %s"
+            % (label, type(value).__name__))
+    if not value.strip():
+        raise TranscriptError("%s must not be empty" % label)
+    if "\x00" in value:
+        raise TranscriptError("%s must not contain a NUL byte" % label)
+    resolved = os.path.abspath(value)
+    if os.path.isdir(resolved):
+        raise TranscriptError(
+            "%s names a directory, not a file: %s" % (label, resolved))
+    try:
+        approved = approved_root(root)
+    except TimelineError as err:
+        raise TranscriptError(str(err)) from err
+    canonical = os.path.realpath(resolved)
+    if not _within(canonical, approved):
+        raise TranscriptError(
+            "%s must stay inside %s, but %s resolves to %s"
+            % (label, approved, resolved, canonical))
+    _refuse_symlink(resolved, approved, label)
+    if os.path.exists(resolved) and not os.path.isfile(resolved):
+        raise TranscriptError(
+            "%s is not a regular file: %s" % (label, resolved))
+    return resolved
+
+
+def _sync_directory(parent: str) -> None:
+    """Force a rename in `parent` to the device, tolerating refusal.
+
+    os.replace() is atomic with respect to a reader, but the directory
+    entry it creates is not durable until the directory itself is
+    synced.  A filesystem that refuses to sync a directory is reported
+    rather than allowed to end the run: the data itself is already
+    fsynced.
+    """
+    try:
+        descriptor = os.open(parent, os.O_RDONLY | os.O_DIRECTORY)
+    except OSError as err:
+        _warn("could not open %s to sync the rename (%s)"
+              % (parent, err))
+        return
+    try:
+        os.fsync(descriptor)
+    except OSError as err:
+        _warn("could not sync %s after the rename (%s)"
+              % (parent, err))
+    finally:
+        os.close(descriptor)
+
+
+def write_text(path: str, text: str) -> str:
+    """Write `text` to `path` atomically.  Returns the path written.
+
+    UTF-8 with newline="\\n", so the file has LF endings whatever the
+    platform and never a byte-order mark: a mark would sit in front of
+    the first cue's sequence number and stop it being read as one.
+
+    THE REPLACEMENT IS ATOMIC.  Opening the destination "w" truncates
+    it first, so an interruption between the truncation and the last
+    byte -- a full disk, a signal, a crash -- would destroy a
+    transcript that was complete and leave half of one in its place,
+    which is worse than a stale one because the stale one is at least
+    internally consistent.  So the text goes to a temporary file in the
+    SAME directory, is flushed and fsynced so the bytes are durable,
+    and is then moved into place with os.replace(), which either fully
+    succeeds or leaves the previous file untouched.  A failed attempt
+    removes its temporary file rather than leaving litter beside the
+    artifact.
+    """
+    parent = os.path.dirname(path)
+    if not os.path.isdir(parent):
+        raise TranscriptError(
+            "the directory for %s does not exist: %s" % (path, parent))
+    descriptor, temporary = tempfile.mkstemp(
+        dir=parent, prefix=".transcript-", suffix=".tmp")
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8",
+                       newline="\n") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        # mkstemp creates at 0600; both artifacts are committed and
+        # read by the caption muxer and by people, so they carry the
+        # ordinary file mode a plain open() would have produced.
+        os.chmod(temporary, 0o644)
+        os.replace(temporary, path)
+    except OSError:
+        # The destination is untouched at this point, so removing the
+        # temporary file restores the directory exactly as it was.
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+    _sync_directory(parent)
+    return path
+
+
+def write_transcripts(
+    srt_text: str,
+    markdown_text: str,
+    srt_path: Optional[str] = None,
+    markdown_path: Optional[str] = None,
+    root: Optional[str] = None,
+) -> Tuple[str, str]:
+    """Write both artifacts.  Returns the two paths written.
+
+    BOTH texts are already complete before this is called and BOTH
+    paths are validated before EITHER file is opened, so a rejected
+    path or a failed check cannot leave one artifact updated against a
+    stale other.  Each write is then atomic in itself, which is as
+    close to writing two files at once as a filesystem allows.
+    """
+    srt_target = validated_output_path(
+        default_srt_path() if srt_path is None else srt_path,
+        "the caption path", root)
+    markdown_target = validated_output_path(
+        default_markdown_path() if markdown_path is None
+        else markdown_path,
+        "the transcript path", root)
+    if srt_target == markdown_target:
+        raise TranscriptError(
+            "both artifacts would be written to %s; the captions and "
+            "the transcript are two files" % srt_target)
+    write_text(srt_target, srt_text)
+    write_text(markdown_target, markdown_text)
+    return srt_target, markdown_target
+
+
+# ---------------------------------------------------------------------
+# The command line.  Three paths and two switches, and deliberately
+# nothing else: there is no flag that turns the captions into WebVTT,
+# no flag that styles or positions them, and no flag that burns them
+# into the picture.  The track is a selectable mov_text stream, which
+# is a requirement and not a default to be overridden.
+# ---------------------------------------------------------------------
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Return the command line parser."""
+    parser = argparse.ArgumentParser(
+        prog="make_srt.py",
+        description=(
+            "Write playthrough/transcript.srt and "
+            "playthrough/transcript.md from playthrough/timeline.json "
+            "in one pass, so the timestamped in-character record and "
+            "the caption cues are the same numbers.  Each cue occupies "
+            "its frame's own window in video time, read from the "
+            "timeline rather than recomputed, and the captions are "
+            "muxed as a selectable track -- never burned into the "
+            "picture."))
+    parser.add_argument(
+        "--timeline", default=None, metavar="PATH",
+        help=("the timeline to read; defaults to PLAYTHROUGH_TIMELINE "
+              "or <repository>/playthrough/timeline.json"))
+    parser.add_argument(
+        "--srt", default=None, metavar="PATH",
+        help=("the caption file to write; defaults to "
+              "PLAYTHROUGH_TRANSCRIPT_SRT or "
+              "<repository>/playthrough/transcript.srt"))
+    parser.add_argument(
+        "--md", default=None, metavar="PATH",
+        help=("the transcript to write; defaults to "
+              "PLAYTHROUGH_TRANSCRIPT_MD or "
+              "<repository>/playthrough/transcript.md"))
+    parser.add_argument(
+        "-n", "--dry-run", action="store_true",
+        help=("build and check both artifacts and report the counts "
+              "without writing either, leaving the committed record "
+              "untouched"))
+    parser.add_argument(
+        "-q", "--quiet", action="store_true",
+        help="suppress the summary line on success")
+    return parser
+
+
+def _report(problems: Sequence[str]) -> None:
+    """Print every problem on stderr, one per line."""
+    for problem in problems:
+        print("make_srt.py: %s" % problem, file=sys.stderr)
+
+
+def main(
+    argv: Optional[Sequence[str]] = None,
+    root: Optional[str] = None,
+) -> int:
+    """Run the command line and return an exit status.
+
+    Zero only when both artifacts were built, every check passed, and
+    -- unless --dry-run was given -- both were written.  A run_pipeline
+    stage reads nothing but this status, so an exit status that is
+    wrong is a whole stage that appears to have worked.
+
+    `root` is a call site's argument and nothing else: argparse never
+    produces it, no environment variable reaches it, and the shell
+    entry point below never passes one.  It exists so that a test can
+    hold the REAL command line against a temporary directory it owns,
+    instead of either testing a paraphrase of it or writing into the
+    committed artifact tree, which is the captured evidence of a
+    session and is not a test fixture.
+    """
+    args = build_parser().parse_args(argv)
+    try:
+        source = (default_timeline_path() if args.timeline is None
+                  else args.timeline)
+        # ONE read.  Through the sibling's own hardened reader, so the
+        # document this module renders is the document the renderer
+        # reads, held to the same containment and no-symlink rules and
+        # opened with O_NOFOLLOW.
+        document = read_timeline(source, root)
+        srt_text, markdown_text, cues = build_transcripts(document)
+        entries = timeline_entries(document)
+        summary = summarise(document, entries, cues, markdown_text)
+        problems = summary_problems(summary)
+        if problems:
+            _report(problems)
+            print("make_srt.py: %d problem(s) found" % len(problems),
+                  file=sys.stderr)
+            return 1
+        for advisory in commentary_advisories(cues):
+            _warn(advisory)
+        if args.dry_run:
+            destination = "nothing written"
+        else:
+            destination = "%s, %s" % write_transcripts(
+                srt_text, markdown_text, args.srt, args.md, root)
+        if not args.quiet:
+            print(summary_line(summary, destination))
+    except TranscriptError as err:
+        print("make_srt.py: %s" % err, file=sys.stderr)
+        return 1
+    except TimelineError as err:
+        print("make_srt.py: %s" % err, file=sys.stderr)
+        return 1
+    except OSError as err:
+        print("make_srt.py: %s" % err, file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
