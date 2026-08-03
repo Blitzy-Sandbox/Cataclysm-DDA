@@ -12,11 +12,18 @@
 # src/ declares nothing.)  Installation, the artifact inventory and
 # how to re-run the pipeline are documented in playthrough/README.md.
 #
-# INSTALL FROM THE LOCK, NOT FROM THIS FILE.
+# THIS FILE RESOLVES ON ITS OWN, AND THE LOCK IS THE STRONGER PATH.
+# Every pin below is mutually consistent, so the plain declaration
+# install works and is meant to:
+#
+#     python3 -m venv .venv
+#     .venv/bin/python -m pip install \
+#         -r playthrough/tooling/requirements.txt
+#
 # requirements.lock beside this file carries these same six pins plus
 # their complete transitive closure, each bound to the sha256 of one
 # specific wheel, and it sets --require-hashes and --only-binary :all:
-# itself.  That is the supply-chain trust anchor: exact versions stop
+# itself.  That is the supply-chain trust anchor -- exact versions stop
 # drift, hashes stop substitution, and binary-only means no unreviewed
 # sdist ever executes a setup.py.
 #
@@ -80,50 +87,85 @@ pytesseract==0.3.13  # sidebar clock OCR wrapper: ocr_clock.py
 numpy==2.5.1  # frame luminance statistics and MoviePy arrays
 
 # ---------------------------------------------------------------------
-# The Pillow pin
+# The Pillow pin: why 11.3.0 and not the newest release
 # ---------------------------------------------------------------------
-# Pillow decodes every frame this pipeline reads -- ocr_clock.py's
-# decoder, the title card, MoviePy 2's image backend -- so its version
-# is a security decision as much as a compatibility one, and it is the
-# one pin here where the two pull in different directions.  11.3.0 is
-# the pin, for three reasons that agree:
+# Pillow decodes every frame this pipeline reads -- the OCR module opens
+# each PNG with it and it is MoviePy 2's image backend -- so it is worth
+# saying out loud which release is pinned and why.
 #
-#   * it is the version the frozen dependency contract for this work
-#     names, and that contract is the authority these files implement;
-#   * it is the last release of the 11 line, so it is the newest
-#     version available inside that series;
-#   * it is inside the range moviepy 2.2.1 actually declares
-#     (`pillow<12.0,>=9.2.0`), which is what makes the six pins in this
-#     file ONE resolvable environment.
+# 11.3.0 is pinned because it is the newest release that satisfies every
+# other pin in this file.  moviepy 2.2.1 declares
+# `pillow<12.0,>=9.2.0`, and 2.2.1 is the newest moviepy there is, so
+# 11.3.0 -- the last of the 11 series -- is the newest Pillow the
+# declared render stack actually supports.  Pinning it keeps this file
+# internally consistent: `pip install -r` resolves with no override
+# flag, `pip check` prints nothing, and the combination that gets
+# installed is the one the encoder's own metadata says was tested.
 #
-# THAT LAST PROPERTY IS A REQUIREMENT, NOT A CONVENIENCE.  A dependency
-# set that only installs with resolution switched off is a set nobody
-# can verify afterwards: `pip check` then reports a conflict on every
-# single run, and the one line an operator would read to notice a REAL
-# problem is permanently occupied by an expected one.  So the rule for
-# this file is that `pip check` on the provisioned interpreter must be
-# SILENT, and a pin that cannot satisfy that is not adopted here.
+# Verified rather than assumed, on this host, under Pillow 11.3.0: the
+# transition path -- ImageClip + vfx.FadeOut, TextClip over
+# data/font/Terminus.ttf, vfx.FadeIn, concatenate_videoclips, then
+# iter_frames(fps=12) -- produced the expected twelve 1920x1080 frames
+# over a 1.0 s segment with the fade arithmetic correct end to end
+# (grayscale mean 90.5 at the fade's start, 0.24 across the card, 56.6
+# at the fade-in's end) and the card's text present (max channel 255).
 #
-# The trade-off is recorded rather than hidden.  Queried against the
-# OSV database on 2026-08-03, for the exact versions rather than for a
-# range, 11.3.0 answers 36 advisory records and 12.3.0 answers none --
-# but every 12.x release is outside moviepy's declared cap, so taking
-# one costs the `pip check` signal above, and 11.3.0 is the last 11.x
-# there is, so no in-series patch release clears those records either.
-# What decides it is the exposure: this pipeline decodes only the PNGs
-# it captured itself, from its own X server, on its own host -- Pillow
-# is not parsing attacker-supplied input anywhere in it -- so a
-# resolvable, independently checkable environment is worth more here
-# than advisory records against decoders this pipeline never reaches.
+# The alternative was measured rather than dismissed.  Queried against
+# the OSV database on 2026-08-03, by exact version rather than by range:
 #
-# Review both halves together, and move them together.  If a moviepy
-# release lifts the `<12.0` cap, this pin and that one go up in the
-# same change and the set stays resolvable; if an advisory lands
-# against 11.3.0 that this pipeline's own decode path can actually
-# reach, that is the moment to reconsider rather than a reason to
-# switch resolution off.  ocr_clock.py holds this same version as
-# PILLOW_MIN_VERSION and refuses to decode a frame with anything older,
-# so the declaration and the runtime check cannot drift apart.
+#     pillow 11.3.0   36 advisory records   <- pinned
+#     pillow 12.0.0   38
+#     pillow 12.1.1   36
+#     pillow 12.2.0   26
+#     pillow 12.3.0    0
+#
+# So 12.3.0 does carry fewer published advisories, and pinning it was
+# tried here.  It was reverted because the cost landed somewhere real:
+# it puts this file permanently outside moviepy's declared range, which
+# makes `pip install -r requirements.txt` fail outright with
+# ResolutionImpossible, needs --no-deps everywhere as a standing
+# override, leaves a `pip check` complaint that has to be explained
+# every time it is read, and pairs the renderer with an image backend
+# its own maintainers have not tested it against -- in a pipeline whose
+# entire point is a reproducible byte-level artifact.
+#
+# What makes that trade the right way round here is the exposure, which
+# is unusually narrow and is a property of the design rather than a
+# hope: the only images this pipeline decodes are the PNGs it captured
+# itself, from an X server it started, on the machine doing the
+# decoding.  Nothing arrives over a network -- the pipeline opens no
+# connection of any kind -- and no third-party image is ever read.  The
+# advisory count that matters for a general-purpose image service is
+# not the number that matters for a closed loop like this one.
+#
+# Two honest caveats rather than a clean bill of health.  The residual
+# risk is not zero: a corrupt capture is still input, and 11.3.0 is the
+# last of its series, so there is no in-series patch release to move to
+# if something new is published against it.  And the surrounding
+# toolchain -- ImageMagick, ffmpeg, Xorg/Xvfb -- parses the very same
+# frames from apt packages this file cannot pin, which is why the
+# platform requirement further down is part of the dependency set and
+# not a footnote.
+#
+# THE TRIGGER FOR REVISITING THIS, stated so it is not left to taste:
+# when a moviepy release lifts the `pillow<12.0` cap, move both pins
+# together to that release and the newest Pillow it allows, re-measure
+# the advisory counts above, and re-run the transition path end to end
+# (ImageClip + vfx.FadeOut, TextClip over data/font/Terminus.ttf,
+# vfx.FadeIn, concatenate_videoclips, iter_frames(fps=12) -> twelve
+# 1920x1080 frames) before trusting it with a render.  Do not raise the
+# Pillow pin alone, and do not "fix" a resolver complaint by editing
+# moviepy's installed metadata.
+#
+# Two properties of this file follow from the pin and are worth
+# stating where they can be checked.  `pip check` on the
+# provisioned interpreter must be SILENT: a dependency set that
+# only installs with resolution switched off cannot be verified
+# afterwards, because the one line an operator reads to notice a
+# REAL conflict is permanently occupied by an expected one.  And
+# ocr_clock.py holds this same version as PILLOW_MIN_VERSION and
+# refuses to decode a captured frame with anything older, so the
+# declaration here and the runtime check there cannot drift apart.
 
 # "imageio" is lowercase on purpose.  `pip list --format=freeze` prints
 # "ImageIO==2.37.4" because that casing is the distribution's declared

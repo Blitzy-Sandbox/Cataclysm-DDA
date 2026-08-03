@@ -150,9 +150,11 @@ and the binary and every directory above it are checked for
 third-party ownership and group- or world-writability; one that fails
 is treated as absent rather than run, which for ``convert`` means the
 Pillow engine takes over loudly.  And the installed Pillow must be at
-least PILLOW_MIN_VERSION -- the version requirements.txt pins -- since
-every frame is decoded by Pillow and an older release is a different
-decoder than the one this pipeline reviewed.  Both refusals have a
+least PILLOW_MIN_VERSION, which is the pin in
+``playthrough/tooling/requirements.txt``: every frame is decoded by
+Pillow, so an interpreter carrying an older one is not the environment
+this pipeline was verified in and the mismatch is reported here rather
+than discovered from a wrong duration.  Both refusals have a
 documented, per-invocation override for diagnosis
 (``$PLAYTHROUGH_ALLOW_UNVERIFIED_EXECUTABLES=1``,
 ``$PLAYTHROUGH_ALLOW_VULNERABLE_PILLOW=1``); neither is ever the
@@ -388,29 +390,35 @@ TESSERACT_BIN = "tesseract"
 # The lowest Pillow this module will decode a captured frame with, and
 # it is exactly the version playthrough/tooling/requirements.txt pins.
 #
-# Every frame goes through Pillow -- the convert path decodes convert's
-# output with it, the Pillow path does the whole chain in it, and
-# _assert_rect_fits() opens the PNG with it -- so the decoder is the
-# one component every reading in the finished movie depends on, and it
-# is held to the reviewed pin rather than to whatever happens to be
-# installed.  11.3.0 is that pin: the last release of the 11 line, so
-# it carries every fix published in the series, and inside the range
-# moviepy 2.2.1 declares (`pillow<12.0`), which is what keeps the
-# pipeline's six pins one resolvable set with a silent `pip check`.
-# requirements.txt records that trade-off in full.
+# THIS TRACKS THE PIN, and that is the whole contract: it is exactly
+# `pillow==11.3.0` from playthrough/tooling/requirements.txt, so an
+# interpreter that satisfies the requirements file satisfies this check
+# and one that does not is named before a frame is read rather than
+# after a duration comes out wrong.  Every frame goes through Pillow --
+# the convert path decodes convert's output with it, the Pillow path
+# does the whole chain in it, and _assert_rect_fits() opens the PNG
+# with it -- so it is the one library on the pipeline's only hot path,
+# which is why the version is asserted at all instead of assumed.
 #
-# THIS TUPLE AND THAT PIN ARE ONE DECISION.  The diagnostics below
-# quote this constant rather than a literal version, so a remediation
-# message can never name a release this check would then refuse.
+# 11.3.0 is the newest release moviepy 2.2.1's declared
+# `pillow<12.0,>=9.2.0` range allows, it is the last release of the 11
+# line so it carries every fix published in that series, and
+# requirements.txt records the advisory measurement behind preferring
+# that consistency to a newer major.  MOVE THE TWO TOGETHER: raising
+# this constant above the pin makes the provisioned interpreter fail
+# this gate, which is precisely the break this comment exists to
+# prevent.
 PILLOW_MIN_VERSION = (11, 3, 0)
 
 # The pinned version as a requirement specifier, for the diagnostics
-# that tell an operator what to install.  Derived, never repeated.
+# that tell an operator what to install.  Derived, never repeated,
+# so a remediation message can never name a release this check would
+# then refuse.
 PILLOW_PIN_SPEC = "pillow==%s" % ".".join(
     str(part) for part in PILLOW_MIN_VERSION)
 
-# The documented, deliberate override, for diagnosing on a host that
-# cannot yet be moved to the pinned release.  It is loud, it is
+# The documented, deliberate override, for diagnosing on a host whose
+# interpreter carries an older Pillow than the pin.  It is loud, it is
 # per-invocation, and it never becomes the default.
 ENV_ALLOW_VULNERABLE_PILLOW = "PLAYTHROUGH_ALLOW_VULNERABLE_PILLOW"
 
@@ -1472,11 +1480,14 @@ def pillow_complaint() -> Optional[str]:
                 % (PILLOW_VERSION, wanted))
     if not _at_least(found, PILLOW_MIN_VERSION):
         return ("Pillow %s is installed, but %s or newer is required: "
-                "every captured frame is decoded by Pillow, %s is the "
-                "version this pipeline pins and reviewed, and it is "
-                "the last release of its series -- so anything older "
-                "is a decoder missing fixes that one carries.  "
-                "Install playthrough/tooling/requirements.lock (%s)."
+                "every captured frame is decoded by Pillow, and %s is "
+                "the version playthrough/tooling/requirements.txt pins "
+                "and this pipeline was verified against -- it is the "
+                "last release of its series, so anything older is a "
+                "decoder missing fixes that one carries.  Install "
+                "playthrough/tooling/requirements.lock (%s) into the "
+                "interpreter this pipeline runs; env.sh reports it as "
+                "PLAYTHROUGH_PYTHON."
                 % (PILLOW_VERSION, wanted, wanted, PILLOW_PIN_SPEC))
     return None
 
@@ -1500,6 +1511,37 @@ def assert_pillow_supported(
     _warn(
         "%s Continuing because %s=1"
         % (complaint, ENV_ALLOW_VULNERABLE_PILLOW), notes)
+
+
+def preflight_problems() -> List[str]:
+    """Return every reason this module could not read a frame yet.
+
+    bootstrap_problems() answers "did the dependencies import".  This
+    answers the larger question ``--preflight`` is actually asked, by
+    adding the one condition that is checked at the point of use and
+    would therefore surface no earlier than frame 1: whether the Pillow
+    that decodes every frame is the version the pin names.
+
+    Both failures have the same shape -- a whole session of frames that
+    each look like an honest unreadable clock while every count still
+    tallies -- so both belong in the check that runs ONCE before any
+    frame exists rather than in the one that runs per frame.  The
+    documented override is honoured exactly as it is at the point of
+    use: with ``$PLAYTHROUGH_ALLOW_VULNERABLE_PILLOW=1`` the mismatch is
+    announced and is not a problem.
+
+    An import failure short-circuits the version question, because
+    "PIL did not import" is already the report and asking a module that
+    is not there for its version would say nothing further.
+    """
+    problems = bootstrap_problems()
+    if problems:
+        return problems
+    try:
+        assert_pillow_supported()
+    except ToolchainError as exc:
+        problems.append(str(exc))
+    return problems
 
 
 def _run(
@@ -2771,11 +2813,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     problems = bootstrap_problems()
     if args.preflight:
+        # The preflight asks the WIDER question: not just whether the
+        # dependencies imported, but whether the Pillow that decodes
+        # every frame is the pinned one.  See preflight_problems().
+        problems = preflight_problems()
         for problem in problems:
             LOG.error("%s", problem)
         if problems:
             return EXIT_FAULT
-        LOG.info("every dependency of ocr_clock.py is importable")
+        LOG.info(
+            "every dependency of ocr_clock.py is importable, and "
+            "Pillow %s satisfies the pinned %s", PILLOW_VERSION,
+            ".".join(str(part) for part in PILLOW_MIN_VERSION))
         return EXIT_OK
     if problems:
         # Reported here rather than at import time so that this status

@@ -189,11 +189,17 @@ DATE_LINE = "Thursday, Mar 8"
 # userdir really produces -- the engine's constructor default layout is
 # legacy_labels_sidebar at 44 cells [src/panels.cpp:412-418], not
 # custom_sidebar's 36 -- so the harness's example is the one a first
-# session computes.  Both worked examples are quoted in capture.sh's
-# refusal to substitute either, and both are asserted below.
+# session computes.
 CROP = "352x1072+1568+4"
-EXAMPLE_CROP_DEFAULT = "352x1072+1568+4"
-EXAMPLE_CROP_CUSTOM = "288x1072+1632+4"
+# The rectangle capture.sh quotes in its geometry diagnostics as an
+# EXAMPLE of the form PLAYTHROUGH_CAPTURE_RECT takes.  It is not a
+# fallback and nothing substitutes it; it belongs to a 36-cell
+# custom_sidebar, while the engine's own default layout is the 44-cell
+# legacy_labels_sidebar below.  Both are named in the diagnostics, with
+# their layouts, so that neither can quietly become "the documented"
+# one, and both are asserted below.
+EXAMPLE_CROP = "288x1072+1632+4"
+DEFAULT_LAYOUT_CROP = "352x1072+1568+4"
 
 # The twenty-two keys the payload must carry, in order.  CLOCK_DATE is
 # the date exactly as the delegate read it and DATE is the value this
@@ -667,6 +673,23 @@ class CaptureFixture(unittest.TestCase):
         if not os.path.isdir(self.frames):
             return []
         return sorted(os.listdir(self.frames))
+
+    @staticmethod
+    def set_immutable(path, wanted):
+        """Set or clear the immutable attribute; report whether it took.
+
+        A directory mode is no use for "this cannot be written to" when
+        the suite may run as uid 0, since root ignores it.  chattr is
+        the honest expression of that condition, and a filesystem that
+        does not support it is reported rather than worked around.
+        """
+        flag = "+i" if wanted else "-i"
+        try:
+            result = subprocess.run(
+                ["chattr", flag, path], capture_output=True, timeout=30)
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return result.returncode == 0
 
     def rejected(self):
         """Every withdrawn file, sorted."""
@@ -1211,6 +1234,34 @@ class TestOverwritingAnExistingFrame(CaptureFixture):
         with open(path, "rb") as handle:
             return path, handle.read()
 
+    def test_a_frames_directory_that_refuses_writes_is_not_a_collision(
+            self):
+        """An unwritable directory is a capture failure, not a reuse.
+
+        Both failures arrive as the same refusal from noclobber, and
+        reporting the wrong one is not just confusing: "take the next
+        index" is the remedy for a collision and is actively harmful
+        here, because every index would fail identically and a caller
+        following that advice would walk the counter forward through a
+        whole session of failures.
+        """
+        # Immutability rather than a mode, because this suite may run as
+        # uid 0 and root ignores directory permissions.  Skipped rather
+        # than faked where the filesystem cannot express it.
+        os.makedirs(self.frames, exist_ok=True)
+        if not self.set_immutable(self.frames, True):
+            self.skipTest(
+                "this filesystem cannot make a directory immutable, "
+                "and a mode would not stop uid 0 from writing")
+        self.addCleanup(self.set_immutable, self.frames, False)
+        status, _, err = self.run_capture("1")
+        self.assertEqual(
+            status, EX_CAPTURE,
+            msg="EX_EXISTS would mean the index was taken; it is not")
+        self.assertIn("nothing is there to be in the way", err)
+        self.assertIn("next index would fail identically", err)
+        self.assertEqual(self.frame_files(), [])
+
     def test_an_existing_frame_is_not_clobbered(self):
         path, before = self.existing()
         status, _, err = self.run_capture("1")
@@ -1504,9 +1555,9 @@ class TestTheCropResolution(CaptureFixture):
         status, _, err = self.run_capture("1", STUB_GEOMETRY_RC="1")
         self.assertEqual(status, EX_GEOMETRY)
         self.assertIn("is NOT substituted", err)
-        self.assertIn(EXAMPLE_CROP_DEFAULT, err)
+        self.assertIn(DEFAULT_LAYOUT_CROP, err)
         self.assertIn(
-            EXAMPLE_CROP_CUSTOM, err,
+            EXAMPLE_CROP, err,
             msg=("both worked examples are quoted, because naming one "
                  "as THE rectangle is how a reader comes to believe a "
                  "literal describes their run"))
@@ -1522,10 +1573,31 @@ class TestTheCropResolution(CaptureFixture):
         status, _, err = self.run_capture("1")
         self.assertEqual(status, EX_GEOMETRY)
         self.assertIn("missing", err)
-        self.assertIn("is not substituted", err)
-        self.assertIn(EXAMPLE_CROP_DEFAULT, err)
-        self.assertIn(EXAMPLE_CROP_CUSTOM, err)
+        self.assertIn("NOT substituted", err)
+        self.assertIn(DEFAULT_LAYOUT_CROP, err)
+        self.assertIn(EXAMPLE_CROP, err)
         self.assertEqual(self.frame_files(), [])
+
+    def test_the_diagnostics_name_the_layout_each_rectangle_belongs_to(
+            self):
+        """A quoted rectangle carries the layout it is right for.
+
+        Naming one on its own is how a literal goes stale: the value
+        below belongs to a 36-cell custom_sidebar, while the engine's own
+        default is the 44-cell legacy_labels_sidebar, and a reader who
+        took the first for "the documented crop" would be cropping 64
+        pixels short of the column while every count still tallied.
+        """
+        for setup in ({"STUB_GEOMETRY_RC": "1"}, {}):
+            if not setup:
+                os.unlink(
+                    os.path.join(self.tooling, "sidebar_geometry.py"))
+            with self.subTest(geometry_absent=not setup):
+                _, _, err = self.run_capture("1", **setup)
+                self.assertIn(DEFAULT_LAYOUT_CROP, err)
+                self.assertIn("legacy_labels_sidebar", err)
+                self.assertIn(EXAMPLE_CROP, err)
+                self.assertIn("custom_sidebar", err)
 
     def test_the_sanctioned_way_past_it_is_an_explicit_rectangle(self):
         os.unlink(os.path.join(self.tooling, "sidebar_geometry.py"))

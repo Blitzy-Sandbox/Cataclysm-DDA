@@ -309,6 +309,16 @@ playthrough_secure_dir() {
             "this user does not own"
         return 1
     fi
+    # The mode BEFORE the chmod, so that a repair can be announced.  A
+    # directory found at the mode it should already have is the normal
+    # case and says nothing -- sourcing this file has to stay silent --
+    # but one found wider is a different matter: something else opened
+    # the pipeline's private runtime state to other accounts, and the
+    # repair is the only moment anyone would ever learn that happened.
+    # Fixing it quietly would leave the operator believing it had always
+    # been 0700.
+    local previous
+    previous="$(stat -Lc '%a' -- "${path}" 2>/dev/null || true)"
     if ! chmod "${mode}" -- "${path}"; then
         playthrough_die "cannot chmod ${mode} ${label} '${path}'"
         return 1
@@ -318,6 +328,13 @@ playthrough_secure_dir() {
         playthrough_die "${label} '${path}' is mode" \
             "'${actual:-unknown}' after chmod ${mode}, not ${mode}"
         return 1
+    fi
+    if [ -n "${previous}" ] && [ "${previous}" != "${mode}" ]; then
+        playthrough_warn "${label} '${path}' was mode" \
+            "${previous}, not ${mode}; it has been repaired to" \
+            "${mode}, but something outside this pipeline widened it," \
+            "and anything written there while it was open was" \
+            "readable by other accounts on this host"
     fi
     return 0
 }
@@ -2598,58 +2615,69 @@ playthrough_env_summary() {
     # Resolve the platform verdict so the record carries it.  It is
     # memoised and warns at most once, and a strict-mode refusal is the
     # caller's business rather than the summary's, hence `|| true`.
+    # The pairs are collected in an ARRAY rather than written straight
+    # into printf's argument list, and that is a correctness decision
+    # rather than a style one.  A continued argument list needs a
+    # trailing backslash on every line, and a single missing one does
+    # not fail: bash ends the printf there and parses the next line as a
+    # command of its own, so the report silently stops early and the
+    # dropped fields -- XAUTHORITY, IMAGEIO_FFMPEG_EXE and the platform
+    # verdict among them -- read as absent rather than as unprinted.
+    # `bash -n` accepts it, because nothing is syntactically wrong.
+    # Inside ( ... ) no continuations are needed at all, so that failure
+    # cannot happen here again.  KEEP IT THIS WAY.
     playthrough_check_platform >/dev/null 2>&1 || true
     # The trust state is recomputed here for the same reason: this is
     # the record of what a session ran under, and "diagnostic" is the
     # single most important thing it can say.  Refusing is the launch's
     # and the capture's business, not the summary's.
     playthrough_trust_refresh || true
-    printf '%s\n' "playthrough environment contract"
-    printf '  %-26s %s\n' \
-        "DISPLAY" "${DISPLAY}" \
-        "SDL_VIDEODRIVER" "${SDL_VIDEODRIVER}" \
-        "SDL_AUDIODRIVER" "${SDL_AUDIODRIVER}" \
-        "LIBGL_ALWAYS_SOFTWARE" "${LIBGL_ALWAYS_SOFTWARE}" \
-        "XDG_RUNTIME_DIR" "${XDG_RUNTIME_DIR}" \
-        "PYTHONDONTWRITEBYTECODE" "${PYTHONDONTWRITEBYTECODE}" \
-        "PLAYTHROUGH_CLONE_INDEX" "${PLAYTHROUGH_CLONE_INDEX}" \
-        "PLAYTHROUGH_RUNTIME_DIR" "${PLAYTHROUGH_RUNTIME_DIR}" \
-        "PLAYTHROUGH_SCREEN" "${PLAYTHROUGH_SCREEN}" \
-        "PLAYTHROUGH_WINDOW_CLASS" "${PLAYTHROUGH_WINDOW_CLASS}" \
-        "PLAYTHROUGH_TILESET" "${PLAYTHROUGH_TILESET}" \
-        "PLAYTHROUGH_SIDEBAR_LAYOUT" "${PLAYTHROUGH_SIDEBAR_LAYOUT}" \
-        "PLAYTHROUGH_SIDEBAR_CELLS" "${PLAYTHROUGH_SIDEBAR_CELLS}" \
-        "PLAYTHROUGH_REPO_ROOT" "${PLAYTHROUGH_REPO_ROOT}" \
-        "PLAYTHROUGH_DIR" "${PLAYTHROUGH_DIR}" \
-        "PLAYTHROUGH_FRAMES_DIR" "${PLAYTHROUGH_FRAMES_DIR}" \
-        "PLAYTHROUGH_BUILD_DIR" "${PLAYTHROUGH_BUILD_DIR}" \
-        "PLAYTHROUGH_TRANSITIONS_DIR" \
-        "${PLAYTHROUGH_TRANSITIONS_DIR}" \
-        "PLAYTHROUGH_USERDIR" "${PLAYTHROUGH_USERDIR}" \
-        "PLAYTHROUGH_USERDIR_ARG" "${PLAYTHROUGH_USERDIR_ARG}" \
-        "PLAYTHROUGH_MANIFEST" "${PLAYTHROUGH_MANIFEST}" \
-        "PLAYTHROUGH_OBSERVATIONS" "${PLAYTHROUGH_OBSERVATIONS}" \
-        "PLAYTHROUGH_DATE_AUDIT" "${PLAYTHROUGH_DATE_AUDIT}" \
-        "PLAYTHROUGH_TIMELINE" "${PLAYTHROUGH_TIMELINE}" \
-        "PLAYTHROUGH_MOVIE" "${PLAYTHROUGH_MOVIE}" \
-        "PLAYTHROUGH_MOVIE_CC" "${PLAYTHROUGH_MOVIE_CC}" \
-        "PLAYTHROUGH_SUPERVISOR_XVFB" \
-        "${PLAYTHROUGH_SUPERVISOR_XVFB}" \
-        "PLAYTHROUGH_SUPERVISOR_WM" "${PLAYTHROUGH_SUPERVISOR_WM}" \
-        "PLAYTHROUGH_PYTHON" "${PLAYTHROUGH_PYTHON}" \
-        "PLAYTHROUGH_PYTHON_VERSION" \
-        "${PLAYTHROUGH_PYTHON_VERSION:-<unknown>}" \
-        "PLAYTHROUGH_PYTHON_ABI" "${PLAYTHROUGH_PYTHON_ABI}" \
-        "XAUTHORITY" "${XAUTHORITY:-<unset>}" \
-        "PLAYTHROUGH_XAUTHORITY_ORIGIN" \
-        "${PLAYTHROUGH_XAUTHORITY_ORIGIN}" \
-        "IMAGEIO_FFMPEG_EXE" "${IMAGEIO_FFMPEG_EXE:-<unset>}" \
-        "PLAYTHROUGH_PLATFORM" "${PLAYTHROUGH_PLATFORM:-<unchecked>}" \
-        "PLAYTHROUGH_PLATFORM_SUPPORTED" \
-        "${PLAYTHROUGH_PLATFORM_SUPPORTED:-<unchecked>}" \
-        "PLAYTHROUGH_TRUST_STATE" "${PLAYTHROUGH_TRUST_STATE}" \
-        "PLAYTHROUGH_TRUST_BYPASSES" \
+    local _playthrough_summary_fields=(
+        "DISPLAY" "${DISPLAY}"
+        "SDL_VIDEODRIVER" "${SDL_VIDEODRIVER}"
+        "SDL_AUDIODRIVER" "${SDL_AUDIODRIVER}"
+        "LIBGL_ALWAYS_SOFTWARE" "${LIBGL_ALWAYS_SOFTWARE}"
+        "XDG_RUNTIME_DIR" "${XDG_RUNTIME_DIR}"
+        "XAUTHORITY" "${XAUTHORITY:-<unset>}"
+        "PYTHONDONTWRITEBYTECODE" "${PYTHONDONTWRITEBYTECODE}"
+        "IMAGEIO_FFMPEG_EXE" "${IMAGEIO_FFMPEG_EXE:-<unset>}"
+        "PLAYTHROUGH_CLONE_INDEX" "${PLAYTHROUGH_CLONE_INDEX}"
+        "PLAYTHROUGH_RUNTIME_DIR" "${PLAYTHROUGH_RUNTIME_DIR}"
+        "PLAYTHROUGH_XAUTHORITY_ORIGIN"
+        "${PLAYTHROUGH_XAUTHORITY_ORIGIN}"
+        "PLAYTHROUGH_PLATFORM" "${PLAYTHROUGH_PLATFORM:-<unchecked>}"
+        "PLAYTHROUGH_PLATFORM_SUPPORTED"
+        "${PLAYTHROUGH_PLATFORM_SUPPORTED:-<unchecked>}"
+        "PLAYTHROUGH_SCREEN" "${PLAYTHROUGH_SCREEN}"
+        "PLAYTHROUGH_WINDOW_CLASS" "${PLAYTHROUGH_WINDOW_CLASS}"
+        "PLAYTHROUGH_TILESET" "${PLAYTHROUGH_TILESET}"
+        "PLAYTHROUGH_SIDEBAR_LAYOUT" "${PLAYTHROUGH_SIDEBAR_LAYOUT}"
+        "PLAYTHROUGH_SIDEBAR_CELLS" "${PLAYTHROUGH_SIDEBAR_CELLS}"
+        "PLAYTHROUGH_REPO_ROOT" "${PLAYTHROUGH_REPO_ROOT}"
+        "PLAYTHROUGH_DIR" "${PLAYTHROUGH_DIR}"
+        "PLAYTHROUGH_FRAMES_DIR" "${PLAYTHROUGH_FRAMES_DIR}"
+        "PLAYTHROUGH_BUILD_DIR" "${PLAYTHROUGH_BUILD_DIR}"
+        "PLAYTHROUGH_TRANSITIONS_DIR" "${PLAYTHROUGH_TRANSITIONS_DIR}"
+        "PLAYTHROUGH_USERDIR" "${PLAYTHROUGH_USERDIR}"
+        "PLAYTHROUGH_USERDIR_ARG" "${PLAYTHROUGH_USERDIR_ARG}"
+        "PLAYTHROUGH_MANIFEST" "${PLAYTHROUGH_MANIFEST}"
+        "PLAYTHROUGH_OBSERVATIONS" "${PLAYTHROUGH_OBSERVATIONS}"
+        "PLAYTHROUGH_DATE_AUDIT" "${PLAYTHROUGH_DATE_AUDIT}"
+        "PLAYTHROUGH_TIMELINE" "${PLAYTHROUGH_TIMELINE}"
+        "PLAYTHROUGH_MOVIE" "${PLAYTHROUGH_MOVIE}"
+        "PLAYTHROUGH_MOVIE_CC" "${PLAYTHROUGH_MOVIE_CC}"
+        "PLAYTHROUGH_SUPERVISOR_XVFB" "${PLAYTHROUGH_SUPERVISOR_XVFB}"
+        "PLAYTHROUGH_SUPERVISOR_WM" "${PLAYTHROUGH_SUPERVISOR_WM}"
+        "PLAYTHROUGH_PYTHON" "${PLAYTHROUGH_PYTHON}"
+        "PLAYTHROUGH_PYTHON_VERSION"
+        "${PLAYTHROUGH_PYTHON_VERSION:-<unknown>}"
+        "PLAYTHROUGH_PYTHON_ABI" "${PLAYTHROUGH_PYTHON_ABI}"
+        "PLAYTHROUGH_TRUST_STATE" "${PLAYTHROUGH_TRUST_STATE}"
+        "PLAYTHROUGH_TRUST_BYPASSES"
         "${PLAYTHROUGH_TRUST_BYPASSES:-<none>}"
+    )
+    printf '%s\n' "playthrough environment contract"
+    printf '  %-26s %s\n' "${_playthrough_summary_fields[@]}"
 }
 
 # ---------------------------------------------------------------------

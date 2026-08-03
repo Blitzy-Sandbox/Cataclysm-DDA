@@ -54,6 +54,7 @@ provisioned.
 
 import contextlib
 import datetime
+import errno
 import io
 import json
 import os
@@ -113,6 +114,25 @@ def _read_bytes(path):
 def _remove_tree(path):
     """Remove a temporary directory tree created by this suite."""
     shutil.rmtree(path, ignore_errors=True)
+
+
+@contextlib.contextmanager
+def _patched(module, **attributes):
+    """Swap module attributes for a block, then restore them.
+
+    Used to make a write fail the way a full disk makes it fail, which
+    is not something a test can arrange any other way without a
+    filesystem it owns.  Restoring in a `finally` matters: os.write left
+    swapped would break every test after it.
+    """
+    previous = {name: getattr(module, name) for name in attributes}
+    try:
+        for name, value in attributes.items():
+            setattr(module, name, value)
+        yield
+    finally:
+        for name, value in previous.items():
+            setattr(module, name, value)
 
 
 @contextlib.contextmanager
@@ -377,13 +397,53 @@ class TestTheClockColumn(ManifestFixture):
             (TWELVE_HOUR_CLOCK, manifest.CLOCK_NONSTANDARD),
             ("8:15:32AM", manifest.CLOCK_NONSTANDARD),
             (UNKNOWN_TIME_TEXT, manifest.CLOCK_UNKNOWN),
-            ("48:48:48", manifest.CLOCK_EXACT),
+            ("48:48:48", manifest.CLOCK_UNRECOGNISED),
             ("half past something", manifest.CLOCK_UNRECOGNISED),
         )
         for value, expected in cases:
             with self.subTest(value=value):
                 self.assertEqual(
                     manifest.classify_ingame_clock(value), expected)
+
+    def test_a_clock_shaped_impossible_time_is_not_called_exact(self):
+        """'exact' means a clock that can be believed, so range counts.
+
+        ocr_clock.py applies the same bounds and DECLINES a reading like
+        these outright, so labelling one 'exact' here would have the two
+        modules describing the same string differently -- and would put
+        a self-contradictory pair in timeline.json.
+        """
+        for value in ("24:00:00", "23:60:00", "23:59:60", "99:99:99",
+                      "48:48:48"):
+            with self.subTest(value=value):
+                self.assertFalse(
+                    manifest.is_possible_clock(value),
+                    msg="hour <= 23, minute and second <= 59")
+                self.assertEqual(
+                    manifest.classify_ingame_clock(value),
+                    manifest.CLOCK_UNRECOGNISED)
+
+    def test_the_extremes_a_clock_can_show_stay_exact(self):
+        for value in ("00:00:00", "23:59:59", "08:15:32"):
+            with self.subTest(value=value):
+                self.assertTrue(manifest.is_possible_clock(value))
+                self.assertEqual(
+                    manifest.classify_ingame_clock(value),
+                    manifest.CLOCK_EXACT,
+                    msg=("the boundaries are readings the engine really "
+                         "can render, and they are believable"))
+
+    def test_an_impossible_clock_is_recorded_verbatim_and_warned(self):
+        row, err = self.capture_stderr(self.append, clock="24:00:00")
+        self.assertEqual(
+            row["ingame_clock"], "24:00:00",
+            msg=("the reading is evidence: it is recorded exactly as it "
+                 "was given and NOT repaired into a plausible time"))
+        self.assertIn("no in-game clock can show", err)
+        self.assertIn("NOT repaired", err)
+        self.assertIn(
+            "24:00:00",
+            json.loads(self.lines()[0])["ingame_clock"])
 
     def test_every_coarse_phrase_the_engine_emits_is_recognised(self):
         self.assertEqual(
@@ -554,6 +614,41 @@ class TestTheNarrativeColumns(ManifestFixture):
         with self.assertRaises(manifest.ManifestError):
             self.row(action="press '5'\nthen wait")
 
+    def test_a_control_character_is_refused_in_either_column(self):
+        """These strings become transcript lines and SRT cue text.
+
+        JSON carries a NUL through as an escape perfectly happily, so
+        the manifest would look fine while a later artifact -- or the
+        terminal printing it -- would not.
+        """
+        for char in ("\x00", "\x1b", "\x08", "\x7f", "\x85"):
+            for field in ("action", "commentary"):
+                with self.subTest(char=repr(char), field=field):
+                    values = {"action": "press '5'",
+                              "commentary": "I wait."}
+                    values[field] = "I wait%s and listen." % char
+                    with self.assertRaises(manifest.ManifestError):
+                        self.row(**values)
+                    self.assertFalse(
+                        os.path.exists(self.manifest),
+                        msg="a refused row writes nothing at all")
+
+    def test_ordinary_punctuation_and_unicode_are_not_controls(self):
+        text = "\u00c9clair -- \u4e2d\u6587 -- \U0001f600, still here."
+        self.assertEqual(self.row(commentary=text)["commentary"], text)
+
+    def test_a_runaway_field_is_refused_and_a_long_one_is_advised(self):
+        with self.assertRaises(manifest.ManifestError):
+            self.row(commentary="c" * (manifest.MAX_FIELD_LENGTH + 1))
+        long_enough = "c" * (manifest.CUE_ADVISORY_LENGTH + 1)
+        row, err = self.capture_stderr(self.row,
+                                       commentary=long_enough)
+        self.assertEqual(
+            row["commentary"], long_enough,
+            msg=("length that is merely long is advised about, never "
+                 "edited: the survivor's words are the survivor's"))
+        self.assertIn("more than a reader can take in", err)
+
     def test_out_of_character_wording_is_reported_never_rewritten(self):
         text = "I check the frame counter before the next screenshot."
         row, err = self.capture_stderr(self.row, commentary=text)
@@ -690,6 +785,73 @@ class TestAppendingIsAppendOnly(ManifestFixture):
         self.assertNotIn(b"\r", data)
         self.assertTrue(data.endswith(b"\n"))
         self.assertFalse(data.endswith(b"\n\n"))
+
+    def test_a_write_that_cannot_finish_leaves_no_partial_row(self):
+        """A failed append restores the file, byte for byte.
+
+        The realistic cause is a full disk part way through a long
+        session -- one PNG per keystroke fills a volume long before a
+        session ends -- and a half-written line is not JSON, which
+        makes the WHOLE record unreadable and blocks timeline.py, the
+        render, the captions and every gate that counts rows.  Simulated
+        here by refusing the write itself, which is the same failure the
+        row has to survive.
+        """
+        self.append_many(2)
+        before = _read_bytes(self.manifest)
+        real_write = os.write
+        torn = {"count": 0}
+
+        def short_then_fail(descriptor, payload):
+            # Write a fragment, exactly as a filling disk does, then
+            # refuse: the fragment must not be left behind.
+            torn["count"] += 1
+            real_write(descriptor, payload[:40])
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+        with _patched(os, write=short_then_fail):
+            with self.assertRaises(manifest.ManifestError) as bad:
+                self.append(frame=3)
+        self.assertEqual(torn["count"], 1, msg="the fragment was written")
+        self.assertIn("left exactly as it was", str(bad.exception))
+        self.assertEqual(
+            _read_bytes(self.manifest), before,
+            msg=("the fragment was truncated away: the file is exactly "
+                 "what the last COMPLETE row left behind"))
+        rows = manifest.read_rows(self.manifest, root=self.directory)
+        self.assertEqual([row["frame"] for row in rows], [1, 2],
+                         msg="the record is still readable")
+        self.assertEqual(
+            manifest.verify_manifest(
+                self.manifest, frames_dir=self.frames,
+                root=self.directory),
+            [],
+            msg="and still passes its own verification")
+
+    def test_appending_onto_an_unfinished_row_is_refused(self):
+        """A tear no rollback could reach is refused, not fused.
+
+        A process killed outright mid-write -- SIGKILL, a power loss --
+        leaves a row with no newline and no chance to undo it.  Appending
+        then joins two half-rows into one line that is neither, turning a
+        recoverable tear into a corrupt record.
+        """
+        self.append_many(2)
+        with open(self.manifest, "ab") as handle:
+            handle.write(b'{"frame": 3, "file": "playthrough/frames/f')
+        torn = _read_bytes(self.manifest)
+        with self.assertRaises(manifest.ManifestError) as bad:
+            self.append(frame=4)
+        self.assertIn("ends mid-row", str(bad.exception))
+        self.assertEqual(
+            _read_bytes(self.manifest), torn,
+            msg="the refusal changes nothing, including the tear")
+        problems = manifest.verify_manifest(
+            self.manifest, root=self.directory)
+        self.assertTrue(
+            any("not JSON" in problem for problem in problems),
+            msg=("verify names the line to repair rather than the "
+                 "writer hiding it: %r" % problems))
 
 
 class TestReadingTheRecord(ManifestFixture):

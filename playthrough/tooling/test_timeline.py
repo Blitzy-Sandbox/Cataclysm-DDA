@@ -112,10 +112,22 @@ session, and a test suite that wrote to the record it exists to
 protect would be worse than no suite at all.  The pure functions are
 exercised in memory; every test that needs files on disk works in a
 temporary directory it creates, passes in as the approved root and
-removes again, with PLAYTHROUGH_MANIFEST, PLAYTHROUGH_TIMELINE and
-PLAYTHROUGH_OBSERVATIONS redirected there for its duration and restored
+removes again, with ALL FOUR of PLAYTHROUGH_MANIFEST,
+PLAYTHROUGH_TIMELINE, PLAYTHROUGH_OBSERVATIONS and
+PLAYTHROUGH_DATE_AUDIT redirected there for its duration and restored
 afterwards -- and one test asserts that the real artifacts were
 untouched by the run, as the belt to that braces.
+
+THE SUITE IS HERMETIC, WHICH IS A PROPERTY WITH A TEST OF ITS OWN.
+Four variables, not three: a class that redirected only the first three
+would still resolve the date-evidence sidecar from whatever env.sh
+exported, land outside the temporary root it nominated, and be refused
+by the containment guard -- a failure with nothing to do with the code
+under test, and one that arrives only for whoever sourced the
+pipeline's own environment first.  So the count is asserted rather than
+promised: TestTheSuiteIsHermetic reads this file and requires every
+class that drives the command line to redirect all four.  Run this
+suite with env.sh sourced and without it; both must be green.
 
 NO REAL ARTIFACT IS EVER WRITTEN.  Nothing here touches
 playthrough/frames/, playthrough/manifest.jsonl or
@@ -133,6 +145,7 @@ added to tests/ either, because tests/CMakeLists.txt globs tests/*.cpp
 into the Catch2 C++ binary.
 """
 
+import ast
 import contextlib
 import copy
 import io
@@ -3829,14 +3842,15 @@ class TestTimelineCliAndIo(unittest.TestCase):
         self.assertEqual(os.path.getmtime(self.output), before)
         self.assertEqual(_read_text(self.output), digest)
 
-    def test_drift_problems_compares_bytes_and_names_the_counts(self):
+    def test_drift_problems_compares_the_canonical_form(self):
         fresh = timeline.build_timeline(make_rows(REFERENCE_CLOCKS))
         self.assertEqual(
             timeline._drift_problems(
                 copy.deepcopy(fresh), fresh, self.output,
                 self.manifest),
             [],
-            msg=("identical bytes are exactly the claim worth making: "
+            msg=("both sides are re-encoded and the encodings "
+                 "compared, which is exactly the claim worth making: "
                  "this file was computed from this manifest by this "
                  "code"))
         shorter = timeline.build_timeline(
@@ -3846,6 +3860,52 @@ class TestTimelineCliAndIo(unittest.TestCase):
         self.assertEqual(len(problems), 2)
         self.assertIn("regenerate it with", problems[0])
         self.assertIn("4 entr(ies) against 7 row(s)", problems[1])
+
+    def test_a_reindent_is_not_drift_but_a_changed_value_is(self):
+        # WHAT --verify CLAIMS, EXACTLY, AND WHAT IT DOES NOT.  The
+        # stored document is passed through the same encoder as the
+        # fresh one, so a rewrite that changed only LAYOUT -- an editor
+        # that pretty-printed the artifact, a tool that normalised line
+        # endings -- is not drift, because nothing the artifact SAYS has
+        # moved.  A duration that moved by a nanosecond is.  The help
+        # text promises this distinction; this is where it is held to it,
+        # so neither half can be lost: raising on whitespace would train
+        # an operator to ignore the one check guarding the timing
+        # evidence, and passing a changed value would make the check
+        # worthless.
+        self.assertEqual(self.run_main("--quiet")[0], 0)
+        stored = json.loads(_read_text(self.output))
+        _write_lines(
+            self.output,
+            [json.dumps(stored, indent=4, ensure_ascii=False)])
+        self.assertNotEqual(
+            _read_text(self.output), timeline.encode_timeline(stored),
+            msg=("the fixture has to differ in BYTES for this to be "
+                 "testing anything"))
+        status, _, err = self.run_main("--verify", "--quiet")
+        self.assertEqual(
+            status, 0,
+            msg=("a layout-only rewrite is not drift: %s" % err))
+        # A rewritten commentary is the sharpest case: the document
+        # stays internally consistent, so every invariant still passes
+        # and this comparison is the ONLY thing that can catch it -- a
+        # caption put into the survivor's mouth after the fact.
+        stored["frames"][0]["commentary"] = "something else entirely"
+        _write_lines(
+            self.output,
+            [json.dumps(stored, indent=4, ensure_ascii=False)])
+        self.assertEqual(
+            timeline.validate_timeline(stored), [],
+            msg=("the tampered document is internally consistent, "
+                 "which is why the drift check has to be the one that "
+                 "notices"))
+        status, _, err = self.run_main("--verify", "--quiet")
+        self.assertEqual(
+            status, 1,
+            msg="changed CONTENT is drift, whatever the layout")
+        self.assertIn(
+            "does not match a fresh computation", err,
+            msg="and the refusal says the artifact is stale")
 
     # -- the parser, the reporting helpers and the wrappers ---------
 
@@ -4247,11 +4307,28 @@ class TestDateEvidenceSidecar(unittest.TestCase):
             with self.subTest(value=value):
                 self.assertIsNone(timeline.normalise_date(value))
 
+    # The exit status the writer subprocess uses to report that
+    # ocr_clock.py could not be IMPORTED, as distinct from any other
+    # failure.  It has to be distinguishable: a refused write and an
+    # absent dependency are different facts, and a suite that skipped
+    # on both would report the wrong cause for the wrong one -- which
+    # is exactly how this assertion came to be silently unrunnable.
+    IMPORT_FAILED_STATUS = 3
+
     def test_the_sidecar_round_trips_from_ocr_clocks_own_writer(self):
         # THE CONTRACT BETWEEN THE TWO MODULES.  timeline.py cannot
         # import ocr_clock.py -- that would make Pillow a dependency of
         # computing a timeline -- so the field names are asserted
         # against a sidecar the real writer produced.
+        #
+        # THE ROOT IS PASSED TO THE WRITER.  ocr_clock.append_date_audit
+        # confines its one write to approved_artifact_root(root), which
+        # without a nomination is the committed playthrough/ tree -- so a
+        # call that omitted the root would be REFUSED for a temporary
+        # path, which is not a missing dependency and must never be
+        # reported as one.  read_date_audit() below is held to the same
+        # directory, so both sides of the round trip are confined to a
+        # directory this test owns.
         tooling = os.path.dirname(os.path.abspath(timeline.__file__))
         script = os.path.join(tooling, "ocr_clock.py")
         if not os.path.isfile(script):
@@ -4260,23 +4337,76 @@ class TestDateEvidenceSidecar(unittest.TestCase):
             "import sys;"
             "sys.dont_write_bytecode = True;"
             "sys.path.insert(0, %r);"
-            "import ocr_clock;"
+            "\ntry:\n"
+            "    import ocr_clock\n"
+            "except Exception as err:\n"
+            "    sys.stderr.write('import failed: %%r' %% (err,))\n"
+            "    raise SystemExit(%d)\n"
             "r = ocr_clock.SidebarReading("
             "    png='p', rect='288x1072+1632+4', clock='08:15:32',"
-            "    phrase=None, date='Spring, day 3', text='');"
-            "ocr_clock.append_date_audit(%r, 1, r)"
-            % (tooling, self.audit))
+            "    phrase=None, date='Spring, day 3', text='')\n"
+            "ocr_clock.append_date_audit(%r, 1, r, %r)\n"
+            % (tooling, self.IMPORT_FAILED_STATUS, self.audit,
+               self.tmp))
         done = subprocess.run(
             [sys.executable, "-B", "-c", program],
             capture_output=True, text=True, timeout=120)
-        if done.returncode != 0:
-            self.skipTest("ocr_clock.py is not importable here: %s"
-                          % done.stderr.strip()[:200])
+        if done.returncode == self.IMPORT_FAILED_STATUS:
+            # The only legitimate skip: this interpreter cannot load the
+            # OCR module at all.  The suite is required to run on a bare
+            # interpreter, so that is a real state -- and it is now
+            # stated as itself rather than standing in for everything.
+            self.skipTest(
+                "ocr_clock.py cannot be imported by %s, so its writer "
+                "cannot be exercised here: %s"
+                % (sys.executable, done.stderr.strip()[:200]))
+        self.assertEqual(
+            done.returncode, 0,
+            msg=("ocr_clock.py imported but its writer failed, which is "
+                 "a broken contract rather than a missing dependency: "
+                 "%s" % done.stderr.strip()[:400]))
         self.assertEqual(
             self.read(),
             {1: "Spring, day 3"},
             msg=("timeline.py must read what ocr_clock.py writes; if "
                  "this fails the two have drifted apart"))
+
+    def test_the_sidecar_field_names_are_the_agreed_contract(self):
+        # THE HALF OF THE CONTRACT THAT NEEDS NO INTERPRETER.  The round
+        # trip above is the stronger check but it can only run where
+        # ocr_clock.py imports.  The field NAMES are readable from its
+        # source with the standard library alone, so a rename on either
+        # side is caught even on a bare interpreter -- which is where
+        # this suite is required to run.
+        tooling = os.path.dirname(os.path.abspath(timeline.__file__))
+        script = os.path.join(tooling, "ocr_clock.py")
+        if not os.path.isfile(script):
+            self.skipTest("ocr_clock.py is not beside timeline.py")
+        declared = None
+        for node in ast.walk(ast.parse(_read_text(script))):
+            if not isinstance(node, ast.Assign):
+                continue
+            names = [target.id for target in node.targets
+                     if isinstance(target, ast.Name)]
+            if "DATE_AUDIT_FIELDS" not in names:
+                continue
+            declared = tuple(
+                element.value for element in node.value.elts
+                if isinstance(element, ast.Constant))
+        self.assertEqual(
+            declared,
+            ("frame", "file", "clock", "phrase", "date", "agreement"),
+            msg=("ocr_clock.DATE_AUDIT_FIELDS is the sidecar's shape "
+                 "and timeline.py reads it by name; a change here is a "
+                 "change to a cross-module contract"))
+        self.assertIn(
+            timeline.AUDIT_FRAME_FIELD, declared,
+            msg=("timeline.py keys the sidecar off %r, which the writer "
+                 "must still emit" % timeline.AUDIT_FRAME_FIELD))
+        self.assertIn(
+            timeline.AUDIT_DATE_FIELD, declared,
+            msg=("timeline.py takes the date from %r, which the writer "
+                 "must still emit" % timeline.AUDIT_DATE_FIELD))
 
 
 class TestManifestGateIsAuthoritative(unittest.TestCase):
@@ -4331,15 +4461,35 @@ class TestManifestGateIsAuthoritative(unittest.TestCase):
 
 
 class TestNoWriteBypassRemains(unittest.TestCase):
-    """F12: nothing writes a timeline from invalid evidence."""
+    """F12: nothing writes a timeline from invalid evidence.
+
+    Every path here is inside a temporary directory this class owns and
+    nominates as the approved root, and all four PLAYTHROUGH_*
+    variables are redirected into it for the duration -- the same
+    discipline TestTimelineCliAndIo follows, for the same two reasons.
+    A bug in this suite must not be able to reach the committed
+    evidence; and main() resolves the telemetry and date-audit
+    DEFAULTS, which an ambient export from env.sh would otherwise point
+    at the committed tree, outside the root nominated here, where the
+    containment guard would rightly refuse them.  The suite has to be
+    green whether or not the pipeline's environment has been sourced.
+    """
 
     def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix="blitzy_tl_cli_")
+        self.tmp = os.path.realpath(
+            tempfile.mkdtemp(prefix="blitzy_tl_cli_"))
+        self.addCleanup(_remove_tree, self.tmp)
         self.manifest = os.path.join(self.tmp, "manifest.jsonl")
         self.output = os.path.join(self.tmp, "timeline.json")
-
-    def tearDown(self):
-        shutil.rmtree(self.tmp, ignore_errors=True)
+        self.observations = os.path.join(self.tmp, "observations.jsonl")
+        self.audit = os.path.join(self.tmp, "frame_dates.jsonl")
+        self.env = _environment(
+            PLAYTHROUGH_MANIFEST=self.manifest,
+            PLAYTHROUGH_TIMELINE=self.output,
+            PLAYTHROUGH_OBSERVATIONS=self.observations,
+            PLAYTHROUGH_DATE_AUDIT=self.audit)
+        self.env.__enter__()
+        self.addCleanup(self.env.__exit__, None, None, None)
 
     def write_manifest(self, rows):
         with open(self.manifest, "w", encoding="utf-8") as handle:
@@ -4612,11 +4762,19 @@ class TestPathsAreConfinedToTheArtifactTree(unittest.TestCase):
             timeline.approved_root(), expected,
             msg=("the approved root comes from this module's own "
                  "location, never from the environment"))
-        self.assertTrue(
-            os.path.realpath(
-                timeline.default_timeline_path()).startswith(
-                    expected + os.sep),
-            msg="the default artifact lives inside the approved root")
+        # UNSET while the module-derived fallback is asserted.  With
+        # PLAYTHROUGH_TIMELINE exported the default is that export by
+        # design -- test_the_default_timeline_path_follows_the_
+        # environment covers it -- so reading the ambient value here
+        # would test the shell instead of the module.
+        with _environment(PLAYTHROUGH_TIMELINE=None):
+            self.assertTrue(
+                os.path.realpath(
+                    timeline.default_timeline_path()).startswith(
+                        expected + os.sep),
+                msg=("with nothing exported the default artifact is "
+                     "derived from the module and lives inside the "
+                     "approved root"))
 
     def test_a_path_outside_the_tree_is_refused(self):
         for candidate in ("/etc/blitzy-timeline.json",
@@ -4744,6 +4902,47 @@ class TestPathsAreConfinedToTheArtifactTree(unittest.TestCase):
                     timeline.approved_root() + os.sep),
                 msg="and with no nomination the committed tree is it")
 
+    def test_a_nominated_root_outranks_the_environment(self):
+        # THE PRECEDENCE THAT KEEPS A CONFINED CALLER USABLE.  env.sh
+        # exports both sidecar paths at the committed tree.  If an
+        # ambient export outranked a nomination, a caller that confined
+        # itself to its own directory would be handed a path OUTSIDE
+        # that directory and then refused by the guard above -- so the
+        # nomination, which IS the containment boundary, comes first.
+        # A caller wanting a particular file inside its own root names
+        # it in the argument, which outranks either default.
+        committed = timeline.approved_root()
+        exported = os.path.join(
+            committed, "build", "observations.jsonl")
+        exported_audit = os.path.join(
+            committed, "build", "frame_dates.jsonl")
+        with _environment(PLAYTHROUGH_OBSERVATIONS=exported,
+                          PLAYTHROUGH_DATE_AUDIT=exported_audit):
+            self.assertEqual(
+                timeline.default_observations_path(self.root),
+                os.path.join(self.root, "observations.jsonl"),
+                msg=("an ambient export must not defeat a nominated "
+                     "root; it names a path the guard would refuse"))
+            self.assertEqual(
+                timeline.default_date_audit_path(self.root),
+                os.path.join(self.root, "frame_dates.jsonl"),
+                msg=("the date-evidence default follows the same "
+                     "precedence -- it is the fourth variable, and "
+                     "the one whose omission broke this suite"))
+            self.assertIsNone(
+                timeline.load_observations(root=self.root),
+                msg=("and the reader must WORK rather than raise: an "
+                     "absent sidecar inside the nominated root is an "
+                     "ordinary state, not a containment failure"))
+            self.assertEqual(
+                timeline.read_date_audit(root=self.root), {},
+                msg="the same for the date evidence")
+            self.assertEqual(
+                timeline.default_observations_path(), exported,
+                msg=("with NO nomination env.sh still defines the "
+                     "layout, which is how the pipeline finds the "
+                     "sidecar capture.sh actually wrote"))
+
     def test_evidence_inside_the_approved_root_is_read_normally(self):
         path = os.path.join(self.root, "observations.jsonl")
         with open(path, "w", encoding="utf-8") as handle:
@@ -4847,8 +5046,10 @@ class TestTheCommandLineGatesTheManifest(unittest.TestCase):
     generation applies -- and they fail if it is ever reopened.
 
     The real command line is exercised, exit status included, against a
-    temporary directory passed as the approved root.  Nothing here
-    touches playthrough/manifest.jsonl or playthrough/timeline.json.
+    temporary directory passed as the approved root, with all four
+    PLAYTHROUGH_* variables redirected into it so that the run depends
+    on nothing ambient.  Nothing here touches playthrough/manifest.jsonl
+    or playthrough/timeline.json.
     """
 
     # The reviewer's reproduction, kept verbatim: frame 1 pointing at
@@ -4860,6 +5061,22 @@ class TestTheCommandLineGatesTheManifest(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.root = os.path.realpath(self.temporary.name)
         self.addCleanup(self.temporary.cleanup)
+        # main() resolves the telemetry and date-audit defaults from the
+        # environment when nothing is nominated, and env.sh exports both
+        # at the committed tree.  Redirecting all four into this root
+        # keeps the exit statuses asserted below a property of the code
+        # under test rather than of whether env.sh was sourced first.
+        self.env = _environment(
+            PLAYTHROUGH_MANIFEST=os.path.join(
+                self.root, "manifest.jsonl"),
+            PLAYTHROUGH_TIMELINE=os.path.join(
+                self.root, "timeline.json"),
+            PLAYTHROUGH_OBSERVATIONS=os.path.join(
+                self.root, "observations.jsonl"),
+            PLAYTHROUGH_DATE_AUDIT=os.path.join(
+                self.root, "frame_dates.jsonl"))
+        self.env.__enter__()
+        self.addCleanup(self.env.__exit__, None, None, None)
 
     def malformed_rows(self):
         """Return rows the canonical gate must refuse."""
@@ -5070,6 +5287,159 @@ class TestTheCommandLineGatesTheManifest(unittest.TestCase):
         self.assertIn(
             "timeline ok", out,
             msg="the successful path still summarises")
+
+
+class TestTheSuiteIsHermetic(unittest.TestCase):
+    """The suite depends on nothing the environment carries.
+
+    THE DEFECT THIS EXISTS TO PREVENT, STATED PLAINLY.  Two of the
+    three classes that drive main() once nominated a temporary root but
+    left the ambient PLAYTHROUGH_* exports alone.  main() resolved its
+    telemetry and date-audit DEFAULTS from those exports, landed outside
+    the root the class had nominated, and was refused by the containment
+    guard -- six deterministic failures and a non-zero exit status for
+    anyone who sourced playthrough/tooling/env.sh first, which is
+    exactly what the pipeline's own documentation tells an operator to
+    do.  The arithmetic under test was never involved.
+
+    A green suite in a bare shell is therefore not evidence of anything
+    on its own, and a prose invariant in a docstring is not either.  So
+    this class reads THIS FILE and asserts the invariant structurally:
+    every class that calls timeline.main() must redirect all four
+    variables in setUp.  Adding a fifth artifact variable to env.sh
+    means adding it here, and the omission then fails immediately
+    instead of at the next checkpoint.
+
+    Its second reason for existing is the more dangerous failure mode:
+    the obvious way to make a red suite green is to relax the
+    containment guard, and that guard is the only thing standing
+    between a test run and the committed evidence of the session.  The
+    redirection is the correct fix; this test is what keeps it in place.
+    """
+
+    # The artifact layout env.sh exports and this module reads defaults
+    # from.  Every variable here must be redirected by any test class
+    # that lets the command line resolve a default.
+    ARTIFACT_VARIABLES = (
+        "PLAYTHROUGH_MANIFEST",
+        "PLAYTHROUGH_TIMELINE",
+        "PLAYTHROUGH_OBSERVATIONS",
+        "PLAYTHROUGH_DATE_AUDIT",
+    )
+
+    @classmethod
+    def setUpClass(cls):
+        """Parse this file once; every test below reads the tree."""
+        cls.tree = ast.parse(_read_text(os.path.abspath(__file__)))
+
+    @staticmethod
+    def _drives_the_command_line(node):
+        """True when a class body calls timeline.main() anywhere."""
+        for child in ast.walk(node):
+            if not isinstance(child, ast.Call):
+                continue
+            function = child.func
+            if (isinstance(function, ast.Attribute) and
+                    function.attr == "main" and
+                    isinstance(function.value, ast.Name) and
+                    function.value.id == "timeline"):
+                return True
+        return False
+
+    @staticmethod
+    def _redirected_variables(node):
+        """Names passed to _environment() with a real value."""
+        names = set()
+        for child in ast.walk(node):
+            if not isinstance(child, ast.Call):
+                continue
+            function = child.func
+            if not (isinstance(function, ast.Name) and
+                    function.id == "_environment"):
+                continue
+            for keyword in child.keywords:
+                if keyword.arg is None:
+                    continue
+                unset = (isinstance(keyword.value, ast.Constant) and
+                         keyword.value.value is None)
+                if not unset:
+                    names.add(keyword.arg)
+        return names
+
+    def _cli_classes(self):
+        """Return (name, ClassDef) for every class driving main()."""
+        found = []
+        for node in ast.walk(self.tree):
+            if not isinstance(node, ast.ClassDef):
+                continue
+            if self._drives_the_command_line(node):
+                found.append((node.name, node))
+        return found
+
+    def test_every_class_that_drives_the_cli_redirects_all_four(self):
+        classes = self._cli_classes()
+        self.assertGreaterEqual(
+            len(classes), 3,
+            msg=("the command line is exercised by at least three "
+                 "classes; finding fewer means this check stopped "
+                 "seeing them and is no longer protecting anything"))
+        for name, node in classes:
+            with self.subTest(test_class=name):
+                setup = next(
+                    (child for child in node.body
+                     if isinstance(child, ast.FunctionDef) and
+                     child.name == "setUp"), None)
+                self.assertIsNotNone(
+                    setup,
+                    msg=("%s calls timeline.main() and so must have a "
+                         "setUp that redirects the artifact layout"
+                         % name))
+                redirected = self._redirected_variables(setup)
+                for variable in self.ARTIFACT_VARIABLES:
+                    self.assertIn(
+                        variable, redirected,
+                        msg=("%s does not redirect %s, so a run with "
+                             "env.sh sourced resolves that default at "
+                             "the committed tree, outside the root it "
+                             "nominated, and is refused"
+                             % (name, variable)))
+
+    def test_the_four_variables_are_the_ones_the_module_reads(self):
+        # The list above is only protective if it matches the module's
+        # own vocabulary; a renamed variable would otherwise be
+        # asserted under its old name for ever.
+        self.assertIn(
+            timeline.ENV_OBSERVATIONS, self.ARTIFACT_VARIABLES,
+            msg="the module's own name for the telemetry variable")
+        self.assertIn(
+            timeline.ENV_DATE_AUDIT, self.ARTIFACT_VARIABLES,
+            msg="and for the date-evidence variable")
+        source = _timeline_source()
+        for variable in ("PLAYTHROUGH_MANIFEST", "PLAYTHROUGH_TIMELINE"):
+            with self.subTest(variable=variable):
+                self.assertIn(
+                    variable, source,
+                    msg=("%s names an artifact this module resolves a "
+                         "default from; if it no longer appears there "
+                         "the layout has moved" % variable))
+
+    def test_the_suite_reads_no_environment_at_import_time(self):
+        # A module-scope os.environ read would make even collection
+        # environment-dependent, and no per-test redirection could
+        # repair that: the value would already have been captured.
+        for node in self.tree.body:
+            if isinstance(node, (ast.ClassDef, ast.FunctionDef)):
+                continue
+            for child in ast.walk(node):
+                if (isinstance(child, ast.Attribute) and
+                        child.attr == "environ" and
+                        isinstance(child.value, ast.Name) and
+                        child.value.id == "os"):
+                    self.fail(
+                        "os.environ is read at module scope (line %d); "
+                        "the environment must only be consulted inside "
+                        "a test, where it can be redirected"
+                        % child.lineno)
 
 
 if __name__ == "__main__":

@@ -34,6 +34,9 @@
 #     the resulting interpreter is silent and installing
 #     requirements.txt WITH resolution reaches the same versions.  The
 #     lock exists to fix the bytes, not to escape a conflict.
+#     Installing without it must also succeed; if it ever does
+#     not, a pin and a declared range have drifted apart, and that
+#     is the defect to fix rather than a flag to add.
 #
 # THE CLOSURE, AND WHY EACH ENTRY IS HERE
 #   Direct (declared in requirements.txt): moviepy, pillow,
@@ -77,11 +80,12 @@ moviepy==2.2.1 \
 
 # PNG inspection, title-card composition, MoviePy's image backend and
 # the OCR module's decoder.  11.3.0 is the last release of the 11 line
-# and the newest Pillow inside the range moviepy 2.2.1 declares, which
-# is what keeps this closure resolvable; see requirements.txt for the
-# trade-off that pin records.  The hash is the cp312 manylinux_2_28
-# x86_64 wheel, i.e. the artifact the regeneration command above
-# selects on this platform.
+# and the newest Pillow inside the `pillow<12.0` range moviepy 2.2.1
+# declares, which is what keeps this closure resolvable; requirements.txt
+# records the advisory measurement behind choosing that consistency
+# over a newer major.  The hash is the cp312 manylinux_2_28 x86_64
+# wheel, i.e. the artifact the regeneration command above selects on
+# this platform.
 pillow==11.3.0 \
  --hash=sha256:676b2815362456b5b3216b4fd5bd89d362100dc6f4945154ff172e206a22c024
 

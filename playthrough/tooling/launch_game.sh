@@ -434,6 +434,11 @@ TILESET_NAMES=()
 TILESET_VIEWS=()
 TILESET_DIRS=()
 SESSION_MODE=""
+# The Python half of the contract: the Pillow release the resolved
+# interpreter carries, and ocr_clock.py's own verdict on whether that
+# interpreter can read a clock at all.  See read_interpreter_facts().
+INTERPRETER_PILLOW=""
+INTERPRETER_PREFLIGHT=""
 SAVE_WORLD=""
 SAVE_WORLD_COUNT=0
 SAVE_CHAR_COUNT=0
@@ -1519,6 +1524,64 @@ game_is_tiles() {
     case "${GAME_VERSION_ALL}" in
         *'+tiles'*) return 0 ;;
     esac
+    return 1
+}
+
+# read_interpreter_facts -- describe the PYTHON half of the contract.
+#
+# Sets INTERPRETER_PILLOW to the Pillow release the resolved interpreter
+# carries and INTERPRETER_PREFLIGHT to ocr_clock.py's own verdict on it.
+# Returns non-zero when that verdict is not "ok".
+#
+# THIS IS REPORTED BEFORE A SESSION STARTS BECAUSE THE ALTERNATIVE IS
+# FRAME 1.  Every captured frame is decoded by Pillow, ocr_clock.py
+# asserts the pinned version at the point of use, and a mismatch there
+# is a clock FAULT: capture.sh withdraws the frame and stops.  `status`
+# is the subcommand an operator runs before committing to a run, so an
+# interpreter that will refuse to read a clock belongs in its output
+# rather than in the first capture's error.
+#
+# Nothing here is fatal and nothing is invented.  An interpreter that
+# cannot be run, a missing module, or a probe that answers nothing is
+# reported as unknown -- `status` observes and changes nothing, so a
+# Python environment it cannot inspect is stated as uninspected.
+read_interpreter_facts() {
+    INTERPRETER_PILLOW=""
+    INTERPRETER_PREFLIGHT="unknown"
+    if [ -z "${PLAYTHROUGH_PYTHON}" ] || [ ! -x "${PLAYTHROUGH_PYTHON}" ]
+    then
+        INTERPRETER_PREFLIGHT="no-interpreter"
+        return 1
+    fi
+    INTERPRETER_PILLOW="$(
+        timeout -- "${VERSION_TIMEOUT}" "${PLAYTHROUGH_PYTHON}" -B -c \
+            'import PIL
+print(PIL.__version__)' 2>/dev/null
+    )" || INTERPRETER_PILLOW=""
+    INTERPRETER_PILLOW="${INTERPRETER_PILLOW%%$'\n'*}"
+    local ocr="${PLAYTHROUGH_TOOLING_DIR}/ocr_clock.py"
+    if [ ! -f "${ocr}" ]; then
+        INTERPRETER_PREFLIGHT="no-ocr-module"
+        return 1
+    fi
+    # --preflight imports every dependency and checks the Pillow pin
+    # without reading a frame: 0 when the interpreter can do the work,
+    # 2 when it cannot.  Its diagnosis already names the remedy, so it
+    # is relayed rather than paraphrased.
+    local detail rc=0
+    detail="$(
+        timeout -- "${VERSION_TIMEOUT}" "${PLAYTHROUGH_PYTHON}" -B \
+            "${ocr}" --preflight 2>&1
+    )" || rc=$?
+    if [ "${rc}" -eq 0 ]; then
+        INTERPRETER_PREFLIGHT="ok"
+        return 0
+    fi
+    INTERPRETER_PREFLIGHT="failed"
+    playthrough_warn "the resolved interpreter" \
+        "${PLAYTHROUGH_PYTHON} cannot read a sidebar clock" \
+        "(ocr_clock.py --preflight exit ${rc}):" \
+        "${detail:-<no diagnosis>}"
     return 1
 }
 
@@ -3764,6 +3827,14 @@ report_status() {
         emit PLAYTHROUGH_GAME_IS_TILES 0
         playthrough_log "no binary yet; run the 'build' subcommand"
     fi
+
+    # The interpreter is reported whatever its verdict, because "which
+    # Python would have run" is a fact about this checkout that an
+    # operator needs before a session and cannot otherwise see.
+    read_interpreter_facts || true
+    emit PLAYTHROUGH_PYTHON "${PLAYTHROUGH_PYTHON}"
+    emit PLAYTHROUGH_PYTHON_PILLOW "${INTERPRETER_PILLOW}"
+    emit PLAYTHROUGH_PYTHON_PREFLIGHT "${INTERPRETER_PREFLIGHT}"
 
     emit PLAYTHROUGH_DISPLAY "${PLAYTHROUGH_DISPLAY}"
     if playthrough_display_ready; then

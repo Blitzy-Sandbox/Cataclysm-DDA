@@ -145,6 +145,57 @@ HELPERS = (
     "playthrough_assert_trusted",
 )
 
+# Every field playthrough_env_summary() promises to print.  The list is
+# spelled out rather than counted because a truncated report is the
+# failure this guards against, and a count is exactly what a truncated
+# report can still satisfy: a run that dropped the last five fields
+# still printed thirty lines.  Two of the five that were dropped are
+# security controls -- IMAGEIO_FFMPEG_EXE, which is what stops the
+# encoder bundled inside a wheel from being the one that renders, and
+# PLAYTHROUGH_PLATFORM_SUPPORTED, which is the end-of-life warning
+# surface -- so an operator reading the report to check either one saw
+# nothing at all and could not tell "unset" from "unprinted".
+SUMMARY_FIELDS = (
+    "DISPLAY",
+    "SDL_VIDEODRIVER",
+    "SDL_AUDIODRIVER",
+    "LIBGL_ALWAYS_SOFTWARE",
+    "XDG_RUNTIME_DIR",
+    "XAUTHORITY",
+    "PYTHONDONTWRITEBYTECODE",
+    "IMAGEIO_FFMPEG_EXE",
+    "PLAYTHROUGH_CLONE_INDEX",
+    "PLAYTHROUGH_RUNTIME_DIR",
+    "PLAYTHROUGH_XAUTHORITY_ORIGIN",
+    "PLAYTHROUGH_PLATFORM",
+    "PLAYTHROUGH_PLATFORM_SUPPORTED",
+    "PLAYTHROUGH_SCREEN",
+    "PLAYTHROUGH_WINDOW_CLASS",
+    "PLAYTHROUGH_TILESET",
+    "PLAYTHROUGH_SIDEBAR_LAYOUT",
+    "PLAYTHROUGH_SIDEBAR_CELLS",
+    "PLAYTHROUGH_REPO_ROOT",
+    "PLAYTHROUGH_DIR",
+    "PLAYTHROUGH_FRAMES_DIR",
+    "PLAYTHROUGH_BUILD_DIR",
+    "PLAYTHROUGH_TRANSITIONS_DIR",
+    "PLAYTHROUGH_USERDIR",
+    "PLAYTHROUGH_USERDIR_ARG",
+    "PLAYTHROUGH_MANIFEST",
+    "PLAYTHROUGH_OBSERVATIONS",
+    "PLAYTHROUGH_DATE_AUDIT",
+    "PLAYTHROUGH_TIMELINE",
+    "PLAYTHROUGH_MOVIE",
+    "PLAYTHROUGH_MOVIE_CC",
+    "PLAYTHROUGH_SUPERVISOR_XVFB",
+    "PLAYTHROUGH_SUPERVISOR_WM",
+    "PLAYTHROUGH_PYTHON",
+    "PLAYTHROUGH_PYTHON_VERSION",
+    "PLAYTHROUGH_PYTHON_ABI",
+    "PLAYTHROUGH_TRUST_STATE",
+    "PLAYTHROUGH_TRUST_BYPASSES",
+)
+
 
 class Sourced(object):
     """The result of sourcing env.sh in a pristine shell."""
@@ -860,15 +911,31 @@ class TestSourcingIsInert(EnvFixture):
         result = self.sourced(
             after='SUMMARY="$(playthrough_env_summary'
                   ' | grep -c .)"\nexport SUMMARY')
-        self.assertGreater(
-            int(result.get("SUMMARY", "0")), 20,
-            msg="the record of what the capture actually ran under")
+        self.assertEqual(
+            int(result.get("SUMMARY", "0")), len(SUMMARY_FIELDS) + 1,
+            msg=("the record of what the capture actually ran under: "
+                 "one header line and one line per promised field"))
+
+    def run_the_file(self, preset=None):
+        """Execute env.sh as a program and return the CompletedProcess.
+
+        The documented second mode -- "Executing the file instead prints
+        the resolved contract and exports nothing" -- and therefore a
+        mode that has to be exercised as a whole, not only by calling
+        the helper from a sourced shell.
+        """
+        environment = {"PATH": BASE_PATH}
+        if preset:
+            environment.update(preset)
+        return subprocess.run(
+            ["/usr/bin/env", "-i"] + [
+                "%s=%s" % (name, value)
+                for name, value in environment.items()
+            ] + ["/bin/bash", "--noprofile", "--norc", ENV_SH],
+            cwd=REPO_ROOT, capture_output=True, timeout=120)
 
     def test_running_the_file_prints_the_contract_and_exports_nothing(self):
-        result = subprocess.run(
-            ["/usr/bin/env", "-i", "PATH=" + BASE_PATH,
-             "/bin/bash", "--noprofile", "--norc", ENV_SH],
-            cwd=REPO_ROOT, capture_output=True, timeout=120)
+        result = self.run_the_file()
         self.assertEqual(result.returncode, 0)
         text = result.stdout.decode("utf-8", "replace")
         self.assertIn("playthrough environment contract", text)
@@ -928,6 +995,65 @@ class TestSourcingIsInert(EnvFixture):
         self.assertIn(
             "summary could not be written",
             result.stderr.decode("utf-8", "replace"))
+
+    def test_running_the_file_says_nothing_on_stderr(self):
+        """Silence on stderr, because noise there WAS the symptom.
+
+        A report assembled from a continued argument list truncated
+        itself when one continuation went missing, and announced it only
+        as `PLAYTHROUGH_PYTHON: command not found` on a channel nothing
+        was asserting on.
+        """
+        for index in (None, "2"):
+            preset = {} if index is None else {"CLONE_INDEX": index}
+            with self.subTest(clone_index=index):
+                result = self.run_the_file(preset)
+                self.assertEqual(
+                    result.stderr.decode("utf-8", "replace"), "",
+                    msg="the reporting mode reports, it does not error")
+                self.assertEqual(result.returncode, 0)
+
+    def test_the_printed_contract_carries_every_promised_field(self):
+        result = self.run_the_file()
+        self.assertEqual(result.returncode, 0)
+        lines = result.stdout.decode("utf-8", "replace").splitlines()
+        self.assertEqual(
+            lines[0], "playthrough environment contract",
+            msg="the header, then one line per field")
+        printed = [line.split()[0] for line in lines[1:] if line.strip()]
+        for name in SUMMARY_FIELDS:
+            with self.subTest(field=name):
+                self.assertIn(
+                    name, printed,
+                    msg=("a field that is printed as nothing at all "
+                         "cannot be told from one that is unset"))
+        self.assertEqual(
+            sorted(printed), sorted(set(printed)),
+            msg="no field is reported twice")
+        self.assertEqual(
+            len(printed), len(SUMMARY_FIELDS),
+            msg="exactly the promised fields, no more: %r" % printed)
+
+    def test_the_printed_contract_carries_values_not_just_names(self):
+        result = self.run_the_file({"CLONE_INDEX": "2"})
+        text = result.stdout.decode("utf-8", "replace")
+        values = {}
+        for line in text.splitlines()[1:]:
+            parts = line.split(None, 1)
+            if len(parts) == 2:
+                values[parts[0]] = parts[1].strip()
+        self.assertEqual(values.get("DISPLAY"), ":101")
+        self.assertEqual(values.get("SDL_VIDEODRIVER"), "x11")
+        self.assertEqual(values.get("XDG_RUNTIME_DIR"), "/tmp/xdg2")
+        for name in ("XAUTHORITY", "IMAGEIO_FFMPEG_EXE",
+                     "PLAYTHROUGH_PLATFORM",
+                     "PLAYTHROUGH_PLATFORM_SUPPORTED",
+                     "PLAYTHROUGH_XAUTHORITY_ORIGIN"):
+            with self.subTest(field=name):
+                self.assertTrue(
+                    values.get(name),
+                    msg=("the trailing fields are the ones a truncated "
+                         "report loses first"))
 
 
 class TestSourcingTwiceIsSafe(EnvFixture):

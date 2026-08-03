@@ -141,6 +141,32 @@ REAL_TS_EXAMPLE = "2026-05-14T09:12:03.481Z"
 # "%02d:%02d:%02d" (src/calendar.cpp:649).
 CLOCK_24H_RE = re.compile(r"^\d{2}:\d{2}:\d{2}$")
 
+# The RANGE half of that contract, which the shape alone does not carry.
+# to_string_time_of_day formats the three fields from a time of day, so
+# "24:00:00", "23:60:00" and "99:99:99" are all fixed-width and
+# clock-shaped while saying something no clock in this game can show.
+# ocr_clock.py enforces exactly these bounds on the reading side and
+# DECLINES such a value rather than repairing it into a plausible time;
+# the same numbers live here so that the writer cannot label a reading
+# 'exact' that its sibling would have refused to emit at all.
+CLOCK_MAX_HOUR = 23
+CLOCK_MAX_MINUTE = 59
+CLOCK_MAX_SECOND = 59
+
+# Bounds on the free-text fields, both about what happens to these
+# strings AFTER this file: `action` and `commentary` are copied into
+# playthrough/transcript.md and become the SRT cue text.
+#
+# MAX_FIELD_LENGTH is a refusal and is set far above anything a person
+# writes, so it catches machine output and runaway loops without ever
+# arguing with legitimate prose.  CUE_ADVISORY_LENGTH is only an
+# advisory, and its value comes from the other end of the pipeline: a
+# cue occupies its frame's on-screen window, timeline.py caps that
+# window at 10 s, and a few hundred characters is what a reader gets
+# through in that time.
+MAX_FIELD_LENGTH = 2000
+CUE_ADVISORY_LENGTH = 400
+
 # The two other shapes to_string_time_of_day can emit: "military"
 # "%02d%02d.%02d" (src/calendar.cpp:646) and the 12h default
 # "%d:%02d:%02d%sAM/PM" with variable padding (src/calendar.cpp:
@@ -579,6 +605,59 @@ def _reject_line_breaks(value, label):
             "one line" % label)
 
 
+def _reject_control_characters(value, label):
+    """Raise if `value` carries a control character.
+
+    The line-break check above catches the two controls that would
+    change this file's shape; this catches the rest, and it exists
+    because the manifest is not the end of the road for these strings.
+    `action` and `commentary` are copied into playthrough/transcript.md
+    and into the SRT cue text, and JSON is perfectly happy to carry a
+    NUL as "\\u0000" through both -- so a value that survives the
+    manifest intact can still corrupt a caption file, a terminal that
+    prints it, or the ffmpeg mux that reads it.
+
+    There is no legitimate source for one either: these fields are a
+    keystroke and a sentence a person wrote, neither of which contains
+    a NUL, a backspace or an escape.  A value that does is a program
+    error or pasted machine output, and both are worth stopping at the
+    door rather than embedding in the evidence.
+    """
+    for char in value:
+        code = ord(char)
+        if code < 0x20 or code == 0x7F or 0x80 <= code <= 0x9F:
+            raise ManifestError(
+                "%s carries the control character U+%04X, which is not "
+                "something a keystroke or a sentence contains: these "
+                "strings are copied verbatim into "
+                "playthrough/transcript.md and the SRT cue text, so a "
+                "control character here corrupts a later artifact "
+                "rather than this one.  Record the reading or the "
+                "reason in plain text" % (label, code))
+
+
+def _reject_runaway_length(value, label):
+    """Raise if `value` is far longer than anything observed can be.
+
+    A generous ceiling rather than a style rule: 2000 characters is
+    already several paragraphs, and one keystroke's description or one
+    survivor's reason is a sentence.  A value this long is a stuck loop
+    or a pasted log, and it would land in an SRT cue that no player
+    could read and that no frame is on screen long enough to show.
+
+    Deliberately far above anything a person writes, so it can never
+    refuse legitimate prose -- the readability advisory below is what
+    speaks to length that is merely long.
+    """
+    if len(value) > MAX_FIELD_LENGTH:
+        raise ManifestError(
+            "%s is %d characters, and the limit is %d.  A row describes "
+            "ONE keystroke and the reason for it; a value this long is "
+            "machine output or a runaway loop, and it becomes an SRT "
+            "cue no frame is on screen long enough to display"
+            % (label, len(value), MAX_FIELD_LENGTH))
+
+
 def _validated_text(value, label):
     """Return a required, single-line, non-blank string field."""
     if value is None:
@@ -593,6 +672,8 @@ def _validated_text(value, label):
             "%s must not be empty: every row documents a real "
             "keystroke and a real reason for it" % label)
     _reject_line_breaks(value, label)
+    _reject_control_characters(value, label)
+    _reject_runaway_length(value, label)
     return value
 
 
@@ -617,6 +698,29 @@ def _validated_file(value, frame):
     return value
 
 
+def is_possible_clock(value):
+    """True when `value` is a time an in-game clock could display.
+
+    SHAPE AND RANGE, because the shape alone admits "24:00:00".  Named
+    to match ocr_clock.py's helper of the same name, which applies the
+    identical rule when it decides whether an OCR reading may be
+    believed, so the two modules cannot drift into disagreeing about
+    what a credible clock looks like.
+
+    This is a question, not a repair: a caller that gets False records
+    the value it was given, verbatim, and says so.
+    """
+    if not isinstance(value, str):
+        return False
+    text = value.strip()
+    if not CLOCK_24H_RE.match(text):
+        return False
+    hour, minute, second = (int(part) for part in text.split(":"))
+    return (hour <= CLOCK_MAX_HOUR and
+            minute <= CLOCK_MAX_MINUTE and
+            second <= CLOCK_MAX_SECOND)
+
+
 def classify_ingame_clock(value):
     """Describe a clock reading without altering it.
 
@@ -626,6 +730,15 @@ def classify_ingame_clock(value):
     survivor without a watch sees, CLOCK_UNKNOWN for "???", and
     CLOCK_UNRECOGNISED for anything else -- which is information, not
     grounds for discarding the reading.
+
+    A fixed-width value that is out of range -- "24:00:00",
+    "23:60:00" -- is CLOCK_UNRECOGNISED rather than CLOCK_EXACT.  The
+    label is the point: 'exact' is what timeline.py, verify_artifacts.sh
+    and the report read as "a clock that can be believed", and a
+    self-contradictory row (`"ingame_clock": "24:00:00", "clock_kind":
+    "exact"`) misdescribes the evidence even when nothing downstream
+    trusts the label.  The reading itself is still recorded exactly as
+    it was given; only the description of it is honest.
     """
     if value is None:
         return CLOCK_NULL
@@ -635,7 +748,9 @@ def classify_ingame_clock(value):
             % type(value).__name__)
     text = value.strip()
     if CLOCK_24H_RE.match(text):
-        return CLOCK_EXACT
+        if is_possible_clock(text):
+            return CLOCK_EXACT
+        return CLOCK_UNRECOGNISED
     if CLOCK_MILITARY_RE.match(text) or CLOCK_12H_RE.match(text):
         return CLOCK_NONSTANDARD
     if text in COARSE_TIME_PHRASES:
@@ -667,7 +782,21 @@ def _validated_ingame_clock(value):
             "could not be read, which records JSON null")
     _reject_line_breaks(value, "ingame_clock")
     kind = classify_ingame_clock(value)
-    if kind == CLOCK_UNRECOGNISED:
+    if kind == CLOCK_UNRECOGNISED and CLOCK_24H_RE.match(value.strip()):
+        # Clock-shaped but impossible.  Called out separately because
+        # the cause is different and so is the remedy: ocr_clock.py
+        # declines such a value outright, so one that reaches this
+        # writer came from a hand transcription of the frame and the
+        # frame is what should be re-read.
+        _warn(
+            "ingame_clock %r is fixed-width but states a time no "
+            "in-game clock can show (hour <= %d, minute and second "
+            "<= %d); recorded verbatim and NOT repaired into a "
+            "plausible time, and left for timeline.py to reconcile.  "
+            "ocr_clock.py declines such a reading, so re-read the "
+            "frame rather than trusting this value"
+            % (value, CLOCK_MAX_HOUR, CLOCK_MAX_SECOND))
+    elif kind == CLOCK_UNRECOGNISED:
         _warn(
             "ingame_clock %r matches no known form; recorded verbatim "
             "and left for timeline.py to reconcile" % value)
@@ -697,6 +826,19 @@ def find_meta_vocabulary(text):
 def _validated_commentary(value):
     """Return the survivor's own words, with an advisory if needed."""
     text = _validated_text(value, "commentary")
+    if len(text) > CUE_ADVISORY_LENGTH:
+        # Advisory, not a refusal: this is about a caption being
+        # readable, and where that line falls is a judgement the writer
+        # of the sentence gets to make.  The number comes from the other
+        # end of the pipeline -- a cue occupies its frame's on-screen
+        # window, which timeline.py caps at 10 s, and a comfortable
+        # reading rate over 10 s is a few hundred characters.
+        _warn(
+            "commentary is %d characters, which is more than a reader "
+            "can take in while its frame is on screen (a frame's window "
+            "is at most 10 s, and this becomes one SRT cue): %r -- "
+            "recorded as given, but consider saying it in a sentence"
+            % (len(text), text[:80] + "..."))
     hits = find_meta_vocabulary(text)
     if hits:
         _warn(
@@ -859,7 +1001,7 @@ def encode_row(row):
     return json.dumps(ordered, ensure_ascii=False) + "\n"
 
 
-def _fsync(handle, path, frame, require_durable):
+def _fsync(descriptor, path, frame, require_durable):
     """Force a written row to the device, or fail loudly.
 
     A crash mid-session must not lose the row for a frame that already
@@ -878,9 +1020,16 @@ def _fsync(handle, path, frame, require_durable):
     behaviour for a caller who genuinely accepts it, such as a scratch
     manifest on a filesystem that cannot fsync at all.  The default is
     the safe one, and the opt-in has to be typed out.
+
+    THIS STEP DELIBERATELY DOES NOT ROLL THE ROW BACK, unlike the write
+    itself.  By the time it runs the line is complete and valid JSON on
+    disk; what is in doubt is only whether it survives a power loss.
+    Truncating it away would turn an uncertainty into a certain loss --
+    deleting the record of a frame that exists -- so the row stays and
+    the uncertainty is reported for what it is.
     """
     try:
-        os.fsync(handle.fileno())
+        os.fsync(descriptor)
     except OSError as err:
         if require_durable:
             raise ManifestError(
@@ -900,23 +1049,144 @@ def _fsync(handle, path, frame, require_durable):
             "approved this reduced durability" % err)
 
 
-def _lock_exclusively(handle, path):
+def _roll_back(descriptor, committed, path, frame, cause):
+    """Undo a failed append and return the error to raise.
+
+    The caller writes `raise _roll_back(...)`, so that the rollback and
+    the failure are one statement and neither can be forgotten.
+
+    THIS IS WHAT MAKES AN APPEND ALL-OR-NOTHING, and it is the opposite
+    of rewriting history rather than an exception to it.  The only bytes
+    it can remove are the ones the append that just failed had started
+    to write: `committed` was read from the file BEFORE that write, so
+    truncating to it restores the file to exactly the state every
+    already-recorded row left it in.  No recorded row is altered, no
+    row is dropped, and the failure is still raised.
+
+    Without it a write that stops half way -- ENOSPC on a long session
+    is the realistic case, because one PNG per keystroke fills a disk
+    long before a session ends -- leaves a partial line with no newline,
+    and a partial line is not JSON.  The manifest then cannot be read
+    at all: timeline.py, the render, the captions and every acceptance
+    gate that counts rows are blocked behind a file only a human hand
+    edit can repair.  An append-only evidence record exists precisely so
+    that a resource failure costs the failing row and nothing else.
+
+    A truncate that itself fails is reported alongside the original
+    cause rather than hidden behind it: the operator then knows the file
+    needs inspecting, which is strictly better than being told only
+    about the disk.
+    """
+    trouble = ""
+    try:
+        os.ftruncate(descriptor, committed)
+    except OSError as err:
+        trouble = ("  The rollback to %d bytes ALSO failed (%s), so the "
+                   "file may still end mid-row: check its last line "
+                   "before appending again." % (committed, err))
+    return ManifestError(
+        "could not append frame %s's row to %s (%s); the manifest is "
+        "the session's evidence, so a write this module cannot complete "
+        "is reported rather than passed over.  The file was left exactly "
+        "as it was before this row (%d bytes), so it is still readable "
+        "and the frame this row describes is the one to re-record.%s"
+        % (frame, path, cause, committed, trouble))
+
+
+def _assert_row_boundary(descriptor, committed, path, frame):
+    """Refuse to append onto a line that was never finished.
+
+    _roll_back() removes a torn row whenever this process survives to
+    run it, which covers the failure that motivated it.  It cannot cover
+    a process that is killed outright -- SIGKILL, a power loss, an OOM
+    kill -- part way through the write, and then the file ends mid-row
+    with no newline.  Appending after that would join two half-rows into
+    one line that is neither, quietly turning a recoverable tear into a
+    corrupt record that reads as a single malformed row.
+
+    So the boundary is checked before every append, at the cost of one
+    byte read: a non-empty manifest must end with the LF that terminated
+    its last complete row.  It is refused rather than repaired, because
+    the missing piece is a row about a frame that exists, and deciding
+    what it said is not this module's business -- verify_manifest()
+    reports which line is malformed, the frame it describes is still on
+    disk, and the correction is the operator's to make deliberately.
+    """
+    if committed <= 0:
+        return
+    try:
+        tail = os.pread(descriptor, 1, committed - 1)
+    except OSError as err:
+        raise ManifestError(
+            "could not read the last byte of the manifest %s (%s), so "
+            "frame %s's row was not appended: a row must never be "
+            "joined onto an unfinished one, and that cannot be ruled "
+            "out without this check" % (path, err, frame)) from err
+    if tail != b"\n":
+        raise ManifestError(
+            "%s ends mid-row -- its last %d bytes are not terminated by "
+            "a newline -- so frame %s's row was NOT appended onto it.  "
+            "A manifest ends with a complete row or it ends with a tear "
+            "from a process that was killed mid-write, and appending "
+            "would fuse the two into one line that is neither.  Run "
+            "'python playthrough/tooling/manifest.py verify' to see the "
+            "line, and repair the record deliberately: the frame that "
+            "row describes is still in playthrough/frames/"
+            % (path, committed, frame))
+
+
+def _append_whole_row(descriptor, payload, committed, path, frame):
+    """Write one encoded row, entirely or not at all.
+
+    One `os.write` of the complete line, unbuffered, on a descriptor
+    opened O_APPEND and held under the exclusive lock: there is no
+    userspace buffer that could flush a fragment later, and the kernel
+    places the bytes at the end of the file whatever another writer is
+    doing.  A refusal and a short write are handled identically --
+    rolled back to `committed` -- because a row that is 90% written is
+    exactly as unreadable as one that raised.
+
+    A short write is looped rather than assumed away only after the
+    rollback question is settled: os.write may legitimately return
+    fewer bytes, so the remainder is written until it is all there, and
+    a step that makes no progress is treated as a failure rather than
+    spun on.
+    """
+    total = len(payload)
+    written = 0
+    while written < total:
+        try:
+            count = os.write(descriptor, payload[written:])
+        except OSError as err:
+            raise _roll_back(
+                descriptor, committed, path, frame, err) from err
+        if count <= 0:
+            raise _roll_back(
+                descriptor, committed, path, frame,
+                "the write stopped after %d of %d bytes and made no "
+                "further progress" % (written, total))
+        written += count
+
+
+def _lock_exclusively(descriptor, path):
     """Take an exclusive advisory lock over the open manifest.
 
     Two writers appending at the same instant is not hypothetical: the
     capture loop runs unattended, and a second stage or a re-run can
     overlap it.  O_APPEND keeps each write at the end of the file, but
-    the lock is what makes "validate, encode, write, flush, fsync" one
-    indivisible step from another process's point of view, so no row
-    can be interleaved with another and no reader can see half of one.
+    the lock is what makes "measure the end, write, fsync, and on
+    failure truncate back" one indivisible step from another process's
+    point of view -- so no row can be interleaved with another, no
+    reader can see half of one, and a rollback can never remove bytes
+    another writer put there after this one measured the end.
 
     The lock is released when the descriptor closes, which the caller's
-    `with` block guarantees on every path including an exception.  A
+    `finally` guarantees on every path including an exception.  A
     filesystem that refuses flock is reported once rather than allowed
     to end the session: the write itself is still a single append.
     """
     try:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
     except OSError as err:
         _warn_once(
             "flock",
@@ -976,33 +1246,64 @@ def append_row(manifest_path, frame, file, real_ts, ingame_clock,
     # refused by the kernel instead of followed, and the whole append
     # is serialised against other writers by the lock below.
     #
+    # THE APPEND IS ALL-OR-NOTHING.  The row is written with a single
+    # unbuffered os.write, not through a buffered stream: a stream can
+    # flush a fragment of a line when the disk fills, and a fragment is
+    # not JSON, which makes the whole manifest unreadable and blocks
+    # every stage that counts its rows.  The end of the file is measured
+    # first, under the lock, so a write that cannot complete is
+    # truncated straight back to it -- see _append_whole_row() and
+    # _roll_back().  Nothing else in this module ever seeks or
+    # truncates, and a rollback can only ever remove bytes the failing
+    # append itself had begun to write.
+    #
     # Every step is guarded so that an OSError from any of them becomes
     # a ManifestError: the caller already catches that for every
     # validation failure, and a write or durability failure deserves
     # the same visibility rather than surfacing as a different
     # exception type from a different layer.  The ManifestError raised
     # by _fsync() is not an OSError, so it passes through untouched.
+    # O_RDWR rather than O_WRONLY for exactly one reason: the boundary
+    # check below reads the file's last byte, and pread needs a readable
+    # descriptor.  It buys no other freedom -- O_APPEND still forces
+    # every write to the end of the file, the reads are positional and
+    # never move the write offset, and this remains the only descriptor
+    # in the module that can write at all.
+    payload = line.encode("utf-8")
     descriptor = _open_nofollow(
-        path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW)
+        path, os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW)
     try:
-        handle = os.fdopen(
-            descriptor, "a", encoding="utf-8", newline="\n")
-    except OSError as err:
-        os.close(descriptor)
-        raise ManifestError(
-            "could not open the manifest %s: %s" % (path, err)) from err
-    try:
-        with handle:
-            _lock_exclusively(handle, path)
-            handle.write(line)
-            handle.flush()
-            _fsync(handle, path, row["frame"], require_durable)
-    except OSError as err:
-        raise ManifestError(
-            "could not append frame %s's row to %s (%s); the manifest "
-            "is the session's evidence, so a write this module cannot "
-            "complete is reported rather than passed over"
-            % (row["frame"], path, err)) from err
+        _lock_exclusively(descriptor, path)
+        try:
+            committed = os.lseek(descriptor, 0, os.SEEK_END)
+        except OSError as err:
+            raise ManifestError(
+                "could not measure the end of the manifest %s (%s), so "
+                "frame %s's row was not written: without that offset a "
+                "failed append could not be undone, and a half-written "
+                "row would make the whole record unreadable"
+                % (path, err, row["frame"])) from err
+        _assert_row_boundary(descriptor, committed, path, row["frame"])
+        _append_whole_row(
+            descriptor, payload, committed, path, row["frame"])
+        _fsync(descriptor, path, row["frame"], require_durable)
+    finally:
+        # Closing releases the lock as well.  A close that fails cannot
+        # hide a row this function claimed to have stored -- the write
+        # and the fsync above both already raise, and the fsync ran
+        # first -- so it is not promoted to a failure that would
+        # contradict a row already on disk.  It is still reported once,
+        # because a descriptor the operating system would not close is a
+        # fact about the host and not something to swallow.
+        try:
+            os.close(descriptor)
+        except OSError as err:
+            _warn_once(
+                "close",
+                "could not close the manifest %s after appending (%s); "
+                "the row itself was written and forced to the device "
+                "before this point, so the record is intact" %
+                (path, err))
     return row
 
 

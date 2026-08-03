@@ -1305,12 +1305,25 @@ def default_date_audit_path(root: Optional[str] = None) -> str:
     `root` is the same call-site-only nomination the rest of the module
     carries, and for the same reason: a default that ignored it would
     send a confined reader at the committed tree.
+
+    A NOMINATION OUTRANKS THE ENVIRONMENT, in that order and not the
+    other way round.  The nomination is a containment boundary -- the
+    same one _validated_evidence_path() then holds this path to -- so an
+    ambient $PLAYTHROUGH_DATE_AUDIT pointing anywhere outside it could
+    only ever be refused: honouring it would turn a caller that confined
+    itself into a caller that can read nothing at all.  With no
+    nomination the export wins, because env.sh is the single definition
+    of the artifact layout; with neither, the path comes from this
+    file's own location so the module needs no configuration in any
+    checkout.  A call site that wants a particular file inside its own
+    root passes it to read_date_audit() explicitly, which outranks
+    every default here.
     """
+    if root is not None:
+        return os.path.join(approved_root(root), "frame_dates.jsonl")
     from_env = os.environ.get(ENV_DATE_AUDIT)
     if from_env and from_env.strip():
         return os.path.abspath(from_env)
-    if root is not None:
-        return os.path.join(approved_root(root), "frame_dates.jsonl")
     return os.path.join(_playthrough_dir(), "build",
                         "frame_dates.jsonl")
 
@@ -2611,20 +2624,24 @@ def load_manifest_rows(
 def default_observations_path(root: Optional[str] = None) -> str:
     """Where the capture telemetry sidecar lives.
 
-    $PLAYTHROUGH_OBSERVATIONS wins when set, because env.sh is the
-    single definition of the artifact layout; otherwise the path is
-    built from the approved root, which is this file's own location
-    unless a CALL SITE nominated one -- so the module works in any
-    checkout without configuration, and a caller holding it to a
-    temporary tree gets that tree's default rather than the committed
-    one.
+    A CALL SITE's nominated root outranks $PLAYTHROUGH_OBSERVATIONS,
+    for the reason default_date_audit_path() states at length: the
+    nomination is the containment boundary this path is then held to, so
+    an ambient export pointing outside it is unusable by construction
+    and honouring it would leave a confined caller unable to read
+    anything.  With no nomination the export wins, because env.sh is the
+    single definition of the artifact layout; with neither, the path is
+    built from this file's own location, so the module works in any
+    checkout without configuration.  A caller that wants a particular
+    sidecar inside its own root names it in the load_observations()
+    argument, which outranks this default entirely.
     """
-    from_env = os.environ.get(ENV_OBSERVATIONS)
-    if from_env:
-        return _validated_path(from_env, "observations path")
     if root is not None:
         return os.path.join(approved_root(root),
                             *OBSERVATIONS_REL_PARTS[1:])
+    from_env = os.environ.get(ENV_OBSERVATIONS)
+    if from_env:
+        return _validated_path(from_env, "observations path")
     return os.path.join(_playthrough_dir(), *OBSERVATIONS_REL_PARTS)
 
 
@@ -2976,9 +2993,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--verify", action="store_true",
         help=("check the timeline already on disk: it must pass every "
-              "invariant AND be byte-identical to a fresh computation "
-              "from the manifest, which is what proves it describes "
-              "this session and no other"))
+              "invariant AND match a fresh computation from the "
+              "manifest once both are encoded canonically, which is "
+              "what proves it describes this session and no other.  "
+              "Every difference of CONTENT is drift -- a duration, a "
+              "cue, a clock reading, a total, an added or removed "
+              "frame, an unexpected key; a difference of layout alone, "
+              "such as a reindent, is not"))
     parser.add_argument(
         "--observations", default=None, metavar="PATH",
         help=("the capture telemetry holding the per-frame sidebar "
@@ -3249,9 +3270,20 @@ def _drift_problems(
 ) -> List[str]:
     """Report a timeline that no longer matches its manifest.
 
-    Byte comparison rather than a field-by-field one: the encoder is
-    deterministic, so identical bytes are exactly the claim worth
-    making -- this file was computed from this manifest by this code.
+    BOTH SIDES ARE RE-ENCODED AND THE ENCODINGS ARE COMPARED, rather
+    than the stored bytes being compared to a fresh encoding or the two
+    documents walked field by field.  The encoder is deterministic and
+    total -- stable key order, fixed float formatting, every key it was
+    given -- so equal encodings are exactly the claim worth making:
+    this file was computed from this manifest by this code.  Passing the
+    stored document through the same encoder is what makes the
+    comparison a statement about CONTENT: a value that changed, a key
+    that appeared, a frame added or dropped, a total that no longer
+    follows all show up, while a difference of layout alone -- a
+    reindent, a re-ordering of keys, a line ending -- does not, because
+    a reformatter has changed nothing about what the artifact says.
+    That is deliberate: raising drift for whitespace would train an
+    operator to ignore the one check that guards the timing evidence.
     """
     if encode_timeline(stored) == encode_timeline(fresh):
         return []

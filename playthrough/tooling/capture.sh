@@ -392,8 +392,24 @@ readonly DEFAULT_OCR_TIMEOUT=300
 # plausible and meaningless.  A crop that cannot be computed is
 # therefore fatal (EX_GEOMETRY), and an operator who wants a fixed
 # rectangle asks for one by name with PLAYTHROUGH_CAPTURE_RECT.
-readonly EXAMPLE_RECT_DEFAULT='352x1072+1568+4'
-readonly EXAMPLE_RECT_CUSTOM='288x1072+1632+4'
+#
+# WHAT THE NEXT CONSTANT IS, AND WHAT IT IS NOT.  It is an EXAMPLE of
+# the geometry form PLAYTHROUGH_CAPTURE_RECT takes, quoted in the two
+# diagnostics below so that an operator setting one has the shape in
+# front of them.  It is NOT a fallback, nothing ever substitutes it, and
+# the name it used to carry -- FALLBACK_RECT -- invited exactly that
+# misreading.  The value is deliberately layout-specific and is stated
+# with its layout wherever it appears, because the right rectangle
+# depends on which sidebar preset is in force: the engine's own default
+# is legacy_labels_sidebar at 44 cells [src/panels.cpp:412-418], which
+# computes to 352x1072+1568+4, while the 36-cell custom_sidebar
+# computes to the 288x1072+1632+4 below.  Neither number is a default
+# for this file to reach for -- sidebar_geometry.py resolves whichever
+# one this run actually needs, and if it cannot, that is a stop.
+readonly EXAMPLE_RECT='288x1072+1632+4'
+readonly EXAMPLE_RECT_LAYOUT='a 36-cell custom_sidebar'
+readonly DEFAULT_LAYOUT_RECT='352x1072+1568+4'
+readonly DEFAULT_LAYOUT_NAME='legacy_labels_sidebar (44 cells)'
 
 # An ImageMagick geometry, and a bare non-negative decimal number as
 # ImageMagick's fx: operators print one.  The numeric guard matters:
@@ -1113,6 +1129,14 @@ fi
 # instead, and `--preflight` asks it to check them without reading
 # anything.
 #
+# `--preflight` answers BOTH Python-side questions: whether every
+# dependency imported, and whether the Pillow that decodes every frame
+# is the version requirements.txt pins.  The second one matters here
+# because it is otherwise asserted at the point of use -- which is
+# frame 1, after the capture has already started, where it costs a
+# withdrawn frame and a stopped session to learn something knowable
+# now.
+#
 # Doing it here, before a frame exists, is the difference between one
 # actionable failure and a whole session of frames that each look like
 # an honest unreadable clock while the movie's pacing quietly collapses
@@ -1123,17 +1147,18 @@ if [ "${CLOCK_MODE}" = "on" ] && [ -f "${OCR_SCRIPT}" ] &&
    command -v "${PLAYTHROUGH_PYTHON}" >/dev/null 2>&1; then
     if ! "${PLAYTHROUGH_PYTHON}" "${OCR_SCRIPT}" --preflight; then
         if [ "${STRICT_CLOCK}" -eq 1 ]; then
-            die "${EX_CLOCK_FAULT}" "ocr_clock.py cannot run: one of \
-its dependencies did not import (see the diagnosis above).  This is a \
-FAULT, not an unreadable clock, and it would otherwise report EVERY \
-frame of the session as unreadable while every count still tallied.  \
-Install playthrough/tooling/requirements.txt into \
-${PLAYTHROUGH_PYTHON}, or set PLAYTHROUGH_CAPTURE_STRICT_CLOCK=0 to \
-capture with the weaker inline reader instead."
+            die "${EX_CLOCK_FAULT}" "ocr_clock.py cannot run: a \
+dependency did not import, or the interpreter's Pillow is older than \
+the pin (see the diagnosis above).  This is a FAULT, not an unreadable \
+clock, and it would otherwise report EVERY frame of the session as \
+unreadable while every count still tallied.  Install \
+playthrough/tooling/requirements.lock into ${PLAYTHROUGH_PYTHON}, or \
+set PLAYTHROUGH_CAPTURE_STRICT_CLOCK=0 to capture with the weaker \
+inline reader instead."
         fi
-        playthrough_warn "ocr_clock.py's dependencies are incomplete" \
-            "and PLAYTHROUGH_CAPTURE_STRICT_CLOCK=0, so the clock is" \
-            "read with the inline convert|tesseract|grep chain"
+        playthrough_warn "ocr_clock.py's dependency contract is not" \
+            "satisfied and PLAYTHROUGH_CAPTURE_STRICT_CLOCK=0, so the" \
+            "clock is read with the inline convert|tesseract|grep chain"
         OCR_PREFLIGHT_FAILED=1
     fi
 fi
@@ -1222,6 +1247,25 @@ fi
 # overwriting would leave the frames count one short of the keystroke
 # count with nothing to show that it happened.
 if ! ( set -o noclobber; : >"${FRAME_PATH}" ) 2>/dev/null; then
+    # noclobber refuses for TWO different reasons, and they have
+    # opposite remedies, so they are told apart before anything is
+    # reported.  A path that exists means the index is taken and the
+    # answer is the next index.  A path that does NOT exist means the
+    # creation itself was refused -- an immutable or unwritable frames
+    # directory, a read-only or full filesystem -- and then "take the
+    # next index" is actively wrong advice: every index would fail the
+    # same way, and a caller that trusted it would walk the counter
+    # forward through a whole session of failures, breaking the
+    # one-frame-per-keystroke identity in the process.  That case is a
+    # capture failure (EX_CAPTURE), not an index collision.
+    if [ ! -e "${FRAME_PATH}" ]; then
+        die "${EX_CAPTURE}" "cannot create ${FRAME_PATH}, and nothing \
+is there to be in the way -- so this is not a repeated index and the \
+next index would fail identically.  The frames directory itself \
+refused the write: it may be immutable (chattr +i), not writable by \
+this user, or on a filesystem that is read-only or full.  Check \
+${PLAYTHROUGH_FRAMES_DIR} and the filesystem holding it."
+    fi
     if [ "${OVERWRITE}" -ne 1 ]; then
         die "${EX_EXISTS}" "${FRAME_PATH} already exists, or another \
 capture holds this index.  A repeated index means the frame counter \
@@ -1567,15 +1611,17 @@ elif [ -n "${RECT_OVERRIDE}" ]; then
 else
     if [ ! -f "${GEOMETRY_SCRIPT}" ]; then
         die "${EX_GEOMETRY}" "missing ${GEOMETRY_SCRIPT}, which is \
-where the sidebar crop is computed.  It is not substituted with either \
-documented example (${EXAMPLE_RECT_DEFAULT} for the engine's default \
-44-cell legacy_labels_sidebar, ${EXAMPLE_RECT_CUSTOM} for a 36-cell \
-custom_sidebar): each literal is correct for one layout only, and \
-nothing has confirmed which one this run draws.  Cropping the wrong \
-column reads as an unreadable clock rather than as an error, so every \
-duration would fall to the floor while every count still tallied.  \
-Restore the script, or set PLAYTHROUGH_CAPTURE_RECT explicitly to \
-accept a fixed rectangle."
+where the sidebar crop is computed.  A fixed rectangle is NOT \
+substituted for it, because the right one depends on the sidebar \
+layout in force: \
+${DEFAULT_LAYOUT_RECT} for the engine default \
+${DEFAULT_LAYOUT_NAME}, ${EXAMPLE_RECT} for ${EXAMPLE_RECT_LAYOUT}, \
+and a different width again for each of the other presets that ship in \
+data/json/ui.  Cropping the wrong column reads as an unreadable clock \
+rather than as an error, so every duration would fall to the floor \
+while every count still tallied.  Restore the script, or set \
+PLAYTHROUGH_CAPTURE_RECT explicitly to accept a fixed rectangle \
+(the form is ${EXAMPLE_RECT})."
     fi
     _cap_rc=0
     # stdout carries the geometry and NOTHING else, which is why stderr
@@ -1595,13 +1641,13 @@ ${FRAME_FILE} is unknown.  stderr: ${_cap_detail:-<none>}"
     elif [ "${_cap_rc}" -ne 0 ]; then
         die "${EX_GEOMETRY}" "sidebar_geometry.py could not compute \
 the sidebar crop for ${FRAME_FILE} (exit ${_cap_rc}): \
-${_cap_detail:-<no diagnostic>}.  The crop is NOT substituted from \
-either documented example (${EXAMPLE_RECT_DEFAULT} for the engine's \
-default 44-cell legacy_labels_sidebar, ${EXAMPLE_RECT_CUSTOM} for a \
-36-cell custom_sidebar) -- each is right for one layout only and this \
-run's configuration is exactly what could not be read.  Fix the \
-configuration, or set PLAYTHROUGH_CAPTURE_RECT explicitly to accept a \
-fixed rectangle."
+${_cap_detail:-<no diagnostic>}.  A fixed rectangle is NOT substituted \
+for it -- each sidebar preset needs its own (${DEFAULT_LAYOUT_RECT} for \
+the engine default ${DEFAULT_LAYOUT_NAME}, ${EXAMPLE_RECT} for \
+${EXAMPLE_RECT_LAYOUT}), and this run's configuration is exactly what \
+could not be read.  Fix the configuration, or set \
+PLAYTHROUGH_CAPTURE_RECT explicitly to accept a fixed rectangle (the \
+form is ${EXAMPLE_RECT})."
     fi
     # Relayed even on success: a crop computed from defaulted values is
     # still a crop derived from a configuration nobody confirmed, and
