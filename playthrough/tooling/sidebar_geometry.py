@@ -1,73 +1,97 @@
 #!/usr/bin/env python3
 """Compute the sidebar OCR crop rectangle from configuration.
 
-This module is the resolution of the ``<sidebar region>`` placeholder
-left open by the playthrough capture request.  It is imported by
-``playthrough/tooling/ocr_clock.py`` and invoked as a script by
-``playthrough/tooling/capture.sh``; both need one and the same
-ImageMagick geometry string of the form ``WxH+X+Y``, and they get it
-from here so that the two cannot disagree.
+This is the resolution of the ``<sidebar region>`` placeholder left open
+by the capture request.  ``ocr_clock.py`` imports it and ``capture.sh``
+invokes it as a script; both need the same ImageMagick geometry string
+``WxH+X+Y``, and they get it from here so the two cannot disagree.
 
 THE FORMULA
+    cols   = engine_cells(TERMINAL_X, SCALING_FACTOR, 80)
+    rows   = engine_cells(TERMINAL_Y, SCALING_FACTOR, 24)
     width  = sidebar_width_cells * FONT_WIDTH   * SCALING_FACTOR
-    height = TERMINAL_Y          * FONT_HEIGHT  * SCALING_FACTOR
+    height = rows                * FONT_HEIGHT  * SCALING_FACTOR
     x      = window.x + window.width - width  (SIDEBAR_POSITION right)
     x      = window.x                         (SIDEBAR_POSITION left)
     y      = window.y
 
 where the game window itself is derived exactly as the engine derives
-it -- ``WindowWidth = TERMINAL_WIDTH * fontwidth * scaling_factor`` and
+it, in the engine's own ORDER.  That order is the part worth reading
+twice, because performing only its second half is wrong: the engine
+first turns the SAVED ``TERMINAL_X``/``TERMINAL_Y`` into a LOGICAL
+grid -- trimming to a multiple of the scaling factor, flooring at
+``EVEN_MINIMUM_TERM_*`` times that factor, then DIVIDING by it
+[src/sdltiles.cpp:6235-6252] -- and only then computes
+``WindowWidth = TERMINAL_WIDTH * fontwidth * scaling_factor`` and
 ``WindowHeight = TERMINAL_HEIGHT * fontheight * scaling_factor``
-[src/sdltiles.cpp:595-596] -- and is then centred inside the X root,
-which is what produces the four-pixel letterbox: the window measures
-1920x1072 at ``+0+4`` inside a 1920x1080 root, so ``y`` is 4 rather
-than 0.  That 4 is COMPUTED as ``(1080 - 1072) // 2``; it is not a
-constant anywhere in this file.
+[src/sdltiles.cpp:595-596].  Multiplying the saved values by the
+scaling factor without dividing first overstates a scaled window by
+the square of the factor: a saved 240x67 at factor 2 is a 120x33
+logical grid in a 1920x1056 window, not a 3840x2144 one.  The window
+is then centred inside the X root, which is what produces the
+four-pixel letterbox: at factor 1 the window measures 1920x1072 at
+``+0+4`` inside a 1920x1080 root, so ``y`` is 4 rather than 0.  That 4
+is COMPUTED as ``(1080 - 1072) // 2``; it is not a constant anywhere
+in this file.
 
-On the configuration this pipeline runs under the formula evaluates to
-``288x1072+1632+4``.  That string appears in this docstring as an
-expected result and nowhere on any return path.
+WHICH SIDEBAR, AND ON WHOSE AUTHORITY
+The width in cells belongs to the layout the engine is CURRENTLY
+drawing, which is not necessarily ``custom_sidebar``:
+
+* ``current_layout_id`` is read from the game's own
+  ``<userdir>/config/panel_options.json`` [src/panels.cpp:492-503,
+  :544-548; src/path_info.cpp:356-358];
+* before the game has written one, the engine's constructor default
+  applies -- ``legacy_labels_sidebar`` on every non-Android build
+  [src/panels.cpp:412-418], whose width is 44 cells and NOT
+  ``custom_sidebar``'s 36;
+* the id is looked up among the ``style: sidebar`` widgets of the
+  whole ``data/json/ui`` tree, because that is where the engine builds
+  its layout map from [src/panels.cpp:398-408], and the width used is
+  that widget's own ``width`` [src/panels.cpp:484].
+
+On a fresh userdir the formula therefore evaluates to
+``352x1072+1568+4``, and on a game whose panel options select
+``custom_sidebar`` it evaluates to ``288x1072+1632+4``.  Both strings
+appear in this docstring as expected results and on no return path.
 
 WHY THIS IS COMPUTED AND NOT A LITERAL
 Measured in this checkout, not estimated: nine files match
 ``data/json/ui/sidebar*.json``, and across the whole ``data/json/ui``
 tree -- including the ``zenfs/``, ``structured/`` and ``spacebar/``
 bundles -- twelve widgets declare ``"style": "sidebar"`` at eight
-distinct widths: 32, 36, 43, 44, 48, 58, 62 and 66 cells.  The default
-``custom_sidebar`` is 36 [data/json/ui/sidebar.json:7].  A hard-coded
-rectangle would therefore crop the wrong column the moment the layout
-changed -- and it would do so SILENTLY.  Nothing crashes: the OCR
-simply stops matching, every ``ingame_clock`` goes null, every
-duration collapses to the 0.25 s floor, and the finished movie looks
-plausible while meaning nothing.  Preventing that specific silent
-failure is the entire reason this module exists, which is why every
-fallback below is announced on stderr through ``logging`` and why a
-malformed input raises :class:`GeometryError` instead of being papered
-over with a default.
-
-WHAT THIS RETURNS -- THE WHOLE COLUMN, NEVER A BAND
-The clock is drawn by the ``time_desc_label`` widget bound to
-``time_text`` [data/json/ui/time.json:2-8], and its row depends on the
-order of ``custom_sidebar``'s ``widgets`` array, so its ``y`` cannot be
-known from configuration alone.  This module therefore returns the
-full-height sidebar strip and ``ocr_clock.py`` locates the clock row by
-regex inside the OCR output.  :func:`narrow_to_rows` can trim the strip
-for performance, but it is opt-in, it returns the full column unless
-BOTH bounds are supplied, and it is never the only path.
+distinct widths: 32, 36, 43, 44, 48, 58, 62 and 66 cells.  A
+hard-coded rectangle -- or a correctly computed one taken from the
+wrong preset, which is the same defect wearing a function's clothes --
+would crop the wrong column the moment the layout changed, and it
+would do so SILENTLY.  Nothing crashes: the OCR simply stops matching,
+every ``ingame_clock`` goes null, every duration collapses to the
+0.25 s floor, and the finished movie looks plausible while meaning
+nothing.  Preventing that specific silent failure is the entire
+reason this module exists, which is why every fallback below is
+announced on stderr through ``logging`` and why a malformed input
+raises :class:`GeometryError` instead of being papered over with a
+default.
 
 READ-ONLY BY CONSTRUCTION
-Nothing here writes anywhere.  ``data/json/ui/sidebar.json`` and the
-game-written ``options.json`` are opened for reading only; no widget is
-modified, the in-game sidebar manager is never invoked, no subprocess
-is started, and no network call of any kind is made.
+Nothing here writes anywhere.  The widget JSON under
+``data/json/ui``, the game-written ``options.json`` and the
+game-written ``panel_options.json`` are opened for reading only; no
+widget is modified, no layout is selected, the in-game sidebar manager
+is never invoked, no subprocess is started, and no network call of any
+kind is made.
 
 USAGE
     $ python3 playthrough/tooling/sidebar_geometry.py
+    352x1072+1568+4
+
+    $ python3 playthrough/tooling/sidebar_geometry.py \\
+          --layout-id custom_sidebar
     288x1072+1632+4
 
     >>> import sidebar_geometry
     >>> sidebar_geometry.sidebar_crop_geometry()
-    '288x1072+1632+4'
+    '352x1072+1568+4'
 
 Standard output carries exactly the geometry string and nothing else,
 so ``RECT="$(python3 playthrough/tooling/sidebar_geometry.py)"`` is
@@ -117,10 +141,38 @@ DEFAULT_FONT_HEIGHT = 16
 FONT_HEIGHT_RANGE = (8, 100)
 
 # src/options.cpp:2818-2824 SCALING_FACTOR values { 1, 2, 4 }, "1".
-# It multiplies both window axes at src/sdltiles.cpp:595-596, so it
-# multiplies the crop too.
+#
+# It does NOT simply multiply the saved terminal dimensions, and
+# getting that backwards produces a confidently wrong rectangle.  The
+# engine's order is divide, then multiply
+# [src/sdltiles.cpp:6160-6252]:
+#
+#   terminal        = ( TERMINAL_X, TERMINAL_Y )      from options.json
+#   terminal.x     -= terminal.x % scaling_factor     :6235-6236
+#   terminal.x      = max( 80 * scaling_factor, ... ) :6238-6239
+#   TERMINAL_WIDTH  = terminal.x / scaling_factor     :6251
+#   WindowWidth     = TERMINAL_WIDTH * fontwidth
+#                     * scaling_factor                :595
+#
+# So the saved TERMINAL_X is a PHYSICAL cell count and TERMINAL_WIDTH
+# -- the LOGICAL grid everything on screen is laid out in, including
+# the sidebar's width in cells -- is that number divided by the
+# scaling factor.  At scale 2 a saved 240 is a 120-cell logical grid in
+# a 1920 px window, not a 3840 px window; treating it as the latter
+# overshoots the root, gets clamped to it, and lands the crop on the
+# wrong column with no error anywhere.  The trim and the floor are
+# mirrored here for the same reason: they are what the engine actually
+# stored before it divided.
 DEFAULT_SCALING_FACTOR = 1
 SCALING_FACTORS = (1, 2, 4)
+
+# src/game_constants.h:11-12 EVEN_MINIMUM_TERM_WIDTH = 80 and
+# EVEN_MINIMUM_TERM_HEIGHT = 24.  The engine refuses a terminal
+# smaller than these times the scaling factor
+# [src/sdltiles.cpp:6238-6239], so a smaller saved value never
+# reaches the window computation.
+EVEN_MINIMUM_TERM_WIDTH = 80
+EVEN_MINIMUM_TERM_HEIGHT = 24
 
 # src/options.cpp:2132-2136 SIDEBAR_POSITION { left, right }, "right".
 # Both values are honoured.  Supporting only the default would make
@@ -128,21 +180,76 @@ SCALING_FACTORS = (1, 2, 4)
 DEFAULT_SIDEBAR_POSITION = "right"
 SIDEBAR_POSITIONS = ("left", "right")
 
-# data/json/ui/sidebar.json:7 custom_sidebar "width": 36.  Used only if
-# that widget cannot be read AND a caller passes the value explicitly;
-# the JSON is the source of truth and a failure to read it raises.
-DEFAULT_SIDEBAR_CELLS = 36
+# data/json/ui/sidebar.json:7 custom_sidebar "width": 36, recorded for
+# reference only.  It is deliberately NOT a default of any kind: the
+# width always comes from the widget the ACTIVE layout names, and there
+# is no code path on which this number is substituted for it.  Naming
+# it DEFAULT_ anything is what let a 36-cell crop stand in for a
+# 44-cell sidebar in the first place, so it is named for the preset it
+# documents instead.
+CUSTOM_SIDEBAR_CELLS = 36
 
-# The headless contract from playthrough/tooling/env.sh:375-378,
+# ---------------------------------------------------------------------
+# WHICH SIDEBAR IS ACTUALLY ON SCREEN
+#
+# The crop must be taken from the layout the engine is CURRENTLY
+# drawing, and that is not custom_sidebar on a fresh userdir.
+#
+#   * panel_manager's constructor sets current_layout_id to
+#     "legacy_labels_sidebar" on every non-Android build, and to
+#     "sidebar-mobile" on Android [src/panels.cpp:412-418].
+#   * The selection is persisted to and restored from
+#     <userdir>/config/panel_options.json [src/panels.cpp:492-503,
+#     :548, src/path_info.cpp:356-358], which is where a layout chosen
+#     in game with the sidebar manager ends up.
+#   * A layout id that no longer names a known layout falls back to
+#     "legacy_classic_sidebar" [src/panels.cpp:426-431]; a persisted id
+#     absent from the layout map falls back to "labels"
+#     [src/panels.cpp:548-553].
+#   * The layout map is built from EVERY widget whose style is
+#     "sidebar" [src/panels.cpp:398-408], across the whole
+#     data/json/ui tree -- not only data/json/ui/sidebar.json.
+#   * The sidebar's width in cells is that layout widget's own "width"
+#     [src/panels.cpp:484 update_offsets( ...panels().begin()
+#     ->get_width() )].
+#
+# The consequence, measured in this checkout: legacy_labels_sidebar
+# declares "width": 44, so a fresh non-Android game renders a 352 px
+# sidebar, where custom_sidebar's 36 cells would imply 288 px.  Reading
+# the wrong one crops 64 pixels of the wrong column and the clock
+# simply never matches -- silently, which is the failure mode this
+# module exists to prevent.
+# ---------------------------------------------------------------------
+DEFAULT_LAYOUT_ID = "legacy_labels_sidebar"
+ANDROID_LAYOUT_ID = "sidebar-mobile"
+INVALID_LAYOUT_FALLBACK_ID = "legacy_classic_sidebar"
+MISSING_LAYOUT_FALLBACK_ID = "labels"
+LAYOUT_KEY = "current_layout_id"
+
+# The headless contract from playthrough/tooling/env.sh,
+# "Display, window and grid geometry":
 # `Xvfb :99 -screen 0 1920x1080x24`.  Capture targets the X ROOT, not
 # the game window, so the root size is what the crop is aligned in.
 DEFAULT_SCREEN_WIDTH = 1920
 DEFAULT_SCREEN_HEIGHT = 1080
 
 # The widget this module reads, by id first and by style second.
-# data/json/ui/sidebar.json:3 "id", :5 "style".
+# data/json/ui/sidebar.json:3 "id", :5 "style".  The default is now
+# resolved from the game's own configuration rather than fixed to one
+# preset; DEFAULT_SIDEBAR_WIDGET_ID remains the documented id of the
+# custom_sidebar preset for a caller that wants to ask for it by name.
 DEFAULT_SIDEBAR_WIDGET_ID = "custom_sidebar"
 SIDEBAR_WIDGET_STYLE = "sidebar"
+
+# Where the sidebar widgets live.  data/json/ui/sidebar.json is looked
+# at first because it is the file the pipeline documents, but the
+# engine loads the WHOLE tree, so every *.json under data/json/ui --
+# including the spacebar/, structured/ and zenfs/ bundles -- is
+# searched for the resolved layout id.  Measured in this checkout:
+# eight widgets declare "style": "sidebar" in data/json/ui/*.json at
+# widths 32, 36, 43, 44, 44 and 66, with more in the themed bundles.
+UI_JSON_PARTS = ("data", "json", "ui")
+JSON_SUFFIX = ".json"
 
 # Option names as the engine spells them in options.json.
 OPT_TERMINAL_X = "TERMINAL_X"
@@ -160,20 +267,23 @@ OPT_SIDEBAR_POSITION = "SIDEBAR_POSITION"
 # when the game-written options file does not carry the key -- which is
 # the real state of a fresh userdir, since the engine writes
 # options.json on its first launch [src/path_info.cpp:167].  Preferring
-# the pipeline's declared contract (env.sh:386-389) over the engine's
+# the pipeline's declared contract (env.sh's PLAYTHROUGH_TERMINAL_X
+# and PLAYTHROUGH_TERMINAL_Y) over the engine's
 # compiled-in first-launch default in that window is what makes the
 # crop match the frames actually being captured: those defaults are
-# 80x24 cells, a 640x384 window, whereas capture runs at 240x67 cells
-# in a 1920x1072 window.  Every such substitution is announced.
+# 80x24 cells, a 640x384 render grid, whereas capture runs at 240x67
+# cells, a 1920x1072 grid.  Every such substitution is announced.
 #
 # There is deliberately NO environment tier for the sidebar width.
-# env.sh:390 does export PLAYTHROUGH_SIDEBAR_CELLS, and honouring it
+# env.sh does export PLAYTHROUGH_SIDEBAR_CELLS, and honouring it
 # would let a constant back in through the side door; the width is read
 # from the game's own widget definition, which always ships, or the
 # computation fails.  An explicit argument remains available for
 # exercising other presets.
 ENV_REPO_ROOT = "PLAYTHROUGH_REPO_ROOT"
 ENV_OPTIONS_JSON = "PLAYTHROUGH_OPTIONS_JSON"
+ENV_PANEL_OPTIONS = "PLAYTHROUGH_PANEL_OPTIONS_JSON"
+ENV_CONFIG_DIR = "PLAYTHROUGH_CONFIG_DIR"
 ENV_SCREEN_WIDTH = "PLAYTHROUGH_SCREEN_WIDTH"
 ENV_SCREEN_HEIGHT = "PLAYTHROUGH_SCREEN_HEIGHT"
 ENV_TERMINAL_X = "PLAYTHROUGH_TERMINAL_X"
@@ -185,12 +295,18 @@ ENV_FONT_HEIGHT = "PLAYTHROUGH_FONT_HEIGHT"
 # src/path_info.cpp:164 config_dir_value = user_dir_value + "config/";
 # src/path_info.cpp:167 options_value = config_dir_value +
 # "options.json";  The userdir itself is the pipeline's own
-# ./playthrough/userdir/ (env.sh:300, 310-311).
+# ./playthrough/userdir/ (env.sh's PLAYTHROUGH_USERDIR,
+# PLAYTHROUGH_CONFIG_DIR and PLAYTHROUGH_OPTIONS_JSON).
 SIDEBAR_JSON_PARTS = ("data", "json", "ui", "sidebar.json")
 OPTIONS_JSON_PARTS = ("playthrough", "userdir", "config", "options.json")
+# src/path_info.cpp:356-358 panel_options() = config_dir /
+# "panel_options.json"; src/panels.cpp:492-503 writes and reads it.
+PANEL_OPTIONS_PARTS = ("playthrough", "userdir", "config",
+                       "panel_options.json")
 
 # Markers proving a directory really is a Cataclysm-DDA checkout.  The
-# same pair env.sh:147-152 asserts, for the same reason: a wrong root
+# same pair env.sh asserts on sourcing, for the same reason: a
+# wrong root
 # would otherwise surface much later as an unreadable clock.
 ROOT_MARKER_DIR_PARTS = ("data", "json", "ui")
 ROOT_MARKER_FILE_PARTS = ("src", "path_info.cpp")
@@ -283,6 +399,24 @@ class Rect:
 
 
 @dataclass(frozen=True)
+class WindowGeometry:
+    """The game window, plus the grid and scale it was derived from.
+
+    ``scale`` is the scaling factor that was actually IN FORCE, which
+    is not always the one the options file asked for: the engine
+    resets a factor too large for the display back to 1
+    [src/sdltiles.cpp:6209-6232].  Returning it alongside the
+    rectangle is what stops a caller from sizing the sidebar with a
+    factor the engine had already abandoned.
+    """
+
+    rect: Rect
+    cols: int
+    rows: int
+    scale: int
+
+
+@dataclass(frozen=True)
 class SidebarGeometry:
     """The computed crop plus every input it was computed from.
 
@@ -299,14 +433,35 @@ class SidebarGeometry:
     screen_height: int
     sidebar_cells: int
     sidebar_widget_id: str
+    # Which sidebar layout the crop was taken from, and on whose
+    # authority: the game's own panel_options.json, the engine's
+    # documented default, or a caller's explicit override.  Carried
+    # because "44 cells" is only checkable if the reader knows which
+    # of the eight shipped presets it came from.
+    layout_id: str
+    layout_source: str
+    # terminal_x/y are the SAVED option values; terminal_cols/rows are
+    # the LOGICAL grid the engine derives from them at this scaling
+    # factor [src/sdltiles.cpp:6235-6252].  They differ only when the
+    # scaling factor is above 1, and keeping both is what makes that
+    # difference visible instead of quietly folded away.
     terminal_x: int
     terminal_y: int
+    terminal_cols: int
+    terminal_rows: int
     font_width: int
     font_height: int
+    # The factor actually IN FORCE, which is the one the window was
+    # drawn at.  It is the SCALING_FACTOR option value except where the
+    # engine reset a factor too large for the display back to 1
+    # [src/sdltiles.cpp:6209-6232]; the reset is recorded in notes.
+    # Reporting the requested value here would let a consumer -- the
+    # OCR row height, for one -- measure a window that was never made.
     scaling_factor: int
     position: str
     sidebar_json: str
     options_json: str
+    panel_options_json: str
     notes: Tuple[str, ...] = field(default=())
 
     @property
@@ -335,24 +490,29 @@ class SidebarGeometry:
         cell_h = self.font_height * self.scaling_factor
         lines = [
             "sidebar OCR crop derivation",
+            f"  panel options         {self.panel_options_json}",
+            f"  sidebar layout        {self.layout_id}"
+            f" (from {self.layout_source})",
             f"  sidebar json          {self.sidebar_json}",
             f"  sidebar widget        {self.sidebar_widget_id}",
             f"  options json          {self.options_json}",
             f"  X root                {self.screen_width}"
             f"x{self.screen_height}",
-            f"  terminal grid         {self.terminal_x}"
+            f"  saved terminal        {self.terminal_x}"
             f"x{self.terminal_y} cells",
+            f"  logical grid          {self.terminal_cols}"
+            f"x{self.terminal_rows} cells",
             f"  font cell             {self.font_width}"
             f"x{self.font_height} px",
             f"  scaling factor        {self.scaling_factor}",
             f"  effective cell        {cell_w}x{cell_h} px",
-            f"  game window           {self.window.geometry}",
+            f"  render grid           {self.window.geometry}",
             f"  sidebar position      {self.position}",
             f"  sidebar width         {self.sidebar_cells} cells"
             f" * {cell_w} px = {self.rect.width} px",
-            f"  sidebar height        {self.terminal_y} cells"
+            f"  sidebar height        {self.terminal_rows} cells"
             f" * {cell_h} px = {self.rect.height} px",
-            f"  letterbox y           ({self.screen_height}"
+            f"  grid origin y         ({self.screen_height}"
             f" - {self.window.height}) // 2 = {self.rect.y}",
             f"  crop                  {self.rect.geometry}",
         ]
@@ -394,44 +554,68 @@ def _looks_like_checkout(candidate: str) -> bool:
 def repo_root(explicit: Optional[str] = None) -> str:
     """Return the absolute repository root, verified to be one.
 
-    Resolution order, first match wins:
+    Resolution order:
 
     1. ``explicit``, when a caller passes one;
     2. ``$PLAYTHROUGH_REPO_ROOT``, exported by
-       ``playthrough/tooling/env.sh:294``, so that every stage of the
+       ``playthrough/tooling/env.sh``, so that every stage of the
        pipeline agrees on the root;
     3. two directories above this file, which is the idiom
        ``tools/json_tools/util.py:13-16`` uses.
 
-    :raises GeometryError: when the resolved directory is not a
-        Cataclysm-DDA checkout.  This is deliberately fatal.  The
-        module's whole purpose is to avoid a plausible-but-wrong
-        rectangle, and a wrong root produces exactly that.
-    """
-    candidates = []
-    if explicit:
-        candidates.append(("explicit argument", explicit))
-    env_root = os.environ.get(ENV_REPO_ROOT)
-    if env_root:
-        candidates.append((f"${ENV_REPO_ROOT}", env_root))
-    here = os.path.abspath(os.path.dirname(__file__))
-    candidates.append(
-        ("this file's location", _join(here, ("..", ".."))))
+    AN INVALID NOMINATED ROOT IS FATAL; IT IS NOT SKIPPED.  Steps 1 and
+    2 are *instructions*, not guesses: someone stated which checkout to
+    read.  Silently ignoring a bad one and falling through to this
+    module's own checkout answers a question nobody asked -- it computes
+    a crop from the wrong ``data/json/ui/sidebar.json`` and the wrong
+    ``options.json``, and because the result is a perfectly well-formed
+    rectangle, the only symptom is a clock that never matches: every
+    reading empty, every duration on the floor, a plausible movie whose
+    pacing means nothing.  So a nominated root that is not a checkout
+    raises, NAMING the path that was rejected.  Step 3 is the only
+    fallback, and it is a derivation rather than an instruction.
 
-    tried = []
-    for origin, candidate in candidates:
+    :raises GeometryError: when a nominated root is not a Cataclysm-DDA
+        checkout, or when no root could be located at all.
+    """
+    marker_dir = os.path.join(*ROOT_MARKER_DIR_PARTS)
+    marker_file = os.path.join(*ROOT_MARKER_FILE_PARTS)
+
+    nominated = []
+    if explicit:
+        nominated.append(("the explicit root argument", explicit))
+    env_root = os.environ.get(ENV_REPO_ROOT)
+    if env_root and env_root.strip():
+        nominated.append((f"${ENV_REPO_ROOT}", env_root))
+
+    for origin, candidate in nominated:
         resolved = os.path.abspath(os.path.normpath(candidate))
         if _looks_like_checkout(resolved):
             LOG.debug("repository root from %s: %s", origin, resolved)
             return resolved
-        tried.append(f"{origin} -> {resolved}")
+        raise GeometryError(
+            f"{origin} names '{candidate}' (resolved to "
+            f"'{resolved}'), which is not a Cataclysm-DDA checkout: it "
+            f"has no {marker_dir} directory or no {marker_file} file.  "
+            f"That root was asked for explicitly, so it is not "
+            f"silently replaced with this module's own checkout -- "
+            f"which would compute a crop from a different sidebar "
+            f"layout and a different options file, and the wrong "
+            f"column reads as an unreadable clock rather than as an "
+            f"error")
 
-    marker_dir = os.path.join(*ROOT_MARKER_DIR_PARTS)
-    marker_file = os.path.join(*ROOT_MARKER_FILE_PARTS)
-    attempts = "; ".join(tried)
+    here = os.path.abspath(os.path.dirname(__file__))
+    derived = os.path.abspath(os.path.normpath(_join(here, ("..", ".."))))
+    if _looks_like_checkout(derived):
+        LOG.debug("repository root from this file's location: %s",
+                  derived)
+        return derived
+
     raise GeometryError(
         f"cannot locate a Cataclysm-DDA checkout (no {marker_dir} "
-        f"directory and no {marker_file} file); tried: {attempts}")
+        f"directory and no {marker_file} file); this module resolves "
+        f"to '{derived}' from its own location, and no root was "
+        f"nominated by an argument or ${ENV_REPO_ROOT}")
 
 
 def sidebar_json_path(root: Optional[str] = None) -> str:
@@ -447,7 +631,7 @@ def options_json_path(root: Optional[str] = None) -> str:
     """Absolute path of the game-written ``options.json``.
 
     ``$PLAYTHROUGH_OPTIONS_JSON`` wins when set
-    [playthrough/tooling/env.sh:311], so the value is defined once for
+    [playthrough/tooling/env.sh], so the value is defined once for
     the whole pipeline.  Otherwise the path is derived exactly as the
     engine derives it -- ``config_dir_value = user_dir_value +
     "config/"`` [src/path_info.cpp:164] and ``options_value =
@@ -458,6 +642,41 @@ def options_json_path(root: Optional[str] = None) -> str:
     if from_env:
         return os.path.abspath(os.path.normpath(from_env))
     return _join(repo_root(root), OPTIONS_JSON_PARTS)
+
+
+def panel_options_path(root: Optional[str] = None) -> str:
+    """Absolute path of the game-written ``panel_options.json``.
+
+    This is where the engine persists which sidebar layout is on
+    screen -- ``PATH_INFO::panel_options()`` is
+    ``config_dir_path_value / "panel_options.json"``
+    [src/path_info.cpp:356-358], written by ``panel_manager::save()``
+    and read by ``panel_manager::load()`` [src/panels.cpp:492-503].
+
+    ``$PLAYTHROUGH_PANEL_OPTIONS_JSON`` wins when set, then
+    ``$PLAYTHROUGH_CONFIG_DIR`` (both exported by
+    playthrough/tooling/env.sh, which owns the artifact layout), and
+    otherwise the path is derived exactly as the engine derives it
+    under this pipeline's own ``./playthrough/userdir/``.
+    """
+    from_env = os.environ.get(ENV_PANEL_OPTIONS)
+    if from_env:
+        return os.path.abspath(os.path.normpath(from_env))
+    config_dir = os.environ.get(ENV_CONFIG_DIR)
+    if config_dir:
+        return _join(os.path.abspath(os.path.normpath(config_dir)),
+                     ("panel_options.json",))
+    return _join(repo_root(root), PANEL_OPTIONS_PARTS)
+
+
+def ui_json_dir(root: Optional[str] = None) -> str:
+    """Absolute path of the widget tree ``data/json/ui``.
+
+    Read-only input.  The engine loads every widget in this tree, so
+    the layout resolved from ``panel_options.json`` may be defined in
+    any file under it, not only in ``sidebar.json``.
+    """
+    return _join(repo_root(root), UI_JSON_PARTS)
 
 
 # ---------------------------------------------------------------------
@@ -496,90 +715,211 @@ def _load_json(path: str, what: str) -> object:
             f"{what} at {path} is not valid JSON: {err}") from err
 
 
-def read_sidebar_cells(
+def read_current_layout_id(
     path: Optional[str] = None,
-    widget_id: str = DEFAULT_SIDEBAR_WIDGET_ID,
     notes: Optional[List[str]] = None,
     root: Optional[str] = None,
-) -> Tuple[int, str]:
-    """Read the sidebar width in terminal cells from the game's JSON.
+) -> Tuple[str, str]:
+    """Return the sidebar layout the engine is currently drawing.
 
-    ``data/json/ui/sidebar.json`` is a JSON array of widget objects.
-    The wanted one is located by ``"id"`` first
-    [data/json/ui/sidebar.json:3] and, failing that, by
-    ``"style": "sidebar"`` [data/json/ui/sidebar.json:5], which is the
-    more robust match because it identifies the role rather than the
-    name.  The width itself is at
-    [data/json/ui/sidebar.json:7] -- ``"width": 36``.
+    ``panel_manager::serialize`` writes a one-element JSON array whose
+    single object carries ``current_layout_id`` [src/panels.cpp:
+    508-513], and ``deserialize`` reads it back from element 0
+    [src/panels.cpp:544-548].  That file only exists once the game has
+    saved its panel options; until then the engine's own constructor
+    default applies -- ``legacy_labels_sidebar`` on every non-Android
+    build [src/panels.cpp:412-418].
 
-    The JSON is parsed with :mod:`json`, never pattern-matched: a
-    regex over this file would match ``"width"`` keys belonging to
-    nested layout widgets, of which the presets contain many.
+    An ABSENT file is therefore an ordinary, expected state and yields
+    the documented default with a note.  A file that exists but cannot
+    be believed raises: it means the engine wrote something this module
+    does not understand, and guessing a layout from it would put the
+    crop on a column chosen at random.
 
-    :returns: ``(cells, widget_id_used)``.  The second element names
-        the widget the value actually came from, which differs from
-        ``widget_id`` whenever the style fallback fired.
-    :raises GeometryError: when the file is unreadable, is not an
-        array, contains no sidebar widget, or carries a width that is
-        not a positive integer.  No default is substituted here -- the
-        file ships with the game and is always present, so a failure
-        to read it means the root is wrong or the content tree has
-        been altered, and both must be loud.
+    :returns: ``(layout_id, source)`` where ``source`` is
+        ``"panel_options.json"`` or ``"engine default"``.
+    :raises GeometryError: when the file exists but is not the shape
+        the engine writes.
     """
-    resolved = path or sidebar_json_path(root)
-    data = _load_json(resolved, "sidebar widget definition")
-    if not isinstance(data, list):
-        raise GeometryError(
-            f"{resolved} must contain a JSON array of widgets, got "
-            f"{type(data).__name__}")
+    resolved = path or panel_options_path(root)
+    if not os.path.exists(resolved):
+        _note(
+            f"{resolved} does not exist yet, so the sidebar layout is "
+            f"the engine's own default '{DEFAULT_LAYOUT_ID}' "
+            f"[src/panels.cpp:412-418]; it is written once the game "
+            f"saves its panel options",
+            notes)
+        return DEFAULT_LAYOUT_ID, "engine default"
 
-    widgets = [item for item in data if isinstance(item, dict)]
-    by_id = [w for w in widgets if w.get("id") == widget_id]
-    chosen = None
-    if by_id:
-        chosen = by_id[0]
-    else:
-        by_style = [
-            w for w in widgets
-            if w.get("style") == SIDEBAR_WIDGET_STYLE and "width" in w
-        ]
-        if by_style:
-            chosen = by_style[0]
-            _note(
-                f"{resolved} has no widget with id '{widget_id}'; used "
-                f"the first widget whose style is "
-                f"'{SIDEBAR_WIDGET_STYLE}' instead, id "
-                f"'{chosen.get('id')}'",
-                notes)
-
-    if chosen is None:
+    data = _load_json(resolved, "panel options")
+    holder: object = data
+    if isinstance(data, list):
+        if not data:
+            raise GeometryError(
+                f"{resolved} is an empty JSON array; the engine writes "
+                f"exactly one object into it "
+                f"[src/panels.cpp:508-513], so this file cannot say "
+                f"which sidebar is on screen and no layout will be "
+                f"guessed for it")
+        holder = data[0]
+    if not isinstance(holder, dict):
         raise GeometryError(
-            f"{resolved} contains no widget with id '{widget_id}' and "
-            f"none with style '{SIDEBAR_WIDGET_STYLE}'; the sidebar "
-            f"width cannot be read and will not be guessed")
-
-    if "width" not in chosen:
+            f"{resolved} holds a {type(holder).__name__} where the "
+            f"engine writes an object carrying '{LAYOUT_KEY}' "
+            f"[src/panels.cpp:508-513]")
+    if LAYOUT_KEY not in holder:
         raise GeometryError(
-            f"widget '{chosen.get('id')}' in {resolved} declares no "
+            f"{resolved} carries no '{LAYOUT_KEY}'; the engine always "
+            f"writes it [src/panels.cpp:512], so this is not a panel "
+            f"options file and the layout will not be guessed")
+    layout_id = holder[LAYOUT_KEY]
+    if not isinstance(layout_id, str) or not layout_id.strip():
+        raise GeometryError(
+            f"{resolved} declares {LAYOUT_KEY}={layout_id!r}, which is "
+            f"not a layout id")
+    LOG.debug("current sidebar layout %r from %s", layout_id, resolved)
+    return layout_id.strip(), "panel_options.json"
+
+
+def _widget_files(root: Optional[str] = None) -> List[str]:
+    """Every widget JSON file the engine loads, in a stable order.
+
+    ``data/json/ui/sidebar.json`` is listed FIRST so that the file this
+    pipeline documents is the one searched first, and the rest of the
+    tree follows in sorted order so that two runs on one checkout
+    resolve the same widget.  Sorting matters: an arbitrary filesystem
+    order would make a duplicate id resolve differently between runs.
+    """
+    base = ui_json_dir(root)
+    documented = _join(repo_root(root), SIDEBAR_JSON_PARTS)
+    found: List[str] = []
+    if os.path.isfile(documented):
+        found.append(documented)
+    for current, directories, files in os.walk(base):
+        directories.sort()
+        for name in sorted(files):
+            if not name.endswith(JSON_SUFFIX):
+                continue
+            candidate = os.path.normpath(os.path.join(current, name))
+            if candidate not in found:
+                found.append(candidate)
+    return found
+
+
+def _sidebar_widgets(
+    paths: Sequence[str],
+) -> List[Tuple[str, Dict[str, object]]]:
+    """Return every ``style: sidebar`` widget in ``paths``.
+
+    Files that are not JSON arrays of objects are skipped rather than
+    fatal: the widget tree also holds bare objects and other shapes,
+    and the engine simply ignores what is not a widget it wants.  A
+    file that cannot be parsed at all IS reported, because a broken
+    content tree is worth knowing about even when the wanted widget
+    happens to be found elsewhere.
+    """
+    widgets: List[Tuple[str, Dict[str, object]]] = []
+    for path in paths:
+        try:
+            data = _load_json(path, "widget definition")
+        except GeometryError as err:
+            LOG.debug("skipping unreadable widget file: %s", err)
+            continue
+        if not isinstance(data, list):
+            continue
+        for entry in data:
+            if (isinstance(entry, dict) and
+                    entry.get("style") == SIDEBAR_WIDGET_STYLE):
+                widgets.append((path, entry))
+    return widgets
+
+
+def _widget_width(
+    path: str, widget: Dict[str, object],
+) -> int:
+    """Return one widget's declared width in cells, or raise."""
+    if "width" not in widget:
+        raise GeometryError(
+            f"widget '{widget.get('id')}' in {path} declares no "
             f"'width'; the sidebar width cannot be read and will not "
             f"be guessed")
-
-    cells = chosen["width"]
+    cells = widget["width"]
     if isinstance(cells, bool) or not isinstance(cells, int):
         raise GeometryError(
-            f"widget '{chosen.get('id')}' in {resolved} declares "
-            f"width {cells!r}, which is not an integer")
+            f"widget '{widget.get('id')}' in {path} declares width "
+            f"{cells!r}, which is not an integer")
     if cells <= 0:
         raise GeometryError(
-            f"widget '{chosen.get('id')}' in {resolved} declares "
-            f"width {cells}, which is not a positive cell count")
+            f"widget '{widget.get('id')}' in {path} declares width "
+            f"{cells}, which is not a positive cell count")
+    return cells
 
-    used_id = chosen.get("id")
-    if not isinstance(used_id, str):
-        used_id = widget_id
-    LOG.debug("sidebar width %d cells from %s (%s)",
-              cells, resolved, used_id)
-    return cells, used_id
+
+def resolve_sidebar_widget(
+    layout_id: str,
+    notes: Optional[List[str]] = None,
+    root: Optional[str] = None,
+    paths: Optional[Sequence[str]] = None,
+) -> Tuple[int, str, str]:
+    """Resolve one layout id to its widget width, as the engine does.
+
+    The engine builds its layout map from every ``style: sidebar``
+    widget in the whole content tree and keys it by widget id
+    [src/panels.cpp:398-408]; the sidebar's width in cells is that
+    widget's own ``width`` [src/panels.cpp:484].  This mirrors both,
+    including the engine's two fallbacks for an id that no longer
+    names a layout: ``legacy_classic_sidebar``
+    [src/panels.cpp:426-431] and then ``labels``
+    [src/panels.cpp:548-553].  Every fallback is announced, because a
+    crop taken from a layout other than the one asked for is exactly
+    the kind of substitution a reader needs to see.
+
+    :returns: ``(cells, widget_id_used, widget_file)``.
+    :raises GeometryError: when no sidebar widget can be found at all,
+        or when the resolved widget's width cannot be believed.
+    """
+    searched = list(paths) if paths is not None else _widget_files(root)
+    widgets = _sidebar_widgets(searched)
+    if not widgets:
+        raise GeometryError(
+            f"no widget with style '{SIDEBAR_WIDGET_STYLE}' exists "
+            f"anywhere under {ui_json_dir(root)}; the sidebar width "
+            f"cannot be read and will not be guessed")
+
+    by_id = {}
+    for path, widget in widgets:
+        identifier = widget.get("id")
+        if isinstance(identifier, str) and identifier not in by_id:
+            by_id[identifier] = (path, widget)
+
+    for candidate, why in (
+            (layout_id, None),
+            (INVALID_LAYOUT_FALLBACK_ID,
+             "src/panels.cpp:426-431"),
+            (MISSING_LAYOUT_FALLBACK_ID,
+             "src/panels.cpp:548-553")):
+        if candidate not in by_id:
+            continue
+        path, widget = by_id[candidate]
+        if why is not None:
+            _note(
+                f"no sidebar widget is named '{layout_id}', so the "
+                f"engine's own fallback layout '{candidate}' [{why}] "
+                f"was used for the crop instead",
+                notes)
+        return _widget_width(path, widget), candidate, path
+
+    path, widget = widgets[0]
+    identifier = widget.get("id")
+    used = identifier if isinstance(identifier, str) else layout_id
+    _note(
+        f"neither '{layout_id}' nor either of the engine's fallback "
+        f"layouts ('{INVALID_LAYOUT_FALLBACK_ID}', "
+        f"'{MISSING_LAYOUT_FALLBACK_ID}') exists under "
+        f"{ui_json_dir(root)}; used the first sidebar widget found, "
+        f"'{used}' in {path}",
+        notes)
+    return _widget_width(path, widget), used, path
 
 
 def load_options(
@@ -762,16 +1102,17 @@ def resolve_screen_size(
 ) -> Tuple[int, int]:
     """Resolve the X root size the crop is aligned inside.
 
-    Capture targets the X ROOT rather than the game window -- the root
-    is 1920x1080 while the window is 1920x1072, so photographing the
-    root yields a true-resolution PNG with a four-pixel letterbox and
-    needs no rescaling, and rescaling would soften exactly the 8x16
-    glyphs the clock OCR depends on
-    [playthrough/tooling/env.sh:351-360].
+    Capture targets the X ROOT rather than the game X window -- the root
+    is 1920x1080 while the terminal render grid inside it is 1920x1072,
+    so photographing the root yields a true-resolution PNG whose only
+    non-game pixels are that thin band and which needs no rescaling;
+    rescaling would soften exactly the 8x16 glyphs the clock OCR depends
+    on [playthrough/tooling/env.sh, "Display, window and grid
+    geometry"].
 
     Resolution order per axis: an explicit argument, then the
     ``PLAYTHROUGH_SCREEN_WIDTH`` / ``PLAYTHROUGH_SCREEN_HEIGHT``
-    exports [playthrough/tooling/env.sh:375-376], then the documented
+    exports [playthrough/tooling/env.sh], then the documented
     default with a visible note.  Taking it from the environment rather
     than baking it into the arithmetic is what keeps the
     right-alignment correct if the display ever changes.
@@ -836,6 +1177,70 @@ def _resolve_int(
     return option_int(options, name, default, notes, valid_range)
 
 
+def _resolve_scaling_factor(
+    explicit: Optional[int],
+    options: Dict[str, str],
+    notes: Optional[List[str]] = None,
+) -> int:
+    """Resolve ``SCALING_FACTOR`` as a SET, never as a range.
+
+    The engine declares it as an enumeration of exactly ``{1, 2, 4}``
+    [src/options.cpp:2818-2824] -- a copt with three named values, not a
+    numeric option with bounds -- so a range test of 1 to 4 is the wrong
+    shape of check: it admits 3, which the engine cannot produce and
+    would not accept.
+
+    That matters because this value multiplies BOTH window axes
+    [src/sdltiles.cpp:595-596] and therefore multiplies the crop.  A
+    scale of 3 would compute a sidebar rectangle for a window geometry
+    the game never renders: the crop would land on the wrong pixels, the
+    clock pattern would simply stop matching, every reading would come
+    back empty, every duration would collapse to the floor, and the
+    finished movie would look entirely plausible while its pacing meant
+    nothing.  A value the engine cannot hold is therefore refused rather
+    than used.
+
+    :raises GeometryError: when an explicit argument or the value in the
+        options file is not one of the three the engine permits.
+    """
+    permitted = ", ".join(str(value) for value in SCALING_FACTORS)
+    if explicit is not None:
+        value = _positive_int(explicit, f"{OPT_SCALING_FACTOR} override")
+        if value not in SCALING_FACTORS:
+            raise GeometryError(
+                f"{OPT_SCALING_FACTOR} override is {value}, which is "
+                f"not one of the {permitted} the engine declares "
+                f"[src/options.cpp:2818-2824].  It multiplies both "
+                f"window axes, so an impossible value would compute a "
+                f"crop for a window the game never renders")
+        return value
+
+    if OPT_SCALING_FACTOR not in options:
+        _note(
+            f"option '{OPT_SCALING_FACTOR}' is absent; using the "
+            f"engine's documented default {DEFAULT_SCALING_FACTOR}",
+            notes)
+        return DEFAULT_SCALING_FACTOR
+
+    raw = options[OPT_SCALING_FACTOR]
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError) as err:
+        raise GeometryError(
+            f"option '{OPT_SCALING_FACTOR}' is {raw!r}, which is not "
+            f"an integer; refusing to guess a crop from it") from err
+    if value not in SCALING_FACTORS:
+        raise GeometryError(
+            f"option '{OPT_SCALING_FACTOR}' is {value}, which is not "
+            f"one of the {permitted} the engine declares "
+            f"[src/options.cpp:2818-2824].  Unlike a numeric option "
+            f"that is merely out of range, an unlisted value here is "
+            f"one the engine cannot hold, so the options file is not "
+            f"describing a state the game can be in -- and the crop "
+            f"derived from it would silently read the wrong pixels")
+    return value
+
+
 def _positive_int(raw: object, what: str) -> int:
     """Coerce ``raw`` to a positive int or raise loudly."""
     if isinstance(raw, bool):
@@ -855,7 +1260,149 @@ def _positive_int(raw: object, what: str) -> int:
 # The computation
 # ---------------------------------------------------------------------
 
-def window_rect(
+def engine_logical_grid(
+    terminal_x: int,
+    terminal_y: int,
+    font_width: int,
+    font_height: int,
+    scaling_factor: int,
+    screen_width: int,
+    screen_height: int,
+    notes: Optional[List[str]] = None,
+) -> Tuple[int, int, int]:
+    """Turn the SAVED terminal option values into the LOGICAL grid.
+
+    A faithful mirror of ``init_term_size_and_scaling_factor``
+    [src/sdltiles.cpp:6159-6253], in the engine's own order, including
+    the two branches that are easy to miss:
+
+    1. At scaling factor 1 the saved values pass through untouched --
+       every adjustment below lives inside ``if( scaling_factor > 1 )``
+       [:6172-6247].
+    2. A factor too large for the display is RESET TO 1 and the
+       terminal is recomputed from the display size [:6209-6232]: the
+       engine refuses to run a scaled grid it cannot fit even at the
+       minimum terminal size, and says so with "SCALING_FACTOR set too
+       high for display size, resetting to 1".  A caller that models
+       only the arithmetic and not this reset computes a crop four
+       times too wide for a display the engine is in fact drawing
+       unscaled.
+    3. Only then is the value trimmed to a multiple of the factor
+       [:6235-6236], floored at ``EVEN_MINIMUM_TERM_* * factor``
+       [:6238-6239], and DIVIDED by the factor to give
+       ``TERMINAL_WIDTH``/``TERMINAL_HEIGHT`` [:6251-6252].
+
+    The returned cell counts are the unit everything on screen is laid
+    out in -- including a sidebar widget's ``width`` -- and multiplying
+    them back up by ``font * factor`` reproduces the engine's physical
+    window [:595-596].
+
+    The display bound used here is the X root, which is what the engine
+    uses when ``FULLSCREEN`` is anything but ``"no"``: it takes the
+    desktop display mode rather than probing a maximised test window
+    [:6180-6202].  ``FULLSCREEN`` defaults to windowed borderless
+    [src/options.cpp:2715-2724] and this pipeline never changes it, so
+    the root is the right bound.
+
+    ``scaling_factor`` is checked against the engine's enumeration
+    ``{1, 2, 4}`` [src/options.cpp:2818-2824] rather than merely for
+    positivity.  :func:`_resolve_scaling_factor` already refuses an
+    unlisted value on the configuration path, but this function is the
+    one that actually multiplies both axes, so it enforces the same set
+    itself: a scale of 3 arriving from any other caller would otherwise
+    produce a well-formed rectangle for a window the game never
+    renders, and a wrong-but-plausible rectangle is the single failure
+    this module exists to prevent.
+
+    :returns: ``(cols, rows, effective_scaling_factor)``.
+    :raises GeometryError: when any input is not a positive integer, or
+        when ``scaling_factor`` is not one of the three the engine
+        permits.
+    """
+    grid_x = _positive_int(terminal_x, "terminal width")
+    grid_y = _positive_int(terminal_y, "terminal height")
+    font_w = _positive_int(font_width, "font width")
+    font_h = _positive_int(font_height, "font height")
+    scale = _positive_int(scaling_factor, "scaling factor")
+    if scale not in SCALING_FACTORS:
+        permitted = ", ".join(str(value) for value in SCALING_FACTORS)
+        raise GeometryError(
+            f"scaling factor is {scale}, which is not one of the "
+            f"{permitted} the engine declares "
+            f"[src/options.cpp:2818-2824]; it multiplies both window "
+            f"axes, so an impossible value would describe a window "
+            f"geometry the game never renders")
+    max_w = _positive_int(screen_width, "screen width")
+    max_h = _positive_int(screen_height, "screen height")
+
+    if scale == 1:
+        # src/sdltiles.cpp:6172 -- everything below is conditional on a
+        # scaling factor above 1, so an unscaled grid is used verbatim.
+        return grid_x, grid_y, scale
+
+    def _reset_to_unscaled(axis: str, minimum: int) -> Tuple[int, int]:
+        _note(
+            f"scaling factor {scale} cannot fit the minimum terminal "
+            f"{axis} of {minimum} cells on a {max_w}x{max_h} display, "
+            f"so the engine resets the factor to 1 and recomputes the "
+            f"terminal from the display size "
+            f"[src/sdltiles.cpp:6209-6232]",
+            notes)
+        return max_w // font_w, max_h // font_h
+
+    if (grid_x * font_w > max_w or
+            EVEN_MINIMUM_TERM_WIDTH * font_w * scale > max_w):
+        if EVEN_MINIMUM_TERM_WIDTH * font_w * scale > max_w:
+            grid_x, grid_y = _reset_to_unscaled(
+                "width", EVEN_MINIMUM_TERM_WIDTH)
+            scale = 1
+        else:
+            _note(
+                f"the saved terminal width {grid_x} cells would need "
+                f"{grid_x * font_w} px on a {max_w} px display, so the "
+                f"engine reduces it to {max_w // font_w} cells "
+                f"[src/sdltiles.cpp:6209-6219]",
+                notes)
+            grid_x = max_w // font_w
+
+    if (grid_y * font_h > max_h or
+            EVEN_MINIMUM_TERM_HEIGHT * font_h * scale > max_h):
+        if EVEN_MINIMUM_TERM_HEIGHT * font_h * scale > max_h:
+            grid_x, grid_y = _reset_to_unscaled(
+                "height", EVEN_MINIMUM_TERM_HEIGHT)
+            scale = 1
+        else:
+            _note(
+                f"the saved terminal height {grid_y} cells would need "
+                f"{grid_y * font_h} px on a {max_h} px display, so the "
+                f"engine reduces it to {max_h // font_h} cells "
+                f"[src/sdltiles.cpp:6221-6233]",
+                notes)
+            grid_y = max_h // font_h
+
+    if scale == 1:
+        # The reset above already recomputed the terminal from the
+        # display, and the engine's remaining adjustments are no-ops at
+        # factor 1.
+        return grid_x, grid_y, scale
+
+    trimmed_x = max(EVEN_MINIMUM_TERM_WIDTH * scale,
+                    grid_x - (grid_x % scale))
+    trimmed_y = max(EVEN_MINIMUM_TERM_HEIGHT * scale,
+                    grid_y - (grid_y % scale))
+    if trimmed_x != grid_x or trimmed_y != grid_y:
+        _note(
+            f"at scaling factor {scale} the engine trims the terminal "
+            f"to a multiple of the factor and floors it at "
+            f"{EVEN_MINIMUM_TERM_WIDTH} x {EVEN_MINIMUM_TERM_HEIGHT} "
+            f"cells times the factor [src/sdltiles.cpp:6235-6239], "
+            f"turning {grid_x}x{grid_y} into {trimmed_x}x{trimmed_y} "
+            f"physical cells",
+            notes)
+    return trimmed_x // scale, trimmed_y // scale, scale
+
+
+def resolve_window(
     terminal_x: int,
     terminal_y: int,
     font_width: int,
@@ -864,63 +1411,97 @@ def window_rect(
     screen_width: int = DEFAULT_SCREEN_WIDTH,
     screen_height: int = DEFAULT_SCREEN_HEIGHT,
     notes: Optional[List[str]] = None,
-) -> Rect:
+) -> "WindowGeometry":
     """Derive the game window's rectangle inside the X root.
 
-    The extent is the engine's own arithmetic --
-    ``WindowWidth = TERMINAL_WIDTH * fontwidth * scaling_factor`` and
-    ``WindowHeight = TERMINAL_HEIGHT * fontheight * scaling_factor``
-    [src/sdltiles.cpp:595-596].  The window is then centred in the
-    root, which is where the letterbox comes from: on this pipeline's
-    configuration 67 rows of 16 pixels is 1072, inside a 1080-pixel
-    root, so ``y`` computes to ``(1080 - 1072) // 2 == 4``.
+    The extent is the engine's own arithmetic, in the engine's own
+    order.  ``TERMINAL_WIDTH`` is NOT the saved ``TERMINAL_X``: the
+    engine trims the saved value to a multiple of the scaling factor,
+    floors it, and DIVIDES by that factor
+    [src/sdltiles.cpp:6235-6252] before
+    ``WindowWidth = TERMINAL_WIDTH * fontwidth * scaling_factor``
+    [:595-596] multiplies it back.  Both steps are mirrored here --
+    see :func:`engine_terminal_cells` -- because performing only the
+    multiplication overstates a scaled window by the square of the
+    factor: a saved 240x67 at scale 2 is a 120x33 logical grid in a
+    1920x1056 window, not a 3840x2144 one.
 
-    A window larger than the root is clamped to the root and reported,
+    The window is then centred in the root, which is where the
+    letterbox comes from: on this pipeline's configuration 67 rows of
+    16 pixels is 1072, inside a 1080-pixel root, so ``y`` computes to
+    ``(1080 - 1072) // 2 == 4``.
+
+    A grid larger than the root is clamped to the root and reported,
     because the engine does the same thing in that situation -- it
     calls ``GetWindowSize`` and recomputes ``TERMINAL_WIDTH`` and
     ``TERMINAL_HEIGHT`` from the actual window
-    [src/sdltiles.cpp:672-676] -- so the root is the honest bound.
+    [src/sdltiles.cpp:671-675] -- so the root is the honest bound.
 
+    :returns: a :class:`WindowGeometry` carrying the rectangle, the
+        logical grid it was built from, and the scaling factor that
+        was actually in force after the engine's own adjustments.
     :raises GeometryError: when any input is not a positive integer.
     """
-    cell_w = (_positive_int(font_width, "font width") *
-              _positive_int(scaling_factor, "scaling factor"))
-    cell_h = (_positive_int(font_height, "font height") *
-              _positive_int(scaling_factor, "scaling factor"))
-    width = _positive_int(terminal_x, "terminal width") * cell_w
-    height = _positive_int(terminal_y, "terminal height") * cell_h
     root_w = _positive_int(screen_width, "screen width")
     root_h = _positive_int(screen_height, "screen height")
+    cols, rows, scale = engine_logical_grid(
+        terminal_x=terminal_x,
+        terminal_y=terminal_y,
+        font_width=font_width,
+        font_height=font_height,
+        scaling_factor=scaling_factor,
+        screen_width=root_w,
+        screen_height=root_h,
+        notes=notes)
+    cell_w = _positive_int(font_width, "font width") * scale
+    cell_h = _positive_int(font_height, "font height") * scale
+    width = cols * cell_w
+    height = rows * cell_h
 
     if width > root_w:
         _note(
             f"the terminal grid implies a {width} px wide window but "
             f"the X root is only {root_w} px wide; clamping to the "
             f"root, which is what the engine itself does when the "
-            f"window cannot be honoured (src/sdltiles.cpp:672-676)",
+            f"window cannot be honoured (src/sdltiles.cpp:671-675)",
             notes)
         width = root_w
+        cols = width // cell_w
     if height > root_h:
         _note(
             f"the terminal grid implies a {height} px tall window but "
             f"the X root is only {root_h} px tall; clamping to the "
             f"root, which is what the engine itself does when the "
-            f"window cannot be honoured (src/sdltiles.cpp:672-676)",
+            f"window cannot be honoured (src/sdltiles.cpp:671-675)",
             notes)
         height = root_h
+        rows = height // cell_h
 
-    return Rect(
+    rect = Rect(
         width=width,
         height=height,
         x=(root_w - width) // 2,
         y=(root_h - height) // 2)
+    return WindowGeometry(rect=rect, cols=cols, rows=rows, scale=scale)
+
+
+def window_rect(*args: Any, **kwargs: Any) -> Rect:
+    """Return just the game window's rectangle.
+
+    The convenience wrapper for a caller that wants the rectangle and
+    not the grid it was derived from.  Takes exactly
+    :func:`resolve_window`'s arguments.
+    """
+    return resolve_window(*args, **kwargs).rect
 
 
 def compute_sidebar_geometry(
     repo_root_dir: Optional[str] = None,
     sidebar_json: Optional[str] = None,
     options_json: Optional[str] = None,
-    sidebar_widget_id: str = DEFAULT_SIDEBAR_WIDGET_ID,
+    panel_options_json: Optional[str] = None,
+    layout_id: Optional[str] = None,
+    sidebar_widget_id: Optional[str] = None,
     sidebar_cells: Optional[int] = None,
     terminal_x: Optional[int] = None,
     terminal_y: Optional[int] = None,
@@ -937,19 +1518,28 @@ def compute_sidebar_geometry(
     optional override that exists so the computation can be exercised
     against configurations other than the live one; supplying none of
     them reads the real repository JSON and the real game-written
-    options file, which is the path the pipeline takes.
+    options and panel-options files, which is the path the pipeline
+    takes.
 
     Resolution order for each term is: the explicit override, then the
     game-written ``options.json``, then the ``env.sh`` contract, then
     the engine's documented default -- with every tier below the first
     two announced at WARNING and recorded in
-    :attr:`SidebarGeometry.notes`.  The sidebar width in cells is the
-    one exception -- it is read from ``data/json/ui/sidebar.json``,
-    which ships with the game and is therefore always present, and a
-    failure to read it raises rather than defaulting.  Letting an
-    environment variable or a constant stand in for that value would
-    reintroduce the hard-coded rectangle this module exists to
-    eliminate.
+    :attr:`SidebarGeometry.notes`.
+
+    The sidebar width in cells is the one term that is never taken
+    from an environment variable or a constant, because that is
+    precisely the hard-coded rectangle this module exists to
+    eliminate.  It is resolved the way the engine resolves it:
+    ``current_layout_id`` comes from
+    ``<userdir>/config/panel_options.json`` -- or, before the game has
+    written one, from the engine's own default
+    ``legacy_labels_sidebar`` [src/panels.cpp:412-418] -- and that id
+    is then looked up among the ``style: sidebar`` widgets of the whole
+    ``data/json/ui`` tree, whose ``width`` is the sidebar's width in
+    cells [src/panels.cpp:398-408, :484].  ``sidebar_widget_id``
+    remains available as a direct override for exercising one specific
+    preset.
 
     :returns: a :class:`SidebarGeometry` carrying the crop and every
         input it was derived from.
@@ -960,19 +1550,42 @@ def compute_sidebar_geometry(
     root = repo_root(repo_root_dir)
     resolved_sidebar_json = sidebar_json or sidebar_json_path(root)
     resolved_options_json = options_json or options_json_path(root)
+    resolved_panel_options = (panel_options_json or
+                              panel_options_path(root))
 
     options = load_options(
         path=resolved_options_json, notes=notes, root=root)
 
+    # Which layout, and on whose authority.  An explicit layout id or
+    # widget id wins; otherwise the game's own persisted selection
+    # does; otherwise the engine's constructor default.
+    if sidebar_widget_id is not None:
+        resolved_layout = sidebar_widget_id
+        layout_source = "widget id override"
+    elif layout_id is not None:
+        resolved_layout = layout_id
+        layout_source = "layout id override"
+    else:
+        resolved_layout, layout_source = read_current_layout_id(
+            path=resolved_panel_options, notes=notes, root=root)
+
+    widget_file = resolved_sidebar_json
     if sidebar_cells is None:
-        cells, widget_used = read_sidebar_cells(
-            path=resolved_sidebar_json,
-            widget_id=sidebar_widget_id,
-            notes=notes,
-            root=root)
+        # An explicitly named widget file is searched FIRST and the
+        # rest of the tree still follows, because the engine loads the
+        # whole tree; naming one file narrows the answer, it does not
+        # hide the others.
+        search: Optional[List[str]] = None
+        if sidebar_json is not None:
+            search = [resolved_sidebar_json]
+            search.extend(
+                path for path in _widget_files(root)
+                if path != resolved_sidebar_json)
+        cells, widget_used, widget_file = resolve_sidebar_widget(
+            resolved_layout, notes=notes, root=root, paths=search)
     else:
         cells = _positive_int(sidebar_cells, "sidebar width in cells")
-        widget_used = sidebar_widget_id
+        widget_used = resolved_layout
         LOG.debug("sidebar width overridden to %d cells", cells)
 
     grid_x = _resolve_int(
@@ -990,10 +1603,7 @@ def compute_sidebar_geometry(
     font_h = _resolve_int(
         font_height, options, OPT_FONT_HEIGHT, ENV_FONT_HEIGHT,
         DEFAULT_FONT_HEIGHT, notes, FONT_HEIGHT_RANGE)
-    scale = _resolve_int(
-        scaling_factor, options, OPT_SCALING_FACTOR, None,
-        DEFAULT_SCALING_FACTOR, notes,
-        (min(SCALING_FACTORS), max(SCALING_FACTORS)))
+    scale = _resolve_scaling_factor(scaling_factor, options, notes)
     side = (position if position is not None else
             option_str(options, OPT_SIDEBAR_POSITION,
                        DEFAULT_SIDEBAR_POSITION, notes,
@@ -1006,7 +1616,7 @@ def compute_sidebar_geometry(
     root_w, root_h = resolve_screen_size(
         width=screen_width, height=screen_height, notes=notes)
 
-    window = window_rect(
+    resolved = resolve_window(
         terminal_x=grid_x,
         terminal_y=grid_y,
         font_width=font_w,
@@ -1015,13 +1625,25 @@ def compute_sidebar_geometry(
         screen_width=root_w,
         screen_height=root_h,
         notes=notes)
+    window = resolved.rect
+    # The factor the engine ended up drawing at, which is what the
+    # sidebar's physical width must be computed from.  It differs from
+    # the requested one only when the engine reset a factor too large
+    # for the display [src/sdltiles.cpp:6209-6232], and using the
+    # requested one there would size the crop for a window that was
+    # never created.
+    scale = resolved.scale
 
+    # A widget's "width" is in LOGICAL cells, the same unit
+    # TERMINAL_WIDTH is in, so the physical width is that cell count
+    # times the physical cell -- font times scaling factor
+    # [src/sdltiles.cpp:595].
     sidebar_px = cells * font_w * scale
     if sidebar_px > window.width:
         raise GeometryError(
             f"the sidebar is {cells} cells ({sidebar_px} px) wide but "
-            f"the game window is only {window.width} px wide; the "
-            f"crop would extend past the window and the clock could "
+            f"the render grid is only {window.width} px wide; the "
+            f"crop would extend past the grid and the clock could "
             f"not be read from it")
 
     if side == "left":
@@ -1052,14 +1674,19 @@ def compute_sidebar_geometry(
         screen_height=root_h,
         sidebar_cells=cells,
         sidebar_widget_id=widget_used,
+        layout_id=resolved_layout,
+        layout_source=layout_source,
         terminal_x=grid_x,
         terminal_y=grid_y,
+        terminal_cols=resolved.cols,
+        terminal_rows=resolved.rows,
         font_width=font_w,
         font_height=font_h,
         scaling_factor=scale,
         position=side,
-        sidebar_json=resolved_sidebar_json,
+        sidebar_json=widget_file,
         options_json=resolved_options_json,
+        panel_options_json=resolved_panel_options,
         notes=tuple(notes))
 
 
@@ -1160,18 +1787,22 @@ def narrow_to_rows(
 # ---------------------------------------------------------------------
 
 _EPILOG = """\
-examples:
+examples (run from the repository root; this file is tracked mode 644
+and is not on PATH, so it is always invoked through the interpreter):
   # the live configuration, for capture.sh
-  sidebar_geometry.py
+  python3 playthrough/tooling/sidebar_geometry.py
 
   # show how the rectangle was derived (stderr) as well
-  sidebar_geometry.py --explain
+  python3 playthrough/tooling/sidebar_geometry.py --explain
 
-  # a different preset, without touching any file
-  sidebar_geometry.py --sidebar-cells 44
+  # a different layout, without touching any file
+  sidebar_geometry.py --layout-id custom_sidebar
+
+  # a width no shipped preset declares
+  sidebar_geometry.py --sidebar-cells 40
 
   # a left-hand sidebar
-  sidebar_geometry.py --position left
+  python3 playthrough/tooling/sidebar_geometry.py --position left
 
 Exit status: 0 on success, 1 when the crop cannot be computed
 honestly, 2 on a command line error.
@@ -1200,19 +1831,28 @@ def build_parser() -> argparse.ArgumentParser:
              "two directories above this script")
     paths.add_argument(
         "--sidebar-json", metavar="FILE",
-        help="widget definition to read the sidebar width from; "
-             "defaults to data/json/ui/sidebar.json")
+        help="widget definition looked at first; the whole "
+             "data/json/ui tree is searched for the resolved layout, "
+             "as the engine does")
     paths.add_argument(
         "--options-json", metavar="FILE",
         help="game-written options file; defaults to "
              "$PLAYTHROUGH_OPTIONS_JSON or "
              "playthrough/userdir/config/options.json")
     paths.add_argument(
+        "--panel-options-json", metavar="FILE",
+        help="game-written panel options file, which names the active "
+             "sidebar layout; defaults to $" + ENV_PANEL_OPTIONS +
+             " or playthrough/userdir/config/panel_options.json")
+    paths.add_argument(
+        "--layout-id", metavar="ID",
+        help="sidebar layout to use instead of the one the game has "
+             "persisted (engine default: " + DEFAULT_LAYOUT_ID + ")")
+    paths.add_argument(
         "--widget-id", metavar="ID",
-        default=DEFAULT_SIDEBAR_WIDGET_ID,
-        help="sidebar widget id to read (default: %(default)s); the "
-             "first widget with style '" + SIDEBAR_WIDGET_STYLE +
-             "' is used if that id is absent")
+        help="synonym for --layout-id, kept because a sidebar layout "
+             "IS a widget id [src/panels.cpp:398-408]; e.g. " +
+             DEFAULT_SIDEBAR_WIDGET_ID)
 
     over = parser.add_argument_group(
         "overrides",
@@ -1236,8 +1876,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--font-height", type=int, metavar="PX",
         help="font cell height in pixels (option FONT_HEIGHT)")
     over.add_argument(
-        "--scaling-factor", type=int, metavar="N",
-        help="display scaling factor (option SCALING_FACTOR)")
+        "--scaling-factor", type=int, choices=list(SCALING_FACTORS),
+        help="display scaling factor (option SCALING_FACTOR); the "
+             "engine declares exactly these values "
+             "(src/options.cpp:2818-2824)")
     over.add_argument(
         "--position", choices=list(SIDEBAR_POSITIONS),
         help="which side the sidebar is drawn on (option "
@@ -1321,11 +1963,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "either narrow the crop deliberately or leave it as the "
             "full sidebar column")
 
+    if args.layout_id is not None and args.widget_id is not None:
+        parser.error(
+            "--layout-id and --widget-id name the same thing; give "
+            "one of them, not both")
+
     try:
         geometry = compute_sidebar_geometry(
             repo_root_dir=args.repo_root,
             sidebar_json=args.sidebar_json,
             options_json=args.options_json,
+            panel_options_json=args.panel_options_json,
+            layout_id=args.layout_id,
             sidebar_widget_id=args.widget_id,
             sidebar_cells=args.sidebar_cells,
             terminal_x=args.terminal_x,
@@ -1347,7 +1996,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.explain:
         sys.stderr.write(geometry.describe() + "\n")
 
-    # The one and only thing written to stdout.
     sys.stdout.write(rect.geometry + "\n")
     return 0
 

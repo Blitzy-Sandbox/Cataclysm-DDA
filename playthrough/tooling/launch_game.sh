@@ -2,41 +2,101 @@
 # ---------------------------------------------------------------------
 # playthrough/tooling/launch_game.sh
 #
-# The launcher for the Cataclysm-DDA playthrough capture and
-# cinematography pipeline.  It does five things, in this order, and
-# every one of them is asserted rather than assumed:
+# The launcher for the playthrough capture pipeline: it establishes a
+# verified starting state and reports what it verified.  Nothing here
+# plays the game -- session.py sends the keystrokes and capture.sh
+# photographs the result.  Five steps, each asserted rather than
+# assumed:
 #
-#   1. BUILD the SDL tiles binary if ./cataclysm-tiles is absent, then
-#      prove from the binary's own --version output that it really is
-#      the tiles build and not the curses build.
-#   2. BRING UP the headless X surface -- Xvfb plus a window manager --
-#      only if it is not already serving, and assert that the root
-#      window is exactly 1920x1080 at depth 24.
-#   3. RESOLVE the tileset: prefer MSXotto+ when it is installed, or
-#      can be installed from a pre-placed pack, and otherwise fall
-#      back to the ASCIITiles that ship with the checkout.
-#   4. PROBE for an existing save, so that a run which finds one
-#      resumes it instead of replacing it.
-#   5. LAUNCH the game fully detached from the repository root and wait
-#      for its window BY CLASS.
+#   1. BUILD ./cataclysm-tiles if absent, then prove from the binary's
+#      own --version output that it is the SDL tiles build, never curses.
+#   2. BRING UP the headless X surface -- Xvfb under SDL_VIDEODRIVER=x11
+#      plus a window manager -- only if it is not already serving, and
+#      assert the ROOT window is exactly 1920x1080 at depth 24, the
+#      geometry capture.sh photographs.
+#   3. RESOLVE the REQUIRED tileset, MSXotto+, installed already or
+#      hydrated from a pre-placed pack whose provenance is verified
+#      first.  Its absence FAILS THE RUN; the ASCIITiles fallback is
+#      diagnostic only and has to be asked for by name.
+#   4. PROBE for an existing save, so a run that finds a CHARACTER save
+#      RESUMES it instead of replacing it.  A world with no character in
+#      it has nothing to continue and is reused.
+#   5. LAUNCH the game from the repository root in its own session
+#      (setsid + nohup, so a signal to this shell's process group misses
+#      it), and wait for a window whose OWNING PROCESS is confirmed to be
+#      this checkout's binary -- found by class, accepted by identity.
+#      Long work is then followed by POLLING a pid file and a status
+#      sentinel, so `status` reports what is observably true rather than
+#      what was started.
 #
-# Nothing here plays the game.  session.py sends the keystrokes and
-# capture.sh photographs the result; this script only establishes a
-# reproducible, verified starting state and reports what it verified.
+# SECURITY POSTURE (the parts that live here rather than in env.sh)
+#   * The X display this launches onto is authenticated: env.sh starts
+#     Xvfb with -auth and a fresh cookie and asserts that a client
+#     without it is refused.  This file relies on that and adds the
+#     other half -- a window is only accepted once
+#     window -> _NET_WM_PID -> /proc/<pid>/exe resolves to the binary
+#     this script verified, and two distinct engines are an error rather
+#     than a choice.
+#   * Nothing is signalled on the strength of a pid alone.  Identity is
+#     the pair (executable, start time) from /proc, re-checked
+#     immediately before SIGTERM and again before SIGKILL, so a recycled
+#     pid can never be killed in the game's place.
+#   * Every number taken from the environment is validated before any
+#     arithmetic touches it (validate_tunables), because bash evaluates
+#     command substitution inside arithmetic expansion.
+#   * Logs, the build sentinel and pid files default into env.sh's
+#     private 0700 runtime root and are created through its checked
+#     helpers, so a symlink at a predictable path is refused rather than
+#     written through.
+#   * A tileset pack is only ingested after its ownership, its absence
+#     of links and special files, and a sha256 manifest all check out.
+#   * Concurrency is held by flock: a build lock spans the
+#     check-and-start of make, and a session lock spans the save probe
+#     and the engine start.
 #
-# USAGE
-#     playthrough/tooling/launch_game.sh [subcommand]
+# Run `playthrough/tooling/launch_game.sh help` for the subcommands;
+# usage() below is the single definition of what that PRINTS, and the
+# list under SUBCOMMANDS here summarises the same set for a reader of
+# this file.
 #
+# Tunables are all optional, all prefixed PLAYTHROUGH_, and each is
+# declared with its default under "Tunables" and range-checked by name
+# in validate_tunables(); the two path tunables must resolve inside
+# $PLAYTHROUGH_RUNTIME_DIR, the mode-0700 directory env.sh verifies,
+# because this script truncates and writes them.  CLONE_INDEX is read by
+# env.sh and offsets the display and every host-global scratch path so
+# parallel checkouts cannot collide.
+#
+# SUBCOMMANDS
 #     all       (default) steps 1 to 5 above, in order
 #     build     build if needed, then assert the +tiles binary
 #     headless  bring up and verify the X surface only
 #     tileset   resolve -- installing if needed -- the tileset only
 #     probe     report the resume-versus-create decision only
 #     launch    launch and wait for the window only
+#     guard     as `all`, then hold the foreground for as long as the
+#               instance lives; for a caller that needs one process to
+#               own the game rather than a detached one
 #     status    report the current state, changing nothing
-#     stop      diagnostic teardown of a game instance this pipeline
-#               started; read the warning on that function first
+#     stop      diagnostic teardown of a CALIBRATION instance this
+#               pipeline started -- refused once any frame or manifest
+#               row exists; read the warning on that function first
 #     help      this text
+#
+# PROCESS DURABILITY -- WHAT DETACHMENT DOES AND DOES NOT BUY
+#     `launch` starts the game with the full detachment idiom
+#     (setsid + nohup + </dev/null + disown), so it survives the shell
+#     that started it.  It does NOT survive the container, nor a
+#     platform that reaps a whole process tree when a command returns,
+#     and nothing here restarts it.  For genuine durability use a
+#     supervisor -- which env.sh already prefers for Xvfb and the
+#     window manager -- or keep `guard` running in the foreground.
+#     env.sh owns this contract and states it in full: PROCESS
+#     LIFETIME at the top of the file summarises it, PROCESS LIFECYCLE
+#     beside playthrough_spawn_detached gives the three-tier
+#     preference, and PROCESS LIFETIME beside the supervised-X
+#     integration gives the two honest ways to run a session.  This
+#     file relies on all three and restates none of them.
 #
 # STDOUT IS A MACHINE CONTRACT
 #     Every line printed on stdout is `KEY=value`, one per line, and
@@ -53,24 +113,61 @@
 #     2  not being run from inside a Cataclysm-DDA checkout
 #     3  the build failed, or did not finish inside its timeout
 #     4  the binary is not the SDL tiles build (no "+tiles")
-#     5  no usable X display at the contracted geometry
-#     6  no usable tileset could be resolved
-#     7  the game window never appeared
-#     8  a prerequisite is missing (env.sh, make, a compiler, a tool)
+#     5  no usable X display at the contracted geometry, or a display
+#        with no access control
+#     6  the required tileset (MSXotto+) could not be resolved
+#     7  the game window never appeared, or could not be bound to a
+#        confirmed game process, or two engines were found
+#     8  a prerequisite is missing or untrustworthy (env.sh, make, a
+#        compiler, a tool)
+#     9  a RECORDED session is in progress, so the requested action
+#        would end it outside the in-game Save & Quit -- `stop` refuses
+#        once any frame or manifest row exists
 #
-# TUNABLES -- all optional, all read from the environment
-#     PLAYTHROUGH_BUILD_JOBS      make parallelism        (default 3)
-#     PLAYTHROUGH_COMPILER        C++ compiler        (default g++-14)
+# TUNABLES -- all optional, all read from the environment.  Every
+# numeric one is validated for shape and range before any subcommand
+# acts on it (see validate_tunables); a malformed value is refused with
+# the accepted range rather than silently coerced.
+#     PLAYTHROUGH_BUILD_JOBS      make parallelism        (default 3,
+#                                 capped at 3 -- a memory limit, see
+#                                 clamp_build_jobs)
+#     PLAYTHROUGH_COMPILER        C++ compiler        (default g++-14;
+#                                 whatever is named must report major
+#                                 version 14 from -dumpversion)
+#     PLAYTHROUGH_ALLOW_ANY_COMPILER=1  proceed with an unsanctioned
+#                                 compiler version anyway; expect
+#                                 -Werror failures in engine source
 #     PLAYTHROUGH_BUILD_TIMEOUT   seconds              (default 5400)
-#     PLAYTHROUGH_BUILD_LOG       build log path
+#     PLAYTHROUGH_BUILD_LOG       build log path (created safely
+#                                 wherever it points)
 #     PLAYTHROUGH_WINDOW_TIMEOUT  seconds               (default 180)
 #     PLAYTHROUGH_STOP_TIMEOUT    seconds                (default 30)
 #     PLAYTHROUGH_LIVENESS_SETTLE seconds                 (default 2)
-#     PLAYTHROUGH_TILESET_PACK    pre-placed tileset pack directory
+#     PLAYTHROUGH_TILESET_PACK    pre-placed tileset pack directory;
+#                                 must carry a verifiable SHA256SUMS
+#     PLAYTHROUGH_TILESET_SHA256SUMS  an explicit manifest path
+#     PLAYTHROUGH_ALLOW_UNVERIFIED_TILESET_PACK=1  accept a pack staged
+#                                 under a world-writable path (this
+#                                 host's /tmp is mode 2777).  The
+#                                 pack's sha256 manifest is still
+#                                 required and still verified
+#     PLAYTHROUGH_ALLOW_TILESET_FALLBACK  1 permits the ASCIITiles
+#                                 fallback FOR DIAGNOSIS ONLY; never
+#                                 set it for a recorded session
 #     PLAYTHROUGH_GAME_PIDFILE    pid file path
+#     PLAYTHROUGH_RESUME_WORLD    which world to continue when more
+#                                 than one holds a character save;
+#                                 ambiguity is refused, never guessed
 #     CLONE_INDEX                 read by env.sh; offsets the display
-#                                 and every host-global scratch path
-#                                 so parallel checkouts cannot collide
+#                                 and the private runtime root, so
+#                                 parallel checkouts cannot collide
+# PROCESS OWNERSHIP.  Nothing here reuses a window, or signals a pid,
+# that it has not bound to THIS checkout -- same executable inode, this
+# repository root as the working directory, exactly this `--userdir`
+# argument in a NUL-delimited argv, and this DISPLAY.  A window of the
+# right class that fails any of those belongs to another clone and is
+# left alone; two of our own instances on one userdir stops the script
+# rather than being a choice to make.
 # ---------------------------------------------------------------------
 
 set -euo pipefail
@@ -168,44 +265,143 @@ unset _lg_script_dir _lg_env_file
 cd "${PLAYTHROUGH_REPO_ROOT}"
 
 # ---------------------------------------------------------------------
-# Exit codes, named so that the call sites read as intent.
+# Exit codes, named so that the call sites read as intent.  These are
+# the script's documented contract; a caller may branch on them.
 # ---------------------------------------------------------------------
 readonly EX_OK=0
+# Bad subcommand, or a tunable that is non-numeric, out of range, or
+# names a scratch path outside the verified runtime directory.
 readonly EX_USAGE=1
+# Not being run from inside a Cataclysm-DDA checkout, or the calibration
+# launch produced no readable options.json.
 readonly EX_LAYOUT=2
+# The build failed, or did not finish inside its timeout.
 readonly EX_BUILD=3
+# The binary is not the SDL tiles build (no "+tiles"), or its --version
+# probe had to be killed on a timeout.
 readonly EX_NOT_TILES=4
+# No usable X display at the contracted geometry.
 readonly EX_DISPLAY=5
+# The REQUIRED tileset is not installed and could not be hydrated from
+# the pre-placed pack.
 readonly EX_TILESET=6
+# The game window never appeared, an instance could not be confirmed
+# stopped, or two instances share one userdir.
 readonly EX_WINDOW=7
+# A prerequisite is missing: env.sh, make, a compiler, or a tool.
 readonly EX_PREREQ=8
+# A recorded session is in progress, so the requested action would end
+# it outside the in-game Save & Quit.  Distinct from EX_USAGE because
+# nothing about the invocation was wrong: the state of the run is what
+# refuses it.
+readonly EX_RECORDED=9
 
 # ---------------------------------------------------------------------
-# Tunables.  Host-global scratch paths carry the same per-checkout
-# suffix env.sh uses for its own logs, so two clones running at once
-# cannot overwrite each other's diagnostics.
+# Tunables.
+#
+# EVERY NUMERIC TUNABLE IS VALIDATED BEFORE IT IS USED, and every
+# scratch path is CONFINED to the runtime directory env.sh verified.
+#
+# The numbers reach arithmetic (`$(( timeout * 4 ))`), `sleep` and
+# `make -j`, so an unvalidated one does not fail cleanly: `-j` with a
+# non-numeric value is a make usage error thirty seconds into a
+# detached build, `sleep abc` errors once per poll while the loop spins,
+# and `$(( ))` on a non-numeric string evaluates to zero, which turns a
+# bounded wait into an instant timeout that reports the wrong cause.
+# So a bad value is a documented usage failure at startup instead.
+#
+# The paths are the other half of the same argument: a predictable name
+# in world-writable /tmp can be pre-created as a symlink by any other
+# account, and this script truncates and writes those files.  They now
+# live inside env.sh's PRIVATE RUNTIME ROOT -- already per-checkout, and
+# verified to be a 0700 directory this user owns, so two clones cannot
+# collide there and no other account can pre-create, symlink or read
+# what this script writes.  Logs go to its log/ subdirectory and
+# control state to run/, and each file is created through
+# playthrough_secure_file / playthrough_secure_truncate, which refuse a
+# symlink, a non-regular file or a foreign owner instead of writing
+# through it.  An operator override is still honoured, but only if it
+# resolves inside that directory; anything else is refused rather than
+# silently accepted, because a caller-controlled path is exactly how
+# the guard would otherwise be bypassed.
 # ---------------------------------------------------------------------
-if [ "${PLAYTHROUGH_CLONE_INDEX}" -eq 0 ]; then
-    _lg_suffix=""
-else
-    _lg_suffix="${PLAYTHROUGH_CLONE_INDEX}"
-fi
 
+# The build contract, from the AAP's own build instruction:
+#
+#     CXX=g++-14 CCACHE=1 make -j3 RELEASE=1 TILES=1 SOUND=1 SDL3=0 \
+#         ASTYLE=0 LINTJSON=0
+#
+# Both halves of it are enforced rather than merely preferred, because
+# each one fails in a way that is expensive to diagnose:
+#
+#   * THE COMPILER.  This host carries g++-14 and an unversioned g++
+#     that is GCC 15.  The engine builds with -Werror, and GCC 15
+#     diagnoses code GCC 14 accepts, so an unversioned fallback turns a
+#     supported build into a wall of errors in engine source this
+#     pipeline is forbidden to touch.  doc/c++/COMPILER_SUPPORT.md
+#     names 9.3 as the oldest supported GCC and aims at the newest
+#     stable versions; 14 is the version this pipeline's own setup
+#     installs and validates this tree against, so it is the
+#     sanctioned one -- not because the project singles it out.
+#   * THE PARALLELISM.  See clamp_build_jobs.
+#
+# SANCTIONED_COMPILER is what an unset PLAYTHROUGH_COMPILER resolves
+# to, and REQUIRED_COMPILER_MAJOR is what any resolved compiler's own
+# -dumpversion must report.  Naming them here keeps the contract in one
+# place instead of spread across resolve_compiler and its comments.
+readonly SANCTIONED_COMPILER="g++-14"
+readonly REQUIRED_COMPILER_MAJOR=14
+readonly MAX_BUILD_JOBS=3
+
+# Quarter-second ticks to wait for a process to disappear after
+# SIGKILL before reporting it as still alive.  Five seconds: SIGKILL is
+# not negotiable except against an uninterruptible kernel wait, so this
+# is long enough to ride out a slow one and short enough that a genuine
+# failure is reported promptly rather than hung on.
+readonly SIGKILL_CONFIRM_TICKS=20
+
+# The raw values, exactly as the environment gave them.  Nothing below
+# uses them until validate_tunables() -- called first from main(), once
+# die() and every helper exist -- has checked and normalised each one
+# in place.  They are deliberately NOT validated here at load time:
+# die() is defined further down, and a failure at load time could only
+# report itself as "command not found".
+#
+# Every scratch path defaults INSIDE the mode-0700 runtime directory
+# env.sh created and verified, never into world-writable /tmp, because
+# this script truncates each of them.
 BUILD_JOBS="${PLAYTHROUGH_BUILD_JOBS:-3}"
 BUILD_TIMEOUT="${PLAYTHROUGH_BUILD_TIMEOUT:-5400}"
-BUILD_LOG="${PLAYTHROUGH_BUILD_LOG:-/tmp/cata-build${_lg_suffix}.log}"
-BUILD_STATUS="${BUILD_LOG}.status"
-BUILD_PIDFILE="${BUILD_LOG}.pid"
+BUILD_LOG="${PLAYTHROUGH_BUILD_LOG:-\
+${PLAYTHROUGH_LOG_DIR}/cata-build.log}"
+# Deliberately NOT derived from BUILD_LOG: the log may be redirected by
+# a caller, while these two are the build's CONTROL STATE -- the exit
+# status a later run believes and the pid it waits on -- and they belong
+# inside the verified runtime root either way.
+BUILD_STATUS="${PLAYTHROUGH_RUN_DIR}/build.status"
+BUILD_PIDFILE="${PLAYTHROUGH_RUN_DIR}/build.pid"
 # The $0 given to the detached build's inner shell.  It is how a later
 # run recognises a build of its own still in flight, so it can wait for
 # that one instead of racing a second make against the same tree.
 readonly BUILD_TAG="launch_game_build"
-WINDOW_TIMEOUT="${PLAYTHROUGH_WINDOW_TIMEOUT:-180}"
-STOP_TIMEOUT="${PLAYTHROUGH_STOP_TIMEOUT:-30}"
-LIVENESS_SETTLE="${PLAYTHROUGH_LIVENESS_SETTLE:-2}"
+# The --version probe's own bound.  It exists because that probe HAS
+# hung on this host: the binary answers --version while parsing its
+# command line, so a healthy one returns in well under a second, and
+# anything approaching this bound is a fault to report rather than to
+# wait out.
+VERSION_TIMEOUT="${PLAYTHROUGH_VERSION_TIMEOUT-30}"
+WINDOW_TIMEOUT="${PLAYTHROUGH_WINDOW_TIMEOUT-180}"
+STOP_TIMEOUT="${PLAYTHROUGH_STOP_TIMEOUT-30}"
+LIVENESS_SETTLE="${PLAYTHROUGH_LIVENESS_SETTLE-2}"
 TILESET_PACK="${PLAYTHROUGH_TILESET_PACK:-/opt/cdda-gfx-cache}"
-PIDFILE="${PLAYTHROUGH_GAME_PIDFILE:-/tmp/cata-play${_lg_suffix}.pid}"
-unset _lg_suffix
+PIDFILE="${PLAYTHROUGH_GAME_PIDFILE:-\
+${PLAYTHROUGH_RUN_DIR}/cata-play.pid}"
+# The real path of PLAYTHROUGH_RUNTIME_DIR, resolved once by
+# validate_tunables so every confinement comparison uses one string.
+RUNTIME_REAL=""
+# Set when a diagnostic ASCIITiles fallback is explicitly permitted; a
+# recorded session must never set it.  See resolve_tileset().
+ALLOW_TILESET_FALLBACK="${PLAYTHROUGH_ALLOW_TILESET_FALLBACK:-0}"
 
 # ---------------------------------------------------------------------
 # Results.  Functions here set globals rather than echoing values,
@@ -214,6 +410,7 @@ unset _lg_suffix
 # keep every failure fatal to the whole script, which is the point.
 # ---------------------------------------------------------------------
 COMPILER_BIN=""
+COMPILER_MAJOR=""
 BUILD_RUNNING_PID=""
 GAME_VERSION=""
 GAME_VERSION_ALL=""
@@ -228,11 +425,22 @@ SESSION_MODE=""
 SAVE_WORLD=""
 SAVE_WORLD_COUNT=0
 SAVE_CHAR_COUNT=0
+# Which canonical character-file form(s) the save tree holds: ".sav",
+# ".sav.zzip", both, or empty when there is no character file at all.
+SAVE_CHAR_FORMS=""
+# The (executable, start time) pair of the instance this run is working
+# with.  Every signal is checked against it first; see the PROCESS
+# IDENTITY PRIMITIVES section.
+GAME_IDENTITY=""
 WINDOW_ID=""
 WINDOW_GEOMETRY=""
 WINDOW_WIDTH=""
 WINDOW_HEIGHT=""
 GAME_PID=""
+# The pid find_game_window verified for the window it chose, declared
+# here with the other results and set only by that function.
+WINDOW_OWNED_PID=""
+FOREIGN_WINDOWS_WARNED=0
 LAUNCH_PHASE=""
 FIRST_RUN=0
 PROBE_DONE=0
@@ -275,12 +483,300 @@ tail_log() {
     playthrough_log "--- end of ${path} ---"
 }
 
+# ---------------------------------------------------------------------
+# TUNABLE VALIDATION.
+#
+# Every tunable above arrives from the environment as a string, and
+# every one of them is then used in arithmetic, as a `sleep` operand,
+# as `make -j`'s argument, or as a path this script TRUNCATES.  An
+# unvalidated value does not fail cleanly, which is the whole reason
+# this section exists:
+#
+#   * `[ "${waited}" -ge "${ticks}" ]` with a non-numeric operand makes
+#     test exit 2, which is neither true nor false but IS a non-zero
+#     status -- so a bounded wait can lose its bound;
+#   * `$(( timeout * 4 ))` on a non-numeric value yields 0, turning a
+#     bounded poll into one that gives up on the first tick and then
+#     reports the wrong cause;
+#   * `make -jabc` dies thirty seconds into a detached build with a
+#     usage error nobody is watching for;
+#   * a value carrying `$(...)` or backticks would be EVALUATED by
+#     arithmetic expansion, so validating the shape is a security
+#     property here and not only a robustness one;
+#   * a negative or zero job count is passed straight to `make -j`,
+#     and `-j0` is an error while `-j-1` is worse;
+#   * a scratch PATH in world-writable /tmp is precisely how a symlink
+#     redirects a truncating write somewhere it has no business going,
+#     so every scratch file is confined to the verified mode-0700
+#     runtime directory env.sh creates.
+#
+# So the values are checked for shape and range BEFORE anything acts on
+# them, and a bad one is refused with the name, the value and the
+# accepted range rather than being silently coerced.  Refusing beats
+# coercing: a caller who set PLAYTHROUGH_BUILD_TIMEOUT=90m meant
+# something, and quietly reading it as 90 seconds -- or as zero --
+# would produce a confusing failure much later.
+#
+# The integer results are written back into the same globals, normalised
+# to plain decimal, so no call site has to think about it again.  A
+# path result comes back in a global rather than on stdout because a
+# `$( ... )` capture runs in a subshell, where die()'s `exit` would end
+# only that subshell and leave the caller holding an empty string --
+# the exact failure this file's Results section warns about.
+#
+# AN EXPLICITLY EMPTY VALUE IS THE ONE DELIBERATE EXCEPTION.  The
+# assignments above use `${VAR:-default}`, so `VAR=` is read as the
+# documented default rather than refused.  That is intentional here and
+# is NOT the same judgement env.sh makes about CLONE_INDEX: an empty
+# CLONE_INDEX coerced to 0 would route a clone onto another clone's
+# display and scratch paths, so it must be refused, whereas an empty
+# job count simply means the default job count and collides with
+# nothing.  `VAR="${SOMETHING_UNSET}"` is a common and reasonable way
+# for a caller to say "use the default", and breaking it would buy
+# nothing.
+# ---------------------------------------------------------------------
+
+VALIDATED_PATH=""
+
+# require_positive_int NAME VALUE MIN MAX -- a plain decimal integer in
+# range, or die.  No sign, no whitespace, no leading plus, nothing an
+# arithmetic context could interpret as anything but a number.  A
+# leading zero is accepted and read through 10# as decimal, because
+# "08" is a natural thing to type and octal would be a silent surprise.
+require_positive_int() {
+    local name="$1"
+    local value="$2"
+    local min="$3"
+    local max="$4"
+    case "${value}" in
+        ''|*[!0-9]*)
+            die "${EX_USAGE}" "${name}='${value}' is not a plain" \
+                "decimal integer; it is used in arithmetic and as a" \
+                "bound, where a non-numeric value evaluates to zero" \
+                "and turns a bounded wait into an immediate timeout" \
+                "that reports the wrong cause.  Give a whole number" \
+                "between ${min} and ${max} with no sign and no unit" \
+                "suffix."
+            ;;
+    esac
+    # 10#: a value like 08 is decimal here, not a rejected octal
+    # literal.  The shape check above has already guaranteed digits.
+    if [ "$(( 10#${value} ))" -lt "${min}" ] ||
+        [ "$(( 10#${value} ))" -gt "${max}" ]; then
+        die "${EX_USAGE}" "${name}=${value} is out of range; it must" \
+            "be between ${min} and ${max}"
+    fi
+    return 0
+}
+
+# require_positive_number NAME VALUE MAX -- a positive decimal, whole
+# or fractional, in range.  `sleep` accepts a fraction, so a settle
+# time legitimately may be 0.5; it may not be negative, empty or a
+# shell substitution.
+require_positive_number() {
+    local name="$1"
+    local value="$2"
+    local max="$3"
+    case "${value}" in
+        ''|*[!0-9.]*|.|*.*.*)
+            die "${EX_USAGE}" "${name}='${value}' is not a plain" \
+                "positive decimal number; it is passed to sleep and" \
+                "used as a bound, so it must look like 2 or 0.5 and" \
+                "must not exceed ${max}"
+            ;;
+    esac
+    # Compare without bc: split on the decimal point and compare the
+    # whole part, which is all the range check needs.
+    local whole="${value%%.*}"
+    whole="${whole:-0}"
+    if [ "$(( 10#${whole} ))" -gt "${max}" ]; then
+        die "${EX_USAGE}" "${name}=${value} is out of range; it must" \
+            "not exceed ${max}"
+    fi
+    # Reject a value that is zero however it was spelled: 0, 0.0, .0
+    # all mean "do not wait at all", which defeats every settle and
+    # every bounded poll built on it.
+    case "${value}" in
+        0|0.|0.0|0.00|.0|.00|00)
+            die "${EX_USAGE}" "${name}=${value} is zero; a zero" \
+                "settle or timeout defeats the bounded waits built" \
+                "on it.  Use the smallest value you actually want."
+            ;;
+    esac
+    return 0
+}
+
+# validate_scratch_path NAME VALUE -- sets VALIDATED_PATH.
+#
+# The file must sit directly inside PLAYTHROUGH_RUNTIME_DIR, the
+# mode-0700 directory env.sh created and verified.  The parent is
+# resolved with cd+pwd -P so a symlinked component is followed once and
+# compared for real: a textual prefix test would happily accept
+# ${PLAYTHROUGH_RUNTIME_DIR}/../../etc/anything.
+#
+# This is a security control, not tidiness.  This script truncates and
+# writes each of these files, so a caller-supplied path -- or a
+# predictable one in world-writable /tmp -- is precisely how a symlink
+# could redirect that write somewhere it has no business going.
+validate_scratch_path() {
+    local name="$1"
+    local value="$2"
+    local dir base resolved
+    if [ -z "${value}" ]; then
+        die "${EX_USAGE}" "${name} is empty; scratch state belongs in" \
+            "${PLAYTHROUGH_RUNTIME_DIR}"
+    fi
+    dir="$(dirname -- "${value}")"
+    base="$(basename -- "${value}")"
+    case "${base}" in
+        ''|'.'|'..'|*/*)
+            die "${EX_USAGE}" "${name}='${value}' does not name a" \
+                "file"
+            ;;
+    esac
+    # The `if` form rather than `cd && pwd || true`: an unreadable
+    # directory must leave `resolved` empty and be reported below, not
+    # abort the script through errexit with no message at all.
+    resolved="$(
+        if cd "${dir}" >/dev/null 2>&1; then
+            pwd -P
+        fi
+    )"
+    if [ -z "${resolved}" ]; then
+        die "${EX_USAGE}" "${name}='${value}' is inside a directory" \
+            "that does not exist; scratch state belongs in" \
+            "${PLAYTHROUGH_RUNTIME_DIR}"
+    fi
+    # AT OR BELOW the runtime root, not a direct child of it.  env.sh
+    # deliberately lays out log/, run/, lock/ and rejected/ inside that
+    # root and verifies each one at mode 0700, and the scratch files
+    # this script writes legitimately live in them -- so the property
+    # being asserted is "inside the tree env.sh vouched for", which is
+    # what the confinement was ever about.  The comparison is between
+    # two FULLY RESOLVED paths, so a symlinked component cannot smuggle
+    # a target past it, and the separator is included so that a sibling
+    # named like the root with a suffix ("...runtime-evil") does not
+    # match a prefix test.
+    case "${resolved}" in
+        "${RUNTIME_REAL}"|"${RUNTIME_REAL}/"*) ;;
+        *)
+            die "${EX_USAGE}" "${name}='${value}' resolves into" \
+                "'${resolved}', outside the verified mode-0700" \
+                "runtime directory '${RUNTIME_REAL}'.  This script" \
+                "truncates and writes that file, so it will not" \
+                "follow a path it cannot vouch for.  Keep it in the" \
+                "runtime directory, or move the whole directory with" \
+                "CLONE_INDEX."
+            ;;
+    esac
+    VALIDATED_PATH="${resolved}/${base}"
+    return 0
+}
+
+# validate_tunables -- run every check, in one place, before any
+# subcommand does anything.
+#
+# The upper bounds are deliberately generous: they exist to catch a
+# typo or a unit suffix, not to second-guess an operator who knows
+# their host.  BUILD_JOBS is the exception and is discussed at its
+# call site.
+validate_tunables() {
+    RUNTIME_REAL="$(
+        if cd "${PLAYTHROUGH_RUNTIME_DIR}" >/dev/null 2>&1; then
+            pwd -P
+        fi
+    )"
+    if [ -z "${RUNTIME_REAL}" ]; then
+        die "${EX_LAYOUT}" "PLAYTHROUGH_RUNTIME_DIR" \
+            "'${PLAYTHROUGH_RUNTIME_DIR}' is not a directory." \
+            "env.sh creates and verifies it at mode 0700, so" \
+            "re-source playthrough/tooling/env.sh."
+    fi
+
+    require_positive_int PLAYTHROUGH_BUILD_JOBS "${BUILD_JOBS}" 1 1024
+    BUILD_JOBS=$(( 10#${BUILD_JOBS} ))
+    require_positive_int PLAYTHROUGH_BUILD_TIMEOUT \
+        "${BUILD_TIMEOUT}" 1 86400
+    BUILD_TIMEOUT=$(( 10#${BUILD_TIMEOUT} ))
+    require_positive_int PLAYTHROUGH_VERSION_TIMEOUT \
+        "${VERSION_TIMEOUT}" 1 600
+    VERSION_TIMEOUT=$(( 10#${VERSION_TIMEOUT} ))
+    require_positive_int PLAYTHROUGH_WINDOW_TIMEOUT \
+        "${WINDOW_TIMEOUT}" 1 3600
+    WINDOW_TIMEOUT=$(( 10#${WINDOW_TIMEOUT} ))
+    require_positive_int PLAYTHROUGH_STOP_TIMEOUT \
+        "${STOP_TIMEOUT}" 1 3600
+    STOP_TIMEOUT=$(( 10#${STOP_TIMEOUT} ))
+    # A fraction is legitimate here and nowhere else: this value is a
+    # `sleep` operand, and 0.5 is a reasonable settle.
+    require_positive_number PLAYTHROUGH_LIVENESS_SETTLE \
+        "${LIVENESS_SETTLE}" 3600
+
+    # PLAYTHROUGH_ALLOW_TILESET_FALLBACK is not a number, but it is
+    # read from the environment and it decides whether a run may be
+    # recorded in the wrong artwork, so it is held to exactly two
+    # values.  Anything else -- "yes", "true", "0 " -- is a mistake
+    # worth refusing rather than a value worth interpreting, because
+    # every interpretation of it that is not 1 is silently 0.
+    case "${ALLOW_TILESET_FALLBACK}" in
+        0|1) ;;
+        *)
+            die "${EX_USAGE}" "PLAYTHROUGH_ALLOW_TILESET_FALLBACK=" \
+                "'${ALLOW_TILESET_FALLBACK}' is neither 0 nor 1"
+            ;;
+    esac
+
+    validate_scratch_path PLAYTHROUGH_BUILD_LOG "${BUILD_LOG}"
+    BUILD_LOG="${VALIDATED_PATH}"
+    # NOT re-derived from BUILD_LOG.  The log may be redirected by a
+    # caller; the build's control state stays inside the verified
+    # runtime root, so each is confined on its own account.
+    validate_scratch_path PLAYTHROUGH_RUN_DIR "${BUILD_STATUS}"
+    BUILD_STATUS="${VALIDATED_PATH}"
+    validate_scratch_path PLAYTHROUGH_RUN_DIR "${BUILD_PIDFILE}"
+    BUILD_PIDFILE="${VALIDATED_PATH}"
+    validate_scratch_path PLAYTHROUGH_GAME_PIDFILE "${PIDFILE}"
+    PIDFILE="${VALIDATED_PATH}"
+
+    clamp_build_jobs
+    return 0
+}
+
+# clamp_build_jobs -- hold make's parallelism to what this host's
+# MEMORY can carry, not what its CPU count suggests.
+#
+# This is the AAP's own adaptation of the documented build command and
+# the reason it deviates from `-j$(nproc)`: the host reports far more
+# CPUs than it has gigabytes of RAM and has no swap, so a wide build is
+# OOM-killed rather than merely slow.  A make killed that way does not
+# report a compile error -- it reports being Killed, or nothing at all
+# -- so the failure is expensive to diagnose and cheap to prevent.
+#
+# The cap is applied loudly rather than silently, and an operator who
+# genuinely has the memory can raise MAX_BUILD_JOBS in one place.
+clamp_build_jobs() {
+    if [ "$(( 10#${BUILD_JOBS} ))" -le "${MAX_BUILD_JOBS}" ]; then
+        return 0
+    fi
+    playthrough_warn "PLAYTHROUGH_BUILD_JOBS=${BUILD_JOBS} exceeds" \
+        "the ${MAX_BUILD_JOBS}-job cap this pipeline builds under" \
+        "and is being reduced to ${MAX_BUILD_JOBS}.  The cap is a" \
+        "memory limit, not a CPU one: a wider build over this" \
+        "object tree is OOM-killed, which surfaces as 'Killed'" \
+        "rather than as a compile error and is far harder to read."
+    BUILD_JOBS="${MAX_BUILD_JOBS}"
+    return 0
+}
+
 # wait_for_file PATH TIMEOUT_SECONDS -- bounded poll, never a fixed
 # sleep, so a fast host is not penalised and a slow one is not
-# truncated.
+# truncated.  The timeout is validated for the same reason as the
+# tunables above: it reaches arithmetic.
 wait_for_file() {
     local path="$1"
-    local timeout="$2"
+    playthrough_validate_int "$2" "wait_for_file timeout" 1 172800 ||
+        die "${EX_USAGE}" "wait_for_file was given an unusable timeout"
+    local timeout="${PLAYTHROUGH_INT}"
     local ticks=$(( timeout * 4 ))
     local waited=0
     while [ ! -f "${path}" ]; do
@@ -291,6 +787,94 @@ wait_for_file() {
         waited=$(( waited + 1 ))
     done
     return 0
+}
+
+# ---------------------------------------------------------------------
+# PROCESS IDENTITY PRIMITIVES
+#
+# A pid is not an identity.  Pids are recycled, /proc/<pid>/cmdline is
+# argv and therefore whatever the process chose to put there, and the
+# window-manager path below hands us a pid claimed by an X client.  Any
+# of those alone can name the wrong process -- and the operations that
+# follow are SIGTERM and SIGKILL, where naming the wrong process means
+# killing something that had nothing to do with this pipeline.
+#
+# Identity here is therefore the pair (executable, start time):
+#
+#   * /proc/<pid>/exe is a kernel-maintained link to the running binary.
+#     Unlike cmdline it cannot be set by the process, so "this really is
+#     ./cataclysm-tiles" is a fact rather than a claim.  It is readable
+#     only by the owner (or root), so a pid we cannot identify is
+#     refused rather than assumed -- fail closed.
+#   * field 22 of /proc/<pid>/stat is the start time in ticks since
+#     boot.  Together with the pid it is unique for the life of the
+#     machine, which is what closes the recycle window: a pid that has
+#     been reused since we recorded it has a different start time, so the
+#     identity no longer matches and nothing is signalled.
+#
+# Every signal in this file is preceded by a fresh identity check
+# against the pair captured when the process was found.  There is no
+# pkill, no killall and no `ps | grep | xargs kill` anywhere here: this
+# host also runs the tooling that invokes this script, and a pattern
+# that matched it would end the run.
+# ---------------------------------------------------------------------
+
+# proc_exe PID -- the resolved path of the running binary, or nothing.
+proc_exe() {
+    local pid="${1-}"
+    case "${pid}" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    local exe
+    exe="$(readlink -f -- "/proc/${pid}/exe" 2>/dev/null || true)"
+    [ -n "${exe}" ] || return 1
+    printf '%s\n' "${exe}"
+}
+
+# proc_start_time PID -- field 22 of /proc/<pid>/stat.
+#
+# Parsed after the LAST ')' rather than by field number from the start,
+# because field 2 is the command name in parentheses and may itself
+# contain spaces or parentheses.  What follows that ')' begins at field
+# 3, so the start time is the 20th token of the remainder.
+proc_start_time() {
+    local pid="${1-}"
+    case "${pid}" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    local stat rest value
+    stat="$(cat "/proc/${pid}/stat" 2>/dev/null || true)"
+    [ -n "${stat}" ] || return 1
+    rest="${stat##*') '}"
+    [ "${rest}" != "${stat}" ] || return 1
+    value="$(printf '%s\n' "${rest}" | awk '{ print $20 }')"
+    case "${value}" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    printf '%s\n' "${value}"
+}
+
+# proc_identity PID -- "<exe>|<start time>", or nothing when the process
+# cannot be identified.  This string is what gets compared; it is opaque
+# on purpose so no caller starts interpreting half of it.
+proc_identity() {
+    local pid="${1-}"
+    local exe start
+    exe="$(proc_exe "${pid}")" || return 1
+    start="$(proc_start_time "${pid}")" || return 1
+    printf '%s|%s\n' "${exe}" "${start}"
+}
+
+# pid_has_identity PID IDENTITY -- true only when that pid is still the
+# very process the identity was taken from.  Called immediately before
+# every signal.
+pid_has_identity() {
+    local pid="${1-}"
+    local want="${2-}"
+    [ -n "${want}" ] || return 1
+    local now
+    now="$(proc_identity "${pid}")" || return 1
+    [ "${now}" = "${want}" ]
 }
 
 # ---------------------------------------------------------------------
@@ -372,32 +956,118 @@ warn_if_tree_dirty() {
 # the assumption that it is there.
 # ---------------------------------------------------------------------
 
-# resolve_compiler -- pick the C++ compiler, honouring an override.
+# compiler_major BIN -- the major version the compiler reports about
+# itself, or the empty string.
 #
-# g++-14 is preferred because doc/c++/COMPILER_SUPPORT.md states the
-# project aims to support GCC and clang "up to the newest stable
-# versions" while keeping 9.3 as the floor, and the engine compiles
-# against -std=c++17 (Makefile:533), so a modern GCC is squarely
-# inside the supported range.  Plain g++ is accepted as a fallback so
-# that a host without the versioned package still builds.
+# `-dumpversion` is asked of the binary rather than parsed out of
+# `--version`'s prose, because the prose is localised and reformatted
+# between releases while -dumpversion is a stable, machine-readable
+# contract.  Only the leading number is taken: GCC prints "14" here and
+# clang prints "19.1.7", and the major is all the gate needs.
+compiler_major() {
+    local bin="$1"
+    local reported
+    reported="$("${bin}" -dumpversion 2>/dev/null || true)"
+    reported="${reported%%.*}"
+    case "${reported}" in
+        ''|*[!0-9]*) printf '%s' "" ;;
+        *) printf '%s' "${reported}" ;;
+    esac
+}
+
+# resolve_compiler -- resolve the C++ compiler and prove BOTH of the
+# things that have to be true about something this script is about to
+# run over the whole source tree.  They are independent questions and
+# each is asked separately:
+#
+# IS IT THE RIGHT VERSION?  THE FALLBACK TO AN UNVERSIONED g++ IS GONE,
+# DELIBERATELY.  It used to accept whatever `g++` happened to be, which
+# on this host is GCC 15; the engine builds with -Werror, and GCC 15
+# diagnoses engine source that GCC 14 accepts.  Because no file under
+# src/ may be edited to make the build succeed, an unsupported compiler
+# cannot be worked around here -- it can only waste a 25-minute build
+# and then fail in code this pipeline is not allowed to touch.  So the
+# requirement is checked up front, by asking the compiler its own
+# version, and a mismatch is refused with the exact package to install.
+# doc/c++/COMPILER_SUPPORT.md names 9.3 as the oldest supported GCC and
+# aims at the newest stable versions; 14 is the version this pipeline's
+# own setup installs and validates this tree against, so it is the
+# sanctioned one -- not because the project singles it out.
+#
+# IS THE BINARY TRUSTWORTHY?  PLAYTHROUGH_COMPILER comes from the
+# environment and PATH is mutable, so "it is on PATH" is not a
+# sufficient test.  playthrough_resolve_tool checks that neither the
+# binary nor any directory above it is group- or world-writable or owned
+# by a third party, and exports the VERIFIED ABSOLUTE PATH -- which is
+# what is recorded in COMPILER_BIN and passed to make, so the build
+# cannot be redirected by a later PATH change.  A candidate that fails
+# verification is refused exactly as if it were absent, with the reason
+# on stderr.
+#
+# An explicit PLAYTHROUGH_COMPILER is still honoured, because an
+# operator on a different distribution may well have the right GCC
+# under a different name -- but it is version-checked exactly like the
+# default, so the override cannot be used to smuggle in an unsupported
+# compiler by accident.  Setting PLAYTHROUGH_ALLOW_ANY_COMPILER=1 is
+# the one documented way to proceed regardless, and it warns rather
+# than staying silent.
 resolve_compiler() {
-    local candidate
+    local candidate="" major="" var=""
     if [ -n "${PLAYTHROUGH_COMPILER:-}" ]; then
-        if ! command -v "${PLAYTHROUGH_COMPILER}" >/dev/null 2>&1; then
+        if ! playthrough_resolve_tool "${PLAYTHROUGH_COMPILER}"; then
             playthrough_warn "PLAYTHROUGH_COMPILER" \
-                "'${PLAYTHROUGH_COMPILER}' is not on PATH"
+                "'${PLAYTHROUGH_COMPILER}' is not on PATH, or was" \
+                "rejected as untrustworthy (see above)"
             return 1
         fi
-        COMPILER_BIN="${PLAYTHROUGH_COMPILER}"
-        return 0
+        var="$(playthrough_tool_var "${PLAYTHROUGH_COMPILER}")"
+        candidate="${!var}"
+    elif playthrough_resolve_tool "${SANCTIONED_COMPILER}"; then
+        var="$(playthrough_tool_var "${SANCTIONED_COMPILER}")"
+        candidate="${!var}"
+    else
+        playthrough_warn "${SANCTIONED_COMPILER} is not on PATH, or" \
+            "was rejected as untrustworthy (see above)." \
+            "It is the compiler this tree is known to build clean" \
+            "under, and an unversioned g++ is NOT accepted in its" \
+            "place: this host's g++ is a newer GCC whose extra" \
+            "-Werror diagnostics fail in engine source that this" \
+            "pipeline must not edit.  Install it with:" \
+            "apt-get install -y g++-14"
+        return 1
     fi
-    for candidate in g++-14 g++; do
-        if command -v "${candidate}" >/dev/null 2>&1; then
-            COMPILER_BIN="${candidate}"
-            return 0
+
+    major="$(compiler_major "${candidate}")"
+    if [ -z "${major}" ]; then
+        playthrough_warn "'${candidate}' did not report a usable" \
+            "version from -dumpversion, so it cannot be verified as" \
+            "the sanctioned compiler"
+        if [ "${PLAYTHROUGH_ALLOW_ANY_COMPILER:-0}" != "1" ]; then
+            return 1
         fi
-    done
-    return 1
+    elif [ "${major}" -ne "${REQUIRED_COMPILER_MAJOR}" ]; then
+        if [ "${PLAYTHROUGH_ALLOW_ANY_COMPILER:-0}" != "1" ]; then
+            playthrough_warn "'${candidate}' is major version" \
+                "${major}, but this tree builds clean under" \
+                "${REQUIRED_COMPILER_MAJOR} and is compiled with" \
+                "-Werror.  Refusing rather than spending a" \
+                "25-minute build to fail in engine source that" \
+                "must not be edited.  Install ${SANCTIONED_COMPILER}" \
+                "(apt-get install -y g++-14), or set" \
+                "PLAYTHROUGH_ALLOW_ANY_COMPILER=1 if you have" \
+                "verified this compiler builds this tree."
+            return 1
+        fi
+        playthrough_warn "proceeding with '${candidate}' (major" \
+            "${major}) instead of ${REQUIRED_COMPILER_MAJOR} because" \
+            "PLAYTHROUGH_ALLOW_ANY_COMPILER=1; a -Werror failure in" \
+            "engine source is the expected outcome if it is not" \
+            "actually supported"
+    fi
+
+    COMPILER_BIN="${candidate}"
+    COMPILER_MAJOR="${major}"
+    return 0
 }
 
 # build_binary -- run the one sanctioned build command, detached.
@@ -445,17 +1115,34 @@ resolve_compiler() {
 #   TESTS=0          Explicitly forbidden.  Makefile:91-92 documents
 #                    it; the test binary stays part of the build.
 #   NATIVE=linux64   Must not be passed on ARM64 hosts.
-#   USE_XDG_DIR=1    Both are opt-in at Makefile:1211-1222 and both
-#   USE_HOME_DIR=1   are fatal here for a source-level reason:
-#                    src/path_info.cpp:153-166 is
+#   USE_XDG_DIR=1    Fatal here, for a source-level reason:
+#                    src/path_info.cpp:152-166 is
 #                    `#if defined(USE_XDG_DIR) ... #else
 #                    config_dir_value = user_dir_value + "config/";
-#                    #endif`, so either flag moves config/ out of the
-#                    userdir entirely.  options.json and
+#                    #endif`, so this flag -- and ONLY this flag --
+#                    moves config/ out of the userdir, to
+#                    $XDG_CONFIG_HOME/cataclysm-dda/.  options.json and
 #                    keybindings.json would then never land under
-#                    playthrough/userdir/config/, which would silently
-#                    break option seeding and destroy the committed
-#                    evidence that no debug action was ever bound.
+#                    playthrough/userdir/config/, which silently breaks
+#                    option seeding and leaves the committed userdir
+#                    with no configuration in it to audit.
+#   USE_HOME_DIR=1   Fatal here for a DIFFERENT reason -- it does not
+#                    touch config_dir at all.  It selects the DEFAULT
+#                    user directory: src/main.cpp:684 makes it one of
+#                    the cases that call `init_user_dir( "" )`, which
+#                    resolves to $HOME/.cataclysm-dda/
+#                    (src/path_info.cpp:99-102) instead of the
+#                    checkout-relative ".".  This pipeline always
+#                    passes `--userdir ./playthrough/userdir/`
+#                    explicitly, so that default is never consulted and
+#                    the flag would change nothing observable -- which
+#                    is exactly why it is refused rather than tolerated:
+#                    a build whose default userdir points at $HOME is
+#                    one forgotten --userdir away from writing the save
+#                    outside the working tree, where git cannot track
+#                    it.  Makefile:1211-1222 also makes the two flags
+#                    mutually exclusive, so neither is a substitute for
+#                    the other.
 #
 # No file under src/ is edited to make this build succeed.  The one
 # C++ change the SDL2 path is known to need -- the
@@ -474,28 +1161,51 @@ resolve_compiler() {
 # distinction was learned the hard way here: when an outer session is
 # torn down the wrapper shell can die while make carries on, so a guard
 # that watched the wrapper would declare the tree free while a build was
-# still writing to it.  Identity is then confirmed two ways --
-# /proc/<pid>/cmdline really is make, and /proc/<pid>/cwd really is this
-# repository root -- so a make belonging to another checkout, or an
-# unrelated process that inherited a recycled pid, can never be
-# mistaken for ours.
+# still writing to it.
+#
+# Identity is confirmed three ways, and the first two are kernel facts
+# rather than claims: /proc/<pid>/exe really is a make binary, the start
+# time recorded alongside the pid still matches (so a RECYCLED pid is
+# rejected instead of mistaken for our build), and /proc/<pid>/cwd really
+# is this repository root (so a make belonging to another checkout is not
+# ours either).  cmdline is deliberately no longer consulted: it is argv,
+# which the process itself controls.
 build_in_progress() {
     BUILD_RUNNING_PID=""
     [ -f "${BUILD_PIDFILE}" ] || return 1
-    local pid
-    pid="$(head -n 1 "${BUILD_PIDFILE}" 2>/dev/null || true)"
+    local record pid want
+    record="$(head -n 1 "${BUILD_PIDFILE}" 2>/dev/null || true)"
+    pid="${record%% *}"
     case "${pid}" in
         ''|*[!0-9]*) return 1 ;;
     esac
-    [ -r "/proc/${pid}/cmdline" ] || return 1
-    local cmd
-    cmd="$(tr '\0' ' ' <"/proc/${pid}/cmdline" 2>/dev/null || true)"
-    case "${cmd}" in
-        *make*) ;;
+    # The recorded start time, when the file carries one.  A pidfile from
+    # an older run without it still works: the exe and cwd checks below
+    # remain, and the next build rewrites the file in the current form.
+    want=""
+    if [ "${record}" != "${pid}" ]; then
+        want="${record#* }"
+        case "${want}" in
+            ''|*[!0-9]*) want="" ;;
+        esac
+    fi
+    local exe start
+    exe="$(proc_exe "${pid}")" || return 1
+    case "${exe##*/}" in
+        make|*make) ;;
         *) return 1 ;;
     esac
+    if [ -n "${want}" ]; then
+        start="$(proc_start_time "${pid}")" || return 1
+        if [ "${start}" != "${want}" ]; then
+            playthrough_warn "pid ${pid} in ${BUILD_PIDFILE} has been" \
+                "recycled (start time ${start}, recorded" \
+                "${want}); it is NOT this pipeline's build"
+            return 1
+        fi
+    fi
     local cwd
-    cwd="$(readlink "/proc/${pid}/cwd" 2>/dev/null || true)"
+    cwd="$(readlink -f -- "/proc/${pid}/cwd" 2>/dev/null || true)"
     if [ "${cwd}" != "${PLAYTHROUGH_REPO_ROOT}" ]; then
         return 1
     fi
@@ -504,12 +1214,38 @@ build_in_progress() {
 }
 
 build_binary() {
-    playthrough_require_tools make ||
-        die "${EX_PREREQ}" "make is required to build the tiles" \
-            "binary and is not on PATH"
+    # PREFLIGHT EVERY EXTERNAL COMMAND FIRST, before a log is
+    # truncated, a pidfile is removed or a child is spawned.  Each of
+    # these is genuinely invoked below -- make and the compiler by the
+    # build itself, ccache because CCACHE=1 is passed, setsid and nohup
+    # by the detachment idiom, tr and readlink by build_in_progress,
+    # tail and head while reporting -- and discovering a missing one
+    # halfway through leaves the build state files inconsistent while
+    # blaming the build for a host problem.  playthrough_require_tools
+    # names the apt package for each missing command.
+    playthrough_require_tools make ccache setsid nohup tr readlink \
+        tail head ||
+        die "${EX_PREREQ}" "the build cannot start: the tools above" \
+            "are missing.  Install them and retry; nothing has been" \
+            "changed."
     resolve_compiler ||
-        die "${EX_PREREQ}" "no C++ compiler found; install g++-14" \
-            "(preferred) or g++, or set PLAYTHROUGH_COMPILER"
+        die "${EX_PREREQ}" "no usable C++ compiler: this tree builds" \
+            "with ${SANCTIONED_COMPILER} (major" \
+            "${REQUIRED_COMPILER_MAJOR}).  Install it with" \
+            "'apt-get install -y g++-14', or point" \
+            "PLAYTHROUGH_COMPILER at an equivalent GCC 14."
+
+    # THE BUILD LOCK spans the check AND the start, which is the whole
+    # point: "no build is running, so start one" is two operations, and
+    # two invocations that interleave between them put two makes on one
+    # object tree -- where they fight over the same .o files and, on a
+    # host sized for three compilers, exhaust its memory.  The lock is
+    # held by an open descriptor for the rest of this process, including
+    # the wait below, so a second run blocks here rather than racing;
+    # the kernel releases it even if this shell dies.
+    playthrough_acquire_lock build "${BUILD_TIMEOUT}" ||
+        die "${EX_BUILD}" "could not take the build lock; another" \
+            "build over this checkout is still running"
 
     if build_in_progress; then
         playthrough_log "a build started by this script is still" \
@@ -518,19 +1254,59 @@ build_binary() {
             "object tree.  Log: ${BUILD_LOG}"
     else
         playthrough_log "building ./cataclysm-tiles with" \
-            "${COMPILER_BIN}, -j${BUILD_JOBS}, SDL2 fallback" \
+            "${COMPILER_BIN} (major ${COMPILER_MAJOR:-unverified})," \
+            "-j${BUILD_JOBS}, SDL2 fallback" \
             "(SDL3=0); log: ${BUILD_LOG}"
         playthrough_log "a cold build takes roughly 25 minutes on" \
             "this class of host; progress is reported every 30s"
 
-        rm -f -- "${BUILD_STATUS}" "${BUILD_PIDFILE}"
-        : >"${BUILD_LOG}"
+        # The sentinel, the pid file and the log are created through
+        # env.sh's checked helpers rather than by `rm -f` plus `>`: all
+        # three names are predictable, the log's is caller-supplied, and
+        # a symlink at any of them would otherwise be followed -- writing
+        # this build's output over whatever it pointed at.  The helpers
+        # refuse a link, a non-regular file or a foreign owner, and
+        # create at mode 0600 under a private umask.
+        playthrough_secure_file "${BUILD_STATUS}" ||
+            die "${EX_BUILD}" "cannot prepare ${BUILD_STATUS}"
+        playthrough_secure_truncate "${BUILD_PIDFILE}" ||
+            die "${EX_BUILD}" "cannot prepare ${BUILD_PIDFILE}"
+        playthrough_secure_truncate "${BUILD_LOG}" ||
+            die "${EX_BUILD}" "cannot prepare ${BUILD_LOG}"
+        # The sentinel is validated and then REMOVED, because its
+        # existence is the signal the wait loop below watches for.  The
+        # pid file is emptied rather than removed for the opposite
+        # reason: build_in_progress reads it, and an empty first line
+        # means "no build" just as an absent file does.
+        rm -f -- "${BUILD_STATUS}"
 
+        # DETACHMENT, AND EXACTLY WHAT IT BUYS.  setsid puts the build
+        # in its OWN session and process group, so it is not killed
+        # when the calling shell's process group is signalled -- a real
+        # failure mode here, not a hypothetical one: a make run in this
+        # tree has been terminated by Interrupt, neither OOM nor a
+        # compile error, purely because an outer call timed out and the
+        # whole group was signalled.
+        #
+        # What it does NOT buy is survival of the container or of a
+        # platform that reaps the process tree wholesale; see the
+        # PROCESS LIFECYCLE block in env.sh.  Nothing below claims
+        # otherwise, and the completion of the build is established by
+        # the status sentinel rather than assumed from a successful
+        # spawn.
         # Detached with setsid so the build is not killed when the
         # calling shell's process group is signalled -- a real failure
         # mode: a make run here has been terminated by Interrupt,
         # neither OOM nor a compile error, purely because an outer call
-        # timed out.
+        # timed out.  That is the precise and only claim: escaping the
+        # caller's process group and controlling terminal.  It says
+        # nothing about surviving a teardown of the session, cgroup or
+        # container as a whole, which takes the build with it whatever
+        # is done here -- which is exactly why the status sentinel and
+        # pid file below exist.  A caller that has to follow a long
+        # build POLLS them (`launch_game.sh status`, or the loop
+        # underneath this comment) rather than trusting the process to
+        # be there.
         #
         # The exit status is written to a sentinel file by the inner
         # shell rather than collected with `wait`, because setsid may
@@ -541,7 +1317,11 @@ build_binary() {
         #
         # The inner shell backgrounds make and records ITS pid, then
         # waits for it, so build_in_progress above watches the process
-        # that actually owns the object tree.
+        # that actually owns the object tree.  It records make's START
+        # TIME beside the pid, read from field 22 of /proc/<pid>/stat
+        # after the last ')' -- that pair is what lets a later run tell
+        # our build from an unrelated process that inherited a recycled
+        # pid, instead of trusting the number alone.
         #
         # SC2016 is suppressed deliberately: $1, $2, $@, $!, $? inside
         # the single-quoted body MUST reach the inner shell unexpanded
@@ -549,6 +1329,14 @@ build_binary() {
         # its child's exit status.  Double quotes would expand them
         # here, in the wrong shell, and would break exactly the status
         # capture this exists for.
+        # The build lock is withheld from the wrapper for the same
+        # reason the session lock is withheld from the engine: make
+        # outlives this shell, and an inherited lock descriptor would
+        # keep the lock held until it finished, so a later run that
+        # only wanted to WAIT for this build would instead time out on
+        # the lock.  See playthrough_child_close_fd in env.sh.
+        playthrough_child_close_fd ||
+            die "${EX_BUILD}" "cannot prepare to detach the build"
         # shellcheck disable=SC2016
         setsid nohup bash -c '
             status_file="$1"
@@ -556,14 +1344,50 @@ build_binary() {
             shift 2
             "$@" &
             child=$!
-            printf "%s\n" "${child}" >"${pid_file}"
+            start=""
+            if read -r -a stat_fields \
+                    <"/proc/${child}/stat" 2>/dev/null; then
+                start="${stat_fields[21]-}"
+            fi
+            case "${start}" in
+                ""|*[!0-9]*) start="" ;;
+            esac
+            printf "%s %s\n" "${child}" "${start}" >"${pid_file}"
             wait "${child}"
             printf "%s\n" "$?" >"${status_file}"
         ' "${BUILD_TAG}" "${BUILD_STATUS}" "${BUILD_PIDFILE}" \
             env "CXX=${COMPILER_BIN}" make "-j${BUILD_JOBS}" \
             RELEASE=1 TILES=1 SOUND=1 SDL3=0 ASTYLE=0 LINTJSON=0 \
             CCACHE=1 "COMPILER=${COMPILER_BIN}" \
-            >>"${BUILD_LOG}" 2>&1 </dev/null &
+            >>"${BUILD_LOG}" 2>&1 </dev/null \
+            {PLAYTHROUGH_CHILD_CLOSE_FD}>&- &
+        # disown completes the AAP's detachment idiom
+        # (`setsid nohup ... < /dev/null & disown`): it drops the job
+        # from this shell's job table so that the shell exiting cannot
+        # deliver SIGHUP to it.  Without it the setsid above is doing
+        # only half the work.
+        disown || true
+        playthrough_child_close_done
+
+        # PROVE the build actually started rather than assuming the
+        # spawn worked.  A make that dies instantly -- a missing
+        # compiler the preflight could not see, an unwritable object
+        # tree -- otherwise looks identical to one still warming up,
+        # and the caller would then wait out the whole timeout for a
+        # process that was never alive.
+        if ! wait_for_file "${BUILD_PIDFILE}" 30; then
+            if [ -f "${BUILD_STATUS}" ]; then
+                playthrough_log "the build finished before it" \
+                    "recorded a pid, which means it failed" \
+                    "immediately; its status is reported below"
+            else
+                tail_log "${BUILD_LOG}"
+                die "${EX_BUILD}" "the build was spawned but" \
+                    "recorded no pid within 30s and produced no" \
+                    "exit status, so it never really started." \
+                    "Its log is ${BUILD_LOG}."
+            fi
+        fi
     fi
 
     local waited=0
@@ -637,12 +1461,30 @@ build_binary() {
 # folded in because a diagnostic must not be allowed to hide the
 # banner, and each substitution is wrapped so that a non-zero exit
 # cannot trip `set -o pipefail`.
+#
+# THE PROBE IS BOUNDED, and that is not defensive decoration: this
+# exact probe has HUNG on this host until an outer harness killed it.
+# A healthy binary answers in milliseconds, so `timeout` costs nothing
+# on the happy path and converts an indefinite hang -- the worst
+# failure here, because it stalls the pipeline with no diagnosis at all
+# -- into a reported fault.  GAME_VERSION_RC carries the outcome so the
+# caller can tell a timeout (124, GNU timeout's convention) from a
+# binary that ran and failed, and the two are reported differently.
+GAME_VERSION_RC=0
 read_game_version() {
     GAME_VERSION=""
     GAME_VERSION_ALL=""
+    GAME_VERSION_RC=0
     [ -x "${PLAYTHROUGH_GAME_BIN}" ] || return 1
     local raw
-    raw="$( { "${PLAYTHROUGH_GAME_BIN}" --version 2>&1 || true; } )"
+    if raw="$(
+            timeout -- "${VERSION_TIMEOUT}" \
+                "${PLAYTHROUGH_GAME_BIN}" --version 2>&1
+         )"; then
+        GAME_VERSION_RC=0
+    else
+        GAME_VERSION_RC=$?
+    fi
     GAME_VERSION_ALL="$(printf '%s\n' "${raw}" |
         tr '\n' ' ' |
         sed 's/[[:space:]]\{1,\}/ /g; s/^ //; s/ $//')"
@@ -650,6 +1492,12 @@ read_game_version() {
         sed 's/ data dir:.*$//')"
     if [ -z "${GAME_VERSION}" ]; then
         GAME_VERSION="${GAME_VERSION_ALL}"
+    fi
+    # A timeout is never a successful read, even if the binary managed
+    # to print a banner before it stalled: the process had to be killed,
+    # so nothing about it can be reported as verified.
+    if [ "${GAME_VERSION_RC}" -eq 124 ]; then
+        return 1
     fi
     [ -n "${GAME_VERSION_ALL}" ]
 }
@@ -669,9 +1517,18 @@ game_is_tiles() {
 # own mouth: a tiles build reports "+tiles" (and, with SOUND=1,
 # "+sound") in its --version output.  Nothing else is trusted here --
 # not the file name, not the presence of gfx/, not the flags we think
-# we passed.  Note that the rule is about the BINARY, not the artwork:
-# a build linked against SDL2 and rendering through the SDL tiles path
-# satisfies it even when the selected tileset is ASCIITiles.
+# we passed.
+#
+# THIS CHECK IS ABOUT THE BINARY.  THE TILESET IS A SEPARATE, EQUALLY
+# MANDATORY REQUIREMENT.  A build linked against SDL2 and rendering
+# through the SDL tiles path satisfies the tiles-versus-curses rule
+# whatever artwork is selected -- which is precisely why it cannot be
+# allowed to stand in for the artwork requirement.  MSXotto+
+# (TILES=MshockXottoplus, menu label "MSXotto+") is required, STEP 3
+# fails closed if it cannot be resolved, and ASCIITiles is not a
+# fallback: it is reachable only when an operator names a different
+# tileset explicitly through PLAYTHROUGH_TILESET, which is a diagnostic
+# override and never a production run.
 assert_tiles_binary() {
     if [ ! -f "${PLAYTHROUGH_GAME_BIN}" ]; then
         die "${EX_PREREQ}" "no binary at ${PLAYTHROUGH_GAME_BIN}" \
@@ -689,9 +1546,23 @@ assert_tiles_binary() {
     # allowed to hide the version string, and the pipeline is wrapped
     # so that a non-zero exit cannot trip `set -o pipefail`.
     if ! read_game_version; then
-        die "${EX_NOT_TILES}" "${PLAYTHROUGH_GAME_BIN}" \
-            "--version printed nothing; it cannot be verified as" \
-            "the SDL tiles build"
+        # A hang and a failure are different faults with different
+        # remedies, so they are reported differently rather than as one
+        # vague "could not verify".
+        if [ "${GAME_VERSION_RC}" -eq 124 ]; then
+            die "${EX_NOT_TILES}" "${PLAYTHROUGH_GAME_BIN} --version" \
+                "did not answer within ${VERSION_TIMEOUT}s and was" \
+                "terminated, so this binary cannot be verified as the" \
+                "SDL tiles build.  --version is answered while the" \
+                "command line is still being parsed, so a healthy" \
+                "binary replies immediately: a stall means the binary" \
+                "itself is wrong (a partial or mismatched link, say)." \
+                "Rebuild it, or raise PLAYTHROUGH_VERSION_TIMEOUT if" \
+                "this host is genuinely that slow."
+        fi
+        die "${EX_NOT_TILES}" "${PLAYTHROUGH_GAME_BIN} --version" \
+            "printed nothing (exit ${GAME_VERSION_RC}); it cannot be" \
+            "verified as the SDL tiles build"
     fi
     if ! game_is_tiles; then
         die "${EX_NOT_TILES}" "${PLAYTHROUGH_GAME_BIN}" \
@@ -741,14 +1612,26 @@ ensure_binary() {
 # to an unfocused window is unreliable, which would break the strict
 # one-keystroke-per-frame invariant the capture depends on.
 #
-# The geometry is asserted rather than assumed because capture targets
-# the X ROOT window: the root is exactly 1920x1080 while the game
-# window occupies 1920x1072 at +0+4 (240 columns x 8 px by 67 rows x
-# 16 px, derived per src/sdltiles.cpp:595-596 with FULLSCREEN
-# defaulting to windowed borderless, src/options.cpp:2715-2724).
-# Photographing the root yields a true-resolution PNG with a 4-pixel
-# letterbox and needs no rescaling -- and rescaling would soften
-# exactly the 8x16 glyphs the sidebar clock OCR has to read.
+# The geometry that is ASSERTED is the X ROOT's 1920x1080, because that
+# is what capture photographs (import -window root).  Keep the three
+# rectangles distinct, since they are different sizes -- see the same
+# table in env.sh:
+#
+#   * the X ROOT is 1920x1080 at depth 24;
+#   * the GAME X WINDOW is whatever the window manager gives the
+#     borderless window (FULLSCREEN defaults to "windowedbl",
+#     src/options.cpp:2715-2724).  Measured on this surface:
+#     1920x1080+0+0.  This script reports it, never assumes it;
+#   * the TERMINAL RENDER GRID is 1920x1072 -- 240 columns x 8 px by 67
+#     rows x 16 px (src/sdltiles.cpp:595-596, recomputed from the
+#     actual window under windowed borderless, :669-675) -- blitted at
+#     the window's top-left with the leftover pixels as border
+#     (:311-320, :1046-1050).
+#
+# Photographing the root therefore yields a true-resolution PNG whose
+# only non-game pixels are that thin leftover band, and needs no
+# rescaling -- and rescaling would soften exactly the 8x16 glyphs the
+# sidebar clock OCR has to read.
 # ---------------------------------------------------------------------
 ensure_headless() {
     if [ "${HEADLESS_DONE}" -eq 1 ]; then
@@ -774,24 +1657,40 @@ ensure_headless() {
 }
 
 # ---------------------------------------------------------------------
-# STEP 3 -- the tileset, resolved as preference with fallback.
+# STEP 3 -- the tileset.  REQUIRED, hydrated if absent, never
+# substituted.
 #
-# The requirement set contains a genuine tension: one part asks for the
-# CDDA-Tilesets pack with MSXotto+ selected, another specifies the
-# ASCIITiles that ship with the checkout.  Both are satisfied by
-# preferring MSXotto+ when it is available and falling back to
-# ASCIITiles when it is not, and by REPORTING which one was actually
-# used so the choice is recorded rather than assumed.  Either outcome
-# satisfies the tiles-binary rule, which is about the binary reporting
-# "+tiles" and not about the artwork pack.
+# The requirement is to install the CDDA-Tilesets pack and configure
+# MSXotto+, so this step has exactly two outcomes: the required tileset
+# is installed and reported, or this script exits non-zero.  There is
+# NO FALLBACK.
+#
+# Why a fallback would be worse than a failure: the checkout ships
+# ASCIITiles, so a run that quietly fell back to it would still produce
+# a full-length movie of a genuine SDL tiles session -- every count
+# would tally, every frame would be a real screenshot, and nothing
+# would look wrong.  The requirement would simply have gone unmet,
+# invisibly, and the only way to notice would be to recognise ASCII art
+# in the finished film.  That is precisely the class of silent failure
+# this pipeline is built to refuse, so the artwork requirement is
+# enforced the same way the video driver is: loudly, up front.
+#
+# An operator who genuinely wants a different tileset exports
+# PLAYTHROUGH_TILESET.  That is a DIAGNOSTIC OVERRIDE, not a production
+# option: naming anything other than MSXotto+ -- ASCIITiles included --
+# leaves the artwork requirement unmet, which is why the value has to be
+# stated deliberately and by name.  It is then validated exactly as
+# strictly as the required pack and reported as what was used; nothing
+# is ever substituted behind the operator's back.
 #
 # A tileset's identity comes from the NAME: field of its tileset.txt,
 # not from its directory name -- src/options.cpp:1213-1227 reads NAME:
 # as the option value and VIEW: only as the label shown in the menu, so
 # the directory gfx/ASCIITileset declares the id ASCIITiles and
 # gfx/MShockXotto+ declares MshockXottoplus with the view MSXotto+.
-# Every lookup below therefore scans those fields and accepts a match
-# on either, and no directory name is ever guessed.
+# Every lookup below therefore scans those fields, accepts a match on
+# either, and additionally tries the alias spellings env.sh lists in
+# PLAYTHROUGH_TILESET_ALIASES.  No directory name is ever guessed.
 #
 # Installing a tileset writes into gfx/, which is deliberate and
 # produces no tracked change at all: /gfx/* is ignored at
@@ -801,9 +1700,9 @@ ensure_headless() {
 # The source is a PRE-PLACED pack directory, by default
 # /opt/cdda-gfx-cache -- the operator's provisioned copy of
 # https://github.com/I-am-Erk/CDDA-Tilesets.  This script never fetches
-# anything: the pipeline opens no network connection, a download has no
-# place on the critical path of a re-run, and a missing pack is a
-# fallback rather than a failure.
+# anything: the pipeline opens no network connection and a download has
+# no place on the critical path of a re-run.  A missing pack is
+# therefore a hard failure with instructions, not a shrug.
 # ---------------------------------------------------------------------
 
 # tileset_field CONF FIELD -- read one field out of a tileset.txt.
@@ -869,10 +1768,137 @@ find_installed_tileset() {
     return 1
 }
 
+# verify_pack_provenance DIR -- decide whether a pre-placed tileset may
+# be ingested at all.
+#
+# A tileset pack is thousands of files that this script copies into the
+# tree the game then loads, so its provenance is a supply-chain question
+# and not a convenience question.  Three checks, and all three must pass:
+#
+#   1. OWNERSHIP.  The pack directory and its parents must be owned by
+#      root or by this user and must not be group- or world-writable.
+#      Otherwise another account can swap the artwork -- or a
+#      tileset.txt, or a symlink -- between the check and the copy.
+#   2. NO LINKS AND NO SPECIAL FILES.  A symlink inside the pack is a
+#      read (or a write) somewhere else once it lands under gfx/; a
+#      device, socket or fifo has no business in an artwork pack at all.
+#      Both are refused outright rather than dereferenced.
+#   3. AN INTEGRITY MANIFEST.  A sha256 manifest inside the pack --
+#      SHA256SUMS, or the file PLAYTHROUGH_TILESET_SHA256SUMS names --
+#      must exist and must verify.  Exact bytes, not "it looked right".
+#
+# Requirement 3 is what makes this an ingestion gate rather than a
+# hygiene check, so it is NOT optional: a pack with no manifest is
+# refused, and the message says how to produce one.  The intended
+# arrangement on a provisioned host is that MSXotto+ is ALREADY
+# installed under gfx/ and this path never runs at all.
+#
+# ONE OF THE THREE HAS A DECLARED ESCAPE, AND ONLY ONE.  Requirement 1
+# is a fact about the HOST rather than about the pack: on a host whose
+# /tmp is world-writable with no sticky bit -- which is the case here,
+# mode 2777 -- a pack staged anywhere under it fails the walk however
+# sound the pack is, and nothing about the pack can fix that.
+# PLAYTHROUGH_ALLOW_UNVERIFIED_TILESET_PACK=1 declares that, warns on
+# every ingestion, and is refused by default.  Requirements 2 and 3 are
+# facts about the PACK, they can always be satisfied, and they have no
+# override at all: the manifest still has to exist and still has to
+# verify, so declaring the host does not buy unverified bytes.
+verify_pack_provenance() {
+    local dir="${1%/}"
+    local entry perm owner
+    entry="$(readlink -f -- "${dir}" 2>/dev/null || true)"
+    if [ -z "${entry}" ] || [ ! -d "${entry}" ]; then
+        playthrough_warn "the tileset pack '${dir}' is not a" \
+            "directory"
+        return 1
+    fi
+    local declared="${PLAYTHROUGH_ALLOW_UNVERIFIED_TILESET_PACK:-0}"
+    local complaint=""
+    while : ; do
+        perm="$(stat -c '%a' -- "${entry}" 2>/dev/null || true)"
+        owner="$(stat -c '%u' -- "${entry}" 2>/dev/null || true)"
+        if [ -z "${perm}" ] || [ -z "${owner}" ]; then
+            playthrough_warn "cannot stat '${entry}' while checking" \
+                "the tileset pack"
+            return 1
+        fi
+        if [ "${owner}" != "0" ] &&
+           [ "${owner}" != "${PLAYTHROUGH_UID}" ]; then
+            complaint="the tileset pack path '${entry}' is owned by \
+uid ${owner}, which is neither root nor uid ${PLAYTHROUGH_UID}"
+        elif [ $(( 8#${perm} & 8#022 )) -ne 0 ]; then
+            complaint="the tileset pack path '${entry}' is mode \
+${perm}, i.e. group- or world-writable, so its contents can be \
+replaced between this check and the copy"
+        fi
+        if [ -n "${complaint}" ]; then
+            if [ "${declared}" != "1" ]; then
+                playthrough_warn "${complaint}; refusing to ingest" \
+                    "artwork from it.  Stage the pack somewhere only" \
+                    "root or this account can write, install the" \
+                    "tileset under gfx/ by hand, or set" \
+                    "PLAYTHROUGH_ALLOW_UNVERIFIED_TILESET_PACK=1 to" \
+                    "accept this host's layout deliberately.  The" \
+                    "sha256 manifest is still required either way."
+                return 1
+            fi
+            playthrough_warn "${complaint}.  Ingesting it anyway" \
+                "because PLAYTHROUGH_ALLOW_UNVERIFIED_TILESET_PACK=1;" \
+                "the pack's own integrity is still verified below, but" \
+                "the host cannot vouch for who staged it."
+            break
+        fi
+        [ "${entry}" = "/" ] && break
+        entry="${entry%/*}"
+        [ -n "${entry}" ] || entry="/"
+    done
+
+    local offender
+    offender="$(find "${dir}" \( -type l -o \! -type d -a \! -type f \) \
+        -print -quit 2>/dev/null || true)"
+    if [ -n "${offender}" ]; then
+        playthrough_warn "the tileset pack '${dir}' contains" \
+            "'${offender}', which is a symbolic link or a special" \
+            "file.  An artwork pack is directories and regular files" \
+            "only; a link inside it would resolve somewhere else once" \
+            "it was copied under gfx/, so the pack is refused rather" \
+            "than filtered."
+        return 1
+    fi
+
+    local sums="${PLAYTHROUGH_TILESET_SHA256SUMS:-${dir}/SHA256SUMS}"
+    if [ ! -f "${sums}" ]; then
+        playthrough_warn "the tileset pack '${dir}' carries no" \
+            "sha256 manifest (looked for '${sums}').  Unverified" \
+            "artwork is not installed into the tree the game loads:" \
+            "generate one with" \
+            "\`cd '${dir}' && find . -type f \\! -name SHA256SUMS" \
+            "-exec sha256sum {} + > SHA256SUMS\`, review it, and" \
+            "re-run.  Or install the tileset under gfx/ by hand," \
+            "which is what a provisioned host already does."
+        return 1
+    fi
+    if ! playthrough_require_tools sha256sum; then
+        return 1
+    fi
+    playthrough_log "verifying '${sums}' before ingesting" \
+        "'${dir}'"
+    if ! ( cd "${dir}" && sha256sum --quiet --check \
+            "$(basename "${sums}")" >/dev/null 2>&1 ); then
+        playthrough_warn "sha256 verification of the tileset pack" \
+            "'${dir}' FAILED against '${sums}'; nothing is copied." \
+            "Re-provision the pack rather than installing it anyway."
+        return 1
+    fi
+    return 0
+}
+
 # install_tileset_from_pack WANTED -- copy one tileset out of the
-# pre-placed pack.  Bounded (one directory, one copy), explicit, and
-# non-fatal: every failure path returns 1 so the caller can fall back,
-# because falling back is a correct outcome and not an error.
+# pre-placed pack, after proving where it came from.
+#
+# Bounded (one directory, one copy) and explicit.  Every failure path
+# returns 1; whether that is fatal is the caller's decision -- see
+# resolve_tileset(), where an absent MSXotto+ now fails closed.
 install_tileset_from_pack() {
     local wanted="$1"
     if [ ! -d "${TILESET_PACK}" ]; then
@@ -880,15 +1906,30 @@ install_tileset_from_pack() {
             "'${TILESET_PACK}'; nothing to install from"
         return 1
     fi
-    local dir conf name view base dest tmp
+    local dir conf name view base dest tmp alias matched leftover
     for dir in "${TILESET_PACK}"/*/; do
         [ -d "${dir}" ] || continue
         conf="${dir}tileset.txt"
         [ -f "${conf}" ] || continue
         name="$(tileset_field "${conf}" NAME || true)"
         view="$(tileset_field "${conf}" VIEW || true)"
-        if [ "${name}" != "${wanted}" ] &&
-           [ "${view}" != "${wanted}" ]; then
+        # The same alias spellings find_required_tileset accepts, so a
+        # pack that declares the id under one of its other names is
+        # still recognised here rather than reported as absent.
+        matched=0
+        if [ "${name}" = "${wanted}" ] ||
+           [ "${view}" = "${wanted}" ]; then
+            matched=1
+        else
+            for alias in ${PLAYTHROUGH_TILESET_ALIASES}; do
+                if [ "${name}" = "${alias}" ] ||
+                   [ "${view}" = "${alias}" ]; then
+                    matched=1
+                    break
+                fi
+            done
+        fi
+        if [ "${matched}" -ne 1 ]; then
             continue
         fi
         base="$(basename "${dir%/}")"
@@ -898,20 +1939,65 @@ install_tileset_from_pack() {
                 "it exactly as it is"
             return 0
         fi
+        verify_pack_provenance "${dir}" || return 1
         # Copy aside and rename, so an interrupted copy can never
         # leave a half-populated tileset that later scans would treat
-        # as installed.
-        tmp="${PLAYTHROUGH_REPO_ROOT}/gfx/.${base}.partial.$$"
+        # as installed.  mktemp -d makes the staging name unpredictable
+        # and creates it 0700, where the old $$-suffixed name was
+        # guessable inside a directory other accounts can read.
+        if ! tmp="$(mktemp -d \
+                "${PLAYTHROUGH_REPO_ROOT}/gfx/.${base}.partial.XXXXXX" \
+                2>/dev/null)"; then
+            playthrough_warn "cannot create a staging directory" \
+                "under gfx/ for '${name}'"
+            return 1
+        fi
         playthrough_log "installing tileset '${name}' from" \
             "${dir} into gfx/${base}"
-        if cp -a "${dir%/}" "${tmp}" 2>/dev/null &&
-           mv -- "${tmp}" "${dest}"; then
-            return 0
+        # cp -a into the staging directory, then RE-CHECK the copy for
+        # links and special files before it is published: the source was
+        # verified, and this confirms that what actually landed matches
+        # what was verified.
+        #
+        # The copy's own stderr is CAPTURED rather than discarded.  A
+        # failure here is the difference between a run that renders the
+        # required tileset and one that stops, so "could not install"
+        # on its own is not a usable diagnosis: the operator needs to
+        # know whether it was a permission, a full disk or a missing
+        # source, and against which two paths.  The excerpt is bounded
+        # so a pathological error cannot flood the log, and it goes to
+        # stderr only, leaving stdout's KEY=value contract intact.
+        local copy_err=""
+        if copy_err="$(
+            cp -a "${dir%/}/." "${tmp}/" 2>&1 1>/dev/null
+        )"; then
+            leftover="$(find "${tmp}" \
+                \( -type l -o \! -type d -a \! -type f \) \
+                -print -quit 2>/dev/null || true)"
+            if [ -z "${leftover}" ] && mv -- "${tmp}" "${dest}"; then
+                chmod 755 -- "${dest}" 2>/dev/null || true
+                return 0
+            fi
+            if [ -n "${leftover}" ]; then
+                playthrough_warn "the staged copy of '${name}'" \
+                    "contains '${leftover}', a link or special file;" \
+                    "discarding it instead of publishing it"
+            fi
         fi
-        playthrough_warn "could not install '${name}' into gfx/;" \
-            "continuing with whatever is already installed"
-        # Remove only the partial directory this call created, named
-        # in full and confirmed to be the intended path first.
+        playthrough_warn "could not install tileset '${name}' from" \
+            "'${dir%/}' into '${dest}'"
+        if [ -n "${copy_err}" ]; then
+            playthrough_warn "cp reported: $(
+                printf '%s' "${copy_err}" |
+                    head -c 500 |
+                    tr '\n' '|'
+            )"
+        elif [ -z "${leftover}" ]; then
+            playthrough_warn "cp reported nothing on stderr, so the" \
+                "rename to '${dest}' is what failed"
+        fi
+        # Remove only the staging directory this call created, named in
+        # full and confirmed to be the intended path first.
         case "${tmp}" in
             "${PLAYTHROUGH_REPO_ROOT}/gfx/."*.partial.*)
                 rm -rf -- "${tmp}"
@@ -943,36 +2029,90 @@ report_installed_tilesets() {
     return 0
 }
 
+# find_required_tileset -- match the required tileset by id, by view
+# label, or by any of its documented alias spellings.
+#
+# The aliases exist because one pack is known by three names -- the id
+# MshockXottoplus, the menu label MSXotto+ and the directory
+# MShockXotto+ -- and a lookup that knew only one of them would report
+# a correctly installed tileset as missing.  They are spellings of a
+# single tileset, never a list of acceptable alternatives.
+find_required_tileset() {
+    local wanted="$1"
+    local alias
+    if find_installed_tileset "${wanted}"; then
+        return 0
+    fi
+    for alias in ${PLAYTHROUGH_TILESET_ALIASES}; do
+        if [ "${alias}" = "${wanted}" ]; then
+            continue
+        fi
+        if find_installed_tileset "${alias}"; then
+            playthrough_log "matched the required tileset on the" \
+                "alias '${alias}' (id '${TILESET_ID}')"
+            return 0
+        fi
+    done
+    return 1
+}
+
 resolve_tileset() {
     assert_repo_root
-    local preferred="${PLAYTHROUGH_TILESET}"
-    local fallback="${PLAYTHROUGH_TILESET_FALLBACK}"
+    local required="${PLAYTHROUGH_TILESET}"
+    # NAMED here, authorised nowhere.  This only says WHICH tileset a
+    # diagnostic run would substitute; ALLOW_TILESET_FALLBACK is the
+    # only thing that says one may be substituted at all.
+    local fallback="${PLAYTHROUGH_TILESET_FALLBACK:-ASCIITiles}"
 
     scan_installed_tilesets
-    if find_installed_tileset "${preferred}"; then
-        TILESET_ORIGIN="preferred-installed"
+    if find_required_tileset "${required}"; then
+        TILESET_ORIGIN="required-installed"
     else
-        playthrough_log "preferred tileset '${preferred}' is not" \
-            "installed under gfx/; trying the pre-placed pack"
-        if install_tileset_from_pack "${preferred}"; then
-            scan_installed_tilesets
-        fi
-        if find_installed_tileset "${preferred}"; then
-            TILESET_ORIGIN="preferred-from-pack"
-        elif find_installed_tileset "${fallback}"; then
+        playthrough_log "the required tileset '${required}' is not" \
+            "installed under gfx/; hydrating it from the pre-placed" \
+            "pack at '${TILESET_PACK}'"
+        install_tileset_from_pack "${required}" || true
+        scan_installed_tilesets
+        if find_required_tileset "${required}"; then
+            TILESET_ORIGIN="required-from-pack"
+        elif [ "${ALLOW_TILESET_FALLBACK}" = "1" ] &&
+             find_required_tileset "${fallback}"; then
+            # DIAGNOSTIC ONLY.  Reached solely because the operator set
+            # PLAYTHROUGH_ALLOW_TILESET_FALLBACK=1, which a recorded
+            # session must never do: the requirement names MSXotto+, and
+            # a movie rendered in ASCIITiles does not satisfy it however
+            # genuinely it was captured.  It exists so that somebody
+            # debugging this pipeline on a host with no pack can still
+            # bring the game up and look at a frame.
             TILESET_ORIGIN="fallback"
-            playthrough_warn "'${preferred}' is unavailable;" \
-                "falling back to '${TILESET_ID}', which ships with" \
-                "the checkout.  This is a correct outcome, and the" \
-                "movie is still a genuine SDL tiles capture --" \
-                "record it in playthrough/TECHNICAL_NOTES.md."
+            playthrough_warn "'${required}' is unavailable, and" \
+                "PLAYTHROUGH_ALLOW_TILESET_FALLBACK=1, so this run" \
+                "uses '${TILESET_ID}' instead.  THIS IS A DIAGNOSTIC" \
+                "CONFIGURATION: the required tileset is MSXotto+, so" \
+                "do not record a session under it."
         else
             report_installed_tilesets
-            die "${EX_TILESET}" "neither the preferred tileset" \
-                "'${preferred}' nor the fallback '${fallback}' is" \
-                "installed under gfx/, and neither could be" \
-                "installed from '${TILESET_PACK}'.  The game cannot" \
-                "render tiles without one."
+            # FAIL CLOSED.  The tileset is a requirement, not a
+            # preference, so an absent MSXotto+ stops the run here
+            # rather than quietly producing a compliant-looking movie
+            # in the wrong artwork -- the failure that would otherwise
+            # be discovered only after the whole session had been
+            # played, with no symptom but the artwork.
+            die "${EX_TILESET}" "the required tileset '${required}'" \
+                "is not installed under gfx/ and could not be" \
+                "hydrated from '${TILESET_PACK}'.  It is REQUIRED:" \
+                "the run must render MSXotto+.  Provision the pack" \
+                "(a composed copy of the MShockXotto+ set from" \
+                "https://github.com/I-am-Erk/CDDA-Tilesets, built" \
+                "with the repository's own tools/gfx_tools/" \
+                "compose.py) at PLAYTHROUGH_TILESET_PACK, or install" \
+                "it under gfx/ by hand -- gfx/ is git-ignored at" \
+                ".gitignore:52, so either changes nothing tracked." \
+                "A fallback to '${fallback}' exists for DIAGNOSIS" \
+                "ONLY, and only when" \
+                "PLAYTHROUGH_ALLOW_TILESET_FALLBACK=1 is set" \
+                "deliberately; it does not satisfy the requirement" \
+                "and must not be used for a recorded session."
         fi
     fi
 
@@ -1005,11 +2145,128 @@ resolve_tileset() {
 # The layout probed is the engine's own: src/path_info.cpp:144
 # `savedir_value = user_dir_value + "save/";`, with each world a
 # directory containing master.gsav (src/path_info.h SAVE_MASTER) and
+# one character file per character, written by
+# src/game_io.cpp:601-621 save_player_data().
+#
+# WHAT COUNTS AS A CHARACTER SAVE -- BOTH FORMS, AND WHY THAT MATTERS
+#     src/game_io.cpp writes `playerfile + SAVE_EXTENSION` when the
+#     world stores plainly, and `playerfile + SAVE_EXTENSION +
+#     zzip_suffix` when it compresses -- `.sav` versus `.sav.zzip`,
+#     with zzip_suffix = ".zzip" at src/worldfactory.h:24-25.  The
+#     engine's WORLD_COMPRESSION2 option DEFAULTS TO TRUE
+#     (src/options.cpp:1816-1819), so on a world this pipeline did not
+#     itself seed, the compressed form is the one that exists.
+#     Counting only `*.sav` therefore reports zero characters for a
+#     perfectly real save -- and because the decision below turns on
+#     that count, it would resolve to "create" and OVERWRITE the very
+#     save the hard rule says must be continued.  Both forms are
+#     counted, always.
+#
+# WHAT MAKES A WORLD RESUMABLE
+#     A character save, and nothing less.  master.gsav proves a WORLD
+#     exists, not that anybody lives in it: the engine writes the world
+#     as soon as it is created, so a run interrupted during character
+#     creation leaves a world with no character at all.  Resuming that
+#     means driving "Load" against a world with an empty character
+#     list, which is a dead end.  Such a world is reported and
+#     excluded, and the session correctly creates a character in it.
+#
+# AMBIGUITY IS REFUSED, NOT GUESSED
+#     Taking the first world in directory order was the previous
+#     behaviour and it is unsafe: glob order is locale- and
+#     filesystem-dependent, so which save got continued could change
+#     between runs of the same command.  With more than one resumable
+#     world the probe FAILS and asks for PLAYTHROUGH_RESUME_WORLD.
+#     That variable is deliberately NOT named PLAYTHROUGH_SAVE_WORLD:
+#     that name is an OUTPUT of this probe, and a caller who eval'd
+#     this script's own stdout would otherwise turn last run's report
+#     into this run's silent input.
 # one `#<base64-of-character-name>.sav` per character
 # (SAVE_EXTENSION, written by src/game_io.cpp save_player_data).
 # master.gsav is the marker for a real world, because a bare directory
 # proves nothing.
+#
+# THERE ARE TWO CANONICAL CHARACTER FILE FORMS, AND BOTH COUNT.
+# WORLD_COMPRESSION2 defaults to TRUE (src/options.cpp:1816-1819), and
+# with it on game::save_player_data writes `playerfile +
+# SAVE_EXTENSION + zzip_suffix`, i.e. `#<b64>.sav.zzip`
+# (src/game_io.cpp:601-621; zzip_suffix = ".zzip" at
+# src/worldfactory.h:25).  seed_options.py seeds it FALSE so this run's
+# own save is a plain, auditable `#<b64>.sav` -- but a world that
+# already exists was not necessarily created under that seed, and this
+# probe runs BEFORE any seeding on a resumed run.  Scanning only
+# `*.sav` would therefore report an existing survivor as absent and
+# send the launcher down the CREATE branch, replacing the very save
+# HR4 requires it to continue.  Both forms are scanned, and a world
+# holding both forms of the SAME character counts as one character:
+# the plain name is derived by stripping the `.zzip` suffix and each
+# distinct base name is counted once.
 # ---------------------------------------------------------------------
+
+# count_character_saves DIR -- how many character saves one world
+# holds, counting the plain and the compressed form.
+#
+# The engine names character files `#<base64-of-name>` (game_io.cpp), so
+# the `#` prefix is the discriminator that separates them from any other
+# `.sav`-suffixed file a world directory might hold.  master.gsav cannot
+# match either pattern -- its suffix is "gsav", not ".sav" -- but the
+# prefix makes the intent explicit rather than relying on that.
+count_character_saves() {
+    local dir="$1"
+    local found=0 entry base seen=" "
+    for entry in "${dir}"'#'*.sav "${dir}"'#'*.sav.zzip; do
+        [ -f "${entry}" ] || continue
+        # `#<b64>.sav.zzip` and `#<b64>.sav` are the SAME character, so
+        # the plain name is what is counted: a two-glob sum would report
+        # two survivors where there is one, and the count is what the
+        # ambiguity warning below is measured against.  `seen` is a
+        # space-delimited set rather than an associative array, so the
+        # probe behaves identically on an older bash a host may carry.
+        base="$(basename "${entry}")"
+        base="${base%.zzip}"
+        case "${seen}" in
+            *" ${base} "*) continue ;;
+        esac
+        seen="${seen}${base} "
+        found=$(( found + 1 ))
+    done
+    printf '%s' "${found}"
+}
+
+# character_save_forms DIR -- which canonical form(s) one world stores
+# its characters in: "", ".sav", ".sav.zzip", or ".sav,.sav.zzip".
+#
+# Reported rather than inferred from the seeded WORLD_COMPRESSION2
+# option, because this probe runs BEFORE any seeding on a resumed run
+# and the world may not have been created under this pipeline's seed at
+# all.  Separate from count_character_saves because that one answers a
+# question about survivors and this one answers a question about
+# storage; both are printed rather than assigned so each can be called
+# and checked on its own.
+character_save_forms() {
+    local dir="$1"
+    local entry plain=0 compressed=0 forms=""
+    for entry in "${dir}"'#'*.sav.zzip; do
+        if [ -f "${entry}" ]; then
+            compressed=1
+            break
+        fi
+    done
+    for entry in "${dir}"'#'*.sav; do
+        if [ -f "${entry}" ]; then
+            plain=1
+            break
+        fi
+    done
+    if [ "${plain}" -eq 1 ]; then
+        forms=".sav"
+    fi
+    if [ "${compressed}" -eq 1 ]; then
+        forms="${forms}${forms:+,}.sav.zzip"
+    fi
+    printf '%s' "${forms}"
+}
+
 probe_save_resume() {
     if [ "${PROBE_DONE}" -eq 1 ]; then
         return 0
@@ -1018,8 +2275,13 @@ probe_save_resume() {
     SAVE_WORLD=""
     SAVE_WORLD_COUNT=0
     SAVE_CHAR_COUNT=0
+    SAVE_CHAR_FORMS=""
 
-    local dir world save
+    local dir world chars forms
+    local resumable=()
+    local characterless=()
+    local requested="${PLAYTHROUGH_RESUME_WORLD:-}"
+
     if [ -d "${PLAYTHROUGH_SAVE_DIR}" ]; then
         for dir in "${PLAYTHROUGH_SAVE_DIR}"/*/; do
             [ -d "${dir}" ] || continue
@@ -1030,32 +2292,102 @@ probe_save_resume() {
                 continue
             fi
             SAVE_WORLD_COUNT=$(( SAVE_WORLD_COUNT + 1 ))
-            if [ -z "${SAVE_WORLD}" ]; then
-                SAVE_WORLD="${world}"
+            chars="$(count_character_saves "${dir}")"
+            SAVE_CHAR_COUNT=$(( SAVE_CHAR_COUNT + chars ))
+            if [ "${chars}" -gt 0 ]; then
+                resumable+=("${world}")
+                playthrough_log "save/${world}: ${chars} character" \
+                    "save(s) -- resumable"
+            else
+                characterless+=("${world}")
             fi
-            for save in "${dir}"*.sav; do
-                [ -f "${save}" ] || continue
-                SAVE_CHAR_COUNT=$(( SAVE_CHAR_COUNT + 1 ))
-            done
+            # Which canonical form(s) this world stores characters in,
+            # accumulated across every world so the emitted fact
+            # describes the save TREE rather than the last directory
+            # scanned.  Recorded rather than inferred from the seeded
+            # WORLD_COMPRESSION2 option, because this probe runs BEFORE
+            # any seeding on a resumed run and the world may not have
+            # been created under this pipeline's seed at all.
+            forms="$(character_save_forms "${dir}")"
+            case "${SAVE_CHAR_FORMS}" in
+                ".sav,.sav.zzip") ;;
+                "") SAVE_CHAR_FORMS="${forms}" ;;
+                *)
+                    if [ -n "${forms}" ] &&
+                       [ "${forms}" != "${SAVE_CHAR_FORMS}" ]; then
+                        SAVE_CHAR_FORMS=".sav,.sav.zzip"
+                    fi
+                    ;;
+            esac
         done
     fi
 
-    if [ "${SAVE_WORLD_COUNT}" -gt 0 ]; then
-        SESSION_MODE="resume"
-        playthrough_log "RESUME: ${SAVE_WORLD_COUNT} world(s) and" \
-            "${SAVE_CHAR_COUNT} character save(s) already exist" \
-            "under ${PLAYTHROUGH_SAVE_DIR}.  The existing save MUST" \
-            "be continued -- load world '${SAVE_WORLD}' and do not" \
-            "create a new character."
-        if [ "${SAVE_WORLD_COUNT}" -gt 1 ]; then
-            playthrough_warn "more than one world is present;" \
-                "'${SAVE_WORLD}' is the first in directory order," \
-                "so confirm it is the intended one before loading"
-        fi
-    else
-        playthrough_log "CREATE: no save under" \
+    for world in "${characterless[@]+"${characterless[@]}"}"; do
+        playthrough_warn "save/${world} is a world with NO character" \
+            "save (neither #*.sav nor #*.sav.zzip).  A world is" \
+            "written as soon as it is created, so this is most" \
+            "likely a run interrupted during character creation." \
+            "It is not resumable -- loading it would open an empty" \
+            "character list -- so it is excluded from the resume" \
+            "decision."
+    done
+
+    local count="${#resumable[@]}"
+    if [ "${count}" -eq 0 ]; then
+        playthrough_log "CREATE: no character save under" \
             "${PLAYTHROUGH_SAVE_DIR}, so this session creates a" \
             "character through the custom point-buy creator"
+    else
+        SESSION_MODE="resume"
+        if [ -n "${requested}" ]; then
+            local match=""
+            for world in "${resumable[@]}"; do
+                if [ "${world}" = "${requested}" ]; then
+                    match="${world}"
+                    break
+                fi
+            done
+            if [ -z "${match}" ]; then
+                die "${EX_LAYOUT}" \
+                    "PLAYTHROUGH_RESUME_WORLD='${requested}' is not" \
+                    "a resumable world.  The worlds holding at" \
+                    "least one character save are:" \
+                    "${resumable[*]}."
+            fi
+            SAVE_WORLD="${match}"
+            playthrough_log "resuming world '${SAVE_WORLD}', chosen" \
+                "explicitly by PLAYTHROUGH_RESUME_WORLD"
+        elif [ "${count}" -eq 1 ]; then
+            SAVE_WORLD="${resumable[0]}"
+        else
+            die "${EX_LAYOUT}" "${count} worlds hold character" \
+                "saves (${resumable[*]}), so which save to continue" \
+                "is ambiguous.  This is refused rather than guessed:" \
+                "directory order is locale- and" \
+                "filesystem-dependent, so a guess could continue a" \
+                "different survivor on the next run of the same" \
+                "command.  Set PLAYTHROUGH_RESUME_WORLD to the one" \
+                "you mean."
+        fi
+        playthrough_log "RESUME: ${SAVE_WORLD_COUNT} world(s) and" \
+            "${SAVE_CHAR_COUNT} character save(s)" \
+            "(${SAVE_CHAR_FORMS:-no character file yet}) exist under" \
+            "${PLAYTHROUGH_SAVE_DIR}.  The existing save MUST be" \
+            "continued -- load world '${SAVE_WORLD}' and do not" \
+            "create a new character."
+        # A WARNING rather than a refusal, and the asymmetry with the
+        # multiple-world case above is deliberate: which WORLD to open
+        # is a decision this script has to make and must not guess,
+        # whereas which survivor to load happens inside the game's own
+        # character list, where the operator sees the names.  One
+        # session, one survivor is still the requirement, so a second
+        # one has to be visible before anything is loaded.
+        if [ "${SAVE_CHAR_COUNT}" -gt 1 ]; then
+            playthrough_warn "${SAVE_CHAR_COUNT} distinct character" \
+                "saves are present, and this run records exactly one" \
+                "survivor; confirm which one is being continued" \
+                "before loading, and do not create another"
+        fi
     fi
 
     PROBE_DONE=1
@@ -1063,6 +2395,12 @@ probe_save_resume() {
     emit PLAYTHROUGH_SAVE_WORLD "${SAVE_WORLD}"
     emit PLAYTHROUGH_SAVE_WORLD_COUNT "${SAVE_WORLD_COUNT}"
     emit PLAYTHROUGH_SAVE_CHAR_COUNT "${SAVE_CHAR_COUNT}"
+    emit PLAYTHROUGH_SAVE_RESUMABLE_COUNT "${count}"
+    # Which canonical form(s) the character files are stored in, so the
+    # fact is recorded rather than assumed from the seeded option: a
+    # comma-separated list of ".sav", ".sav.zzip", or both, and empty
+    # when no character file exists yet.
+    emit PLAYTHROUGH_SAVE_CHAR_FORMS "${SAVE_CHAR_FORMS}"
     return 0
 }
 
@@ -1076,8 +2414,9 @@ probe_save_resume() {
 #     "Cataclysm: Dark Days Ahead - <hash>".  Name matching is not an
 #     available alternative here.
 #   * Scraping a window id out of xwininfo with a loose hexadecimal
-#     pattern is actively unsafe: the "1920x1072" geometry substring
-#     mis-matches such patterns.
+#     pattern is actively unsafe: the geometry substring xwininfo prints
+#     for the window ("1920x1080" on this surface) mis-matches such
+#     patterns.
 # xdotool takes the display from the environment -- it has no --display
 # option -- which is why env.sh exports DISPLAY and every call below
 # simply inherits it.
@@ -1091,15 +2430,123 @@ game_window_ids() {
         2>/dev/null || true
 }
 
-# find_game_window -- set WINDOW_ID to the newest match, or fail.
+# find_game_window -- set WINDOW_ID, WINDOW_OWNED_PID, GAME_PID and
+# GAME_IDENTITY to the ONE window whose owning process is confirmed to
+# be this checkout's game, or fail.
+#
+# A WM_CLASS IS NOT AN IDENTITY, and neither is search order.  The class
+# is "cataclysm-tiles" for EVERY build of this game on the display, and
+# any local client can set its class to that string, so a class search
+# cannot distinguish this checkout's instance from another checkout's,
+# from a hand-started game, from a leftover instance pointed at a
+# different userdir, or from a window somebody else painted.  Taking
+# `tail -n 1` picked one of them on the strength of search order alone,
+# and the consequence is not abstract: session.py would then send this
+# session's keystrokes into a stranger's game and capture.sh would
+# photograph it, producing a movie and a save that do not correspond to
+# each other -- or, worse, a run of fabricated pixels that no gate
+# downstream could tell from the real session.  stop_instance would be
+# entitled to signal it.  env.sh closes the display itself with a
+# cookie; this closes the identification.
+#
+# So every match is resolved window -> _NET_WM_PID -> /proc and put
+# through pid_is_game, which accepts only this checkout's binary, run
+# from this repository root, against this userdir, on this display --
+# and which records the (executable, start time) pair that lets a later
+# signal re-confirm the same process.  Exactly one verified instance is
+# required:
+#
+#   * none            -> failure, the caller waits or launches;
+#   * one             -> that one, whatever the search order was;
+#   * more than one   -> refused outright.  Two instances of this
+#                        checkout against one userdir is a state no
+#                        correct run produces, both would be writing to
+#                        the same save, and choosing between them would
+#                        be guessing.
+#
+# A candidate whose pid cannot be confirmed is DISCARDED, never accepted
+# on the strength of its class.  Several windows belonging to the SAME
+# pid are normal -- SDL can hold more than one -- so the ambiguity test
+# is on the PID, not on the window count.  Unverified matches are
+# reported rather than ignored, because "another game is running on this
+# display" is exactly the context an operator needs when the launch then
+# waits out its timeout.
 find_game_window() {
-    WINDOW_ID="$(game_window_ids | tail -n 1)"
-    [ -n "${WINDOW_ID}" ]
+    WINDOW_ID=""
+    WINDOW_OWNED_PID=""
+    local id pid
+    local ours=() our_pids=() our_identities=() strangers=()
+    while IFS= read -r id; do
+        [ -n "${id}" ] || continue
+        pid="$(xdotool getwindowpid "${id}" 2>/dev/null || true)"
+        case "${pid}" in
+            ''|*[!0-9]*)
+                strangers+=("${id} (no readable owning pid)")
+                continue
+                ;;
+        esac
+        # pid_is_game sets GAME_IDENTITY as its last act, so the pair is
+        # captured HERE, next to the pid it belongs to, rather than left
+        # to whichever call happened to run last.
+        if pid_is_game "${pid}"; then
+            ours+=("${id}")
+            case " ${our_pids[*]-} " in
+                *" ${pid} "*) ;;
+                *)
+                    our_pids+=("${pid}")
+                    our_identities+=("${GAME_IDENTITY}")
+                    ;;
+            esac
+        else
+            strangers+=("${id} (pid ${pid})")
+        fi
+    done < <(game_window_ids)
+
+    if [ "${#our_pids[@]}" -gt 1 ]; then
+        die "${EX_WINDOW}" "${#our_pids[@]} separate instances of" \
+            "this checkout's game are running on" \
+            "${PLAYTHROUGH_DISPLAY} (pids ${our_pids[*]}), all" \
+            "pointed at ${PLAYTHROUGH_USERDIR_ARG}.  Refusing to" \
+            "guess which one to drive: they would both be writing" \
+            "to the same save, and keystrokes sent to the wrong one" \
+            "would be captured as if they were this session.  Stop" \
+            "the instance you do not want -- 'launch_game.sh stop'" \
+            "handles one -- then retry."
+    fi
+
+    if [ "${#ours[@]}" -eq 0 ]; then
+        GAME_IDENTITY=""
+        # Reported ONCE per run.  find_game_window is called from a
+        # bounded poll, so warning on every tick would bury the launch
+        # log under the same sentence a hundred times over.
+        if [ "${#strangers[@]}" -ne 0 ] &&
+           [ "${FOREIGN_WINDOWS_WARNED}" -eq 0 ]; then
+            FOREIGN_WINDOWS_WARNED=1
+            playthrough_warn "${#strangers[@]} window(s) of class" \
+                "'${PLAYTHROUGH_WINDOW_CLASS}' are on" \
+                "${PLAYTHROUGH_DISPLAY} but none belongs to this" \
+                "checkout, so none of them is usable here:" \
+                "${strangers[*]}"
+        fi
+        return 1
+    fi
+
+    # One verified instance.  When it owns several windows they are all
+    # the same process, so any of them addresses it; the last is taken
+    # for continuity with the search order.
+    WINDOW_ID="${ours[${#ours[@]} - 1]}"
+    WINDOW_OWNED_PID="${our_pids[0]}"
+    GAME_PID="${our_pids[0]}"
+    GAME_IDENTITY="${our_identities[0]}"
+    return 0
 }
 
 # wait_for_game_window TIMEOUT_SECONDS -- bounded poll with progress.
 wait_for_game_window() {
-    local timeout="$1"
+    playthrough_validate_int "${1-}" "window timeout" 1 3600 ||
+        die "${EX_USAGE}" "wait_for_game_window was given an" \
+            "unusable timeout"
+    local timeout="${PLAYTHROUGH_INT}"
     local ticks=$(( timeout * 4 ))
     local waited=0
     while [ "${waited}" -lt "${ticks}" ]; do
@@ -1144,8 +2591,8 @@ read_window_geometry() {
     return 0
 }
 
-# pid_is_game PID -- true only when that pid really is a
-# cataclysm-tiles process.
+# pid_is_game PID -- true only when that pid is THIS checkout's game,
+# launched by this pipeline, on this display.
 #
 # This guard exists so that nothing in this file can ever signal a
 # process it merely believes is the game.  Pattern-based process
@@ -1153,52 +2600,232 @@ read_window_geometry() {
 # anywhere here: this host also runs the tooling that invokes this
 # script, and a pattern that matched it would end the run.  Only a
 # numeric pid, obtained from the window we found or from the pid file
-# this script itself wrote, is ever signalled, and only after
-# /proc/<pid>/cmdline confirms what it is.
+# this script itself wrote, is ever signalled, and only after the four
+# checks below agree about what it is.
+#
+# A SUBSTRING OF cmdline IS NOT AN IDENTITY, and the difference is the
+# whole point of this function.  cmdline is ARGV, which the process
+# itself controls: any process can put the string "cataclysm-tiles"
+# there.  So it is never the identity here -- the executable is -- and
+# cmdline is consulted for one narrow purpose only, to confirm the
+# `--userdir` argument, read NUL-delimited so a boundary cannot be
+# forged.  `*cataclysm-tiles*` matches a sibling
+# checkout's game, an operator's own hand-started game on another
+# display, an editor holding the path in its title, and -- worst --
+# a completely unrelated process that has recycled the pid recorded in
+# a stale pid file.  Signalling any of those would take down somebody
+# else's session, and reusing any of their windows would capture
+# somebody else's screen into this run's frames.  So identity is
+# established from four independent facts, all read out of /proc:
+#
+#   1. /proc/<pid>/exe        resolves to OUR binary, byte-for-byte the
+#                             path env.sh exported.  A different
+#                             checkout's cataclysm-tiles is a different
+#                             inode at a different path and fails here.
+#   2. /proc/<pid>/cwd        is THIS repository root.  The engine
+#                             resolves data/, gfx/ and the userdir
+#                             against its working directory
+#                             (src/path_info.cpp:105,129-136), so a
+#                             process with another cwd is playing
+#                             another checkout by definition.
+#   3. /proc/<pid>/cmdline    contains `--userdir` followed by exactly
+#                             our userdir argument, read NUL-delimited
+#                             so an argument boundary cannot be forged
+#                             by whitespace inside another argument.
+#   4. /proc/<pid>/environ    carries our DISPLAY, so a game on another
+#                             X server -- whose window we could never
+#                             legitimately reuse -- is excluded.
+#
+# Any of the four being unreadable is a refusal, not a pass: a process
+# this script cannot fully identify is one it will not touch.
 pid_is_game() {
     local pid="$1"
     case "${pid}" in
         ''|*[!0-9]*) return 1 ;;
     esac
-    [ -r "/proc/${pid}/cmdline" ] || return 1
-    local cmd
-    cmd="$(tr '\0' ' ' <"/proc/${pid}/cmdline" 2>/dev/null || true)"
-    case "${cmd}" in
-        *cataclysm-tiles*) return 0 ;;
-    esac
-    return 1
+    local proc="/proc/${pid}"
+    [ -d "${proc}" ] || return 1
+
+    # 1. The executable, resolved through /proc/<pid>/exe.  readlink -f
+    #    on our own path too, so a symlinked checkout compares equal.
+    local exe want_exe
+    exe="$(readlink -f "${proc}/exe" 2>/dev/null || true)"
+    want_exe="$(readlink -f "${PLAYTHROUGH_GAME_BIN}" 2>/dev/null ||
+        true)"
+    if [ -z "${exe}" ] || [ -z "${want_exe}" ] ||
+       [ "${exe}" != "${want_exe}" ]; then
+        return 1
+    fi
+
+    # 2. The working directory: this checkout's root and no other.
+    local cwd want_cwd
+    cwd="$(readlink -f "${proc}/cwd" 2>/dev/null || true)"
+    want_cwd="$(readlink -f "${PLAYTHROUGH_REPO_ROOT}" 2>/dev/null ||
+        true)"
+    if [ -z "${cwd}" ] || [ -z "${want_cwd}" ] ||
+       [ "${cwd}" != "${want_cwd}" ]; then
+        return 1
+    fi
+
+    # 3. The argument vector, read NUL-delimited.  `--userdir` must be
+    #    present AND the argument after it must name OUR userdir.
+    #
+    #    Every spelling of the same directory is accepted -- the
+    #    relative form the launcher passes, the same without its
+    #    trailing slash, and the absolute form an operator may have
+    #    typed -- because src/path_info.cpp:105 normalises but does not
+    #    absolutise the value, so all of them resolve to one userdir and
+    #    all of them are genuinely this instance.  What is NOT accepted
+    #    is a substring match, which would take
+    #    `--userdir ./playthrough/userdir2/` for this one.
+    #
+    #    `read -d ''` returns non-zero on the final field, which has no
+    #    terminator, so the loop condition accepts a non-empty last
+    #    read.
+    [ -r "${proc}/cmdline" ] || return 1
+    local arg seen_flag=0 userdir_ok=0
+    while IFS= read -r -d '' arg || [ -n "${arg}" ]; do
+        if [ "${seen_flag}" -eq 1 ]; then
+            case "${arg}" in
+                "${PLAYTHROUGH_USERDIR_ARG}"|\
+                "${PLAYTHROUGH_USERDIR_ARG%/}"|\
+                "${PLAYTHROUGH_USERDIR}"|"${PLAYTHROUGH_USERDIR}/")
+                    userdir_ok=1
+                    ;;
+            esac
+            seen_flag=0
+            continue
+        fi
+        if [ "${arg}" = "--userdir" ]; then
+            seen_flag=1
+        fi
+    done <"${proc}/cmdline"
+    if [ "${userdir_ok}" -ne 1 ]; then
+        return 1
+    fi
+
+    # 4. The display.  environ is readable only for our own processes,
+    #    which is itself part of the answer: a game we did not start as
+    #    this user is not ours to signal.
+    [ -r "${proc}/environ" ] || return 1
+    local env_display=""
+    while IFS= read -r -d '' arg; do
+        case "${arg}" in
+            DISPLAY=*) env_display="${arg#DISPLAY=}" ;;
+        esac
+    done <"${proc}/environ"
+    if [ "${env_display}" != "${PLAYTHROUGH_DISPLAY}" ]; then
+        return 1
+    fi
+
+    # 5. THE IDENTITY PAIR, recorded rather than merely confirmed.
+    #    Everything above establishes that this pid IS the game NOW.
+    #    Nothing above survives the pid being recycled between this
+    #    check and a later SIGTERM, and a recycled pid is exactly the
+    #    process this file must never signal.  proc_identity pairs the
+    #    executable with the START TIME from /proc, which no later
+    #    process can reproduce, so pid_has_identity can re-confirm
+    #    immediately before each signal.  A pid whose identity cannot be
+    #    read is refused, in the same fail-closed direction as the four
+    #    facts above.
+    local identity
+    identity="$(proc_identity "${pid}")" || return 1
+    [ -n "${identity}" ] || return 1
+    GAME_IDENTITY="${identity}"
+    return 0
 }
 
-# read_game_pid -- the game's pid, from the window first.
+# pid_is_our_game PID -- the same question as pid_is_game, under the
+# name the rest of this file asks it by.
 #
-# _NET_WM_PID is set by SDL, so the window is the authoritative source;
-# the recorded spawn pid is only a fallback, because `setsid` may fork
-# and leave the shell holding the wrong pid.
+# There is deliberately ONE implementation.  The distinction that used
+# to exist here -- "is it a cataclysm-tiles" versus "is it OURS" -- was
+# not a real one: a cataclysm-tiles that is not this checkout's, not on
+# this display and not against this userdir is of no use to this script
+# and must never be signalled by it, so the shallow question has no
+# caller and no answer worth having.  Collapsing the two removed a
+# genuine bug as well: the tolerant userdir matching documented on the
+# outer function was unreachable, because the inner one had already
+# refused anything but the exact argument string.
+#
+# Both names survive because both are used, and each reads correctly
+# where it is used: `pid_is_game "${stale}"` asks about a pid from a
+# file, `pid_is_our_game "${pid}"` asks about a pid from a window.
+pid_is_our_game() {
+    pid_is_game "${1-}"
+}
+
+# read_game_pid [SPAWN_PID] -- the game's pid, from the window first.
+#
+# _NET_WM_PID is set by SDL, so the window is the authoritative source
+# and find_game_window has already bound it to an exe; the recorded spawn
+# pid and the pid file are fallbacks, because `setsid` may fork and leave
+# the shell holding the wrong pid.
+#
+# EVERY candidate goes through pid_is_game, not a name check, and that
+# includes the one read back out of the pid file this script wrote.  The
+# pid file is the reason this matters most: it is a path that outlives
+# the process it names, and a stale pid can be recycled by anything on
+# the host -- including a cataclysm-tiles from an entirely different
+# checkout.  Adopting that pid would mean reporting a stranger's process
+# as this session's game, and the stop path signals whatever GAME_PID
+# holds.
 read_game_pid() {
     local fallback="${1:-}"
     GAME_PID=""
+    # find_game_window already verified this pid against the window it
+    # chose, so prefer it and do not re-derive it.
+    if [ -n "${WINDOW_OWNED_PID}" ] &&
+       pid_is_game "${WINDOW_OWNED_PID}"; then
+        GAME_PID="${WINDOW_OWNED_PID}"
+        return 0
+    fi
     if [ -n "${WINDOW_ID}" ]; then
         local from_window
         from_window="$(xdotool getwindowpid "${WINDOW_ID}" \
             2>/dev/null || true)"
-        if pid_is_game "${from_window}"; then
+        if pid_is_our_game "${from_window}"; then
             GAME_PID="${from_window}"
             return 0
         fi
     fi
-    if pid_is_game "${fallback}"; then
+    if pid_is_our_game "${fallback}"; then
         GAME_PID="${fallback}"
         return 0
     fi
     if [ -f "${PIDFILE}" ]; then
-        local from_file
-        from_file="$(head -n 1 "${PIDFILE}" 2>/dev/null || true)"
+        # The file holds "PID START_TIME"; take the pid and let
+        # pid_is_game re-derive the rest, so a truncated or hand-edited
+        # line cannot smuggle anything past the identity check.
+        local record from_file
+        record="$(head -n 1 "${PIDFILE}" 2>/dev/null || true)"
+        from_file="${record%% *}"
         if pid_is_game "${from_file}"; then
             GAME_PID="${from_file}"
             return 0
         fi
     fi
+    GAME_PID=""
+    GAME_IDENTITY=""
     return 1
+}
+
+# stop_instance PID TIMEOUT -- ask one confirmed game process to exit,
+# and PROVE that it did.
+# write_game_pidfile PID -- record the pid AND its start time.
+#
+# The pair is what makes the file safe to act on later: a bare number
+# read back after the process has gone names whatever now holds it, and
+# the next thing done with a pid from this file is a signal.  The file is
+# created through env.sh's checked helper, so a symlink at that path is
+# refused instead of written through.
+write_game_pidfile() {
+    local pid="${1-}"
+    local start
+    playthrough_secure_truncate "${PIDFILE}" || return 1
+    start="$(proc_start_time "${pid}" 2>/dev/null || true)"
+    printf '%s %s\n' "${pid}" "${start}" >"${PIDFILE}"
+    return 0
 }
 
 # stop_instance PID TIMEOUT -- ask one confirmed game process to exit.
@@ -1207,28 +2834,125 @@ read_game_pid() {
 # diagnostic and calibration facility; it is NEVER how a captured
 # session ends.  A captured session ends inside the game, through Save
 # & Quit, which is the only exit that writes the save.
+# TERMINATION IS CONFIRMED, NEVER ASSUMED.
+#
+# Every step reports what actually happened:
+#
+#   * a SIGTERM that cannot be delivered is reported, not discarded --
+#     EPERM means this is not our process to signal and ESRCH means it
+#     had already gone, and those are different facts;
+#   * SIGKILL is followed by a BOUNDED WAIT for the process to
+#     disappear.  It usually does, but an uninterruptible sleep in the
+#     kernel is a real state and a process in it survives SIGKILL for
+#     as long as it lasts.  Breaking straight out after sending the
+#     signal, as this once did, reported success for a process that was
+#     still running;
+#   * the pid file is REMOVED ONLY on confirmed death.  It is the
+#     evidence of what is still alive, and deleting it after a failed
+#     kill destroys the one record a caller could use to finish the
+#     job;
+#   * the return status distinguishes the outcomes, so a caller can
+#     stop rather than carry on over a live engine.  seed_options.py
+#     rewriting options.json underneath a running game is the failure
+#     this protects against: the engine holds its options in memory and
+#     writes them back at exit, so it would overwrite the seeded file
+#     and the whole session would run with the wrong ones.
 stop_instance() {
     local pid="$1"
-    local timeout="${2:-30}"
+    playthrough_validate_int "${2:-30}" "stop timeout" 1 3600 ||
+        return 1
+    local timeout="${PLAYTHROUGH_INT}"
     if ! pid_is_game "${pid}"; then
-        playthrough_warn "pid '${pid}' is not a cataclysm-tiles" \
-            "process; refusing to signal it"
+        playthrough_warn "pid '${pid}' is not this checkout's" \
+            "cataclysm-tiles process (checked against" \
+            "${PLAYTHROUGH_GAME_BIN}, this working directory and" \
+            "--userdir ${PLAYTHROUGH_USERDIR_ARG}); refusing to" \
+            "signal it"
         return 1
     fi
+    # The identity captured at the moment the pid was confirmed.  Every
+    # signal below is preceded by a fresh comparison against it, because
+    # the process can exit between the check and the kill and the number
+    # can then be reused by something entirely unrelated -- and this is
+    # the only place in the pipeline that sends a signal at all.
+    local identity="${GAME_IDENTITY}"
     local ticks=$(( timeout * 4 ))
     local waited=0
     playthrough_log "sending SIGTERM to game pid ${pid}"
-    kill -TERM "${pid}" 2>/dev/null || true
-    while kill -0 "${pid}" 2>/dev/null; do
+    # The pid was confirmed above; it is confirmed AGAIN here, because a
+    # process can exit between the check and the kill and the number can
+    # then be held by something entirely unrelated.
+    if ! pid_has_identity "${pid}" "${identity}"; then
+        playthrough_log "pid ${pid} had already exited before" \
+            "SIGTERM was delivered; nothing was signalled"
+        rm -f -- "${PIDFILE}"
+        return 0
+    fi
+    if ! kill -TERM "${pid}" 2>/dev/null; then
+        if pid_has_identity "${pid}" "${identity}"; then
+            playthrough_warn "SIGTERM to pid ${pid} was refused but" \
+                "the process is still the one identified, so it is" \
+                "not ours to signal; leaving ${PIDFILE} in place as" \
+                "evidence"
+            return 1
+        fi
+        playthrough_log "pid ${pid} had already exited before" \
+            "SIGTERM was delivered"
+        rm -f -- "${PIDFILE}"
+        return 0
+    fi
+
+    local killed=0
+    # The wait is on the IDENTITY, not on `kill -0`: a recycled pid
+    # answers kill -0 perfectly well, and waiting on it would report a
+    # stranger's process as the game refusing to die.
+    while pid_has_identity "${pid}" "${identity}"; do
         if [ "${waited}" -ge "${ticks}" ]; then
             playthrough_warn "pid ${pid} ignored SIGTERM for" \
                 "${timeout}s; sending SIGKILL"
-            kill -KILL "${pid}" 2>/dev/null || true
+            # Re-checked once more: SIGKILL is unconditional for
+            # whatever receives it, so it must not be sent on the
+            # strength of a check made ${timeout} seconds ago.
+            if ! pid_has_identity "${pid}" "${identity}"; then
+                break
+            fi
+            if ! kill -KILL "${pid}" 2>/dev/null &&
+               pid_has_identity "${pid}" "${identity}"; then
+                playthrough_warn "could not send SIGKILL to pid" \
+                    "${pid}; it has NOT been stopped"
+                return 1
+            fi
+            killed=1
             break
         fi
         sleep 0.25
         waited=$(( waited + 1 ))
     done
+
+    if [ "${killed}" -eq 1 ]; then
+        # A bounded confirmation window after SIGKILL.  Short, because
+        # SIGKILL is not negotiable except against an uninterruptible
+        # wait, and that is precisely the case worth reporting.
+        local confirm=0
+        while pid_has_identity "${pid}" "${identity}"; do
+            if [ "${confirm}" -ge "${SIGKILL_CONFIRM_TICKS}" ]; then
+                playthrough_warn "pid ${pid} is STILL ALIVE" \
+                    "$(( SIGKILL_CONFIRM_TICKS / 4 ))s after" \
+                    "SIGKILL, which normally means it is blocked in" \
+                    "an uninterruptible kernel wait.  ${PIDFILE} is" \
+                    "being kept so the pid is not lost.  Do not" \
+                    "seed options or launch another instance until" \
+                    "this process is gone."
+                return 1
+            fi
+            sleep 0.25
+            confirm=$(( confirm + 1 ))
+        done
+    fi
+
+    # Confirmed dead: the identity no longer matches, so the process
+    # that was identified is gone -- whether or not the NUMBER has since
+    # been handed to something else.
     rm -f -- "${PIDFILE}"
     playthrough_log "game pid ${pid} has exited"
     return 0
@@ -1243,32 +2967,88 @@ stop_instance() {
 #
 # with both paths left RELATIVE and the working directory set to the
 # repository root, for the source-level reasons given under WORKING
-# DIRECTORY at the top of this file.  It is fully detached -- setsid,
-# nohup, stdin from /dev/null -- so that the game survives the shell
-# that started it and cannot be taken down with that shell's process
-# group.
+# DIRECTORY at the top of this file.  It is detached -- setsid, nohup,
+# stdin from /dev/null -- so that a signal aimed at the CALLING shell's
+# process group, which is what an outer call that times out delivers,
+# cannot take the game down mid-session.  That is the extent of the
+# claim: a teardown of the session, cgroup or container as a whole ends
+# the game whatever is done here, so the pid file and the `status`
+# subcommand are what a caller consults to learn whether the instance is
+# still alive -- never the assumption that it must be.
+# DIRECTORY at the top of this file.
+#
+# PROCESS LIFETIME -- WHAT THE DETACHMENT BUYS, AND WHAT IT DOES NOT.
+# The launch is detached with `setsid nohup ... </dev/null &`, which
+# means two things and only two things: a signal aimed at THIS shell's
+# process group does not reach the game, and the game keeps running
+# after this script returns.  It does NOT survive teardown of the
+# calling shell's whole process TREE -- a harness that reaps every
+# descendant by cgroup or by session leader takes the game with it
+# however it was detached, and nothing a child can do to itself confers
+# durability.  env.sh documents the same contract for the X server
+# under PROCESS LIFETIME.
+#
+# So a RECORDED session must be driven inside ONE orchestration: this
+# launch, every keystroke, the in-game Save & Quit and the final commit
+# in a single run.  That is not a limitation of the requirement -- the
+# session ends inside the game, so one run is exactly long enough.
+# `launch_game.sh status` re-attaches to a surviving instance by window
+# class and confirmed pid identity when the run did span invocations,
+# and `PLAYTHROUGH_USE_SUPERVISED_X` / `PLAYTHROUGH_REQUIRE_DURABLE_X`
+# (env.sh) address the DISPLAY's lifetime.  Neither makes the game
+# immortal, and this script never claims they do.
 #
 # FIRST LAUNCH IS NOT THE MAIN MENU.
 # A fresh userdir opens on a "Select your language" prompt, not the main
 # menu.  Verified by OCR of a real capture on this host: the first frame
-# reads "Select your language" with "1 English" beneath it, and a single
-# Return advances to the title screen whose menu offers "Custom
-# Character", "Random Character", "Play Now! (Default Scenario)" and
-# "Play Now!".  Anything that assumes the main menu is on screen at
+# reads "Select your language" with "1 English" beneath it (tesseract
+# renders the word as "lanquage", which is an OCR artefact of the 8x16
+# face, not what the game draws), and a single Return advances to the
+# title screen.  Anything that assumes the main menu is on screen at
 # launch is therefore wrong.
 #
+# THE NEW GAME LIST HAS FIVE ENTRIES, AND ONLY THE FIRST IS PERMITTED.
+# The labels are quoted from src/main_menu.cpp:476-482, which is the
+# authority for them -- hotkey markup stripped, spacing preserved:
+#
+#     "Custom Character"                <- the only permitted path (R10)
+#     "Preset Character"                <- the character-template picker
+#     "Random Character"
+#     "Play Now!  (Default Scenario)"   <- TWO spaces after the "!"
+#     "Play Now!"
+#
+# The last two appear only when map sharing is off, which it is here.
+# The hints at src/main_menu.cpp:485-493 confirm the roles: Custom
+# Character "Allows you to fully customize points pool, scenario, and
+# character's profession, stats, traits, skills and other parameters",
+# while Preset Character is "Select from one of previously created
+# character templates".
+#
+# WHY THE SOURCE IS QUOTED RATHER THAN THE OCR.  Read back from a real
+# captured frame of this menu, OCR returned only four of the five rows:
+# the row under the cursor is drawn highlighted and comes back empty,
+# so the missing label depends on where the cursor happens to rest --
+# with the cursor on "Preset Character" that entry vanished from the OCR
+# while its own hint was still on screen, and after moving the cursor it
+# read back and "Play Now!  (Default Scenario)" vanished instead.  OCR
+# also collapses that label's two spaces to one.  Both are reasons to
+# treat the frame as evidence of what is displayed and the source string
+# as the authority on what it says.
+#
 # FIRST LAUNCH MAY ALSO NOT BE FULL SIZE.
-# Window size derives from TERMINAL_WIDTH * fontwidth by
+# The requested window size derives from TERMINAL_WIDTH * fontwidth by
 # TERMINAL_HEIGHT * fontheight (src/sdltiles.cpp:595-596), and the
 # compiled defaults are TERMINAL_X 80 / TERMINAL_Y 24
-# (src/options.cpp:2408-2416), which imply a 640x384 window until
+# (src/options.cpp:2408-2416), which ask for a 640x384 window until
 # screen-derived values exist in options.json.  Measured on THIS host,
-# that shortfall did not occur: the engine wrote TERMINAL_X 240 and
-# TERMINAL_Y 67 during the very first launch and the window came up
-# 1920x1080+0+0 immediately.  Both outcomes are handled -- the small
-# case is caught by check_capture_geometry, the large case is accepted
-# -- and neither is assumed, because it depends on what the engine can
-# discover about the display.
+# that shortfall did not occur: with a fresh userdir the game X window
+# came up 1920x1080+0+0 immediately and the engine wrote TERMINAL_X 240
+# / TERMINAL_Y 67 into the options file it then created -- which is the
+# windowed-borderless path recomputing the terminal render grid from the
+# window it actually got (src/sdltiles.cpp:669-675) rather than the
+# other way round.  Both outcomes are handled -- the small case is
+# caught by check_capture_geometry, the full-size case is accepted --
+# and neither is assumed, because it is the window manager's decision.
 #
 # This script handles that explicitly by treating the first launch as
 # THROWAWAY CALIBRATION: it starts the game only long enough for the
@@ -1287,33 +3067,123 @@ launch_instance() {
     assert_repo_root
     # Create frames/, build/, transitions/ and the userdir. env.sh owns
     # these paths; the engine creates save/ and config/ underneath the
-    # userdir itself.
-    playthrough_mkdirs
+    # userdir itself.  playthrough_mkdirs proves each one resolves inside
+    # the checkout with no symlinked component before creating it.
+    playthrough_mkdirs ||
+        die "${EX_LAYOUT}" "the artifact directories could not be" \
+            "created inside the checkout; see the reason above"
 
-    : >"${PLAYTHROUGH_GAME_LOG}"
+    # The userdir is checked once more, by name, immediately before the
+    # engine is pointed at it.  This is the path the SAVE lands in: a
+    # symlink here sends the save, the config and the committed
+    # keybindings evidence outside the working tree, where `git add`
+    # reports success and adds nothing -- the exact silent failure the
+    # acceptance gates exist to catch.  Checking it here, rather than
+    # only inside playthrough_mkdirs, covers a link planted between the
+    # two calls.
+    playthrough_assert_inside "${PLAYTHROUGH_USERDIR}" \
+        "${PLAYTHROUGH_REPO_ROOT}" "userdir" ||
+        die "${EX_LAYOUT}" "refusing to launch with a userdir that" \
+            "does not resolve inside the checkout"
+    playthrough_assert_no_symlink "${PLAYTHROUGH_USERDIR}" \
+        "${PLAYTHROUGH_REPO_ROOT}" "userdir" ||
+        die "${EX_LAYOUT}" "refusing to launch with a symlinked" \
+            "userdir component"
+
+    # Both scratch files go through env.sh's guards rather than a bare
+    # redirection: each path is predictable, this script truncates
+    # both, and a symlink left at either name would send that write
+    # somewhere else entirely.
+    playthrough_secure_truncate "${PLAYTHROUGH_GAME_LOG}" ||
+        die "${EX_LAYOUT}" "cannot prepare the game log" \
+            "${PLAYTHROUGH_GAME_LOG}"
+    playthrough_secure_file "${PIDFILE}" "the game pid file" ||
+        die "${EX_LAYOUT}" "cannot prepare the pid file ${PIDFILE}"
+
     playthrough_log "launching" \
         "${PLAYTHROUGH_GAME_BIN_ARG} --userdir" \
         "${PLAYTHROUGH_USERDIR_ARG} from $(pwd) on" \
         "${PLAYTHROUGH_DISPLAY}; log: ${PLAYTHROUGH_GAME_LOG}"
 
+    # THE DETACHMENT IDIOM, IN FULL.  setsid gives the game its own
+    # session so it is not signalled with this shell's process group;
+    # nohup detaches it from the controlling terminal; </dev/null
+    # guarantees it never blocks on input it will not get; and disown
+    # drops it from this shell's job table so that the shell exiting
+    # cannot deliver SIGHUP to it.  All four together are the AAP's
+    # documented idiom, and `disown` -- previously missing -- is the
+    # part that makes the shell's own exit harmless.
+    #
+    # WHAT THIS DOES NOT PROMISE.  A detached process is not a
+    # supervised one: it survives its parent, not the container and not
+    # a platform that reaps the whole process tree.  See PROCESS
+    # LIFETIME above and env.sh's own block of the same name; the
+    # session must be driven inside ONE orchestration.  The `guard`
+    # subcommand below is the option for a caller that needs a process
+    # to outlive this script by design rather than by luck.
+    # THE SESSION LOCK IS WITHHELD FROM THE ENGINE.  A lock lives in an
+    # open descriptor and a child inherits it, so without this the
+    # detached engine held the session lock for its whole lifetime and
+    # the next `launch` -- the ordinary way a caller re-attaches to a
+    # running instance -- blocked out its timeout and then reported a
+    # concurrent launch that did not exist.  Measured, not hypothetical.
+    # See playthrough_child_close_fd in env.sh; the parent keeps the
+    # lock, which is what the critical section requires.
+    playthrough_child_close_fd ||
+        die "${EX_LAYOUT}" "cannot prepare to detach the engine"
     setsid nohup "${PLAYTHROUGH_GAME_BIN_ARG}" \
         --userdir "${PLAYTHROUGH_USERDIR_ARG}" \
-        >"${PLAYTHROUGH_GAME_LOG}" 2>&1 </dev/null &
+        >>"${PLAYTHROUGH_GAME_LOG}" 2>&1 </dev/null \
+        {PLAYTHROUGH_CHILD_CLOSE_FD}>&- &
     local spawned="$!"
-    printf '%s\n' "${spawned}" >"${PIDFILE}"
+    disown || true
+    playthrough_child_close_done
+    write_game_pidfile "${spawned}" ||
+        die "${EX_LAYOUT}" "cannot record the game pid in ${PIDFILE}"
 
     if ! wait_for_game_window "${WINDOW_TIMEOUT}"; then
         tail_log "${PLAYTHROUGH_GAME_LOG}"
-        rm -f -- "${PIDFILE}"
+        # THE PROCESS IS ACCOUNTED FOR BEFORE THIS FAILS.  Deleting the
+        # pid file and dying -- which is what used to happen here --
+        # abandons a game that may well still be running: it is holding
+        # the userdir, it will overwrite any options.json seeded after
+        # this point when it eventually exits, and with the pid file
+        # gone nothing later can find it to stop it.  So the process we
+        # spawned is resolved, asked to exit, and its exit verified,
+        # before the timeout is reported.
+        local orphan_note="no game process could be identified"
+        if read_game_pid "${spawned}"; then
+            playthrough_log "no window appeared, but game pid" \
+                "${GAME_PID} is running; stopping it before" \
+                "reporting the timeout, so it cannot hold the" \
+                "userdir or overwrite a later options.json"
+            if stop_instance "${GAME_PID}" "${STOP_TIMEOUT}"; then
+                orphan_note="the spawned process (pid ${GAME_PID}) \
+was stopped and its exit verified"
+            else
+                orphan_note="the spawned process (pid ${GAME_PID}) \
+could NOT be stopped and is still present -- stop it before capturing \
+anything"
+            fi
+        else
+            # Nothing to signal: the process is already gone, which is
+            # itself the explanation for the missing window.
+            rm -f -- "${PIDFILE}"
+            orphan_note="the spawned process is already gone, so the \
+engine started and exited before it could create a window"
+        fi
         die "${EX_WINDOW}" "no window of class" \
             "'${PLAYTHROUGH_WINDOW_CLASS}' appeared on" \
-            "${PLAYTHROUGH_DISPLAY} within ${WINDOW_TIMEOUT}s." \
-            "Check the log above; note that searching by window" \
-            "NAME would not find this window even when it is there."
+            "${PLAYTHROUGH_DISPLAY} within ${WINDOW_TIMEOUT}s;" \
+            "${orphan_note}.  Check the log above; note that" \
+            "searching by window NAME would not find this window even" \
+            "when it is there, and that a window whose owning process" \
+            "is not this checkout's binary is deliberately not" \
+            "accepted."
     fi
 
     if read_game_pid "${spawned}"; then
-        printf '%s\n' "${GAME_PID}" >"${PIDFILE}"
+        write_game_pidfile "${GAME_PID}" || true
     else
         playthrough_warn "the window exists but its pid could not" \
             "be confirmed; leaving ${PIDFILE} at the spawn pid"
@@ -1346,24 +3216,75 @@ launch_instance() {
 # premise is one DELIVERED keystroke per frame, a dead engine has to
 # fail here and loudly, never be handed downstream.
 assert_instance_alive() {
+    # Snapshot the pid AND the identity before the settle, because the
+    # comparison afterwards has to be against the process that produced
+    # the window and not merely against that pid number: an engine that
+    # dies during data loading frees its pid, and something else on a
+    # busy host can hold it by the time this check runs.
+    local pid="${GAME_PID}"
+    local identity="${GAME_IDENTITY}"
     sleep "${LIVENESS_SETTLE}"
 
-    if [ -n "${GAME_PID}" ] && ! pid_is_game "${GAME_PID}"; then
+    if [ -n "${pid}" ] && ! pid_has_identity "${pid}" "${identity}"; then
         tail_log "${PLAYTHROUGH_GAME_LOG}"
         rm -f -- "${PIDFILE}"
-        die "${EX_WINDOW}" "the game process (pid ${GAME_PID}) was" \
+        die "${EX_WINDOW}" "the game process (pid ${pid}) was" \
             "gone ${LIVENESS_SETTLE}s after its window appeared:" \
             "the engine started and then exited, most likely while" \
             "loading data. See the log above."
     fi
 
-    if ! find_game_window; then
+    # IS OUR WINDOW STILL THERE?  Asked as a WINDOW question, with the
+    # window tool, and nothing else.
+    #
+    # find_game_window answers a stronger question -- WHICH window is
+    # ours -- by resolving every match to its pid, so one unreadable
+    # `xdotool getwindowpid` makes it report no usable window at all.
+    # Deciding liveness that way meant a transient pid read was
+    # diagnosed as "the window vanished", and the recovery below then
+    # SIGTERMed a perfectly healthy engine -- the one outcome worse
+    # than a false alarm.  The pid question was already settled above,
+    # from /proc, so all that is left here is whether the window id
+    # this launch confirmed is still on the display, and the class
+    # search answers that without reading a pid at all.
+    local id still_listed=0
+    if [ -n "${WINDOW_ID}" ]; then
+        while IFS= read -r id; do
+            if [ "${id}" = "${WINDOW_ID}" ]; then
+                still_listed=1
+                break
+            fi
+        done < <(game_window_ids)
+    fi
+
+    # A window that is genuinely no longer listed earns the fuller
+    # look: SDL can replace its window, so the id may have changed
+    # rather than gone, and find_game_window is what establishes that
+    # the replacement is still ours.
+    if [ "${still_listed}" -eq 0 ] && ! find_game_window; then
         tail_log "${PLAYTHROUGH_GAME_LOG}"
-        rm -f -- "${PIDFILE}"
+        # The window is gone but the PROCESS may not be, and the same
+        # rule applies here as at the window timeout: account for it
+        # before failing, or it keeps the userdir and overwrites any
+        # later options.json on its way out while nothing is left to
+        # find it.
+        local vanish_note="its process is gone too"
+        if pid_is_game "${GAME_PID}"; then
+            if stop_instance "${GAME_PID}" "${STOP_TIMEOUT}"; then
+                vanish_note="its process (pid ${GAME_PID}) was still \
+running and has been stopped"
+            else
+                vanish_note="its process (pid ${GAME_PID}) is still \
+running and could NOT be stopped"
+            fi
+        else
+            rm -f -- "${PIDFILE}"
+        fi
         die "${EX_WINDOW}" "the window of class" \
             "'${PLAYTHROUGH_WINDOW_CLASS}' vanished within" \
             "${LIVENESS_SETTLE}s of appearing on" \
-            "${PLAYTHROUGH_DISPLAY}. See the log above."
+            "${PLAYTHROUGH_DISPLAY}; ${vanish_note}. See the log" \
+            "above."
     fi
 
     playthrough_log "instance still alive after" \
@@ -1393,35 +3314,75 @@ emit_launch_facts() {
 #
 #   * The geometry that MUST hold is the X ROOT's 1920x1080, which
 #     ensure_headless already asserted, because capture targets the
-#     root (import -window root) and never the game window.  The
+#     root (import -window root) and never the game X window.  The
 #     window's own size therefore only matters insofar as it decides
 #     how much of that root the game actually paints.
-#   * WindowWidth/Height derive from TERMINAL_WIDTH * fontwidth and
-#     TERMINAL_HEIGHT * fontheight (src/sdltiles.cpp:595-596), so the
-#     seeded 240x67 grid at 8x16 implies 1920x1072.
+#   * The TERMINAL RENDER GRID is what the terminal dimensions imply:
+#     WindowWidth/Height derive from TERMINAL_WIDTH * fontwidth and
+#     TERMINAL_HEIGHT * fontheight (src/sdltiles.cpp:595-596), so a
+#     240x67 grid at 8x16 is 1920x1072 of painted pixels.
 #   * FULLSCREEN defaults to "windowedbl" -- windowed BORDERLESS
 #     (src/options.cpp:2715-2724) -- and a borderless window is what a
 #     window manager is entitled to size to the whole screen.  Measured
-#     on this host: the window comes up 1920x1080+0+0 against a
-#     1920x1072 grid, i.e. 8px TALLER than the grid.  That is a
-#     correct, indeed ideal, capture state -- the root carries no
-#     letterbox at all -- so an equality test would fire a warning on
-#     every healthy run and train an operator to ignore it.
+#     on this host: the game X window comes up 1920x1080+0+0, i.e. 8 px
+#     TALLER than the 1920x1072 grid, and the engine paints the grid at
+#     the window's top-left leaving those eight pixels as border
+#     (src/sdltiles.cpp:311-320, :1046-1050).  That is a correct capture
+#     state -- every painted pixel is captured at native resolution --
+#     so an equality test would fire a warning on every healthy run and
+#     train an operator to ignore it.
 #   * A window materially SMALLER than the grid is the real defect: it
 #     means options.json still holds the compiled defaults TERMINAL_X
 #     80 and TERMINAL_Y 24 (src/options.cpp:2408-2416), i.e. a 640x384
 #     window adrift in a 1920x1080 root, and capturing that wastes the
 #     session.  That is what this check exists to catch.
 #
-# It stays a warning rather than a failure because the authoritative
-# geometry has already been asserted and because the calibration launch
-# legitimately runs before the options file is seeded.
+# WHEN IT IS FATAL, AND WHY IT HAS TO BE.
+#
+# The check takes a MODE, because the same shortfall means different
+# things at different points in the run:
+#
+#   strict    the launch this session will actually be captured from --
+#             the capture launch, and the reuse path that stands in for
+#             one.  Here an undersized window is terminal: the whole
+#             session would be photographed at 640x384 adrift in a
+#             1920x1080 root, every frame would be mostly black, and
+#             the sidebar crop the clock is read from would land on
+#             empty pixels -- so every duration in the film would come
+#             from an unreadable clock.  That is a wasted session
+#             discovered hours later, which is exactly the class of
+#             silent failure this pipeline is built to refuse.  UNKNOWN
+#             geometry is fatal here for the same reason: an
+#             unverifiable capture surface is not a verified one, and
+#             reporting "could not check" and proceeding is how the
+#             defect reaches the movie.
+#   advisory  a launch nothing is captured from.  Only the calibration
+#             launch qualifies, and it is exempt by NOT CALLING THIS AT
+#             ALL -- it legitimately comes up at 640x384 on the
+#             language prompt before options.json exists, so warning
+#             there would be noise about a documented, expected state.
+#             The mode is kept so that a future caller has a correct
+#             non-fatal option instead of reaching for the old
+#             always-warn behaviour.
 check_capture_geometry() {
+    local mode="${1:-strict}"
     local want_w=$(( PLAYTHROUGH_TERMINAL_X * PLAYTHROUGH_FONT_WIDTH ))
     local want_h=$(( PLAYTHROUGH_TERMINAL_Y * PLAYTHROUGH_FONT_HEIGHT ))
     local want="${want_w}x${want_h}"
 
     if [ -z "${WINDOW_WIDTH}" ] || [ -z "${WINDOW_HEIGHT}" ]; then
+        if [ "${mode}" = "strict" ]; then
+            die "${EX_WINDOW}" "the game window's geometry could not" \
+                "be read, so it is not known whether the capture" \
+                "surface is usable.  This session would be" \
+                "photographed without ever having verified what is" \
+                "on screen, and an unreadable sidebar makes every" \
+                "frame duration in the film come from an unreadable" \
+                "clock.  Expected at least the ${want} grid implied" \
+                "by TERMINAL_X ${PLAYTHROUGH_TERMINAL_X} /" \
+                "TERMINAL_Y ${PLAYTHROUGH_TERMINAL_Y}.  Window id" \
+                "was '${WINDOW_ID:-none}'."
+        fi
         playthrough_warn "window geometry is unknown, so it could" \
             "not be compared with the ${want} grid implied by" \
             "TERMINAL_X ${PLAYTHROUGH_TERMINAL_X} /" \
@@ -1431,6 +3392,19 @@ check_capture_geometry() {
 
     if [ "${WINDOW_WIDTH}" -lt "${want_w}" ] ||
         [ "${WINDOW_HEIGHT}" -lt "${want_h}" ]; then
+        if [ "${mode}" = "strict" ]; then
+            die "${EX_WINDOW}" "window is ${WINDOW_GEOMETRY}," \
+                "SMALLER than the ${want} grid implied by TERMINAL_X" \
+                "${PLAYTHROUGH_TERMINAL_X} / TERMINAL_Y" \
+                "${PLAYTHROUGH_TERMINAL_Y}, so this session must NOT" \
+                "be captured from it: the frames would be mostly" \
+                "black and the sidebar crop would miss the clock" \
+                "entirely.  A 640x384 window means" \
+                "${PLAYTHROUGH_OPTIONS_JSON} still holds the" \
+                "compiled defaults TERMINAL_X 80 and TERMINAL_Y 24" \
+                "(src/options.cpp:2408-2416).  Seed the options" \
+                "file, stop this instance, and relaunch."
+        fi
         playthrough_warn "window is ${WINDOW_GEOMETRY}, SMALLER than" \
             "the ${want} grid implied by TERMINAL_X" \
             "${PLAYTHROUGH_TERMINAL_X} / TERMINAL_Y" \
@@ -1459,6 +3433,24 @@ check_capture_geometry() {
 
 launch_game() {
     ensure_headless
+
+    # THE SESSION LOCK covers the save probe, the reuse decision and the
+    # process start as ONE operation, which is what they have to be.
+    # Every one of those steps reads state that the next step changes:
+    # "no save exists, so create a character", "no window is up, so
+    # start an engine".  Two invocations interleaving anywhere in that
+    # sequence give two engines on one userdir -- and the userdir is the
+    # save, so the damage is to the evidence itself rather than to a
+    # convenience.  The lock is held by an open descriptor for the rest
+    # of this process; the kernel drops it even if this shell dies.
+    #
+    # It is taken AFTER ensure_headless deliberately: bringing the
+    # display up is idempotent and safe to share, while the save probe
+    # that follows is not.
+    playthrough_acquire_lock session "${WINDOW_TIMEOUT}" ||
+        die "${EX_WINDOW}" "could not take the session lock; another" \
+            "launch over this checkout is in flight"
+
     probe_save_resume
 
     FIRST_RUN=0
@@ -1475,9 +3467,18 @@ launch_game() {
         read_window_geometry || true
         playthrough_log "a window of class" \
             "'${PLAYTHROUGH_WINDOW_CLASS}' is already up on" \
-            "${PLAYTHROUGH_DISPLAY} (id ${WINDOW_ID}); reusing it" \
-            "rather than starting a second instance"
-        check_capture_geometry
+            "${PLAYTHROUGH_DISPLAY} (id ${WINDOW_ID}, pid" \
+            "${GAME_PID:-unknown}) and belongs to this checkout;" \
+            "reusing it rather than starting a second instance"
+        # A REUSED INSTANCE IS HELD TO THE SAME STANDARD AS A FRESH
+        # ONE.  It was verified to be ours by find_game_window, but
+        # nothing yet has established that it is still responsive or
+        # that it is big enough to capture -- and a reused instance is
+        # the one case where neither was ever checked, because no
+        # launch happened in this run.  An instance that came up before
+        # the options were seeded is exactly what this catches.
+        assert_instance_alive
+        check_capture_geometry strict
         emit_launch_facts
         return 0
     fi
@@ -1494,25 +3495,80 @@ launch_game() {
             playthrough_log "the engine created" \
                 "${PLAYTHROUGH_OPTIONS_JSON}"
         else
-            playthrough_warn "${PLAYTHROUGH_OPTIONS_JSON} did not" \
-                "appear within 60s; the options file may only be" \
-                "written when the game exits"
+            playthrough_log "${PLAYTHROUGH_OPTIONS_JSON} has not" \
+                "appeared yet; the engine may only write it on exit," \
+                "so the instance is stopped next and the file" \
+                "re-checked afterwards"
         fi
+        # THE CALIBRATION INSTANCE MUST BE GONE BEFORE OPTIONS ARE
+        # SEEDED, so a failure to stop it is fatal rather than
+        # tolerated.  The engine holds its options in memory and writes
+        # them back to options.json when it exits, so seeding the file
+        # underneath a live instance means the seed is silently
+        # overwritten and the captured session then runs with the
+        # compiled defaults -- a 640x384 window and a 12h clock, i.e. a
+        # wasted session whose cause is invisible at the time.  Better
+        # to stop here, while the operator can still act on it.
+        #
+        # This is also the one teardown that does not go through
+        # assert_stoppable, and it is the case that exemption exists
+        # for: the instance being stopped is the calibration launch THIS
+        # invocation started, moments ago, on the branch that only runs
+        # when there is no options.json and no save -- so no keystroke
+        # has been sent and no frame can exist.  read_game_pid confirms
+        # the identity before anything is signalled.
+        local calibration_stopped=0
         if read_game_pid; then
-            stop_instance "${GAME_PID}" "${STOP_TIMEOUT}" || true
+            if stop_instance "${GAME_PID}" "${STOP_TIMEOUT}"; then
+                calibration_stopped=1
+            fi
+        elif ! find_game_window; then
+            # No identifiable process AND no window of ours: the
+            # instance has genuinely gone, which is the state we want.
+            calibration_stopped=1
+            playthrough_log "the calibration instance has already" \
+                "exited"
         else
-            playthrough_warn "could not identify the calibration" \
-                "instance to stop it; stop it before seeding" \
-                "options or the seed will be overwritten on exit"
+            playthrough_warn "a window of this checkout's game is" \
+                "still on ${PLAYTHROUGH_DISPLAY} but its pid could" \
+                "not be confirmed, so the calibration instance" \
+                "cannot be established as stopped"
         fi
+
+        if [ "${calibration_stopped}" -ne 1 ]; then
+            tail_log "${PLAYTHROUGH_GAME_LOG}"
+            die "${EX_WINDOW}" "the calibration instance could not be" \
+                "confirmed stopped.  It is still holding" \
+                "${PLAYTHROUGH_USERDIR_ARG}, so anything seeded into" \
+                "${PLAYTHROUGH_OPTIONS_JSON} now would be overwritten" \
+                "when it eventually exits -- and a run captured under" \
+                "the 12h default clock reads as one long series of" \
+                "unreadable clocks while every count still tallies." \
+                "Stop it (the 'stop' subcommand) and run this again."
+        fi
+
         if [ ! -f "${PLAYTHROUGH_OPTIONS_JSON}" ] &&
            wait_for_file "${PLAYTHROUGH_OPTIONS_JSON}" 30; then
             playthrough_log "${PLAYTHROUGH_OPTIONS_JSON} was" \
                 "written on exit"
         fi
+        if [ ! -r "${PLAYTHROUGH_OPTIONS_JSON}" ]; then
+            tail_log "${PLAYTHROUGH_GAME_LOG}"
+            die "${EX_LAYOUT}" "the calibration launch produced no" \
+                "readable ${PLAYTHROUGH_OPTIONS_JSON}, so there is" \
+                "nothing for seed_options.py to patch -- it patches" \
+                "the file the engine wrote and deliberately never" \
+                "creates one.  The game log is above; a data-load" \
+                "failure or a wrong --userdir is the usual cause."
+        fi
+
         WINDOW_ID=""
+        WINDOW_OWNED_PID=""
         WINDOW_GEOMETRY=""
         GAME_PID=""
+        GAME_IDENTITY=""
+        emit PLAYTHROUGH_CALIBRATION_OPTIONS \
+            "${PLAYTHROUGH_OPTIONS_JSON}"
         emit_launch_facts
         playthrough_log "NEXT: seed the option values" \
             "(24_HOUR=24h, SOUND_ENABLED=false," \
@@ -1534,7 +3590,7 @@ launch_game() {
             "through the custom point-buy creator"
     fi
     launch_instance
-    check_capture_geometry
+    check_capture_geometry strict
     emit_launch_facts
     return 0
 }
@@ -1584,10 +3640,17 @@ report_status() {
     scan_installed_tilesets
     report_installed_tilesets
     emit PLAYTHROUGH_TILESET_INSTALLED_COUNT "${#TILESET_NAMES[@]}"
-    if find_installed_tileset "${PLAYTHROUGH_TILESET}"; then
-        emit PLAYTHROUGH_TILESET_PREFERRED_PRESENT 1
+    # Reported, never resolved: `status` changes nothing, so a required
+    # tileset that is absent is stated as absent here rather than
+    # hydrated.  `tileset` or `all` is what installs it.
+    if find_required_tileset "${PLAYTHROUGH_TILESET}"; then
+        emit PLAYTHROUGH_TILESET_REQUIRED_PRESENT 1
     else
-        emit PLAYTHROUGH_TILESET_PREFERRED_PRESENT 0
+        emit PLAYTHROUGH_TILESET_REQUIRED_PRESENT 0
+        playthrough_warn "the required tileset" \
+            "'${PLAYTHROUGH_TILESET}' is not installed under gfx/;" \
+            "run the 'tileset' subcommand to hydrate it from" \
+            "'${TILESET_PACK}'"
     fi
 
     probe_save_resume
@@ -1598,8 +3661,10 @@ report_status() {
         emit PLAYTHROUGH_GAME_RUNNING 1
     else
         WINDOW_ID=""
+        WINDOW_OWNED_PID=""
         WINDOW_GEOMETRY=""
         GAME_PID=""
+        GAME_IDENTITY=""
         emit PLAYTHROUGH_GAME_RUNNING 0
     fi
     LAUNCH_PHASE="status"
@@ -1607,41 +3672,241 @@ report_status() {
     return 0
 }
 
-# stop_game -- the operator-facing teardown.
+# capture_evidence -- describe the recorded evidence this run has
+# already produced, or print nothing when there is none.
+#
+# The two declared artifacts that only a CAPTURED session can create:
+# one PNG per keystroke under playthrough/frames/, and one manifest row
+# per frame in playthrough/manifest.jsonl.  Either one existing means
+# keystrokes have been photographed and a recorded run is in progress,
+# and it is the only positive identification available that does not
+# depend on a marker file -- which is deliberate, because the artifact
+# inventory this feature may create is closed and inventing one would be
+# a fresh undeclared output.
+capture_evidence() {
+    local frames=0 rows=0 frame
+    for frame in "${PLAYTHROUGH_FRAMES_DIR}"/frame_*.png; do
+        [ -f "${frame}" ] || continue
+        frames=$(( frames + 1 ))
+    done
+    if [ -s "${PLAYTHROUGH_MANIFEST}" ]; then
+        rows="$(wc -l <"${PLAYTHROUGH_MANIFEST}" 2>/dev/null || \
+            echo 0)"
+        case "${rows}" in
+            ''|*[!0-9]*) rows=0 ;;
+        esac
+    fi
+    if [ "${frames}" -eq 0 ] && [ "${rows}" -eq 0 ]; then
+        return 0
+    fi
+    printf '%s' "${frames} captured frame(s) and ${rows} manifest row(s)"
+    return 0
+}
+
+# assert_stoppable -- refuse to signal anything once a run is recorded.
+#
+# The requirement is absolute: a captured session ends INSIDE the game,
+# by realistic sleep or by death, followed by the in-game Save & Quit.
+# So automated teardown is restricted to an instance positively
+# identified as NOT part of a recorded run -- a calibration launch, or a
+# stuck instance from before the first frame was taken.  Once any frame
+# or manifest row exists, this subcommand refuses, and the message says
+# what to do instead.
+#
+# There is no --force, and that is a design decision rather than an
+# omission.  Killing a recorded session is already DURABLY invalidating,
+# through a mechanism this feature declares rather than one it would have
+# to invent: only the in-game Save & Quit writes the save
+# (src/game_io.cpp save_player_data runs on that exit), so a signalled
+# session leaves playthrough/userdir/save/<World>/ without a character
+# file, and the acceptance gate that lists a tracked #<b64>.sav (or
+# #<b64>.sav.zzip) then refuses the run.  An operator who genuinely must
+# free the display can signal the process by hand, and the missing save
+# records what happened -- which is the honest outcome, not a marker
+# file this script wrote about itself.
+assert_stoppable() {
+    local evidence
+    evidence="$(capture_evidence)"
+    if [ -z "${evidence}" ]; then
+        return 0
+    fi
+    die "${EX_RECORDED}" "refusing to stop the game: this checkout" \
+        "already holds ${evidence}, so a RECORDED session is in" \
+        "progress.  A recorded session must end inside the game --" \
+        "realistic sleep or death, then Save & Quit -- because that" \
+        "is the only exit that writes the save.  Signalling the" \
+        "process instead leaves save/<World>/ with no character" \
+        "file, and the acceptance gate that requires a tracked" \
+        "#<b64>.sav then refuses the whole run.  'stop' is for a" \
+        "calibration or stuck instance from before the first frame" \
+        "was captured."
+}
+
+# stop_game -- the operator-facing teardown, calibration instances only.
 #
 # WARNING, AND IT IS NOT A FORMALITY: this terminates the process. It
 # does NOT save.  A captured session must end inside the game, by
 # realistic sleep or by death, followed by the in-game Save & Quit --
 # that is the only exit that writes the save, and it is the only ending
-# this pipeline's requirements accept.  Use this to clear a stuck or
-# calibration instance, never to end a session that is being recorded.
+# this pipeline's requirements accept.  assert_stoppable below refuses
+# this subcommand outright once any frame or manifest row exists, so it
+# can clear a stuck or calibration instance and nothing else.
+#
+# PLAYTHROUGH_GAME_RUNNING IS AN OBSERVATION, NOT AN INTENTION.  This
+# function used to emit 0 and return success on every path, including
+# the ones where nothing had been signalled and the ones where a signal
+# had failed -- so "stopped" was a claim about what had been attempted
+# rather than about what had happened.  Downstream that is dangerous in
+# one specific way: the calibration flow stops the game so that a seeded
+# options.json survives, and a live instance that was reported as
+# stopped overwrites that seed on exit.  So the emitted value is
+# whatever is actually observed -- 1 for still running, 0 only for a
+# demonstrated absence -- and the exit status is non-zero unless the
+# instance is genuinely gone.
 stop_game() {
     if ! find_game_window; then
         if [ -f "${PIDFILE}" ]; then
-            local stale
-            stale="$(head -n 1 "${PIDFILE}" 2>/dev/null || true)"
+            local record stale
+            record="$(head -n 1 "${PIDFILE}" 2>/dev/null || true)"
+            stale="${record%% *}"
             if pid_is_game "${stale}"; then
+                assert_stoppable
                 playthrough_warn "no window found, but pid" \
-                    "${stale} is still a game process; stopping it"
-                stop_instance "${stale}" "${STOP_TIMEOUT}" || true
+                    "${stale} is still a game process of this" \
+                    "checkout; stopping it"
+                if ! stop_instance "${stale}" "${STOP_TIMEOUT}"; then
+                    emit PLAYTHROUGH_GAME_RUNNING 1
+                    die "${EX_WINDOW}" "pid ${stale} could not be" \
+                        "stopped; it is still alive and ${PIDFILE}" \
+                        "has been kept so the pid is not lost"
+                fi
+                emit PLAYTHROUGH_GAME_RUNNING 0
                 return 0
             fi
+            # The pid file names something that is not our game: the
+            # instance it referred to is gone.  Removing it here is the
+            # one safe case, because nothing is being signalled.
+            playthrough_log "removing the stale pid file ${PIDFILE};" \
+                "pid '${stale}' is not this checkout's game"
             rm -f -- "${PIDFILE}"
         fi
-        playthrough_log "no game instance is running on" \
-            "${PLAYTHROUGH_DISPLAY}; nothing to stop"
+        playthrough_log "no game instance of this checkout is" \
+            "running on ${PLAYTHROUGH_DISPLAY}; nothing to stop"
         emit PLAYTHROUGH_GAME_RUNNING 0
         return 0
     fi
+
+    assert_stoppable
     playthrough_warn "stopping the game WITHOUT saving." \
         "A recorded session must instead end in-game with Save &" \
-        "Quit, which is the only exit that writes the save."
-    if read_game_pid; then
-        stop_instance "${GAME_PID}" "${STOP_TIMEOUT}" || true
-    else
-        playthrough_warn "the window exists but no confirmed game" \
-            "pid could be found, so nothing was signalled"
+        "Quit, which is the only exit that writes the save." \
+        "Nothing has been captured yet, so this is a calibration" \
+        "or stuck instance."
+    if ! read_game_pid; then
+        # A window of ours with no resolvable pid is an unknown state,
+        # and an unknown state is reported as still running: claiming
+        # otherwise would be the fabrication this file exists to avoid.
+        emit PLAYTHROUGH_GAME_RUNNING 1
+        die "${EX_WINDOW}" "window ${WINDOW_ID} exists but no" \
+            "confirmed game pid could be found, so nothing was" \
+            "signalled and the instance is still running.  Nothing" \
+            "here signals a process it has not confirmed."
     fi
+    if ! stop_instance "${GAME_PID}" "${STOP_TIMEOUT}"; then
+        emit PLAYTHROUGH_GAME_RUNNING 1
+        die "${EX_WINDOW}" "game pid ${GAME_PID} could not be" \
+            "confirmed stopped; it is still holding" \
+            "${PLAYTHROUGH_USERDIR_ARG}, so do not seed options or" \
+            "capture until it is gone"
+    fi
+
+    # Demonstrate the disappearance rather than assume it: the process
+    # is gone AND no window of ours remains.
+    if find_game_window; then
+        emit PLAYTHROUGH_GAME_RUNNING 1
+        die "${EX_WINDOW}" "game pid ${GAME_PID} exited but a window" \
+            "of class '${PLAYTHROUGH_WINDOW_CLASS}' belonging to this" \
+            "checkout is still on ${PLAYTHROUGH_DISPLAY} (id" \
+            "${WINDOW_ID}, pid ${WINDOW_OWNED_PID}); another instance" \
+            "is running"
+    fi
+    playthrough_log "the game instance is gone: no process and no" \
+        "window of this checkout remain on ${PLAYTHROUGH_DISPLAY}"
+    emit PLAYTHROUGH_GAME_RUNNING 0
+    return 0
+}
+
+# guard_game -- hold the pipeline's state open from ONE FOREGROUND
+# PROCESS, for an orchestrator that needs durability by design.
+#
+# WHY THIS EXISTS.  Everything else in this file detaches, and
+# detachment is honest but limited: it survives the shell that started
+# it, not the container and not a platform that reaps a whole process
+# tree when a command returns.  There are exactly three ways to get a
+# process that genuinely outlives this script, and a caller should pick
+# deliberately rather than discover the difference the hard way:
+#
+#   1. A SUPERVISOR.  The only option that RESTARTS what it owns.
+#      env.sh prefers one for Xvfb and the window manager when
+#      supervisorctl is reachable; that is the right answer for the X
+#      surface, which is infrastructure.
+#   2. THIS SUBCOMMAND.  The caller keeps `launch_game.sh guard`
+#      running in the foreground -- under its own nohup, its own
+#      systemd unit, its own container command, whatever it already
+#      uses to keep a long process alive -- and the game lives for
+#      exactly as long as that.  No restart, but a single obvious
+#      process to own, wait on and signal.
+#   3. PLAIN DETACHMENT, which is what `launch` does and all it claims.
+#
+# It changes nothing that `all` does not already do: it runs the same
+# steps and then simply does not return while the instance is alive.
+# The poll is cheap and pid-based -- no signal is ever sent -- and it
+# reports the exit rather than swallowing it, so an engine that dies
+# mid-session ends the guard with a diagnosis instead of a silence.
+# assert_guardable -- refuse to watch a pid that was never confirmed.
+#
+# A window is only ever accepted after its owning pid has been verified
+# against four /proc facts, so a successful launch normally leaves one
+# here.  This is the assertion of that invariant rather than a
+# workaround for its absence: if it ever does not hold, the honest
+# outcome is to stop, because the alternative is a poll over a number
+# nothing identified -- and the pipeline's whole premise is that
+# nothing is driven, signalled or reported on the strength of a guess.
+#
+# It is its own function so the rule is checkable on its own.  A safety
+# claim reachable only through a full launch is a claim nothing can
+# hold to account.
+assert_guardable() {
+    if [ -z "${GAME_PID}" ]; then
+        die "${EX_WINDOW}" "the instance is up but its pid was never" \
+            "confirmed, so there is nothing to guard.  Nothing here" \
+            "watches a process it has not identified."
+    fi
+    return 0
+}
+
+guard_game() {
+    ensure_binary
+    ensure_headless
+    resolve_tileset
+    probe_save_resume
+    launch_game
+
+    assert_guardable
+
+    playthrough_log "GUARDING pid ${GAME_PID} in the foreground." \
+        "This process now lives exactly as long as the game does;" \
+        "keep it running for as long as you need the instance, and" \
+        "end the session in-game with Save & Quit rather than by" \
+        "signalling either process."
+    emit PLAYTHROUGH_GUARD_PID "$$"
+
+    while pid_is_our_game "${GAME_PID}"; do
+        sleep "${LIVENESS_SETTLE}"
+    done
+
+    playthrough_log "guarded pid ${GAME_PID} has exited; the log is" \
+        "${PLAYTHROUGH_GAME_LOG}"
     emit PLAYTHROUGH_GAME_RUNNING 0
     return 0
 }
@@ -1659,15 +3924,24 @@ usage() {
             "all" "build, headless, tileset, probe, launch (default)" \
             "build" "build if absent and prove the +tiles binary" \
             "headless" "bring up and verify the X surface" \
-            "tileset" "resolve, installing if needed, the tileset" \
+            "tileset" "install and verify the REQUIRED tileset" \
             "probe" "report the resume-versus-create decision" \
             "launch" "launch detached and wait for the window" \
+            "guard" "as 'all', then stay in the foreground for as \
+long as the game lives" \
             "status" "report current state, changing nothing" \
-            "stop" "terminate a game instance WITHOUT saving" \
+            "stop" "terminate a CALIBRATION instance, no save" \
             "help" "this text"
         printf '%s\n' ""
         printf '%s\n' "stdout carries KEY=value lines only; all \
 logging goes to stderr."
+        printf '%s\n' ""
+        printf '%s\n' "'launch' detaches the game: it survives this \
+shell, but not the"
+        printf '%s\n' "container or a platform that reaps the process \
+tree.  Use 'guard'"
+        printf '%s\n' "when something must own the instance for its \
+whole lifetime."
     } >&"${out}"
     return 0
 }
@@ -1683,6 +3957,22 @@ main() {
             "$*"
     fi
 
+    # `help` is answered before anything is validated, so that a
+    # malformed tunable cannot stop an operator from reading the usage
+    # that explains what the tunables are.
+    case "${subcommand}" in
+        help|-h|--help)
+            usage 1
+            return "${EX_OK}"
+            ;;
+    esac
+
+    # Everything else runs only once every tunable has been validated
+    # and normalised: the values are used in arithmetic, as sleep
+    # operands and as loop bounds, so no path below may reach an
+    # expansion with an unvalidated value in it.
+    validate_tunables
+
     case "${subcommand}" in
         all)
             ensure_binary
@@ -1690,6 +3980,9 @@ main() {
             resolve_tileset
             probe_save_resume
             launch_game
+            ;;
+        guard)
+            guard_game
             ;;
         build)
             ensure_binary
@@ -1715,9 +4008,6 @@ main() {
         stop)
             assert_repo_root
             stop_game
-            ;;
-        help|-h|--help)
-            usage 1
             ;;
         *)
             usage 2

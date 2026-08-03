@@ -1,19 +1,37 @@
 # Python dependencies for the Cataclysm-DDA playthrough capture and
 # cinematography pipeline (playthrough/tooling/).
 #
-# This declaration deliberately lives outside the game's source tree.
-# The C++ engine under src/ carries no dependency declaration of any
-# kind and none is ever added there; playthrough/tooling/ is that
-# separation.  The repository's only other requirements file,
-# tools/json_tools/requirements.txt, is left untouched.  See
-# playthrough/README.md for the artifact inventory and how to re-run
-# the pipeline.
+# This file declares the pipeline's PYTHON dependencies, and it lives
+# outside the game's source tree on purpose: NOTHING is added under
+# src/, and the repository's only other requirements file,
+# tools/json_tools/requirements.txt, is left untouched.  (src/ does
+# carry dependency declarations of its own -- src/CMakeLists.txt and
+# src/third-party/CMakeLists.txt name the engine's C++ libraries
+# through add_library/target_link_libraries -- so the separation this
+# file keeps is that no PYTHON declaration is added there, not that
+# src/ declares nothing.)  Installation, the artifact inventory and
+# how to re-run the pipeline are documented in playthrough/README.md.
 #
-# Install into an isolated interpreter, never the system one, which is
-# PEP 668 externally-managed:
+# INSTALL FROM THE LOCK, NOT FROM THIS FILE.
+# requirements.lock beside this file carries these same six pins plus
+# their complete transitive closure, each bound to the sha256 of one
+# specific wheel, and it sets --require-hashes and --only-binary :all:
+# itself.  That is the supply-chain trust anchor: exact versions stop
+# drift, hashes stop substitution, and binary-only means no unreviewed
+# sdist ever executes a setup.py.  Install into an isolated
+# interpreter, never the system one, which is PEP 668
+# externally-managed:
 #
-#     python3 -m venv --without-pip .venv   # bootstrap pip: see below
-#     .venv/bin/pip install -r playthrough/tooling/requirements.txt
+#     python3 -m venv .venv
+#     .venv/bin/python -m pip install --no-deps \
+#         -r playthrough/tooling/requirements.lock
+#
+# --no-deps is required, and it is a documented override rather than a
+# shortcut: the closure in the lock is complete, and resolution has to
+# be off because moviepy declares an upper bound this file's Pillow pin
+# deliberately exceeds.  See "the Pillow pin" below for the evidence.
+# Installing THIS file directly with pip is still meaningful as a
+# declaration check, but it is not how the environment is provisioned.
 #
 # Pins are exact "==" rather than the floating lower bound used by
 # tools/json_tools/requirements.txt.  The deviation is deliberate: this
@@ -21,79 +39,129 @@
 # and its own acceptance evidence, so the effect and encoder stack has
 # to be reproducible.  A floating bound would let a future release
 # silently change the rendered movie while every gate still reported
-# green.  Every version below was read back from the provisioned
-# environment with `pip list --format=freeze`, never assumed.
+# green.  One of the six pins deliberately exceeds a declared upper
+# bound of moviepy's; that override is measured and recorded under "the
+# Pillow pin" below rather than left to be discovered by `pip check`.
 
 moviepy==2.2.1  # fade/card/fade transition unit: make_transitions.py
-pillow==11.3.0  # PNG inspection, title card, MoviePy 2 image backend
+pillow==12.3.0  # PNG inspection, title card, MoviePy 2 image backend
 pytesseract==0.3.13  # sidebar clock OCR wrapper: ocr_clock.py
 numpy==2.5.1  # frame luminance statistics and MoviePy arrays
 
+# ---------------------------------------------------------------------
+# The Pillow pin, and the one dependency conflict this file overrides
+# ---------------------------------------------------------------------
+# Pillow decodes every frame this pipeline reads, so it is the one
+# package here that parses attacker-shaped input in the general case
+# and it is pinned to the release with nothing outstanding against it.
+# Measured against the OSV database on 2026-08-03, querying the exact
+# pinned version rather than a range:
+#
+#     pillow 11.3.0   36 advisory records   <- previously pinned here
+#     pillow 12.0.0   38
+#     pillow 12.1.1   36
+#     pillow 12.2.0   26
+#     pillow 12.3.0    0                    <- pinned now
+#
+# No 11.x release clears them: 11.3.0 is the last of that series, so
+# there is no patch release to move to inside the 11 line.
+#
+# moviepy 2.2.1 declares `pillow<12.0,>=9.2.0`, and 2.2.1 is the newest
+# moviepy release there is -- so that cap is an untested upper bound,
+# not a measured incompatibility, and honouring it would mean shipping
+# 36 known advisories.  The cap is therefore overridden deliberately,
+# with --no-deps over the lock file, and the override is verified
+# rather than assumed: on this host, under Pillow 12.3.0, moviepy
+# 2.2.1's transition path -- ImageClip + vfx.FadeOut, TextClip over
+# data/font/Terminus.ttf, vfx.FadeIn, concatenate_videoclips, then
+# iter_frames(fps=12) -- produced the expected twelve 1920x1080 frames
+# with the fade arithmetic correct end to end (grayscale mean 86.7 at
+# the fade's start, 0.24 across the card, 68.0 at the fade-in's end)
+# and the card's text present (max channel value 255).
+#
+# One consequence to expect rather than be surprised by: `pip check`
+# reports exactly one line for this environment --
+#
+#     moviepy 2.2.1 has requirement pillow<12.0,>=9.2.0,
+#     but you have pillow 12.3.0.
+#
+# That line is the override, visible on purpose.  It is not a broken
+# environment and it is not to be "fixed" by downgrading Pillow or by
+# editing moviepy's installed metadata: the first reintroduces 36
+# advisories, the second hides the conflict instead of recording it.
+# `pip check` reporting anything ELSE is a real problem.
+#
+# Re-measure both halves before changing either pin: if a moviepy
+# release ever lifts the cap, the override should go away rather than
+# be kept out of habit.
+
 # "imageio" is lowercase on purpose.  `pip list --format=freeze` prints
 # "ImageIO==2.37.4" because that casing is the distribution's declared
-# Name metadata, verified on this host, while the canonical install and
-# import name is lowercase.  Do not "correct" it.
+# Name metadata, while the canonical install and import name is
+# lowercase.  Do not "correct" it.
 imageio==2.37.4  # frame and video IO used by MoviePy
 
 # imageio-ffmpeg is the one entry not named in the original request.  It
 # is declared because it is genuinely required rather than optional: it
 # is the ffmpeg bridge MoviePy and imageio encode through, and the
 # render stage fails without it.
+#
+# ITS BUNDLED ENCODER IS NEVER USED, and that is not incidental.  The
+# wheel ships a static ffmpeg -- 7.0.2 in 0.6.0, which is the newest
+# release of the package -- and get_ffmpeg_exe() prefers it over
+# anything on PATH, so an unpatched encoder would slip in underneath a
+# perfectly clean apt inventory and be invisible to any advisory check
+# run against Python packages alone.  env.sh therefore exports
+# IMAGEIO_FFMPEG_EXE to the verified system ffmpeg, which is the one
+# supported way to override that choice, and the render stage asserts
+# the binary it is about to use.  If IMAGEIO_FFMPEG_EXE is ever unset,
+# the bundled binary is what encodes -- so keep it exported.
 imageio-ffmpeg==0.6.0  # encoder bridge for MoviePy and imageio
 
-# ---------------------------------------------------------------------
-# System packages (apt) the pipeline also requires
-# ---------------------------------------------------------------------
-# These cannot be expressed as pip requirements but are equally
-# load-bearing: without them the capture, OCR and render stages fail at
-# run time.  The versions are those installed and read back on the host
-# this pipeline was verified on (Ubuntu 25.10 "questing", x86_64) with
-# `dpkg-query -W` plus each tool's own --version output.
+# System packages the pipeline also needs.  They cannot be expressed as
+# pip requirements but are equally load-bearing: without them the
+# capture, OCR and render stages fail at run time.  ffmpeg and ffprobe
+# render and probe, imagemagick captures and preprocesses, tesseract-ocr
+# reads the sidebar clock, xdotool delivers keystrokes, and xvfb with
+# x11-utils, openbox and scrot provide the headless surface.  See
+# playthrough/README.md for the versions this pipeline was verified
+# against.
 #
-#   ffmpeg         7:7.1.1-1ubuntu4.2
-#       Concat-demuxer base render, mov_text caption mux and ffprobe
-#       verification.  Self-reports "ffmpeg version 7.1.1-1ubuntu4.2".
-#   imagemagick    8:7.1.2.3+dfsg1-1ubuntu0.1
-#       `import -window root` capture, `convert` crop and preprocess,
-#       `identify` inspection.  Self-reports "ImageMagick 7.1.2-3 Q16".
-#   tesseract-ocr  5.5.0-1
-#       Sidebar clock OCR behind pytesseract; self-reports "tesseract
-#       5.5.0".  Depends on tesseract-ocr-eng, the English traineddata
-#       the pipeline reads, so that arrives with it.
-#   xdotool        1:3.20160805.1-5.1
-#       Window focus and single-keystroke delivery.  The window is
-#       found by --class cataclysm-tiles; --name matching misses it.
-#   xvfb           2:21.1.18-1ubuntu1.1
-#       The headless X server, run as :99 at 1920x1080x24.
-#   x11-utils      7.7+7
-#       xdpyinfo and xwininfo, for display and window geometry checks.
-#   openbox        3.6.1-12ubuntu2
-#       Minimal window manager, so that focus and keyboard delivery
-#       behave under Xvfb.
-#   scrot          1.12.1-1
-#       Fallback screen capturer.
+#     apt-get install -y ffmpeg imagemagick tesseract-ocr xdotool xvfb \
+#         x11-utils openbox scrot
 #
-#   apt-get install -y ffmpeg imagemagick tesseract-ocr xdotool xvfb \
-#       x11-utils openbox scrot
-
-# ---------------------------------------------------------------------
-# Host notes, verified on this machine rather than assumed
-# ---------------------------------------------------------------------
-# * Interpreter: CPython 3.12.13 in an isolated virtual environment.
-#   The system interpreter here is 3.13.7 and PEP 668
-#   externally-managed, so nothing is installed into it.
-# * `python3 -m venv <dir>` fails on this host at the ensurepip step.
-#   The working sequences are `python3 -m venv --without-pip <dir>`
-#   followed by bootstrapping pip from get-pip.py, or `uv venv`.
-# * ImageMagick here is 7.1.2 and provides both the unified `magick`
-#   entry point and the legacy `import`, `convert` and `identify`
-#   commands.  The tooling calls only the legacy names: they exist on
-#   both the 6.x and 7.x branches, so the scripts also run against
-#   ImageMagick 6, which has no `magick` entry point at all.
-# * No pip options appear above on purpose: no --index-url, no
-#   --extra-index-url, no --find-links, no hashes, no -r includes and
-#   no environment markers.  The pipeline opens no network connection
-#   of any kind and targets one verified Linux/X11 host.
-# * flake8 and its plugins are deliberately absent.  They gate this
-#   tooling during development but are not runtime dependencies of the
-#   pipeline, so they are installed separately, never declared here.
+# THE PLATFORM REQUIREMENT IS PART OF THAT LIST, because a version
+# number is only as good as the archive still publishing fixes for it.
+# Run this pipeline on a Linux release that is IN SUPPORT and fully
+# patched, and apply outstanding security updates before a capture.
+# ImageMagick, ffmpeg and the Xorg/Xvfb stack all parse
+# untrusted-shaped input -- images, containers, the X protocol -- and on
+# an end-of-life release their known issues stay unfixed by definition,
+# whatever `dpkg-query` reports.  env.sh checks this at run time
+# (playthrough_check_platform) and warns by name; set
+# PLAYTHROUGH_REQUIRE_SUPPORTED_PLATFORM=1 to make an out-of-support
+# release a hard failure instead.
+#
+# TWO PROVISIONING RULES, both security conditions rather than taste.
+# Install into an isolated interpreter using the distribution's own
+# python3-venv and python3-pip, which the archive key apt already
+# trusts; where a specific interpreter version is needed that the
+# distribution does not carry, use a pinned installer whose own
+# artifact is verified.  And do NOT pipe get-pip.py from the network
+# into an interpreter: it is an unverified script executed with the
+# caller's privileges, which is exactly the trust anchor
+# requirements.lock exists to establish for everything downstream of
+# it.  If it is ever unavoidable, download it, check its published
+# sha256 by hand, and record the value beside the command.
+#
+# No pip options appear above on purpose: no --index-url, no
+# --extra-index-url, no --find-links, no hashes and no -r includes.
+# This file is the DECLARATION and stays in the shape of the
+# repository's own precedent; the hashes and the install options live
+# in requirements.lock, which is the install contract.  Neither file
+# names an index or fetches anything at run time -- the pipeline itself
+# opens no network connection of any kind, and provisioning is the one
+# step that talks to an index.  flake8 and its plugins are likewise
+# absent: they gate this tooling during development but are not runtime
+# dependencies of the pipeline, so they are installed separately and
+# never declared here.

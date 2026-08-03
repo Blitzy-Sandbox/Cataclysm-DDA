@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
-"""Patch the game-written ``options.json`` in place, key by key.
+"""Patch the game-written option files in place, key by key.
 
-This module seeds the handful of Cataclysm-DDA option values the
-playthrough capture pipeline depends on, into the configuration file
-**the engine itself wrote**:
+This module seeds the Cataclysm-DDA option values the playthrough
+capture pipeline depends on, into files **the engine itself wrote**:
 
-    playthrough/userdir/config/options.json
+    playthrough/userdir/config/options.json              (always)
+    playthrough/userdir/save/<World>/worldoptions.json   (see below)
 
-It is the only configuration this feature reads or writes.  Nothing
-under ``src/``, ``data/`` or ``gfx/`` is touched, no repository
-configuration file (``.flake8``, ``pyproject.toml``, ``.gitignore``,
-``.gitattributes``) is modified, and no YAML or dotenv is introduced.
+Nothing under ``src/``, ``data/`` or ``gfx/`` is touched, and this
+module modifies no repository configuration file.
 
 WHERE THE TARGET LIVES, AND WHY
     ``--userdir <path>`` routes to ``PATH_INFO::init_user_dir``
@@ -22,64 +20,66 @@ WHERE THE TARGET LIVES, AND WHY
     [src/path_info.cpp:164] and ``options_value = config_dir_value +
     "options.json"`` [src/path_info.cpp:167].
 
-    That derivation is guarded in the engine by
-    ``#if defined(USE_XDG_DIR) ... #else config_dir_value =
-    user_dir_value + "config/" ... #endif``, so building with
-    ``USE_XDG_DIR=1`` or ``USE_HOME_DIR=1`` would move ``config/`` out
-    of the userdir entirely and this module's target would vanish --
-    along with the committed ``keybindings.json`` that proves no debug
-    action was ever bound.  ``launch_game.sh`` owns that prohibition;
-    this module only verifies the file is where it expects and fails
-    loudly when it is not.
+    Two build flags would move that ground, for two DIFFERENT reasons,
+    and ``launch_game.sh`` owns both prohibitions.  ``USE_XDG_DIR=1`` is
+    the only one that touches ``config_dir``: it is the ``#if`` arm of
+    [src/path_info.cpp:152-166] and relocates ``config/`` to
+    ``$XDG_CONFIG_HOME/cataclysm-dda/``, so this module's target would
+    not be there at all.  ``USE_HOME_DIR=1`` leaves ``config_dir``
+    alone and only changes the DEFAULT user directory
+    [src/main.cpp:684; src/path_info.cpp:99-102], which an explicit
+    ``--userdir`` never consults.  This module verifies the file is
+    where it expects and fails loudly when it is not.
 
 IN PLACE, KEY BY KEY -- NEVER WHOLESALE
-    The engine writes 175 option entries into that file.  Only the
-    seven named below are touched; every other entry, and every
+    The engine writes an entry for every option it knows about.  Only
+    the eight named below are touched; every other entry, and every
     member of every entry including the engine's own ``info`` and
-    ``default`` annotations, is preserved byte for byte.  A wholesale
-    rewrite is the fastest way to make the game regenerate defaults
-    and quietly lose the seeded values, so there is no code path here
-    that builds an options document from nothing: the file is always
-    loaded first, and an absent file is a hard error rather than an
+    ``default`` annotations, is preserved byte for byte.  There is no
+    code path here that builds an options document from nothing: a
+    wholesale rewrite is the fastest way to make the game regenerate
+    defaults and quietly lose the seeded values, so the file is always
+    loaded first and an absent file is a hard error rather than an
     invitation to create one.
 
 THE FILE FORMAT IS REPRODUCED EXACTLY
-    ``options_manager::serialize`` writes an ARRAY of objects, each
-    with ``info``, ``default``, ``name`` and ``value``
-    [src/options.cpp:4052-4078], and ``options_manager::deserialize``
-    reads both ``name`` and ``value`` with ``get_string``
-    [src/options.cpp:4080-4100] -- so every value is a JSON STRING,
-    even for numeric and boolean options: ``TERMINAL_X`` is ``"240"``
-    and ``SOUND_ENABLED`` is ``"false"``.  ``options_manager::load``
-    hands the file to a ``JsonArray`` [src/options.cpp:4022-4027], so
-    the top level MUST be an array; a name-to-value mapping would not
-    load at all, which is why this module rejects one instead of
-    "helpfully" accepting it.
+    ``options_manager::serialize`` writes an ARRAY of objects, each with
+    ``info``, ``default``, ``name`` and ``value``
+    [src/options.cpp:4052-4078], and ``deserialize`` reads ``name`` and
+    ``value`` with ``get_string`` [src/options.cpp:4080-4102] -- so
+    every value is a JSON STRING, even for numeric and boolean options:
+    ``TERMINAL_X`` is ``"240"`` and ``SOUND_ENABLED`` is ``"false"``.
+    ``options_manager::load`` hands the file to a ``JsonArray``
+    [src/options.cpp:4197-4202], so the top level MUST be an array; a
+    name-to-value mapping would not load at all, which is why this
+    module rejects one instead of "helpfully" accepting it.
 
-    ``options_manager::save`` uses ``JsonOut jout( fout, true )``, and
-    that pretty printer emits objects INLINE while wrapping array
-    members [src/json.cpp:2251-2350]:
+    Two layouts exist -- pretty for the global file, compact for a
+    world's -- and :func:`load_entries` reports which one it found so
+    :func:`serialize_entries` can write the same one back.  Seeding a
+    value therefore produces a one-line diff rather than reformatting
+    the file, and running this module twice leaves it byte-identical.
 
-        [
-          { "info": "...", "default": "...", "name": "X", "value": "1" },
-          { "info": "...", "default": "...", "name": "Y", "value": "2" }
-        ]
+    The engine's own escaping rules are reproduced with it
+    [src/json.cpp:2363-2404], so a value carrying a quote or a
+    backslash survives a round trip unchanged.
 
-    with two-space indentation, ``", "`` between members, ``": "``
-    after each key, and no trailing newline after the closing bracket.
-    ``WORLD::save_world_options`` uses ``JsonOut jout( fout )``
-    [src/worldfactory.cpp:337-359] -- no pretty flag -- so a world's
-    ``worldoptions.json`` is compact instead.
+THE EIGHT VALUES, AND THE REASON FOR EACH
+    Counted from :data:`SEEDED_OPTIONS`, which is the same list the
+    plan, the patch and the verifier all read: ``24_HOUR``,
+    ``SOUND_ENABLED``, ``USE_TILES``, ``TILES``, ``TERMINAL_X``,
+    ``TERMINAL_Y``, ``CHARACTER_POINT_POOLS``, ``WORLD_COMPRESSION2``.
+    All eight are decided on every production run; none of them is
+    optional, and there is no command-line path that omits one.
 
-    :func:`serialize_entries` reproduces both layouts, including the
-    engine's escaping rules [src/json.cpp:2363-2404], and
-    :func:`load_entries` reports which one it found so a file is
-    always rewritten in the layout its writer used.  The result is
-    that seeding a value produces a ONE-LINE diff rather than
-    reformatting all 176 lines, and that running this module twice
-    leaves the file byte-identical.
+    :data:`REASONS` is the single source of truth for WHY each is
+    needed, and it is quoted in the report and in every change record,
+    so the reason travels with the change rather than living only here.
+    Each engine-declared value set, default and range is recorded
+    beside the constant it is checked against.  The three that fail
+    SILENTLY when they are wrong -- ``24_HOUR``, ``TILES`` and the
+    terminal dimensions -- are called out as such below.
 
-THE SEVEN VALUES, AND THE REASON FOR EACH
     ``24_HOUR = "24h"``
         Values are ``{ "12h", "military", "24h" }``, default ``"12h"``
         [src/options.cpp:1868-1877].  ``to_string_time_of_day``
@@ -105,12 +105,21 @@ THE SEVEN VALUES, AND THE REASON FOR EACH
         [src/options.cpp:2530].  Without it the seeded tileset is
         inert.
     ``TILES = <resolved>``
-        Preference with fallback: the MSXotto+ pack when it is
-        installed, otherwise the ``ASCIITiles`` that ship with the
-        checkout.  Ids come from the ``NAME:`` field of each
-        ``tileset.txt`` and never from the directory name -- the
-        directory is ``ASCIITileset`` while the id is ``ASCIITiles``.
-        An id that is not installed is never written.
+        The MSXotto+ pack, which the run requires.  SILENT when it is
+        wrong: an ASCII capture looks like a perfectly good frame, so a
+        session recorded in the wrong artwork passes every other check.
+        Ids come from the ``NAME:`` field of each ``tileset.txt`` and
+        never from the directory name -- the required pack's directory
+        is ``MShockXotto+`` while its id is ``MshockXottoplus``, and
+        the checkout's own directory is ``ASCIITileset`` while its id
+        is ``ASCIITiles``.  An id that is not installed is never
+        written, and neither is a DIFFERENT installed one: when the
+        pack is missing this module refuses rather than quietly writing
+        the ``ASCIITiles`` that ship with the checkout, because that
+        would record the session in the wrong tileset while every other
+        check still passed.  ``--allow-tileset-fallback`` (or
+        ``$PLAYTHROUGH_ALLOW_TILESET_FALLBACK=1``) is the deliberate
+        opt-in for a diagnostic run.
     ``TERMINAL_X = "240"`` and ``TERMINAL_Y = "67"``
         Ranges 80-960 and 24-270, defaults 80 and 24
         [src/options.cpp:2408-2416].  240x67 is what the engine
@@ -143,54 +152,65 @@ WORLD DEFAULTS LAND IN TWO PLACES
     ``WORLD_OPTIONS = get_options().get_world_defaults()``
     [src/worldfactory.cpp:2039] -- so seeding
     ``CHARACTER_POINT_POOLS`` into ``options.json`` BEFORE the world
-    exists is what the world inherits.  An existing world instead
-    reads its own ``save/<World>/worldoptions.json``
+    exists is what the world inherits.  An existing world instead reads
+    its own ``save/<World>/worldoptions.json``
     [src/path_info.cpp:416-419; src/worldfactory.cpp:2021-2035], and
     the pipeline's rule for a run that finds a save is to RESUME it,
-    not to reshape it.  ``--worlds auto``, the default, therefore
-    reports an existing world's value and warns when it is not
-    point-buy capable but changes nothing; ``--worlds patch`` is the
-    explicit opt-in that edits it.
+    not to reshape it -- so the default ``--worlds`` mode reports an
+    existing world's value and warns when it is not point-buy capable
+    but changes nothing.
 
 WHAT IS DELIBERATELY NOT TOUCHED
-    ``SIDEBAR_POSITION`` stays ``"right"``
-    [src/options.cpp:2132-2136] because ``sidebar_geometry.py`` reads
-    it rather than assuming it; ``SHOW_MONTHS`` stays ``true``
-    [src/options.cpp:1878-1880] so the date line renders and the
-    timeline's midnight-rollover guard has something to cross-check;
-    ``FULLSCREEN`` stays as the engine left it, which is what
-    produces the 1920x1072-at-+0+4 window inside the 1920x1080 root;
+    ``SIDEBAR_POSITION`` stays ``"right"`` [src/options.cpp:2132-2136]
+    because ``sidebar_geometry.py`` reads it rather than assuming it;
+    ``SHOW_MONTHS`` stays ``true`` [src/options.cpp:1878-1880] so the
+    date line renders and the timeline's rollover guard has something to
+    cross-check; ``FULLSCREEN`` stays ``"windowedbl"``
+    [src/options.cpp:2715-2724], which leaves the 1920x1072 render grid
+    inside the 1920x1080 X root the crop is measured against; and
     ``OVERMAP_TILES`` stays ``"Larwick Overmap"``
-    [src/options.cpp:2552-2557], which is installed.  No debug option
-    is ever enabled and ``config/keybindings.json`` is never written
-    by this module -- that file is the committed, auditable evidence
-    that no debug action was bound, and it is not this module's to
-    edit.
+    [src/options.cpp:2552-2557], which is installed.
+
+    No debug option is ever enabled, and ``config/keybindings.json`` is
+    never written by this module: it is committed so the captured state
+    can be audited for a debug binding, and it is not this module's to
+    edit.  The complementary evidence is source-level --
+    data/raw/keybindings.json declares ``debug_mode`` (3398-3403),
+    ``debug`` (3404-3409) and ``debug_hour_timer`` (3466-3471) with no
+    ``bindings`` array, so they are unbound by default.
 
 FIRST-LAUNCH REALITY
-    A fresh userdir has no ``options.json`` at all: the engine writes
-    it on exit from its first run, and that first run opens on a
+    A fresh userdir has no ``options.json``: the engine writes it on
+    exit from its first run, and that run opens on a
     ``Select your language`` prompt rather than the main menu.  This
-    module therefore runs AFTER a first (throwaway, calibration)
-    launch, and says so precisely when the file is missing instead of
-    inventing one.
+    module therefore runs AFTER a first, throwaway calibration launch,
+    and says so precisely when the file is missing instead of inventing
+    one.
+
+EVERY WRITE IS CONFINED, AND ALL WRITES COMMIT TOGETHER
+    CONFINEMENT.  Every path this module opens for writing goes through
+    :func:`_validated_target`, which enumerates the conditions it
+    requires; the point of them is that a write outside this pipeline's
+    own userdir is impossible rather than merely unlikely.
+
+    TRANSACTIONALITY.  Every file's new content is computed in memory
+    first; only then is anything written, in one pass, and if any write
+    fails the ones already made are restored from the exact bytes they
+    held before.  Writing the global file and only then discovering a
+    world cannot be patched would leave ``24_HOUR=24h`` and a new
+    tileset applied while the world still forced a read-only pool tab,
+    with nobody told which half landed.
 
 USAGE
     $ python3 playthrough/tooling/seed_options.py
     $ python3 playthrough/tooling/seed_options.py --dry-run --explain
     $ python3 playthrough/tooling/seed_options.py --verify-only
 
-    >>> import seed_options
-    >>> report = seed_options.patch()
-    >>> [c.name for c in report.changes]
-    ['24_HOUR', 'CHARACTER_POINT_POOLS']
-
     Standard output carries only ``KEY=value`` lines, the same
     machine-readable channel ``launch_game.sh`` uses, so the resolved
     tileset and the change count can be read with ``grep '^KEY='``.
-    Every diagnostic goes to stderr.  ``--explain`` writes a
-    human-readable report to stderr, which is the text to paste into
-    ``playthrough/TECHNICAL_NOTES.md``.
+    Every diagnostic goes to stderr, and ``--explain`` writes a
+    human-readable report there.
 
 EXIT CODES
     0  the file already held, or now holds, every seeded value
@@ -262,20 +282,40 @@ BOOL_TRUE = "true"
 BOOL_FALSE = "false"
 
 # ---------------------------------------------------------------------
-# Tileset resolution
+# Tileset resolution -- ONE REQUIRED TILESET, NO FALLBACK
 #
-# The preferred pack is asked for by both its NAME: id and its VIEW:
+# The required pack is asked for by both its NAME: id and its VIEW:
 # display name, because the two differ: the pack that displays as
 # "MSXotto+" declares NAME: MshockXottoplus, and that id -- not the
 # display name -- is what goes into options.json.
 #
-# ASCIITiles ships with the checkout [gfx/ASCIITileset/tileset.txt:3]
-# and is the fallback.  The compiled default "UltimateCataclysm"
-# [src/options.cpp:2505-2508] is NOT present in a stock checkout, so
-# it is never assumed to be available.
+# There is deliberately no fallback.  The requirement is to install the
+# CDDA-Tilesets pack and configure MSXotto+, and the checkout's own
+# ASCIITiles [gfx/ASCIITileset/tileset.txt:3] would satisfy nothing
+# except the appearance of it: the game would render, every frame would
+# be a real capture, every count would tally, and the requirement would
+# have gone unmet with no symptom other than ASCII art in the finished
+# film.  So an absent required tileset is a hard failure here, exactly
+# as it is in ``launch_game.sh`` -- which hydrates the pack from its
+# pre-placed copy before this module ever runs.
+#
+# An operator who genuinely wants a different tileset sets
+# ``$PLAYTHROUGH_TILESET`` or passes ``--tileset``; that value is then
+# validated against what is installed just as strictly, and nothing is
+# ever substituted behind their back.  The compiled default
+# "UltimateCataclysm" [src/options.cpp:2505-2508] is not present in a
+# stock checkout and is never assumed to be available.
 # ---------------------------------------------------------------------
-TILESET_PREFERRED = "MshockXottoplus"
-TILESET_PREFERRED_ALIASES = ("MshockXottoplus", "MSXotto+", "MShockXotto+")
+TILESET_REQUIRED = "MshockXottoplus"
+TILESET_REQUIRED_ALIASES = (
+    "MshockXottoplus", "MSXotto+", "MShockXotto+")
+
+# The checkout's own tileset -- the one that is always present, because
+# .gitignore:52 negates gfx/ASCIITileset -- and DIAGNOSTIC ONLY.  It is
+# NAMED here and defaulted from $PLAYTHROUGH_TILESET_FALLBACK, but
+# naming it authorises nothing: _fallback_allowed() has to say yes
+# first, and only an explicit --allow-tileset-fallback or
+# $PLAYTHROUGH_ALLOW_TILESET_FALLBACK=1 makes it do so.
 TILESET_FALLBACK = "ASCIITiles"
 
 # PATH_INFO::tileset_conf() [src/path_info.cpp:432-435].
@@ -293,19 +333,41 @@ TILESET_SEARCH_DEPTH = 3
 # only ever read here.  Nothing in this module exports or mutates an
 # environment variable.
 # ---------------------------------------------------------------------
-ENV_REPO_ROOT = "PLAYTHROUGH_REPO_ROOT"          # env.sh:294
-ENV_USERDIR = "PLAYTHROUGH_USERDIR"              # env.sh:300
-ENV_OPTIONS_JSON = "PLAYTHROUGH_OPTIONS_JSON"    # env.sh:311
-ENV_SAVE_DIR = "PLAYTHROUGH_SAVE_DIR"            # env.sh:309
-ENV_TERMINAL_X = "PLAYTHROUGH_TERMINAL_X"        # env.sh:386
-ENV_TERMINAL_Y = "PLAYTHROUGH_TERMINAL_Y"        # env.sh:387
-ENV_TILESET = "PLAYTHROUGH_TILESET"              # env.sh:396
-ENV_TILESET_FALLBACK = "PLAYTHROUGH_TILESET_FALLBACK"  # env.sh:397
+# env.sh exports the eight below from its "Artifact layout" and
+# "Display, window and grid geometry" sections.  They are cited by
+# NAME rather than by line: env.sh is a sibling that changes in the
+# same commit as this file, so a line number there rots, while
+# `grep 'export PLAYTHROUGH_USERDIR' playthrough/tooling/env.sh`
+# does not.  Engine-source citations keep their line numbers, because
+# that tree is upstream and frozen.
+ENV_REPO_ROOT = "PLAYTHROUGH_REPO_ROOT"
+ENV_USERDIR = "PLAYTHROUGH_USERDIR"
+ENV_OPTIONS_JSON = "PLAYTHROUGH_OPTIONS_JSON"
+ENV_CONFIG_DIR = "PLAYTHROUGH_CONFIG_DIR"
+ENV_SAVE_DIR = "PLAYTHROUGH_SAVE_DIR"
+ENV_TERMINAL_X = "PLAYTHROUGH_TERMINAL_X"
+ENV_TERMINAL_Y = "PLAYTHROUGH_TERMINAL_Y"
+ENV_TILESET = "PLAYTHROUGH_TILESET"
+# env.sh -- the spellings ONE required pack goes by, never a list
+# of acceptable alternatives.  Whitespace-separated, as a shell
+# variable has to be.
+ENV_TILESET_ALIASES = "PLAYTHROUGH_TILESET_ALIASES"
+# env.sh -- the checkout's own tileset, and DIAGNOSTIC ONLY.
+# Nothing here consults it unless the substitution is asked for by
+# name through the opt-in below.
+ENV_TILESET_FALLBACK = "PLAYTHROUGH_TILESET_FALLBACK"
+# The one opt-in that lets a tileset other than MSXotto+ be
+# written; launch_game.sh reads the same variable, so a single
+# setting governs the whole pipeline -- and both stages announce
+# themselves on stderr when it is set.
+ENV_ALLOW_TILESET_FALLBACK = "PLAYTHROUGH_ALLOW_TILESET_FALLBACK"
 # Emitted by launch_game.sh on its KEY=value stdout channel
-# [playthrough/tooling/launch_game.sh:983]; consumed here as a HINT
+# [playthrough/tooling/launch_game.sh, resolve_tileset]; consumed
+# here as a HINT
 # and always validated independently against what is installed.
 ENV_TILESET_RESOLVED = "PLAYTHROUGH_TILESET_RESOLVED"
-# "create" or "resume" [playthrough/tooling/launch_game.sh:1017,1044].
+# "create" or "resume"
+# [playthrough/tooling/launch_game.sh, probe_save_resume].
 ENV_SESSION_MODE = "PLAYTHROUGH_SESSION_MODE"
 SESSION_MODE_RESUME = "resume"
 
@@ -315,19 +377,24 @@ SESSION_MODE_RESUME = "resume"
 # target without going through _validated_target().
 # ---------------------------------------------------------------------
 USERDIR_PARTS = ("playthrough", "userdir")
-CONFIG_PARTS = USERDIR_PARTS + ("config",)
+CONFIG_DIR_NAME = "config"
+SAVE_DIR_NAME = "save"
+CONFIG_PARTS = USERDIR_PARTS + (CONFIG_DIR_NAME,)
 OPTIONS_JSON_PARTS = CONFIG_PARTS + ("options.json",)
-SAVE_PARTS = USERDIR_PARTS + ("save",)
+SAVE_PARTS = USERDIR_PARTS + (SAVE_DIR_NAME,)
 
 # PATH_INFO::worldoptions() [src/path_info.cpp:416-419].
 WORLD_OPTIONS_NAME = "worldoptions.json"
 OPTIONS_NAME = "options.json"
 
 # The only two filenames this module will ever write.  Combined with
-# the requirement that the target already exists and already parses as
-# an engine-shaped option array, this makes it impossible for a
-# mistyped path to damage a repository file: no file under src/,
-# data/, gfx/, tools/, tests/ or .github/ carries either name.
+# the requirement that the target already exists, is not a symlink,
+# resolves inside this pipeline's own userdir, and already parses as an
+# engine-shaped option array, this makes it impossible for a mistyped
+# or hostile path to damage a file this module does not own: no file
+# under src/, data/, gfx/, tools/, tests/ or .github/ carries either
+# name, and nothing outside <userdir>/config and <userdir>/save/<World>
+# is writable at all.
 WRITABLE_NAMES = (OPTIONS_NAME, WORLD_OPTIONS_NAME)
 
 # Markers that identify a Cataclysm-DDA checkout, the same pair
@@ -392,11 +459,18 @@ class Tileset:
 class TilesetChoice:
     """The resolved tileset, with the reason it was chosen.
 
-    ``origin`` is one of ``requested``, ``preferred``, ``fallback``.
+    ``origin`` is ``requested`` when a caller named the tileset,
+    ``required`` when the pipeline's own required pack was resolved,
+    and ``fallback`` when a deliberately allowed substitute was used.
     The distinction is worth recording in
-    ``playthrough/TECHNICAL_NOTES.md``: a run that fell back to
-    ``ASCIITiles`` because the MSXotto+ pack was not installed is a
-    materially different run from one that used it.
+    ``playthrough/TECHNICAL_NOTES.md``: a run that used an
+    operator-nominated tileset, or that fell back to the checkout's
+    own ``ASCIITiles`` because the MSXotto+ pack was not installed, is
+    a materially different run from one that used the required pack.
+    ``fallback`` is why the third value exists at all, and it is
+    reachable only deliberately, through
+    ``--allow-tileset-fallback`` -- without that, an unavailable
+    required tileset raises instead of resolving.
     """
 
     tileset: Tileset
@@ -414,15 +488,21 @@ class TilesetChoice:
 class Change:
     """One option value that this module altered.
 
-    :param before: the value found in the file, verbatim.
+    :param before: the value the ENGINE was using, verbatim.  With a
+        duplicated key that is the LAST occurrence's value, because the
+        engine applies them in order and each overwrites the previous.
     :param after: the value written, verbatim.
     :param reason: why the pipeline needs it, for the report.
+    :param path: the file the change was made in, when it is not the
+        global options file.  Carried so a world change can be
+        confirmed against the file it actually landed in.
     """
 
     name: str
     before: str
     after: str
     reason: str
+    path: Optional[str] = None
 
     def __str__(self) -> str:
         return f"{self.name}: {self.before!r} -> {self.after!r}"
@@ -517,84 +597,225 @@ def _looks_like_checkout(candidate: str) -> bool:
             os.path.isfile(_join(candidate, ROOT_MARKER_FILE_PARTS)))
 
 
+# ---------------------------------------------------------------------
+# Where this module is allowed to write
+#
+# Everything below exists because "which file gets patched" is decided
+# by untrusted input: $PLAYTHROUGH_OPTIONS_JSON, $PLAYTHROUGH_USERDIR,
+# $PLAYTHROUGH_SAVE_DIR, $PLAYTHROUGH_REPO_ROOT and the command line.
+# Checking the BASENAME and that the file parses is not enough: any
+# writable options.json anywhere on the host satisfies both, and a
+# symlink named options.json satisfies them while pointing at
+# something else entirely.
+#
+# The rule enforced here is positional, not nominal.  The file must sit
+# where the ENGINE puts it -- <userdir>/config/options.json, or
+# <userdir>/save/<World>/worldoptions.json -- inside the userdir of a
+# checkout this module can vouch for, with no symlinked component
+# anywhere below that userdir.  The one way to move the tree is an
+# explicit --repo-root/root= naming a genuine checkout, which is a
+# deliberate act at the call site; the environment may CONFIRM the
+# location but can no longer redirect it.
+# ---------------------------------------------------------------------
+def _module_repo_root() -> str:
+    """Return the checkout this file is part of, from its own path.
+
+    Derived from ``__file__`` alone, so it is the one root no
+    environment variable can influence.  It is what an environment
+    variable is checked AGAINST.
+    """
+    here = os.path.realpath(os.path.dirname(__file__))
+    return os.path.realpath(os.path.join(here, "..", ".."))
+
+
+def _within(path: str, root: str) -> bool:
+    """True when ``path`` is ``root`` itself or lies beneath it."""
+    return path == root or path.startswith(root + os.sep)
+
+
+def _assert_within(resolved: str, root: str, label: str) -> None:
+    """Refuse a path that does not resolve inside ``root``.
+
+    The FULLY RESOLVED form is tested, so ``../`` and a symlink
+    pointing out of the tree are both caught.
+
+    :raises SeedError: when the path resolves outside ``root``.
+    """
+    canonical = os.path.realpath(resolved)
+    if not _within(canonical, root):
+        raise SeedError(
+            f"refusing to use {label} '{resolved}': it resolves to "
+            f"'{canonical}', which is outside '{root}'.  This module "
+            f"only ever touches the engine's own configuration inside "
+            f"the pipeline's userdir")
+
+
+def _assert_no_symlink(resolved: str, root: str, label: str) -> None:
+    """Refuse ``resolved`` if it or a component below ``root`` links.
+
+    A link inside the tree still points somewhere else, and following
+    one would let a single planted link turn a configuration patch
+    into a write to an arbitrary file that the caller believes is
+    options.json.  The final component is checked first because that
+    case is well defined however the path was spelled.
+
+    :raises SeedError: when any component is a symbolic link.
+    """
+    if os.path.islink(resolved):
+        raise SeedError(
+            f"refusing to use {label} '{resolved}': it is a symbolic "
+            f"link, and this module patches files rather than "
+            f"following links to them")
+    if not _within(resolved, root):
+        # Reached through a link ABOVE the root, e.g. a checkout under
+        # a linked directory.  _assert_within() has already proved the
+        # destination is inside the tree.
+        return
+    current = root
+    for part in os.path.relpath(resolved, root).split(os.sep):
+        if part in ("", os.curdir):
+            continue
+        current = os.path.join(current, part)
+        if os.path.islink(current):
+            raise SeedError(
+                f"refusing to use {label} '{resolved}': '{current}' "
+                f"is a symbolic link, so the path could be redirected "
+                f"inside '{root}'")
+
+
+def _confined(resolved: str, root: str, label: str) -> str:
+    """Return ``resolved`` once it is proved to be inside ``root``."""
+    _assert_within(resolved, root, label)
+    _assert_no_symlink(resolved, root, label)
+    return resolved
+
+
+def approved_userdir(root: Optional[str] = None) -> str:
+    """Return the only userdir tree this module may read or write.
+
+    Derived from :func:`repo_root`, which honours an explicit argument
+    but requires the environment to agree with this file's own
+    location.  Every path this module opens is checked against the
+    result.
+    """
+    return _join(repo_root(root), USERDIR_PARTS)
+
+
 def repo_root(explicit: Optional[str] = None) -> str:
     """Return the absolute repository root, verified to be one.
 
     Resolution order: an explicit argument,
-    ``$PLAYTHROUGH_REPO_ROOT`` [playthrough/tooling/env.sh:294], then
+    ``$PLAYTHROUGH_REPO_ROOT`` [playthrough/tooling/env.sh], then
     two directories above this file.
 
-    An explicit argument and the environment variable are
-    AUTHORITATIVE: when either is supplied and is not a checkout, this
-    raises instead of quietly falling through to a root that happens to
-    work.  Silently disagreeing with the root a caller named is exactly
-    the sort of plausible-but-wrong behaviour this module exists to
-    avoid, and it would leave every sibling in the pipeline pointed
-    somewhere else.
+    An explicit argument is AUTHORITATIVE: when it is supplied and is
+    not a checkout, this raises instead of quietly falling through to a
+    root that happens to work.  Silently disagreeing with the root a
+    caller named is exactly the sort of plausible-but-wrong behaviour
+    this module exists to avoid, and it would leave every sibling in
+    the pipeline pointed somewhere else.
+
+    ``$PLAYTHROUGH_REPO_ROOT`` may CONFIRM the root but can no longer
+    move it.  env.sh derives that variable from its own location
+    [playthrough/tooling/env.sh] and this file sits beside env.sh,
+    so in every legitimate invocation the two agree; a value that
+    names a DIFFERENT checkout is a redirection of every subsequent
+    write and is refused rather than followed.  Relocating the tree is
+    the explicit argument's job.
 
     :raises SeedError: when a supplied candidate, or the fallback, is
-        not a Cataclysm-DDA checkout.
+        not a Cataclysm-DDA checkout, or when the environment names a
+        different checkout from the trusted one.
     """
     marker_dir = os.path.join(*ROOT_MARKER_DIR_PARTS)
     marker_file = os.path.join(*ROOT_MARKER_FILE_PARTS)
-    here = os.path.abspath(os.path.dirname(__file__))
-
     env_root = os.environ.get(ENV_REPO_ROOT)
-    named = []
+
     if explicit:
-        named.append(("explicit argument", explicit))
+        resolved = os.path.abspath(os.path.normpath(explicit))
+        if not _looks_like_checkout(resolved):
+            raise SeedError(
+                f"the repository root given by explicit argument "
+                f"('{resolved}') is not a Cataclysm-DDA checkout: it "
+                f"has no {marker_dir} directory or no {marker_file} "
+                f"file")
+        trusted = resolved
+        origin = "explicit argument"
+    else:
+        trusted = _module_repo_root()
+        if not _looks_like_checkout(trusted):
+            raise SeedError(
+                f"cannot locate a Cataclysm-DDA checkout (no "
+                f"{marker_dir} directory and no {marker_file} file); "
+                f"tried this file's location -> {trusted}")
+        origin = "this file's location"
+
     if env_root:
-        named.append((f"${ENV_REPO_ROOT}", env_root))
+        from_env = os.path.realpath(
+            os.path.abspath(os.path.normpath(env_root)))
+        if from_env != os.path.realpath(trusted):
+            raise SeedError(
+                f"${ENV_REPO_ROOT} names '{from_env}', but the "
+                f"trusted root from {origin} is "
+                f"'{os.path.realpath(trusted)}'.  The environment may "
+                f"confirm the checkout this module patches; it may not "
+                f"redirect it.  Pass --repo-root to work on another "
+                f"checkout deliberately")
 
-    for origin, candidate in named:
-        resolved = os.path.abspath(os.path.normpath(candidate))
-        if _looks_like_checkout(resolved):
-            LOG.debug("repository root from %s: %s", origin, resolved)
-            return resolved
-        raise SeedError(
-            f"the repository root given by {origin} "
-            f"('{resolved}') is not a Cataclysm-DDA checkout: it has "
-            f"no {marker_dir} directory or no {marker_file} file")
-
-    fallback = _join(here, ("..", ".."))
-    if _looks_like_checkout(fallback):
-        LOG.debug("repository root from this file's location: %s",
-                  fallback)
-        return fallback
-    raise SeedError(
-        f"cannot locate a Cataclysm-DDA checkout (no {marker_dir} "
-        f"directory and no {marker_file} file); tried this file's "
-        f"location -> {fallback}")
+    LOG.debug("repository root from %s: %s", origin, trusted)
+    return trusted
 
 
 def userdir_path(root: Optional[str] = None) -> str:
     """Absolute path of the pipeline's userdir.
 
     ``$PLAYTHROUGH_USERDIR`` wins when set
-    [playthrough/tooling/env.sh:300]; otherwise the path is derived
+    [playthrough/tooling/env.sh]; otherwise the path is derived
     from the repository root, matching the ``--userdir
     ./playthrough/userdir/`` the launcher passes
-    [playthrough/tooling/env.sh:341].
+    [playthrough/tooling/env.sh].
     """
+    approved = _join(repo_root(root), USERDIR_PARTS)
     from_env = os.environ.get(ENV_USERDIR)
     if from_env:
+        return _confined(
+            os.path.abspath(os.path.normpath(from_env)), approved,
+            f"the userdir from ${ENV_USERDIR}")
+    return approved
+
+
+def config_dir_path(root: Optional[str] = None) -> str:
+    """Absolute path of ``<userdir>/config``.
+
+    ``config_dir_value = user_dir_value + "config/"``
+    [src/path_info.cpp:164], exported as ``$PLAYTHROUGH_CONFIG_DIR``.
+    Derived from :func:`userdir_path` when that is unset, so the
+    config directory always sits under the same userdir the save
+    directory does -- which is what lets
+    :func:`_permitted_write_locations` describe one coherent tree.
+    """
+    from_env = os.environ.get(ENV_CONFIG_DIR)
+    if from_env:
         return os.path.abspath(os.path.normpath(from_env))
-    return _join(repo_root(root), USERDIR_PARTS)
+    return os.path.join(userdir_path(root), CONFIG_DIR_NAME)
 
 
 def options_json_path(root: Optional[str] = None) -> str:
     """Absolute path of the game-written ``options.json``.
 
     ``$PLAYTHROUGH_OPTIONS_JSON`` wins when set
-    [playthrough/tooling/env.sh:311]; otherwise the path is derived
+    [playthrough/tooling/env.sh]; otherwise the path is derived
     exactly as the engine derives it -- ``config_dir_value =
     user_dir_value + "config/"`` [src/path_info.cpp:164] and
     ``options_value = config_dir_value + "options.json"``
     [src/path_info.cpp:167].
     """
+    approved = approved_userdir(root)
     from_env = os.environ.get(ENV_OPTIONS_JSON)
     if from_env:
-        return os.path.abspath(os.path.normpath(from_env))
+        return _confined(
+            os.path.abspath(os.path.normpath(from_env)), approved,
+            f"the options file from ${ENV_OPTIONS_JSON}")
     return _join(repo_root(root), OPTIONS_JSON_PARTS)
 
 
@@ -603,11 +824,14 @@ def save_dir_path(root: Optional[str] = None) -> str:
 
     ``savedir_value = user_dir_value + "save/"``
     [src/path_info.cpp:144], exported as ``$PLAYTHROUGH_SAVE_DIR``
-    [playthrough/tooling/env.sh:309].
+    [playthrough/tooling/env.sh].
     """
+    approved = approved_userdir(root)
     from_env = os.environ.get(ENV_SAVE_DIR)
     if from_env:
-        return os.path.abspath(os.path.normpath(from_env))
+        return _confined(
+            os.path.abspath(os.path.normpath(from_env)), approved,
+            f"the save directory from ${ENV_SAVE_DIR}")
     return _join(repo_root(root), SAVE_PARTS)
 
 
@@ -622,33 +846,64 @@ def world_options_paths(root: Optional[str] = None) -> List[str]:
     saves = save_dir_path(root)
     if not os.path.isdir(saves):
         return []
+    approved = approved_userdir(root)
     found = []
     for entry in sorted(os.listdir(saves)):
         candidate = os.path.join(saves, entry, WORLD_OPTIONS_NAME)
-        if os.path.isfile(candidate):
-            found.append(candidate)
+        if not os.path.isfile(candidate):
+            continue
+        # A world directory or world options file that is a link is
+        # refused rather than skipped: this list is what gets PATCHED,
+        # so a link here would redirect the patch, and quietly ignoring
+        # it would hide a world the caller believes was inspected.
+        found.append(
+            _confined(candidate, approved,
+                      "the world options file"))
     return found
 
 
-def _validated_target(path: str) -> str:
+def _validated_target(path: str, root: Optional[str] = None) -> str:
     """Return ``path`` as an absolute path this module may write.
 
-    Three conditions must hold, and together they make an accidental
-    write outside the engine's own configuration impossible:
+    Five conditions must hold, and together they make a write outside
+    the engine's own configuration impossible rather than merely
+    unlikely:
 
     1. the basename is ``options.json`` or ``worldoptions.json`` --
        the only two files the engine keeps option values in;
-    2. the file already EXISTS, because this module patches what the
-       engine wrote and never creates a configuration document;
-    3. it parses as an engine-shaped option array, which is checked
-       by :func:`load_entries` before any write is attempted.
+    2. the path resolves INSIDE the pipeline's userdir
+       [playthrough/userdir], the tree the engine owns and this
+       pipeline commits;
+    3. it sits exactly where the engine puts it: ``options.json``
+       directly in ``<userdir>/config`` ``[src/path_info.cpp:164,167]``
+       and ``worldoptions.json`` directly in a world directory under
+       ``<userdir>/save`` ``[src/path_info.cpp:144]``;
+    4. no component below the userdir is a symbolic link, and the
+       target itself is not one;
+    5. the file already EXISTS, because this module patches what the
+       engine wrote and never creates a configuration document.
 
-    No file under ``src/``, ``data/``, ``gfx/``, ``tools/``,
-    ``tests/`` or ``.github/`` carries either name, so a mistyped
-    path fails condition 1 or 2 rather than damaging the repository.
+    :func:`load_entries` then requires it to parse as an engine-shaped
+    option array before any write is attempted.
+
+    Conditions 2 to 4 are the ones that matter for anything but a typo.
+    A basename check alone accepts ANY writable ``options.json`` on the
+    host -- another checkout's, another user's, one planted in a
+    world-writable directory -- and accepts a symlink wearing the right
+    name while pointing somewhere else entirely.  A caller-supplied
+    ``--options`` path, or an unexpected
+    ``$PLAYTHROUGH_OPTIONS_JSON``, is exactly how that would happen,
+    so both are confined here rather than trusted.  Condition 4 is a
+    REFUSAL rather than a resolution for a reason worth stating: a
+    link planted at ``save/<World>`` that was followed would make
+    whatever it points at writable, which is the escape this function
+    exists to close.  Position inside a tree this module can vouch for
+    is what makes the authorisation real.
 
     :raises SeedError: when the basename is not writable by this
-        module, or the file does not exist.
+        module, when the path is outside or misplaced within the
+        userdir, when any component is a link, or when the file does
+        not exist.
     """
     resolved = os.path.abspath(os.path.normpath(path))
     name = os.path.basename(resolved)
@@ -657,6 +912,24 @@ def _validated_target(path: str) -> str:
             f"refusing to write '{resolved}': this module only ever "
             f"writes {' or '.join(WRITABLE_NAMES)}, and the basename "
             f"is '{name}'")
+    approved = approved_userdir(root)
+    _confined(resolved, approved, "the options file")
+    parent = os.path.dirname(os.path.realpath(resolved))
+    config_dir = os.path.realpath(_join(approved, ("config",)))
+    save_dir = os.path.realpath(_join(approved, ("save",)))
+    if name == OPTIONS_NAME:
+        if parent != config_dir:
+            raise SeedError(
+                f"refusing to write '{resolved}': the engine keeps "
+                f"{OPTIONS_NAME} in '{config_dir}' "
+                f"[src/path_info.cpp:164,167], and this one is in "
+                f"'{parent}'")
+    elif os.path.dirname(parent) != save_dir:
+        raise SeedError(
+            f"refusing to write '{resolved}': the engine keeps "
+            f"{WORLD_OPTIONS_NAME} in a world directory directly "
+            f"under '{save_dir}' [src/path_info.cpp:144], and this "
+            f"one is in '{parent}'")
     if not os.path.isfile(resolved):
         raise SeedError(
             f"no options file at '{resolved}'.  The engine writes it "
@@ -664,7 +937,25 @@ def _validated_target(path: str) -> str:
             f"playthrough/tooling/launch_game.sh first; this module "
             f"patches the file the game wrote and deliberately never "
             f"creates one from scratch")
-    return resolved
+    # A symlink AT the target is refused outright rather than followed:
+    # even a link that currently points somewhere permitted is a
+    # standing invitation to be repointed between this check and the
+    # write.
+    if os.path.islink(resolved):
+        raise SeedError(
+            f"refusing to write '{resolved}': it is a symbolic link, "
+            f"and this module rewrites the file it opens.  Replace it "
+            f"with the engine's own regular file")
+    # The name is re-checked AFTER resolution.  The positional check
+    # above proves the real parent, and this proves the real leaf: a
+    # link named options.json pointing at a file called something else
+    # would otherwise satisfy every check while rewriting that file.
+    real = os.path.realpath(resolved)
+    if os.path.basename(real) != name:
+        raise SeedError(
+            f"refusing to write '{path}': it resolves to '{real}', "
+            f"whose name differs from '{name}'")
+    return real
 
 
 # ---------------------------------------------------------------------
@@ -796,7 +1087,7 @@ def _match_tileset(
     Comparison is a literal string equality, never a pattern: real ids
     contain characters such as ``+`` that a regular expression would
     misread.  This is the same rule ``launch_game.sh`` applies
-    [playthrough/tooling/launch_game.sh:853-864].
+    [playthrough/tooling/launch_game.sh, install_tileset_from_pack].
     """
     for tileset in tilesets:
         if tileset.ident == wanted or tileset.view == wanted:
@@ -804,48 +1095,131 @@ def _match_tileset(
     return None
 
 
+def _required_aliases(required: str) -> List[str]:
+    """Return every spelling the required tileset may be known by.
+
+    ``$PLAYTHROUGH_TILESET_ALIASES`` is honoured when it is set, so the
+    list lives in one place -- ``env.sh`` -- rather than being
+    maintained twice.  The requested id always comes first, and the
+    module's own constants are the floor, so an environment that
+    supplies nothing still resolves the pack correctly.
+
+    The pack genuinely is spelled several ways -- the ``NAME:`` id, the
+    ``VIEW:`` display name and the directory the upstream repository
+    ships it as -- so matching on one spelling alone would fail to find
+    an installed pack and report it as absent.
+    """
+    aliases = [required]
+    from_env = os.environ.get(ENV_TILESET_ALIASES) or ""
+    for name in from_env.split():
+        if name and name not in aliases:
+            aliases.append(name)
+    for name in TILESET_REQUIRED_ALIASES:
+        if name not in aliases:
+            aliases.append(name)
+    return aliases
+
+
+def _is_required(tileset: Tileset, wanted: str) -> bool:
+    """True when ``tileset`` IS the MSXotto+ pack the run requires.
+
+    Asked through :func:`_required_aliases` rather than against a
+    literal, so the id, the display name and every directory spelling
+    are accepted from the ONE list ``env.sh`` owns.  Used to decide
+    whether an explicitly requested tileset is the required pack under
+    another of its names or a genuine substitution.
+    """
+    names = set(_required_aliases(wanted))
+    return tileset.ident in names or tileset.view in names
+
+
+def _fallback_allowed(explicit: Optional[bool] = None) -> bool:
+    """True when the ASCII fallback tileset may be written.
+
+    ``False`` unless the caller says otherwise, because the pipeline's
+    requirement names the MSXotto+ pack specifically.  The opt-in is
+    the ``allow_fallback`` argument, ``--allow-tileset-fallback`` on
+    the command line, or ``$PLAYTHROUGH_ALLOW_TILESET_FALLBACK=1`` --
+    the same variable ``launch_game.sh`` reads, so one setting governs
+    the whole pipeline.  Note what is NOT an opt-in:
+    ``$PLAYTHROUGH_TILESET_FALLBACK`` only NAMES the substitute, and
+    setting it alone changes nothing.
+    """
+    if explicit is not None:
+        return bool(explicit)
+    return os.environ.get(ENV_ALLOW_TILESET_FALLBACK, "") == "1"
+
+
 def resolve_tileset(
     root: Optional[str] = None,
     requested: Optional[str] = None,
-    preferred: Optional[str] = None,
-    fallback: Optional[str] = None,
+    required: Optional[str] = None,
     tilesets: Optional[Sequence[Tileset]] = None,
+    allow_fallback: Optional[bool] = None,
 ) -> TilesetChoice:
-    """Choose a tileset id that is genuinely installed.
+    """Resolve the ONE tileset this pipeline is allowed to write.
 
-    Order of preference:
+    Order:
 
     1. ``requested`` -- an explicit ``--tileset`` argument, or
        ``$PLAYTHROUGH_TILESET_RESOLVED`` as emitted by
-       ``launch_game.sh`` [playthrough/tooling/launch_game.sh:983].
-       It is treated as a HINT and validated independently: the
-       launcher and this module must agree, and if they do not, the
-       installed set decides.
-    2. ``preferred`` -- the MSXotto+ pack, asked for by every name it
+       ``launch_game.sh``.  It is treated as a HINT and validated
+       independently: the launcher and this module must agree, and if
+       they do not, the installed set decides.
+    2. ``required`` -- the MSXotto+ pack, asked for by every name it
        goes by, defaulting to ``$PLAYTHROUGH_TILESET``
-       [playthrough/tooling/env.sh:396].
-    3. ``fallback`` -- ``ASCIITiles``, which ships with the checkout,
-       defaulting to ``$PLAYTHROUGH_TILESET_FALLBACK``
-       [playthrough/tooling/env.sh:397].
+       [playthrough/tooling/env.sh].
+    3. ``fallback`` -- the checkout's own ``ASCIITiles``, defaulting to
+       ``$PLAYTHROUGH_TILESET_FALLBACK``
+       [playthrough/tooling/env.sh] -- and ONLY when the caller
+       has explicitly allowed it.
 
-    :raises SeedError: when none of the three is installed.  Writing
-        an id that is not installed would leave the game with a
-        tileset it cannot load, and claiming otherwise in the run's
-        notes would be a fabrication.
+    STEP 3 IS OPT-IN, AND OFF BY DEFAULT.  The requirement is not
+    "some tileset": the game must be configured to use MSXotto+.
+    Quietly writing ``ASCIITiles`` instead produced a run that looked
+    entirely successful -- every count tallied, every frame was
+    captured -- while recording a session in the wrong tileset, which
+    is precisely the kind of silent substitution this pipeline is built
+    to refuse.  ``launch_game.sh`` hydrates the pack from its
+    pre-placed copy before this module runs, so reaching step 3 at all
+    means the pack is genuinely unavailable; the remedy is to install
+    it with ``playthrough/tooling/launch_game.sh tileset``, not to
+    substitute for it.  When the substitution IS asked for by name it
+    is recorded in the report's notes and on stderr, so a diagnostic
+    run cannot be mistaken for a compliant one.
+
+    :param allow_fallback: ``True`` to accept the ASCII fallback,
+        ``False`` to refuse it, ``None`` to read
+        ``$PLAYTHROUGH_ALLOW_TILESET_FALLBACK``.
+    :raises SeedError: when the hint is not installed, when the
+        required tileset is not installed and the fallback has not been
+        allowed, and when nothing usable is installed at all.  Writing
+        an id that is not installed would leave the game with a tileset
+        it cannot load, and claiming otherwise in the run's notes would
+        be a fabrication.
     """
     available = (list(tilesets) if tilesets is not None
                  else discover_tilesets(root))
     installed = tuple(item.ident for item in available)
-
-    wanted_pref = preferred or os.environ.get(ENV_TILESET) or \
-        TILESET_PREFERRED
-    wanted_back = fallback or os.environ.get(ENV_TILESET_FALLBACK) or \
-        TILESET_FALLBACK
+    wanted = required or os.environ.get(ENV_TILESET) or TILESET_REQUIRED
+    fallback = (os.environ.get(ENV_TILESET_FALLBACK) or
+                TILESET_FALLBACK)
     hint = requested or os.environ.get(ENV_TILESET_RESOLVED) or ""
 
     if hint:
         match = _match_tileset(available, hint)
         if match is not None:
+            if not _is_required(match, wanted) and \
+                    not _fallback_allowed(allow_fallback):
+                raise SeedError(
+                    f"'{hint}' was requested, but it is not the "
+                    f"required '{wanted}' (MSXotto+) and the "
+                    f"substitution was not allowed.  Recording the "
+                    f"session in another tileset while every check "
+                    f"passed is exactly the silent substitution this "
+                    f"module refuses: pass --allow-tileset-fallback or "
+                    f"set ${ENV_ALLOW_TILESET_FALLBACK}=1 to ask for "
+                    f"it deliberately")
             return TilesetChoice(
                 tileset=match,
                 origin="requested",
@@ -858,45 +1232,82 @@ def resolve_tileset(
             f"installed ids: {', '.join(installed) or '(none)'}.  "
             f"Install it under gfx/ (which is git-ignored by "
             f".gitignore:52, so installing it changes nothing "
-            f"tracked) or drop the request and let the preferred or "
-            f"fallback tileset be used")
+            f"tracked), or drop the request so the required "
+            f"'{wanted}' is used")
 
-    aliases = list(TILESET_PREFERRED_ALIASES)
-    if wanted_pref not in aliases:
-        aliases.insert(0, wanted_pref)
-    for alias in aliases:
+    for alias in _required_aliases(wanted):
         match = _match_tileset(available, alias)
         if match is not None:
             return TilesetChoice(
                 tileset=match,
-                origin="preferred",
+                origin="required",
                 reason=(
-                    f"the preferred tileset is installed at "
+                    f"the required tileset is installed at "
                     f"{match.directory} (matched on '{alias}')"),
                 installed=installed)
 
-    match = _match_tileset(available, wanted_back)
+    if not _fallback_allowed(allow_fallback):
+        raise SeedError(
+            f"the required tileset '{wanted}' (MSXotto+) is not "
+            f"installed, so there is nothing honest to write to "
+            f"{OPT_TILES}.  Installed ids: "
+            f"{', '.join(installed) or '(none)'}.  Run "
+            f"'playthrough/tooling/launch_game.sh tileset' to hydrate "
+            f"it from the pre-placed pack (gfx/ is git-ignored by "
+            f".gitignore:52, so installing it changes nothing "
+            f"tracked).  Ids come from the NAME: field of each "
+            f"gfx/*/tileset.txt, never from the directory name.  "
+            f"Falling back to '{fallback}' would render a plausible "
+            f"film while failing the requirement to configure "
+            f"MSXotto+, with no symptom but the artwork, so it is "
+            f"refused unless it is asked for explicitly: pass "
+            f"--allow-tileset-fallback or set "
+            f"${ENV_ALLOW_TILESET_FALLBACK}=1 for a diagnostic run")
+
+    match = _match_tileset(available, fallback)
     if match is not None:
         return TilesetChoice(
             tileset=match,
             origin="fallback",
             reason=(
-                f"the preferred tileset ({wanted_pref}) is not "
-                f"installed, so the checkout's own {match.ident} is "
-                f"used instead"),
+                f"the required tileset ({wanted}) is not installed and "
+                f"the fallback was explicitly allowed, so the "
+                f"checkout's own {match.ident} is used instead -- this "
+                f"is a DIAGNOSTIC configuration and does not satisfy "
+                f"the requirement"),
             installed=installed)
 
     raise SeedError(
-        f"no usable tileset: neither the preferred '{wanted_pref}' "
-        f"nor the fallback '{wanted_back}' is installed. Installed "
-        f"ids: {', '.join(installed) or '(none)'}. Ids come from the "
-        f"NAME: field of each gfx/*/tileset.txt, never from the "
-        f"directory name")
+        f"the required tileset '{wanted}' is not installed, and there "
+        f"is deliberately no fallback: a run that quietly used the "
+        f"checkout's own ASCIITiles would render a plausible film "
+        f"while failing the requirement to configure MSXotto+, with "
+        f"no symptom but the artwork.  Installed ids: "
+        f"{', '.join(installed) or '(none)'}.  Run "
+        f"'playthrough/tooling/launch_game.sh tileset' to hydrate it "
+        f"from the pre-placed pack.  Ids come from the NAME: field of "
+        f"each gfx/*/tileset.txt, never from the directory name")
 
 
 # ---------------------------------------------------------------------
 # Reading and writing the engine's option documents
 # ---------------------------------------------------------------------
+def _read_text(path: str) -> str:
+    """Return a file's exact text, or raise SeedError.
+
+    Separate from :func:`load_entries` because the rollback in
+    :func:`_commit_writes` restores the ORIGINAL BYTES rather than a
+    re-serialisation of the parsed values: those two differ in
+    whitespace, and "the file is exactly as you found it" is a claim
+    worth being literally true.
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            return handle.read()
+    except OSError as err:
+        raise SeedError(f"cannot read {path}: {err}") from err
+
+
 def load_entries(path: str) -> Tuple[List[Dict[str, object]], bool]:
     """Load one engine option document.
 
@@ -929,7 +1340,7 @@ def load_entries(path: str) -> Tuple[List[Dict[str, object]], bool]:
         raise SeedError(
             f"{path} must be a JSON array of option objects, got "
             f"{type(data).__name__}. options_manager::load hands the "
-            f"file to a JsonArray [src/options.cpp:4022-4027], so a "
+            f"file to a JsonArray [src/options.cpp:4197-4202], so a "
             f"name-to-value mapping would not load at all")
 
     entries: List[Dict[str, object]] = []
@@ -1168,11 +1579,11 @@ REASONS = {
         "NAME: field of its tileset.txt "
         "[src/options.cpp:1189-1236]"),
     OPT_TERMINAL_X: (
-        "240 columns x 8 px = the 1920 px window the capture geometry "
-        "assumes [src/sdltiles.cpp:595-596]"),
+        "240 columns x 8 px = the 1920 px render grid width the capture "
+        "geometry assumes [src/sdltiles.cpp:595-596]"),
     OPT_TERMINAL_Y: (
-        "67 rows x 16 px = 1072 px, the window height inside the "
-        "1920x1080 root [src/sdltiles.cpp:595-596]"),
+        "67 rows x 16 px = 1072 px, the render grid height inside "
+        "the 1920x1080 X root [src/sdltiles.cpp:595-596]"),
     OPT_POINT_POOLS: (
         "the shipped story_teller default offers FREEFORM only and "
         "makes the pool tab read-only [src/newcharacter.cpp:438-446, "
@@ -1191,7 +1602,7 @@ def _index_entries(
 
     Every occurrence matters: ``options_manager::deserialize`` walks
     the array in order and calls ``setValue`` for each element
-    [src/options.cpp:4080-4100], so a duplicate later in the file
+    [src/options.cpp:4080-4102], so a duplicate later in the file
     would win on load.  Patching all occurrences is therefore the only
     safe behaviour, and a duplicate is reported rather than hidden.
     """
@@ -1234,24 +1645,31 @@ def _apply(
             f"options file; this module will not invent an entry")
     if len(occurrences) > 1:
         _note(
-            f"{name} appears {len(occurrences)} times in {path}; "
-            f"every occurrence is being set, because the engine "
-            f"applies them in order and the last one would win",
+            f"{name} appears {len(occurrences)} times in {path} with "
+            f"the values "
+            f"{', '.join(repr(str(e['value'])) for e in occurrences)}; "
+            f"every occurrence is being set, and the LAST one "
+            f"({str(occurrences[-1]['value'])!r}) is what the engine "
+            f"was actually using, because it applies them in order",
             notes)
 
-    changed_from = None
+    # The value the ENGINE was using is the last occurrence's, since it
+    # applies them in order and each assignment overwrites the previous
+    # one.  Reporting the first occurrence's value as "before" would
+    # describe a state the game never had -- a small fabrication, and
+    # exactly the kind that makes a change log untrustworthy.
+    effective_before = str(occurrences[-1]["value"])
+    changed = False
     for entry in occurrences:
-        before = str(entry["value"])
-        if before != wanted:
+        if str(entry["value"]) != wanted:
             entry["value"] = wanted
-            if changed_from is None:
-                changed_from = before
-    if changed_from is None:
+            changed = True
+    if not changed:
         already.append(name)
         LOG.debug("%s already holds %r", name, wanted)
         return
     changes.append(
-        Change(name=name, before=changed_from, after=wanted,
+        Change(name=name, before=effective_before, after=wanted,
                reason=REASONS.get(name, "required by the pipeline")))
 
 
@@ -1266,6 +1684,7 @@ def patch(
     resolve_tiles: bool = True,
     worlds: str = WORLDS_AUTO,
     dry_run: bool = False,
+    allow_tileset_fallback: Optional[bool] = None,
 ) -> SeedReport:
     """Seed the pipeline's option values into ``path``, in place.
 
@@ -1286,13 +1705,20 @@ def patch(
     :param world_compression: ``WORLD_COMPRESSION2``; defaults to
         ``False``.
     :param resolve_tiles: when ``False``, ``TILES`` is left exactly as
-        the engine wrote it and no tileset discovery is performed.
-        Useful when patching a copy of the file on a host with no
-        ``gfx/`` tree.
+        the engine wrote it and no tileset discovery is performed --
+        for a caller patching a COPY of the file on a host with no
+        ``gfx/`` tree.  CALL-SITE ONLY: :func:`build_parser` exposes no
+        flag that sets it, so no command line and therefore no
+        pipeline stage can drop ``TILES`` out of the plan.  A
+        production run always decides all eight values.
     :param worlds: what to do about an existing world's
         ``worldoptions.json`` -- ``"auto"`` reports but does not touch
         it, ``"patch"`` edits it, ``"skip"`` ignores it entirely.
     :param dry_run: compute and report everything, write nothing.
+    :param allow_tileset_fallback: ``True`` to accept a tileset other
+        than MSXotto+, ``False`` to refuse one, ``None`` to read
+        ``$PLAYTHROUGH_ALLOW_TILESET_FALLBACK``.  Refused by default:
+        see :func:`resolve_tileset`.
 
     ``24_HOUR``, ``SOUND_ENABLED`` and ``USE_TILES`` are deliberately
     NOT parameters.  There is no legitimate configuration of this
@@ -1309,7 +1735,11 @@ def patch(
             f"unknown worlds mode '{worlds}'; expected one of "
             f"{', '.join(WORLDS_MODES)}")
 
-    target = _validated_target(path or options_json_path(root))
+    target = _validated_target(path or options_json_path(root), root)
+    # The file's exact bytes, kept for the rollback in _commit_writes:
+    # "left exactly as it was found" has to mean the original text, not
+    # a re-serialisation of it.
+    original = _read_text(target)
     entries, pretty = load_entries(target)
     grouped = _index_entries(entries)
 
@@ -1336,8 +1766,13 @@ def patch(
     # unresolvable tileset leaves the file completely untouched.
     if resolve_tiles:
         report.tileset = resolve_tileset(
-            root=root, requested=tileset)
-        if report.tileset.origin == "fallback":
+            root=root, requested=tileset,
+            allow_fallback=allow_tileset_fallback)
+        if report.tileset.origin != "required":
+            # An operator-nominated tileset, and a deliberately allowed
+            # fallback, are both deviations from the required pack, so
+            # each is recorded in the report's notes rather than merely
+            # logged.
             _note(report.tileset.reason, notes)
         else:
             LOG.debug("tileset: %s", report.tileset.reason)
@@ -1368,29 +1803,169 @@ def patch(
         _apply(grouped, name, value, target,
                report.changes, report.already, notes)
 
-    if report.changes and not dry_run:
-        write_atomic(target, serialize_entries(entries, pretty))
-        report.written = True
-        LOG.debug("wrote %d change(s) to %s",
-                  len(report.changes), target)
-    elif report.changes:
+    # ------------------------------------------------------------------
+    # PREFLIGHT EVERYTHING, THEN WRITE.  Nothing above this point has
+    # touched the disk: the global file's new content is computed in
+    # memory, and _plan_worlds() below validates and computes every
+    # world file's new content the same way -- resolving each target
+    # under the confinement rules, loading it, and raising for anything
+    # it cannot do honestly.
+    #
+    # The old sequence wrote the global options file first and only then
+    # looked at the worlds, so a world that could not be patched left
+    # the configuration half-applied: the global file already carried
+    # 24_HOUR=24h and the new tileset while the world still carried a
+    # point-pool setting that makes the creator's pool tab read-only,
+    # and the run had failed, so nobody had been told which half had
+    # landed.  Recovering from that means knowing what the file used to
+    # say, which is precisely what an aborted run does not record.
+    #
+    # So the writes happen together, last, and if any one of them fails
+    # the ones already made are restored from the bytes they had before.
+    # ------------------------------------------------------------------
+    planned: List[_PlannedWrite] = []
+    if report.changes:
+        planned.append(_PlannedWrite(
+            target=target,
+            text=serialize_entries(entries, pretty),
+            original=original,
+            label="the global options file",
+            plan=tuple(plan)))
+    planned.extend(
+        _plan_worlds(report, root, wanted_pools, worlds,
+                     dry_run))
+
+    if not planned:
+        LOG.debug("%s already held every seeded value, and no world "
+                  "needed a change", target)
+        return report
+    if dry_run:
         _note(
-            f"dry run: {len(report.changes)} change(s) computed but "
-            f"{target} was not written",
+            f"dry run: {len(report.changes) + len(report.world_changes)}"
+            f" change(s) computed across {len(planned)} file(s), none "
+            f"written",
             notes)
-    else:
-        LOG.debug("%s already held every seeded value", target)
+        return report
 
-    if report.written:
-        _confirm_written(target, plan)
-
-    _handle_worlds(report, root, wanted_pools, worlds, dry_run)
+    _commit_writes(planned, report, root)
     return report
+
+
+@dataclass(frozen=True)
+class _PlannedWrite:
+    """One file's fully computed new content, not yet written.
+
+    ``original`` is the exact text the file held when it was read, kept
+    so that a failure part-way through a multi-file commit can put every
+    already-written file back the way it was.  ``plan`` is the
+    name/value pairs to confirm afterwards, empty for a world file whose
+    single change is confirmed directly.
+    """
+
+    target: str
+    text: str
+    original: str
+    label: str
+    plan: Tuple[Tuple[str, str], ...] = ()
+
+
+def _commit_writes(
+    planned: Sequence[_PlannedWrite],
+    report: SeedReport,
+    root: Optional[str] = None,
+) -> None:
+    """Write every planned file, or restore the ones already written.
+
+    Each individual write is atomic already (:func:`write_atomic`
+    renames into place), so the only failure this has to handle is a
+    write that succeeds followed by one that does not.  In that case
+    every file written by this call is put back to the bytes it held
+    before, in reverse order, and the original error is re-raised: the
+    configuration is then exactly as it was found, which is a state the
+    operator can reason about.
+
+    A rollback write that itself fails is reported at ERROR with the
+    path and the content that could not be restored, because at that
+    point the module genuinely cannot fix it and saying so is the only
+    honest thing left to do.
+
+    :raises SeedError: the first write failure, after rolling back.
+    """
+    written: List[_PlannedWrite] = []
+    for item in planned:
+        try:
+            write_atomic(item.target, item.text)
+        except SeedError as err:
+            if written:
+                LOG.error(
+                    "failed to write %s (%s); restoring %d file(s) "
+                    "already written so the configuration is left "
+                    "exactly as it was found",
+                    item.label, err, len(written))
+                _rollback_writes(written)
+            raise
+        written.append(item)
+        if item.plan:
+            report.written = True
+        LOG.debug("wrote %s (%s)", item.label, item.target)
+
+    # Confirmation happens only once every write has landed, so a
+    # confirmation failure cannot be mistaken for a partial write.
+    for item in written:
+        if item.plan:
+            _confirm_written(item.target, item.plan, root)
+    if report.world_changes:
+        _confirm_world_writes(report, root)
+
+
+def _rollback_writes(written: Sequence[_PlannedWrite]) -> None:
+    """Restore each already-written file to its original bytes."""
+    for item in reversed(written):
+        try:
+            write_atomic(item.target, item.original)
+            LOG.warning("restored %s to its previous content (%s)",
+                        item.label, item.target)
+        except SeedError as err:
+            LOG.error(
+                "could not restore %s at %s (%s).  That file now holds "
+                "this run's partial change and must be repaired by "
+                "hand or regenerated by the engine",
+                item.label, item.target, err)
+
+
+def _confirm_world_writes(
+    report: SeedReport,
+    root: Optional[str],
+) -> None:
+    """Prove every world change actually reached the disk.
+
+    The same argument as :func:`_confirm_written`: reporting a change
+    that did not take effect would be a fabrication, and a world file is
+    no less load-bearing than the global one -- it is what decides
+    whether the character creator's pool tab is live or read-only.
+
+    :raises SeedError: when a recorded world change is not on disk.
+    """
+    problems = []
+    for change in report.world_changes:
+        if change.path is None:
+            continue
+        observed = read_values(change.path, root)
+        actual = observed.get(change.name)
+        if actual != change.after:
+            problems.append(
+                f"{change.path} reads {change.name} back as "
+                f"{actual!r}, not {change.after!r}")
+    if problems:
+        raise SeedError(
+            "a world write did not take effect:\n  - " +
+            "\n  - ".join(problems))
 
 
 def _confirm_written(
     target: str,
     plan: Sequence[Tuple[str, str]],
+    root: Optional[str] = None,
 ) -> None:
     """Re-read ``target`` and prove the write took effect.
 
@@ -1408,7 +1983,7 @@ def _confirm_written(
         holds, naming the ``24_HOUR`` trap explicitly when that is the
         value at fault.
     """
-    observed = read_values(target)
+    observed = read_values(target, root)
     problems = []
     for name, wanted in plan:
         actual = observed.get(name)
@@ -1430,14 +2005,22 @@ def _confirm_written(
               len(plan), target)
 
 
-def _handle_worlds(
+def _plan_worlds(
     report: SeedReport,
     root: Optional[str],
     point_pools: str,
     mode: str,
-    dry_run: bool,
-) -> None:
-    """Report on, or patch, existing worlds' ``worldoptions.json``.
+    dry_run: bool = False,
+) -> List["_PlannedWrite"]:
+    """Preflight existing worlds and RETURN their planned writes.
+
+    Nothing here touches the disk.  Every world target is resolved
+    under the confinement rules, loaded, and checked; the new content is
+    computed in memory and handed back so that :func:`patch` can commit
+    the global file and the world files together, or neither.  A
+    condition this cannot handle honestly -- ``--worlds patch`` against
+    a world that carries no such entry -- still raises here, BEFORE any
+    write has happened, which is the whole point of preflighting.
 
     ``CHARACTER_POINT_POOLS`` is a ``world_default`` option
     [src/options.cpp:2893], and a world captures the global world
@@ -1454,11 +2037,12 @@ def _handle_worlds(
       world's current value and warns when it is not point-buy
       capable, but changes nothing.  ``patch`` is the explicit opt-in.
     """
+    planned: List[_PlannedWrite] = []
     if mode == WORLDS_SKIP:
         report.notes.append(
             "existing world options were not inspected "
             "(--worlds skip)")
-        return
+        return planned
 
     paths = world_options_paths(root)
     if not paths:
@@ -1467,7 +2051,7 @@ def _handle_worlds(
             f"{OPT_POINT_POOLS}='{point_pools}' from the seeded "
             f"global world defaults "
             f"[src/worldfactory.cpp:2039]")
-        return
+        return planned
 
     session_mode = os.environ.get(ENV_SESSION_MODE, "")
     for world_path in paths:
@@ -1486,7 +2070,25 @@ def _handle_worlds(
             _note(message, report.notes)
             continue
 
-        current = str(occurrences[0]["value"])
+        # The LAST occurrence, not the first.  A world options file may
+        # legally carry the same key twice, and the engine deserialises
+        # the array in order -- each assignment overwriting the one
+        # before it -- so the final occurrence is the value the game is
+        # actually running under.  Reading occurrences[0] would report
+        # a value the world does not have, and would then decide
+        # "point-buy is available" (or not) from it: a wrong answer to
+        # the one question this branch exists to answer.
+        current = str(occurrences[-1]["value"])
+        if len(occurrences) > 1:
+            _note(
+                f"world '{world_name}' declares {OPT_POINT_POOLS} "
+                f"{len(occurrences)} times in {world_path} with the "
+                f"values "
+                f"{', '.join(repr(str(e['value'])) for e in occurrences)}"
+                f"; the engine applies them in order, so the "
+                f"effective value is the last one, '{current}', which "
+                f"is what is reported below",
+                report.notes)
         if mode == WORLDS_AUTO:
             detail = (
                 f"world '{world_name}' already exists with "
@@ -1507,7 +2109,8 @@ def _handle_worlds(
             continue
 
         _validated_choice(OPT_POINT_POOLS, point_pools, POINT_POOLS)
-        world_target = _validated_target(world_path)
+        world_target = _validated_target(world_path, root)
+        original = _read_text(world_target)
         changes: List[Change] = []
         already: List[str] = []
         _apply(grouped, OPT_POINT_POOLS, point_pools, world_target,
@@ -1517,15 +2120,28 @@ def _handle_worlds(
                 f"world '{world_name}' already held "
                 f"{OPT_POINT_POOLS}='{point_pools}'")
             continue
+        # The change is recorded with the file it belongs to, so
+        # _confirm_world_writes can prove it landed there.
+        located = [
+            Change(name=change.name, before=change.before,
+                   after=change.after, reason=change.reason,
+                   path=world_target)
+            for change in changes]
+        report.world_changes.extend(located)
+        report.notes.append(
+            f"world '{world_name}': {located[0]} in {world_target}"
+            f"{' -- dry run, nothing written' if dry_run else ''}")
         if dry_run:
             report.notes.append(
-                f"dry run: world '{world_name}' would change "
-                f"{changes[0]}")
-            continue
-        write_atomic(world_target, serialize_entries(entries, pretty))
-        report.world_changes.extend(changes)
-        report.notes.append(
-            f"world '{world_name}': {changes[0]} in {world_target}")
+                f"world '{world_name}' would change: "
+                f"{OPT_POINT_POOLS} -> '{point_pools}' in "
+                f"{world_target}")
+        planned.append(_PlannedWrite(
+            target=world_target,
+            text=serialize_entries(entries, pretty),
+            original=original,
+            label=f"world '{world_name}'"))
+    return planned
 
 
 # ---------------------------------------------------------------------
@@ -1562,7 +2178,7 @@ def read_values(
     :raises SeedError: only when the file itself cannot be believed --
         missing, unreadable, or not an engine-shaped option array.
     """
-    target = _validated_target(path or options_json_path(root))
+    target = _validated_target(path or options_json_path(root), root)
     entries, _ = load_entries(target)
     grouped = _index_entries(entries)
     observed: Dict[str, str] = {}
@@ -1584,6 +2200,7 @@ def verify(
     point_pools: Optional[str] = None,
     world_compression: Optional[bool] = None,
     require_installed: bool = True,
+    allow_tileset_fallback: Optional[bool] = None,
 ) -> Dict[str, str]:
     """Read the options file back and assert every seeded value.
 
@@ -1592,14 +2209,24 @@ def verify(
         which is the stronger check of the two whenever ``gfx/`` is
         reachable.
     :param require_installed: when ``True``, the stored ``TILES`` value
-        must name an installed tileset.  Set ``False`` only when
-        verifying a copy of the file away from a ``gfx/`` tree.
+        must name an installed tileset AND, unless the fallback is
+        allowed, must be the MSXotto+ pack the run requires.  Set
+        ``False`` only when verifying a copy of the file away from a
+        ``gfx/`` tree.  CALL-SITE ONLY: :func:`build_parser` exposes no
+        flag that sets it, so every command-line verification -- and so
+        every production verification -- makes the strong check.
+    :param allow_tileset_fallback: ``True`` to accept a stored tileset
+        other than MSXotto+, ``None`` to read
+        ``$PLAYTHROUGH_ALLOW_TILESET_FALLBACK``.
     :returns: the observed values of every seeded option.
     :raises SeedError: listing every mismatch found, so one run
         reports all of them rather than one at a time.
     """
-    target = _validated_target(path or options_json_path(root))
-    observed = read_values(target)
+    target = _validated_target(path or options_json_path(root), root)
+    # `root` is forwarded, not dropped: read_values confines its own
+    # target too, and a reader that fell back to the module's checkout
+    # would refuse the very file this function just authorised.
+    observed = read_values(target, root)
 
     problems: List[str] = []
     for name in SEEDED_OPTIONS:
@@ -1684,12 +2311,29 @@ def verify(
             f"{OPT_TILES} is {stored_tiles!r}, expected "
             f"{tileset!r}")
     if require_installed and stored_tiles is not None:
-        installed = [item.ident for item in discover_tilesets(root)]
+        available = discover_tilesets(root)
+        installed = [item.ident for item in available]
         if stored_tiles not in installed:
             problems.append(
                 f"{OPT_TILES} is {stored_tiles!r}, which is not "
                 f"installed; installed ids: "
                 f"{', '.join(installed) or '(none)'}")
+        elif not _fallback_allowed(allow_tileset_fallback):
+            # Installed is not the same as required.  The run has to be
+            # recorded in MSXotto+, so a stored id that is merely
+            # present -- ASCIITiles, say -- is reported here rather
+            # than passing verification and being discovered in the
+            # finished movie.
+            match = _match_tileset(available, stored_tiles)
+            wanted = os.environ.get(ENV_TILESET) or TILESET_REQUIRED
+            if match is not None and not _is_required(match, wanted):
+                problems.append(
+                    f"{OPT_TILES} is {stored_tiles!r}, but the run "
+                    f"requires {wanted!r} (MSXotto+).  Install it with "
+                    f"`playthrough/tooling/launch_game.sh tileset`, or "
+                    f"pass --allow-tileset-fallback / set "
+                    f"${ENV_ALLOW_TILESET_FALLBACK}=1 to accept "
+                    f"another tileset deliberately")
 
     if problems:
         raise SeedError(
@@ -1746,12 +2390,37 @@ def build_parser() -> argparse.ArgumentParser:
         help="TILES id or display name; validated against the "
              "tilesets actually installed under gfx/.  Defaults to "
              "$PLAYTHROUGH_TILESET_RESOLVED as emitted by "
-             f"launch_game.sh, then '{TILESET_PREFERRED}', then "
-             f"'{TILESET_FALLBACK}'")
+             f"launch_game.sh, then the required "
+             f"'{TILESET_REQUIRED}'.  An uninstalled tileset is an "
+             f"error, never a substitution")
+    # THERE IS DELIBERATELY NO --no-tileset FLAG.
+    #
+    # It used to exist, and it was a production bypass: it dropped
+    # TILES out of the plan -- eight decided values became seven -- and
+    # it turned off the verifier's installed-tileset check, so a run
+    # could report complete success with ASCIITiles, or the absent
+    # compiled default UltimateCataclysm, left in place.  The run is
+    # required to be recorded in MSXotto+, and a flag that quietly
+    # removes the only check of that is worse than no check at all,
+    # because every other gate still passes.
+    #
+    # `patch(resolve_tiles=False)` and `verify(require_installed=False)`
+    # remain as call-site-only parameters, for a caller holding these
+    # rules against a copy of an options file on a host with no gfx/
+    # tree.  argparse cannot produce either of them, so no command line
+    # -- and therefore no pipeline stage -- can reach the relaxed
+    # behaviour.  The one sanctioned way to record a session in another
+    # tileset is --allow-tileset-fallback, which announces itself in
+    # the report and on stderr.
     parser.add_argument(
-        "--no-tileset", dest="resolve_tiles", action="store_false",
-        help="leave TILES exactly as the engine wrote it and perform "
-             "no tileset discovery")
+        "--allow-tileset-fallback", dest="allow_tileset_fallback",
+        action="store_true", default=None,
+        help=f"accept a tileset other than '{TILESET_REQUIRED}' "
+             f"(MSXotto+) -- for instance the checkout's own "
+             f"'{TILESET_FALLBACK}'.  Refused by default, because the "
+             f"run is required to be recorded in MSXotto+ and a silent "
+             f"substitution would pass every other check.  Equivalent "
+             f"to ${ENV_ALLOW_TILESET_FALLBACK}=1")
     parser.add_argument(
         "--terminal-x", type=int, metavar="N",
         default=TERMINAL_X_WANTED,
@@ -1829,7 +2498,7 @@ def _emit(key: str, value: object) -> None:
     """Write one KEY=value line to stdout.
 
     The same machine-readable channel ``launch_game.sh`` uses
-    [playthrough/tooling/launch_game.sh:257-259], so the resolved
+    [playthrough/tooling/launch_game.sh, EX_LAYOUT], so the resolved
     tileset and the change count can be read with ``grep '^KEY='``.
     """
     sys.stdout.write(f"{key}={value}\n")
@@ -1885,6 +2554,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if args.verify_only:
             path = args.options_json or options_json_path(
                 args.repo_root)
+            # require_installed is not passed and not exposed: every
+            # command-line path takes the default True, so verification
+            # always asserts that TILES names an INSTALLED tileset and,
+            # unless the fallback was deliberately allowed, that it is
+            # the MSXotto+ pack the run requires.
             observed = verify(
                 path,
                 root=args.repo_root,
@@ -1893,12 +2567,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 terminal_y=args.terminal_y,
                 point_pools=args.point_pools,
                 world_compression=args.world_compression,
-                require_installed=args.resolve_tiles)
+                allow_tileset_fallback=args.allow_tileset_fallback)
             report = SeedReport(path=os.path.abspath(path))
             report.already.extend(sorted(observed))
             report.notes.append(
                 "verify-only: nothing was written")
         else:
+            # resolve_tiles is likewise not passed and not exposed, so
+            # TILES is always in the plan and all eight values are
+            # decided on every command-line run.
             report = patch(
                 path=args.options_json,
                 root=args.repo_root,
@@ -1907,14 +2584,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 terminal_y=args.terminal_y,
                 point_pools=args.point_pools,
                 world_compression=args.world_compression,
-                resolve_tiles=args.resolve_tiles,
                 worlds=args.worlds,
-                dry_run=args.dry_run)
+                dry_run=args.dry_run,
+                allow_tileset_fallback=args.allow_tileset_fallback)
             if args.dry_run:
                 # A dry run must not assert values it deliberately did
                 # not write; it reports what the file actually holds
                 # and lets --explain list what would change.
-                observed = read_values(report.path)
+                observed = read_values(report.path, args.repo_root)
             else:
                 observed = verify(
                     report.path,
@@ -1925,7 +2602,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     terminal_y=args.terminal_y,
                     point_pools=args.point_pools,
                     world_compression=args.world_compression,
-                    require_installed=args.resolve_tiles)
+                    allow_tileset_fallback=(
+                        args.allow_tileset_fallback))
     except SeedError as err:
         LOG.error("%s", err)
         return 1

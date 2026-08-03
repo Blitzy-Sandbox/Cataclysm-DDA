@@ -6,55 +6,57 @@ frame per keystroke.  The manifest is the record that the session
 happened: every row ties one keystroke to the PNG it produced, to the
 wall-clock instant of that capture, to the sidebar clock as it was
 actually read from that PNG, and to the survivor's own reason for
-acting.  That record is evidence, and evidence is not rewritten, so
-this module only ever appends.
+acting.  That record is evidence, and evidence is not rewritten, so this
+module only ever appends.
 
-Schema -- exactly six keys, in this order, on every row:
+SCHEMA -- exactly six keys, in this order, on every row:
 
     frame         int       monotonic index from 1, supplied by the
                             caller; this module never generates it
     file          str       "playthrough/frames/frame_%05d.png" from
                             the index, matching what capture.sh wrote
     real_ts       str       UTC wall-clock instant of the capture, one
-                            fixed sortable form on every row
-    ingame_clock  str|None  the sidebar clock AS READ, or JSON null
+                            fixed sortable form on every row; supplied
+                            by the caller, never defaulted here
+    ingame_clock  str|None  the sidebar clock AS READ, or JSON null --
+                            the ONLY nullable field in the schema
     action        str       the single keystroke plus enough plain
                             description to be unambiguous
     commentary    str       the survivor's first-person reason for it
 
-Nothing else is permitted.  Durations, transition flags and caption
-cue windows belong to playthrough/timeline.json, which is the single
-source of truth for timing; recording them here as well would create
-the second source of truth the pipeline exists to avoid.  Engineering
-and diagnostic observations belong to playthrough/TECHNICAL_NOTES.md.
-A row carrying an unexpected key, or missing a required one, is
-refused rather than written.
+Nothing else is permitted, and a row carrying an unexpected key or
+missing a required one is refused rather than written.  Durations,
+transition flags and caption cue windows belong to
+playthrough/timeline.json, the single source of truth for timing;
+recording them here as well would create the second source of truth the
+pipeline exists to avoid.  Engineering and diagnostic observations
+belong to playthrough/TECHNICAL_NOTES.md.
 
-`ingame_clock` is the honesty field.  display::time_string()
-(src/display.cpp:207-219) returns an exact time only when the survivor
+``ingame_clock`` IS THE HONESTY FIELD.  ``display::time_string()``
+(src/display.cpp:207-218) returns an exact time only when the survivor
 has a watch; otherwise one of the coarse phrases from
-display::time_approx() (src/display.cpp:159-185), otherwise "???".
+``display::time_approx()`` (src/display.cpp:159-185), otherwise "???".
 Under the seeded 24_HOUR=24h option an exact reading is fixed-width
 "%02d:%02d:%02d" (src/calendar.cpp:638-663), which is what makes it
-legible at all.  When the clock could not be read the value is None
-and serialises as JSON null.  It is never interpolated, never carried
+legible at all.  When the clock could not be read the value is None and
+serialises as JSON null.  It is never interpolated, never carried
 forward from the previous row and never guessed; reconciling an
-unreadable or non-monotonic reading is timeline.py's job, downstream
-and visibly flagged.  This module records what was seen.
+unreadable or non-monotonic reading is timeline.py's job, downstream and
+visibly flagged.  This module records what was seen.
 
-Typical use, from session.py, which owns the frame counter::
+THE WRITE CONTRACT.  A row is not reported as appended until it has been
+written, flushed AND forced to the device; a failure anywhere on that
+path raises ManifestError rather than being downgraded to a warning,
+because the frame-count identity is checked against this file.
+``real_ts`` is mandatory and taking it is deliberately the caller's act:
+this module will not stamp "now" on the caller's behalf, because the
+instant a row is appended is not the instant the frame was captured, and
+quietly recording one as the other is fabricated evidence.
+:func:`append_row` documents the fields it takes and what it guarantees.
 
-    import manifest
-
-    index = ...                     # session.py's counter, not ours
-    path = manifest.default_manifest_path()
-    manifest.append_row(
-        path, index, manifest.frame_file(index),
-        manifest.utc_timestamp(), "08:15:32", "l  (look around)",
-        "I want the street in front of me read properly before I "
-        "put a boot on it.")
-
-Verification, from verify_artifacts.sh::
+THE COMMAND LINE IS READ-ONLY on purpose -- appending is available to
+importers only, so session.py keeps sole ownership of the frame counter
+and no shell caller can slip a row in beside it:
 
     python3 playthrough/tooling/manifest.py verify --require-frames
     python3 playthrough/tooling/manifest.py count
@@ -63,8 +65,20 @@ The command line is read-only on purpose: appending is available to
 importers only, so that session.py keeps sole ownership of the frame
 counter and no shell caller can slip a row in beside it.
 
+Where the record may live is not negotiable.  Every path this module
+opens -- for reading as well as for appending -- must resolve inside
+the playthrough/ directory derived from this module's OWN location,
+with no symlinked component, and is opened with O_NOFOLLOW.
+PLAYTHROUGH_MANIFEST, PLAYTHROUGH_FRAMES_DIR and a --manifest argument
+are honoured within that tree and refused outside it: a record that an
+environment variable could redirect to /etc/passwd, to a device node
+or to somebody else's checkout would not be evidence of anything.  The
+append itself is serialised with an exclusive fcntl advisory lock, so
+two writers cannot interleave a row.
+
 Standard library only -- nothing here needs
-playthrough/tooling/requirements.txt.  Paths follow
+playthrough/tooling/requirements.txt.  fcntl makes this POSIX-only,
+which matches the pipeline's Linux/X11 scope.  Paths follow
 playthrough/tooling/env.sh, the single definition of the artifact
 layout, whose PLAYTHROUGH_MANIFEST, PLAYTHROUGH_FRAMES_DIR and
 PLAYTHROUGH_FRAME_FORMAT exports are honoured when they are set.
@@ -72,6 +86,8 @@ PLAYTHROUGH_FRAME_FORMAT exports are honoured when they are set.
 
 import argparse
 import datetime
+import errno
+import fcntl
 import json
 import os
 import re
@@ -105,6 +121,13 @@ MAX_FRAME_INDEX = 99999
 FRAMES_REL_DIR = "playthrough/frames"
 FRAME_NAME_FORMAT = "frame_%05d.png"
 FRAME_FILE_FORMAT = FRAMES_REL_DIR + "/" + FRAME_NAME_FORMAT
+
+# The one name this module reads or appends to, defined once and used by
+# both default_manifest_path() and the target validator below.  The
+# record of a session lives at exactly <approved root>/manifest.jsonl
+# and nowhere else: see _validated_manifest_target() for why the exact
+# path, and not merely containment, is what is required.
+MANIFEST_NAME = "manifest.jsonl"
 
 # real_ts: the wall-clock instant of the capture, in UTC, to the
 # millisecond, in one fixed form on every row so that the column sorts
@@ -219,6 +242,123 @@ def _playthrough_dir():
     return os.path.dirname(_module_dir())
 
 
+def approved_root(root=None):
+    """Return the only directory tree this module may read or write.
+
+    Derived from this module's own location and NEVER from the
+    environment.  That is the whole point: PLAYTHROUGH_MANIFEST, a
+    --manifest argument and a caller's typo are all untrusted input,
+    and a record of what was captured is not evidence if any of them
+    can move it somewhere else on the host.  playthrough/ is the root
+    because every artifact of this pipeline lives beneath it.
+
+    `root` exists so that a test can point exactly the same rules at a
+    temporary directory it owns, which is the only supported way to
+    relocate the tree -- it is an explicit argument at the call site,
+    not something an environment variable can reach.
+    """
+    if root is None:
+        return os.path.realpath(_playthrough_dir())
+    if isinstance(root, os.PathLike):
+        root = os.fspath(root)
+    if not isinstance(root, str):
+        raise ManifestError(
+            "the approved root must be a string path, got %s"
+            % type(root).__name__)
+    if not root.strip():
+        raise ManifestError("the approved root must not be empty")
+    if "\x00" in root:
+        raise ManifestError(
+            "the approved root must not contain a NUL byte")
+    resolved = os.path.realpath(root)
+    if not os.path.isdir(resolved):
+        raise ManifestError("no approved root at %s" % resolved)
+    return resolved
+
+
+def _within(path, root):
+    """Return True when `path` is `root` itself or lies beneath it."""
+    return path == root or path.startswith(root + os.sep)
+
+
+def _assert_within_root(resolved, label, root=None):
+    """Refuse a path that does not resolve inside the approved root.
+
+    The FULLY RESOLVED form is what is tested, so `../` sequences and
+    a symlink pointing out of the tree are both caught: /etc/passwd,
+    /dev/anything and a sibling checkout are refused rather than
+    written.  This is the check that makes it safe to accept a path
+    from the environment or the command line at all.
+
+    Returns the approved root, so a caller can pass it straight to
+    _assert_no_symlink() without deriving it twice.
+    """
+    approved = approved_root(root)
+    canonical = os.path.realpath(resolved)
+    if not _within(canonical, approved):
+        raise ManifestError(
+            "%s must stay inside %s, but %s resolves to %s"
+            % (label, approved, resolved, canonical))
+    return approved
+
+
+def _assert_no_symlink(resolved, root, label):
+    """Refuse `resolved` if it or a component below `root` is a link.
+
+    Containment alone is not enough.  A link INSIDE the tree still
+    points somewhere else inside the tree, so one planted link could
+    redirect every appended row into another artifact -- the frames
+    directory, the timeline, the movie -- and the append would look
+    entirely successful.  The final component is checked first because
+    that is the case that is well defined however the path was
+    spelled; the walk then covers every directory between the root and
+    the file.
+    """
+    if os.path.islink(resolved):
+        raise ManifestError(
+            "%s is a symbolic link: %s.  This module writes files, it "
+            "does not follow links to them." % (label, resolved))
+    if not _within(resolved, root):
+        # The path reaches the tree through a symlinked ancestor ABOVE
+        # the root -- a checkout under a linked directory, say.
+        # _assert_within_root() has already proved the destination is
+        # inside the tree, and components above the root are not this
+        # module's business, so there is nothing further to walk.
+        return
+    current = root
+    for part in os.path.relpath(resolved, root).split(os.sep):
+        if part in ("", os.curdir):
+            continue
+        current = os.path.join(current, part)
+        if os.path.islink(current):
+            raise ManifestError(
+                "%s has a symlinked component at %s; a link there "
+                "could redirect the record inside %s"
+                % (label, current, root))
+
+
+def _open_nofollow(path, flags, mode=0o600):
+    """Open `path` without following it if it is a symlink.
+
+    O_NOFOLLOW makes the kernel refuse the final component when it is
+    a link, which closes the window between the check above and this
+    open: a link planted in between fails the syscall instead of being
+    followed.  The mode matters only when the file is created, and it
+    is private because a manifest row records what the survivor's
+    screen showed; git records only the executable bit, so nothing
+    about the committed artifact changes.
+    """
+    try:
+        return os.open(path, flags, mode)
+    except OSError as err:
+        if err.errno in (errno.ELOOP, errno.EMLINK):
+            raise ManifestError(
+                "the manifest path is a symbolic link: %s.  Refusing "
+                "to follow it." % path) from err
+        raise ManifestError(
+            "could not open the manifest %s: %s" % (path, err)) from err
+
+
 def default_manifest_path():
     """Return the manifest this pipeline writes and reads.
 
@@ -232,7 +372,7 @@ def default_manifest_path():
     from_env = os.environ.get("PLAYTHROUGH_MANIFEST")
     if from_env and from_env.strip():
         return os.path.abspath(from_env)
-    return os.path.join(_playthrough_dir(), "manifest.jsonl")
+    return os.path.join(_playthrough_dir(), MANIFEST_NAME)
 
 
 def default_frames_dir():
@@ -277,7 +417,61 @@ def _validated_path(value, label):
     return resolved
 
 
-def _validated_manifest_path(value):
+def _validated_manifest_target(value, root=None):
+    """Return an absolute manifest path this module may touch.
+
+    The shared half of reading and appending, so neither entry point
+    can be the lenient one.  Four conditions must hold:
+
+    1. the path resolves inside the approved root (playthrough/,
+       derived from this module's location) -- so /etc/passwd, a device
+       node and a sibling checkout are refused rather than opened;
+    2. it is not reached through a symlinked component, and is not
+       itself a link;
+    3. it is the EXACT canonical manifest -- ``<approved
+       root>/manifest.jsonl`` -- and not merely some path inside the
+       tree;
+    4. it does not name anything other than a regular file.
+
+    CONDITION 3 IS THE ONE WORTH EXPLAINING.  Containment alone is not
+    enough, because everything this pipeline produces lives inside
+    playthrough/: with only conditions 1 and 2, a
+    ``PLAYTHROUGH_MANIFEST`` or ``--manifest`` naming
+    ``playthrough/timeline.json``, or a frame, or the movie, would be
+    accepted and APPENDED TO -- JSON Lines rows would be written onto
+    the end of another artifact, every write would report success, and
+    the artifact would be silently corrupted while the manifest that was
+    supposed to record the session did not exist at all.  The record of
+    a captured session has exactly one place to live, so that is what
+    is required, compared after resolution so a checkout reached through
+    a symlinked ancestor still matches.
+
+    The ONLY way to work at another location is the explicit
+    call-site-only `root` argument, which relocates the whole approved
+    tree for a caller that owns it -- a test in a temporary directory.
+    Neither the environment nor the command line can reach it, and even
+    then the file must still be named manifest.jsonl directly under that
+    root, so the rule being exercised is the production rule rather than
+    a weaker one.
+    """
+    resolved = _validated_path(value, "manifest path")
+    approved = _assert_within_root(resolved, "the manifest path", root)
+    _assert_no_symlink(resolved, approved, "the manifest path")
+    canonical = os.path.join(approved, MANIFEST_NAME)
+    if os.path.realpath(resolved) != canonical:
+        raise ManifestError(
+            "the manifest is %s and nothing else, but %s was given.  "
+            "A record of a captured session is not written anywhere "
+            "else in the tree: appending rows onto another artifact "
+            "would corrupt it and would report success."
+            % (canonical, resolved))
+    if os.path.exists(resolved) and not os.path.isfile(resolved):
+        raise ManifestError(
+            "the manifest path is not a regular file: %s" % resolved)
+    return resolved
+
+
+def _validated_manifest_path(value, root=None):
     """Return an absolute manifest path that is safe to append to.
 
     The parent directory must already exist.  Creating it here would
@@ -285,20 +479,24 @@ def _validated_manifest_path(value):
     in the tree, and directory creation is playthrough_mkdirs()' job
     in playthrough/tooling/env.sh, not this module's.
     """
-    resolved = _validated_path(value, "manifest path")
+    resolved = _validated_manifest_target(value, root)
     parent = os.path.dirname(resolved)
     if not os.path.isdir(parent):
         raise ManifestError(
             "the directory for the manifest does not exist: %s"
             % parent)
-    if os.path.exists(resolved) and not os.path.isfile(resolved):
-        raise ManifestError(
-            "the manifest path is not a regular file: %s" % resolved)
     return resolved
 
 
-def _validated_directory(value, label):
-    """Return `value` as an absolute directory that exists."""
+def _validated_directory(value, label, root=None):
+    """Return `value` as an absolute directory that exists.
+
+    Held to the approved root as well, because the directory this
+    resolves to is the one counted against the manifest: a frames
+    directory pointed somewhere else -- by PLAYTHROUGH_FRAMES_DIR, a
+    --frames-dir argument or a symlink -- would make the
+    one-frame-per-row identity a statement about the wrong pixels.
+    """
     if value is None:
         raise ManifestError("%s is required" % label)
     if isinstance(value, os.PathLike):
@@ -312,6 +510,8 @@ def _validated_directory(value, label):
     if "\x00" in value:
         raise ManifestError("%s must not contain a NUL byte" % label)
     resolved = os.path.abspath(value)
+    approved = _assert_within_root(resolved, "the %s" % label, root)
+    _assert_no_symlink(resolved, approved, "the %s" % label)
     if not os.path.isdir(resolved):
         raise ManifestError("no %s at %s" % (label, resolved))
     return resolved
@@ -543,19 +743,38 @@ def canonical_real_ts(value):
 
     Accepts the canonical string itself, which round-trips byte for
     byte; any other timezone-aware ISO-8601 string, including the
-    "Z"-suffixed output of `date -u +%Y-%m-%dT%H:%M:%S.%3NZ`; an aware
-    datetime; or None to stamp the current instant.  A value with no
-    timezone is refused rather than assumed to be UTC, because a
-    timestamp with no zone is not sortable across hosts and guessing
-    one would be an invention.
+    "Z"-suffixed output of `date -u +%Y-%m-%dT%H:%M:%S.%3NZ`; or an
+    aware datetime.  A value with no timezone is refused rather than
+    assumed to be UTC, because a timestamp with no zone is not
+    sortable across hosts and guessing one would be an invention.
+
+    None IS REFUSED.  `ingame_clock` is the only nullable field in this
+    schema, and it is nullable precisely so that an unreadable clock
+    can be reported as unread.  real_ts is the opposite kind of value:
+    it is a fact the caller holds and this module does not.  Stamping
+    "now" for a caller who passed nothing would silently record the
+    instant the ROW WAS APPENDED as though it were the instant the
+    FRAME WAS CAPTURED -- two different times, separated by the settle,
+    the screenshot, the crop and the OCR pass -- and it would do so
+    most convincingly on the rows where the caller had simply forgotten
+    to measure.  That is fabricated evidence, which HR6 forbids
+    outright.  So the timestamp must be passed in, and taking it stays
+    a deliberate caller action: utc_timestamp() called at the capture.
     """
     if value is None:
-        return utc_timestamp()
+        raise ManifestError(
+            "real_ts is required and must not be None; it records when "
+            "the capture actually happened, which this module cannot "
+            "know and will not invent.  ingame_clock is the only "
+            "nullable field.  Call utc_timestamp() at the moment the "
+            "frame is captured and pass the result, or pass the "
+            "capture's own timestamp (the canonical form is %s)"
+            % REAL_TS_EXAMPLE)
     if isinstance(value, datetime.datetime):
         return _format_moment(value)
     if not isinstance(value, str):
         raise ManifestError(
-            "real_ts must be an ISO-8601 string, a datetime or None, "
+            "real_ts must be an ISO-8601 string or an aware datetime, "
             "got %s" % type(value).__name__)
     text = value.strip()
     if not text:
@@ -609,7 +828,12 @@ def build_row(frame, file, real_ts, ingame_clock, action, commentary):
 
     Every field is checked here, so a caller can validate before it
     commits to writing, and so append_row() has exactly one validation
-    path.  `ingame_clock` may be None; nothing else may be.
+    path.
+
+    `ingame_clock` may be None; NOTHING ELSE MAY BE, and that is
+    enforced rather than merely documented.  In particular `real_ts` is
+    mandatory: see canonical_real_ts() for why a defaulted timestamp
+    would be fabricated evidence rather than a convenience.
     """
     index = _validated_frame(frame)
     row = {
@@ -635,25 +859,74 @@ def encode_row(row):
     return json.dumps(ordered, ensure_ascii=False) + "\n"
 
 
-def _fsync(handle):
-    """Force a written row to the device, tolerating a refusal.
+def _fsync(handle, path, frame, require_durable):
+    """Force a written row to the device, or fail loudly.
 
     A crash mid-session must not lose the row for a frame that already
-    exists on disk.  flush() has handed the bytes to the operating
-    system by this point, so a filesystem that refuses fsync is
-    reported once rather than allowed to end the session.
+    exists on disk, which is the whole reason this call is here.  So a
+    refusal is NOT tolerated by default.  flush() has handed the bytes
+    to the operating system by this point, but "the kernel has them" is
+    not the same claim as "they survive a power loss", and reporting
+    success for the weaker claim would mean the manifest -- the
+    session's evidence, and the file the frame-count identity is
+    checked against -- could silently be missing rows for frames that
+    exist.  A row this module cannot prove it stored is therefore
+    raised as ManifestError rather than warned about and passed over.
+
+    Reduced durability remains available, but only as an explicit
+    caller decision: `require_durable=False` restores the warn-once
+    behaviour for a caller who genuinely accepts it, such as a scratch
+    manifest on a filesystem that cannot fsync at all.  The default is
+    the safe one, and the opt-in has to be typed out.
     """
     try:
         os.fsync(handle.fileno())
     except OSError as err:
+        if require_durable:
+            raise ManifestError(
+                "could not force frame %s's row to the device (%s).  "
+                "The line was written to %s and handed to the "
+                "operating system, but its DURABILITY IS UNPROVEN, so "
+                "the row may not survive a crash -- and the manifest "
+                "is the session's evidence.  Re-read the file to "
+                "establish what it now contains rather than assuming "
+                "either outcome.  Pass require_durable=False only if "
+                "reduced durability is genuinely acceptable here"
+                % (frame, err, path)) from err
         _warn_once(
             "fsync",
             "could not fsync the manifest (%s); rows are flushed but "
-            "not forced to the device" % err)
+            "not forced to the device -- the caller explicitly "
+            "approved this reduced durability" % err)
+
+
+def _lock_exclusively(handle, path):
+    """Take an exclusive advisory lock over the open manifest.
+
+    Two writers appending at the same instant is not hypothetical: the
+    capture loop runs unattended, and a second stage or a re-run can
+    overlap it.  O_APPEND keeps each write at the end of the file, but
+    the lock is what makes "validate, encode, write, flush, fsync" one
+    indivisible step from another process's point of view, so no row
+    can be interleaved with another and no reader can see half of one.
+
+    The lock is released when the descriptor closes, which the caller's
+    `with` block guarantees on every path including an exception.  A
+    filesystem that refuses flock is reported once rather than allowed
+    to end the session: the write itself is still a single append.
+    """
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+    except OSError as err:
+        _warn_once(
+            "flock",
+            "could not lock the manifest %s (%s); rows are still "
+            "appended one write at a time, but two writers are no "
+            "longer serialised" % (path, err))
 
 
 def append_row(manifest_path, frame, file, real_ts, ingame_clock,
-               action, commentary):
+               action, commentary, require_durable=True, root=None):
     """Validate one row and append it to the manifest.
 
     The only writer in this module, and the only writer of this file.
@@ -661,9 +934,22 @@ def append_row(manifest_path, frame, file, real_ts, ingame_clock,
     assert on it.  Raises ManifestError and writes nothing at all if
     any field is wrong -- there is no partial row.
 
+    A row is not reported as appended until it has been written,
+    flushed AND forced to the device.  Every failure along that path --
+    the open, the write, the flush, the fsync, the close -- raises
+    ManifestError; none is downgraded to a warning, because a caller
+    that is told the row was recorded will not go back and check.
+    `require_durable=False` is the one documented exception, and it
+    weakens only the fsync step: see _fsync().
+
     `manifest_path` is explicit rather than defaulted so that a test,
     a dry run and the real session cannot be confused for one another;
-    default_manifest_path() supplies the pipeline's own value.
+    default_manifest_path() supplies the pipeline's own value.  It is
+    validated against the approved root before anything is opened, so
+    a path outside playthrough/ -- or one reached through a symlink --
+    is refused rather than appended to.  `root` relocates that approved
+    tree for a test that owns a temporary directory; see
+    approved_root().
 
     What this does NOT do is police the index sequence, deliberately.
     Checking that an index follows the last one written would mean
@@ -673,7 +959,7 @@ def append_row(manifest_path, frame, file, real_ts, ingame_clock,
     and reported loudly afterwards by verify_manifest(), which is also
     what the acceptance gate runs.  The counter stays session.py's.
     """
-    path = _validated_manifest_path(manifest_path)
+    path = _validated_manifest_path(manifest_path, root)
     row = build_row(frame, file, real_ts, ingame_clock, action,
                     commentary)
     line = encode_row(row)
@@ -684,18 +970,48 @@ def append_row(manifest_path, frame, file, real_ts, ingame_clock,
     # playthrough/TECHNICAL_NOTES.md, not an edit to this history.
     # newline="\n" pins LF whatever the platform, which is what the
     # `*.jsonl text` attribute expects of the committed file.
-    with open(path, "a", encoding="utf-8", newline="\n") as handle:
-        handle.write(line)
-        handle.flush()
-        _fsync(handle)
+    #
+    # The descriptor is opened with O_NOFOLLOW rather than by name, so
+    # a symlink planted between the validation above and this line is
+    # refused by the kernel instead of followed, and the whole append
+    # is serialised against other writers by the lock below.
+    #
+    # Every step is guarded so that an OSError from any of them becomes
+    # a ManifestError: the caller already catches that for every
+    # validation failure, and a write or durability failure deserves
+    # the same visibility rather than surfacing as a different
+    # exception type from a different layer.  The ManifestError raised
+    # by _fsync() is not an OSError, so it passes through untouched.
+    descriptor = _open_nofollow(
+        path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW)
+    try:
+        handle = os.fdopen(
+            descriptor, "a", encoding="utf-8", newline="\n")
+    except OSError as err:
+        os.close(descriptor)
+        raise ManifestError(
+            "could not open the manifest %s: %s" % (path, err)) from err
+    try:
+        with handle:
+            _lock_exclusively(handle, path)
+            handle.write(line)
+            handle.flush()
+            _fsync(handle, path, row["frame"], require_durable)
+    except OSError as err:
+        raise ManifestError(
+            "could not append frame %s's row to %s (%s); the manifest "
+            "is the session's evidence, so a write this module cannot "
+            "complete is reported rather than passed over"
+            % (row["frame"], path, err)) from err
     return row
 
 
-def append_record(manifest_path, row):
+def append_record(manifest_path, row, require_durable=True, root=None):
     """Append a row supplied as a mapping of the six fields.
 
     A convenience for a caller that already holds a dict; it shares
-    append_row()'s validation exactly, so neither entry point can be
+    append_row()'s validation exactly -- including the path checks, the
+    lock and the durability guarantee -- so neither entry point can be
     the lenient one.
     """
     ordered = _ordered_row(row)
@@ -707,6 +1023,8 @@ def append_record(manifest_path, row):
         ordered["ingame_clock"],
         ordered["action"],
         ordered["commentary"],
+        require_durable=require_durable,
+        root=root,
     )
 
 
@@ -733,36 +1051,49 @@ def _decode_line(raw, number, path):
     return row
 
 
-def read_rows(manifest_path=None):
+def read_rows(manifest_path=None, root=None):
     """Return every row on disk, in file order.  Read-only.
 
     Opened for reading only, and the returned dicts are copies, so no
     caller of this module can rewrite the record through it.  Key
     order is preserved as it appears on disk, which is what lets
     verify_manifest() check the declared order of the file itself.
+
+    The path is held to the same approved-root, no-symlink and
+    O_NOFOLLOW rules as the append path.  Reading is not harmless: a
+    redirected read would report somebody else's file as this
+    session's record, and every count and duration downstream would be
+    computed from it.
     """
     if manifest_path is None:
         manifest_path = default_manifest_path()
-    path = _validated_path(manifest_path, "manifest path")
+    path = _validated_manifest_target(manifest_path, root)
     if not os.path.isfile(path):
         raise ManifestError("no manifest at %s" % path)
     rows = []
-    with open(path, "r", encoding="utf-8", newline="") as handle:
+    descriptor = _open_nofollow(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        handle = os.fdopen(descriptor, "r", encoding="utf-8", newline="")
+    except OSError as err:
+        os.close(descriptor)
+        raise ManifestError(
+            "could not read the manifest %s: %s" % (path, err)) from err
+    with handle:
         for number, raw in enumerate(handle, start=1):
             rows.append(_decode_line(raw, number, path))
     return rows
 
 
-def count_rows(manifest_path=None):
+def count_rows(manifest_path=None, root=None):
     """Return the number of rows on disk.  Read-only.
 
     The count that must equal the number of PNGs in the frames
     directory -- one keystroke, one capture, one row.
     """
-    return len(read_rows(manifest_path))
+    return len(read_rows(manifest_path, root))
 
 
-def last_recorded_frame(manifest_path=None):
+def last_recorded_frame(manifest_path=None, root=None):
     """Return the last frame index recorded, or 0 if there is none.
 
     An observation for the resume branch, not a generator: session.py
@@ -772,10 +1103,10 @@ def last_recorded_frame(manifest_path=None):
     """
     if manifest_path is None:
         manifest_path = default_manifest_path()
-    path = _validated_path(manifest_path, "manifest path")
+    path = _validated_manifest_target(manifest_path, root)
     if not os.path.isfile(path):
         return 0
-    rows = read_rows(path)
+    rows = read_rows(path, root)
     if not rows:
         return 0
     last = rows[-1].get("frame")
@@ -787,9 +1118,21 @@ def last_recorded_frame(manifest_path=None):
 
 
 def _shape_problems(path):
-    """Report defects in the file's byte shape.  Read-only."""
+    """Report defects in the file's byte shape.  Read-only.
+
+    Opened through the same O_NOFOLLOW descriptor discipline as every
+    other read here, so the bytes checked are the bytes of the file
+    that was validated and not of something a link points at.
+    """
     problems = []
-    with open(path, "rb") as handle:
+    descriptor = _open_nofollow(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        handle = os.fdopen(descriptor, "rb")
+    except OSError as err:
+        os.close(descriptor)
+        raise ManifestError(
+            "could not read the manifest %s: %s" % (path, err)) from err
+    with handle:
         data = handle.read()
     if not data:
         return ["%s is empty" % path]
@@ -804,8 +1147,31 @@ def _shape_problems(path):
     return problems
 
 
-def _row_problems(row, number):
-    """Report every schema defect in one row.  Read-only."""
+def row_field_problems(row, number):
+    """Report every schema defect in ONE row.  Read-only.
+
+    PUBLIC AND AUTHORITATIVE.  This function -- not a paraphrase of it
+    -- is what decides whether a single manifest row is well formed.
+    timeline.py gates its whole computation on these rows, and a
+    second, weaker copy of these checks living there would mean the
+    pipeline had two disagreeing definitions of a valid row, with the
+    looser one deciding what gets rendered.  The schema is defined
+    here, next to the writer that enforces it, so the reader and the
+    writer cannot drift apart.
+
+    THE PAIR, AND WHY IT IS A PAIR.  This function and
+    sequence_problems() below are the two halves of the schema: one row
+    in isolation, and the 1..n identity across rows.  row_problems() is
+    the CANONICAL GATE that applies both to a whole manifest, and it is
+    what every other stage calls; these two exist separately so that a
+    caller holding one row -- the writer, on its way to appending it --
+    can check exactly what it holds without inventing its own rules.
+    Nothing outside this module should need to call them directly.
+
+    `number` is the 1-based line number, used only in the messages.
+    Nothing is modified, and a returned empty list means this row
+    satisfies the six-field schema.
+    """
     problems = []
     if list(row) != list(FIELDS):
         return [
@@ -853,10 +1219,21 @@ def _row_problems(row, number):
     return problems
 
 
-def _sequence_problems(rows):
-    """Report gaps, repeats and reorderings.  Read-only."""
+def sequence_problems(rows):
+    """Report gaps, repeats and reorderings.  Read-only.
+
+    PUBLIC AND AUTHORITATIVE, for the same reason as row_problems():
+    the 1..n identity is what makes one keystroke, one frame and one row
+    the same statement, and it is checked here so that every stage
+    checks it the same way.
+    """
     problems = []
     for position, row in enumerate(rows, start=1):
+        if not isinstance(row, dict):
+            # Already reported as a malformed row; skipping it here
+            # keeps every later position honest, because renumbering
+            # around it would blame the wrong row for the gap.
+            continue
         frame = row.get("frame")
         if isinstance(frame, bool) or not isinstance(frame, int):
             continue
@@ -868,10 +1245,60 @@ def _sequence_problems(rows):
     return problems
 
 
-def _frame_problems(rows, frames_dir):
+def row_problems(rows, allow_index_gaps=False):
+    """Report every schema defect in a sequence of rows.  Pure.
+
+    THE canonical in-memory gate for manifest rows: it applies
+    row_field_problems() to every row and sequence_problems() across
+    them, which are the only implementations of those rules anywhere in
+    the pipeline.  What it holds a manifest to is exactly the six
+    declared fields in
+    the declared order, an integer index inside the recorded range
+    whose `file` is the capture path this module formats from that
+    index, a real_ts in the one fixed sortable form, non-empty text
+    where text is required, and an `ingame_clock` that is either a
+    reading or JSON null.
+
+    Both consumers hold their rows to THIS function.
+    verify_manifest() applies it to the file on disk, and timeline.py
+    applies it to the rows it is about to pace a film from -- before it
+    writes a timeline AND before it attests to one already written --
+    so the same defect is reported in the same words wherever it is
+    found.  A second, laxer copy of these rules is precisely how a
+    manifest error becomes a timeline that quietly filled it in: one
+    such copy existed and accepted a row whose `file` named a
+    different capture than its `frame`, and a real_ts that was not a
+    timestamp at all.
+
+    `allow_index_gaps` suppresses only the 1..n sequence check -- the
+    single problem an operator may knowingly accept, and the only one
+    this function will ever stay quiet about.  Every other defect is
+    reported unconditionally, and verify_manifest() never passes the
+    flag, so `manifest.py verify` reports a gap whatever anybody else
+    chose to tolerate.
+
+    Nothing is read from disk, nothing is repaired and nothing is
+    rewritten -- the caller decides what a problem means, which for
+    this pipeline means refusing to build evidence on top of it.
+    """
+    problems = []
+    for position, row in enumerate(rows, start=1):
+        if not isinstance(row, dict):
+            problems.append(
+                "row %d is a %s, not an object"
+                % (position, type(row).__name__))
+            continue
+        problems.extend(row_field_problems(row, position))
+    if not allow_index_gaps:
+        problems.extend(sequence_problems(rows))
+    return problems
+
+
+def _frame_problems(rows, frames_dir, root=None):
     """Report rows whose capture is missing on disk.  Read-only."""
     problems = []
-    directory = _validated_directory(frames_dir, "frames directory")
+    directory = _validated_directory(
+        frames_dir, "frames directory", root)
     for row in rows:
         frame = row.get("frame")
         if isinstance(frame, bool) or not isinstance(frame, int):
@@ -888,33 +1315,34 @@ def _frame_problems(rows, frames_dir):
 
 
 def verify_manifest(manifest_path=None, frames_dir=None,
-                    require_frames=False):
+                    require_frames=False, root=None):
     """Return a list of problems with the manifest.  Read-only.
 
     An empty list means the file satisfies the schema, the byte shape
-    and the one-row-per-frame invariant.  With `require_frames` the
-    capture named by each row must also exist.  Nothing is repaired,
-    reordered or rewritten: a problem is reported so that a human can
-    decide, which for this file means a note in
+    and the one-row-per-frame invariant.  The schema half is
+    row_problems(), the shared gate timeline.py holds its rows to as
+    well, so this function adds the checks that need the FILE -- its
+    byte shape, and with `require_frames` the existence of the capture
+    each row names -- rather than restating the row rules.  Nothing is
+    repaired, reordered or rewritten: a problem is reported so that a
+    human can decide, which for this file means a note in
     playthrough/TECHNICAL_NOTES.md rather than an edit here.
     """
     if manifest_path is None:
         manifest_path = default_manifest_path()
-    path = _validated_path(manifest_path, "manifest path")
+    path = _validated_manifest_target(manifest_path, root)
     if not os.path.isfile(path):
         return ["no manifest at %s" % path]
     try:
-        rows = read_rows(path)
+        rows = read_rows(path, root)
     except ManifestError as err:
         return [str(err)]
     problems = _shape_problems(path)
-    for number, row in enumerate(rows, start=1):
-        problems.extend(_row_problems(row, number))
-    problems.extend(_sequence_problems(rows))
+    problems.extend(row_problems(rows))
     if require_frames:
         if frames_dir is None:
             frames_dir = default_frames_dir()
-        problems.extend(_frame_problems(rows, frames_dir))
+        problems.extend(_frame_problems(rows, frames_dir, root))
     _check_frame_format_contract()
     return problems
 
@@ -930,7 +1358,10 @@ def _build_parser():
     parser.add_argument(
         "--manifest", default=None, metavar="PATH",
         help=("the manifest to read; defaults to PLAYTHROUGH_MANIFEST "
-              "or <repository>/playthrough/manifest.jsonl"))
+              "or <repository>/playthrough/manifest.jsonl.  It must "
+              "resolve to exactly that file: the record of a session "
+              "has one location, and any other path -- including "
+              "another artifact inside playthrough/ -- is refused"))
     commands = parser.add_subparsers(dest="command", required=True)
     verify = commands.add_parser(
         "verify",
@@ -949,18 +1380,26 @@ def _build_parser():
     return parser
 
 
-def main(argv=None):
-    """Run the read-only command line and return an exit status."""
+def main(argv=None, root=None):
+    """Run the read-only command line and return an exit status.
+
+    `root` is call-site only, exactly as it is on every function above:
+    it relocates the approved tree for a caller that owns a temporary
+    directory, and neither the environment nor the command line can
+    reach it.  The rules a relocated run is held to are the production
+    rules, unchanged.
+    """
     args = _build_parser().parse_args(argv)
     try:
         if args.command == "count":
-            print(count_rows(args.manifest))
+            print(count_rows(args.manifest, root))
             return 0
         problems = verify_manifest(
             args.manifest,
             frames_dir=args.frames_dir,
-            require_frames=args.require_frames)
-        total = count_rows(args.manifest) if not problems else 0
+            require_frames=args.require_frames,
+            root=root)
+        total = count_rows(args.manifest, root) if not problems else 0
     except ManifestError as err:
         print("manifest.py: %s" % err, file=sys.stderr)
         return 1

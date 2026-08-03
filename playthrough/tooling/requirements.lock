@@ -1,0 +1,115 @@
+# ---------------------------------------------------------------------
+# playthrough/tooling/requirements.lock
+#
+# The hash-locked, binary-only install manifest for the playthrough
+# capture and cinematography pipeline.
+#
+# requirements.txt beside this file is the DECLARATION: the six
+# libraries the pipeline uses, in the shape the repository's own
+# precedent established (tools/json_tools/requirements.txt).  This file
+# is the INSTALL CONTRACT: the same six pins plus their complete
+# transitive closure, every one bound to the sha256 of one specific
+# wheel, so that what lands in the interpreter is byte for byte what
+# was reviewed.  Exact versions alone stop drift; only hashes stop
+# substitution.
+#
+# INSTALL EXACTLY LIKE THIS, from the repository root:
+#
+#     <interpreter> -m pip install --no-deps \
+#         -r playthrough/tooling/requirements.lock
+#
+#   * --require-hashes and --only-binary :all: are set IN THIS FILE, a
+#     few lines below, so that they cannot be forgotten on a command
+#     line.  pip then refuses any artifact whose sha256 is not listed
+#     here, and refuses to build anything from source -- no setup.py
+#     from an unreviewed sdist ever executes.
+#   * --no-deps is REQUIRED, and it is a deliberate, documented
+#     override rather than a shortcut.  Every dependency of every
+#     package below is already pinned and hashed here -- the closure is
+#     complete, which is what makes disabling resolution safe -- and
+#     resolution has to be disabled because moviepy 2.2.1 declares
+#     `pillow<12.0` while the only Pillow release with no outstanding
+#     advisory is 12.3.0.  requirements.txt records the evidence for
+#     that decision in full, including the measurement that moviepy's
+#     fade, title-card and concatenate path works correctly under
+#     Pillow 12.3.0.  Nothing is being hidden from the resolver: the
+#     conflict is stated, the override is named, and the reason is
+#     written down where an operator reads it.
+#
+# THE CLOSURE, AND WHY EACH ENTRY IS HERE
+#   Direct (declared in requirements.txt): moviepy, pillow,
+#   pytesseract, numpy, imageio, imageio-ffmpeg.
+#   Transitive, and required by exactly these:
+#     decorator, proglog, python-dotenv  <- moviepy
+#     tqdm                               <- proglog
+#     packaging                          <- pytesseract
+#   Nothing else resolves in on Linux: tqdm's colorama is
+#   `platform_system == "Windows"` and every other requirement of every
+#   package here is an extra this pipeline never asks for.
+#
+# PLATFORM
+#   These are the CPython 3.12 wheels for manylinux x86_64, which is
+#   the platform the pipeline is verified on.  numpy and pillow ship
+#   per-interpreter binaries, so a different interpreter or
+#   architecture needs its own lock; regenerate it rather than relaxing
+#   this one.
+#
+# HOW TO REGENERATE, AND HOW THESE HASHES WERE OBTAINED
+#     python -m pip download --only-binary :all: --no-deps \
+#         -d <dir> --python-version 3.12 --implementation cp \
+#         --platform manylinux_2_28_x86_64 <every pin below>
+#     python -m pip hash <dir>/*.whl
+#   Each sha256 below was then cross-checked against the `digests`
+#   field PyPI publishes for that exact filename, so the value in this
+#   file is corroborated by the index and not merely by the download.
+#
+# FORMAT NOTE
+#   A hash is 78 characters, so it sits on its own continuation line to
+#   keep this file inside the repository's 79-column house width.  The
+#   single leading space is deliberate: 78 + 1 is exactly 79.
+# ---------------------------------------------------------------------
+
+--only-binary :all:
+--require-hashes
+
+# Fade, "...time passes..." card and fade-in composition.
+moviepy==2.2.1 \
+ --hash=sha256:6b56803fec2ac54b557404126ac1160e65448e03798fa282bd23e8fab3795060
+
+# PNG inspection, title-card composition, MoviePy's image backend and
+# the OCR module's decoder.  12.3.0 is the first release with no
+# outstanding advisory; see requirements.txt.
+pillow==12.3.0 \
+ --hash=sha256:78cb2c6865a35ab8ff8b75fd122f6033b92a62c82801110e48ddd6c936a45d91
+
+# Sidebar clock OCR wrapper around the tesseract binary.
+pytesseract==0.3.13 \
+ --hash=sha256:7a99c6c2ac598360693d83a416e36e0b33a67638bb9d77fdcac094a3589d4b34
+
+# Frame luminance statistics and MoviePy's array representation.
+numpy==2.5.1 \
+ --hash=sha256:59fda5e192b570217ec2580c96f00e9a7e12ef6866a900eb089b62c1a32545ca
+
+# Frame and video IO used by MoviePy.
+imageio==2.37.4 \
+ --hash=sha256:1ab2e22c8debf700f24c3ac43e8f95f3b3a8110c83b93411e97b4b0b2cd1c7e6
+
+# The encoder bridge.  Its wheel carries a bundled static ffmpeg that
+# this pipeline never uses: env.sh exports IMAGEIO_FFMPEG_EXE so the
+# verified system ffmpeg encodes instead.
+imageio-ffmpeg==0.6.0 \
+ --hash=sha256:c7e46fcec401dd990405049d2e2f475e2b397779df2519b544b8aab515195282
+
+# Transitive.  Pinned and hashed because --no-deps installs exactly
+# what is listed, so an incomplete closure would leave a broken
+# interpreter rather than resolve quietly.
+decorator==5.3.1 \
+ --hash=sha256:f47fe6fdbd2edd623ecfe36875d37aba411624e2670dd395dddae1358689bb3c
+proglog==0.1.12 \
+ --hash=sha256:ccaafce51e80a81c65dc907a460c07ccb8ec1f78dc660cfd8f9ec3a22f01b84c
+python-dotenv==1.2.2 \
+ --hash=sha256:1d8214789a24de455a8b8bd8ae6fe3c6b69a5e3d64aa8a8e5d68e694bbcb285a
+tqdm==4.70.0 \
+ --hash=sha256:7f585706bfddbdebf89daac705b2dfcc16890130727d3197ca62c732b4310953
+packaging==26.2 \
+ --hash=sha256:5fc45236b9446107ff2415ce77c807cee2862cb6fac22b8a73826d0693b0980e

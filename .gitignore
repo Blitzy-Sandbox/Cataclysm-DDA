@@ -257,11 +257,18 @@ VERSION.txt
 # Playthrough capture subsystem artifacts.  This block MUST remain last:
 # git applies the last matching pattern, and these paths are otherwise
 # swallowed by *.log (above), debug.log (above), and \#* (above), which
-# matches Cataclysm-DDA's per-character save files -- written as
-# #<base64-of-character-name>.sav / .log / .shortcuts / .weather
-# (see src/path_info.h SAVE_EXTENSION*, src/game_io.cpp save_player_data).
-# Without this negation, `git add` silently skips the save data and the
-# committed playthrough would be incomplete while reporting success.
+# matches Cataclysm-DDA's per-character save files.  Their names begin
+# with '#' because base64_encode prefixes one (src/catacharset.cpp:266-
+# 273), and on this platform game::save_player_data writes
+# #<base64-of-character-name>.sav -- .sav.zzip when world compression is
+# on -- plus #<base64>.log (src/game_io.cpp:601-641), alongside the
+# #<base64>.apu.json / .ano.json / .sfm.json / .zones*.json sidecars
+# other subsystems write.  (.shortcuts is Android-only, guarded by
+# #if defined(__ANDROID__), and .weather is declared at
+# src/path_info.h:16 but written nowhere; both are listed there for
+# completeness, not produced here.)  Without this negation, `git add`
+# silently skips the save data and the committed playthrough would be
+# incomplete while reporting success.
 # NOTE: never add a directory-level ignore covering this tree -- git does
 # not descend into an excluded directory to evaluate negations inside it,
 # so a pattern such as `playthrough/` would break this block invisibly.

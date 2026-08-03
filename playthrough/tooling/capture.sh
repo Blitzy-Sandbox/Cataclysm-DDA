@@ -4,175 +4,202 @@
 #
 # ONE keystroke, ONE screenshot, ONE clock reading.
 #
-# This is the capture step of the playthrough pipeline's loop --
-# observe, decide in character, act, capture, log.  A single invocation
-# lets the frame settle, photographs the X ROOT window into
+# The capture step of the pipeline's loop -- observe, decide in
+# character, act, capture, log.  A single invocation lets the frame
+# settle, photographs the X ROOT window into
 # playthrough/frames/frame_%05d.png, and reads the sidebar clock out of
-# the pixels it has just written.  It captures one frame for one key
-# and returns.  It never loops over keys and it never sends one:
-# session.py owns the keystroke and the frame counter, this file owns
-# the photograph.
-#
-# THE HELPER THIS FILE IMPLEMENTS
-# The capture helper was specified as:
-#
-#     sleep 0.3   # let the frame settle
-#     i=$(printf "%05d" "$FRAME_INDEX")
-#     import -window root "playthrough/frames/frame_${i}.png"
-#     CLOCK=$(convert "playthrough/frames/frame_${i}.png" \
-#             -crop <sidebar region> png:- \
-#             | tesseract stdin stdout | grep -Eo '<time/turn readout>')
-#
-# Every element of it survives below, in the same order.  Only the two
-# placeholders are resolved, and both resolve from evidence in this
-# repository rather than from guesswork:
-#
-#   <sidebar region>     -> 288x1072+1632+4 for the configuration this
-#                           pipeline runs under, being the sidebar's
-#                           "width": 36 cells [data/json/ui/
-#                           sidebar.json:7, inside the custom_sidebar
-#                           widget] times FONT_WIDTH 8, right-aligned
-#                           because SIDEBAR_POSITION defaults to
-#                           "right" [src/options.cpp, the sidb_opts
-#                           group], over a window whose size is
-#                           WindowWidth = TERMINAL_WIDTH * fontwidth *
-#                           scaling_factor [src/sdltiles.cpp:595-596].
-#                           That value is COMPUTED at run time by
-#                           sidebar_geometry.py and appears as a
-#                           literal here only in this comment and in
-#                           one clearly labelled last-resort fallback.
-#
-#   <time/turn readout>  -> [0-9]{2}:[0-9]{2}:[0-9]{2}, the fixed-width
-#                           form to_string_time_of_day() emits under
-#                           24_HOUR=24h [src/calendar.cpp:649].  The
-#                           other two branches would defeat it:
-#                           "military" renders 0815.32
-#                           [src/calendar.cpp:646] and the shipped
-#                           "12h" default renders 8:15:32 AM with
-#                           variable padding [src/calendar.cpp:
-#                           657-661].  seed_options.py selects 24h for
-#                           exactly this reason.
-#
-# The chain also gains the preprocessing the sketch omitted --
-# `+repage -colorspace Gray -resize 200% -normalize` -- because 8x16
-# terminal glyphs are illegible to tesseract at native size, and with
-# it a real captured frame read back exactly 08:15:32.  Nothing is
-# dropped and nothing is reordered.
-#
-# WHY THE ROOT WINDOW, DELIBERATELY
-# `import -window root`, never the game window.  The X root is exactly
-# 1920x1080 while the game window occupies 1920x1072 at +0+4 (240
-# columns x 8 px by 67 rows x 16 px).  Photographing the root yields a
-# true-resolution PNG with a thin four-pixel letterbox and needs NO
-# rescaling -- and rescaling would soften precisely the 8x16 glyphs the
-# clock read depends on.  Capturing the game window instead would
-# produce a 1920x1072 frame that something downstream would have to
-# resample back up.
-#
-# IMAGEMAGICK: import / convert / identify, NEVER the unified entry
-# point.  The legacy commands exist on both the 6.x and 7.x branches,
-# whereas the version-7 entry point does not exist on 6.x at all --
-# where this pipeline is specified to run -- so code written against
-# version-7 examples fails there with command-not-found.
+# the pixels it has just written.  It never loops over keys and never
+# sends one: session.py owns the keystroke and the frame counter, this
+# file owns the photograph.
 #
 # USAGE
 #     FRAME_INDEX=<n> playthrough/tooling/capture.sh
 #     playthrough/tooling/capture.sh --help
 #
-# THE INDEX IS AN INPUT, NEVER AN INVENTION
-# FRAME_INDEX is the ONLY input and it is required.  session.py is the
-# sole owner of the monotonic frame counter; this file receives an
-# index and must never derive, default, guess or increment one.  It is
-# deliberately not counted off the frames directory: that would be a
-# second source of truth and a retry could silently renumber a frame.
+# FRAME_INDEX is the ONLY input and it is required.  This file must
+# never derive, default, guess or increment one, and deliberately does
+# not count it off the frames directory: that would be a second source
+# of truth, and a retry could silently renumber a frame.
 #
-# STDOUT IS A MACHINE CONTRACT
-# Every line printed on stdout is KEY=value, one per line, and nothing
-# else is ever written there; all logging, warnings and diagnostics go
-# to stderr, which also keeps engineering observations out of the
-# in-character record.  A caller reads a field with
+# THE ROOT WINDOW, DELIBERATELY.  `import -window root`, never the game
+# X window.  The root is 1920x1080 while the terminal render grid the
+# engine paints is 1920x1072 at +0+4 (the three rectangles are tabulated
+# in env.sh under "Display, window and grid geometry").  Photographing
+# the root yields a true-resolution PNG needing NO rescaling, and
+# rescaling would soften exactly the 8x16 glyphs the clock read depends
+# on.  ImageMagick is called only as `import`, `convert` and `identify`:
+# those names exist on both the 6.x and 7.x branches, so this file runs
+# against either.
+#
+# THE CROP AND THE CLOCK.  The sidebar rectangle is COMPUTED at run time
+# by sidebar_geometry.py -- it is never a literal here except in one
+# clearly labelled operator override -- and the reading is matched as
+# [0-9]{2}:[0-9]{2}:[0-9]{2}, the fixed-width form
+# to_string_time_of_day() emits under 24_HOUR=24h
+# (src/calendar.cpp:649).  The other two branches would defeat it:
+# "military" renders 0815.32 and the shipped "12h" default renders
+# 8:15:32 AM with variable padding.  Preprocessing is
+# `+repage -colorspace Gray -resize 200% -normalize`, because 8x16
+# terminal glyphs are illegible to tesseract at native size.
+# THE OCR MAY LEGITIMATELY RETURN NOTHING -- no watch carried, the
+# survivor underground, a genuine misread -- and an unreadable clock is
+# reported as unreadable rather than guessed.
+#
+# STDOUT IS A MACHINE CONTRACT.  Every stdout line is KEY=value, one per
+# line, and nothing else is written there; all logging, warnings and
+# diagnostics go to stderr, which also keeps engineering observations
+# out of the in-character record.  A caller reads a field with
 #
 #     out="$(FRAME_INDEX=42 playthrough/tooling/capture.sh)"
 #     clock="$(printf '%s\n' "${out}" | sed -n 's/^CLOCK=//p')"
 #
 # The keys, always in this order:
 #
-#     FRAME_INDEX     the index exactly as validated
-#     FRAME_NAME      frame_%05d.png
-#     FRAME_FILE      playthrough/frames/frame_%05d.png -- repository
-#                     relative, and byte-identical to manifest.py's
-#                     `file` field, which is built from the same format
-#     FRAME_PATH      the same frame, absolute
-#     FRAME_BYTES     size on disk, so a truncated write is visible
-#     FRAME_FORMAT    the image format identify reports (PNG)
-#     FRAME_GEOMETRY  WxH as captured; asserted against the contract
-#     REAL_TS         UTC instant of the grab, in the manifest's own
-#                     real_ts form (canonical_real_ts() documents
-#                     accepting exactly this `date` output)
-#     CAPTURE_TOOL    import, or scrot when import is unavailable
-#     LUMA_MEAN       grayscale mean of the frame
-#     LUMA_STDDEV     grayscale standard deviation of the frame
-#     CLOCK_RECT      the crop rectangle actually used
-#     CLOCK_RECT_FROM computed | override | fallback
-#     CLOCK_SOURCE    ocr_clock.py | inline | none
-#     CLOCK_STATUS    read | unreadable | fault | skipped
-#     CLOCK           the reading, VERBATIM, or empty when there was
-#                     none.  Never interpolated, never carried forward
-#                     from another frame, never guessed
-#     TIME_PHRASE     the coarse phrase the sidebar showed instead of a
-#                     clock, verbatim, or empty
+#     CAPTURE_MODE     production | diagnostic.  The first key emitted,
+#                      because it decides whether the rest describes a
+#                      frame that belongs to the record.  A caller must
+#                      accept ONLY production -- and cannot do otherwise
+#                      by accident, since diagnostic never exits 0
+#     FRAME_INDEX      the index exactly as validated
+#     FRAME_NAME       frame_%05d.png
+#     FRAME_FILE       playthrough/frames/frame_%05d.png -- repository
+#                      relative, and byte-identical to manifest.py's
+#                      `file` field, built from the same format.  EMPTY
+#                      in diagnostic mode: the frame is withdrawn from
+#                      the tree, so there is no such path
+#     FRAME_PATH       the same frame, absolute.  Empty in diagnostic
+#                      mode, for the same reason
+#     DIAGNOSTIC_PATH  where a withdrawn frame is kept, outside the
+#                      working tree.  Empty in production, where nothing
+#                      is withdrawn -- emitted either way, because a key
+#                      that sometimes disappears is a key a consumer
+#                      papers over with a default
+#     FRAME_BYTES      size on disk, so a truncated write is visible
+#     FRAME_FORMAT     the format identify reports (PNG)
+#     FRAME_GEOMETRY   WxH as captured, asserted against the contract
+#     REAL_TS          UTC instant of the grab, in the manifest's own
+#                      real_ts form (canonical_real_ts() documents
+#                      accepting exactly this `date` output)
+#     CAPTURE_TOOL     import, or scrot when import is unavailable
+#     LUMA_MEAN        grayscale mean of the frame
+#     LUMA_STDDEV      grayscale standard deviation of the frame
+#     CLOCK_RECT       the crop rectangle actually used, or empty
+#                      when no crop was applied to this frame
+#     CLOCK_RECT_FROM  computed | override | skipped -- there is no
+#                      fallback, and 'skipped' means the clock read was
+#                      off, so nothing cropped the frame at all
+#     CLOCK_SOURCE     ocr_clock.py | inline | none
+#     CLOCK_STATUS     read | unreadable | fault | skipped
+#     CLOCK            the reading, VERBATIM, or empty when there was
+#                      none.  Never interpolated, never carried forward
+#                      from another frame, never guessed
+#     TIME_PHRASE      the coarse phrase the sidebar showed instead of a
+#                      clock, verbatim, or empty
+#     CLOCK_DATE       the sidebar date line, VERBATIM, or empty.  Read
+#                      because timeline.py cross-checks its rollover and
+#                      day-count decisions against it: a clock alone
+#                      cannot tell a crossing of midnight from a misread
+#                      going backwards, nor a 24-hour action from a
+#                      zero-second one.  Never derived from the clock
+#     DATE             the same line under the telemetry row's own name,
+#                      so the sidecar row and this payload cannot drift
+#     DATE_STATUS      read | unreadable | fault | unavailable | skipped
+#     DATE_AUDIT       yes | no | off -- whether this frame's date
+#                      evidence reached ocr_clock.py's audit.  "no" is
+#                      not a failure, but timeline.py must then treat
+#                      this frame's date as UNKNOWN, never as unchanged
+#     OBSERVATIONS     the telemetry sidecar this frame's row was
+#                      appended to, or empty when no row was appended
 #
 # EXIT CODES
 #     0  one frame captured and this invocation's output is complete
-#     1  usage error -- a missing, malformed or out-of-range index
+#     1  usage error -- a missing, malformed or out-of-range index, or a
+#        production run that tried to relax one of the four safeguards
 #     2  layout error -- not inside a checkout, or env.sh is missing
 #     3  the capture failed, or produced something that is not a frame
 #     4  the frame is blank -- the black-movie guard fired
-#     5  no usable display at the contracted geometry, or a frame that
-#        is not that geometry
+#     5  no usable display at the contracted geometry, a frame that is
+#        not that geometry, or a crop that could not be computed
 #     6  the clock read hit a FAULT rather than an unreadable clock
 #     7  refusing to overwrite an existing frame at this index
-#     8  a prerequisite command is missing
+#     8  a prerequisite command is missing, or the date-audit directory
+#        does not exist
+#     9  a DIAGNOSTIC capture completed and was withdrawn out of the
+#        working tree.  Non-zero by design: no frame was added to
+#        playthrough/frames/, so this must not read as success
 #
-# THE INVARIANT THIS FILE GUARANTEES
+# THE NON-BLANK GATE.  Every frame is measured in grayscale and rejected
+# unless mean > 0 AND std > 0.  A frame of zero pixels is the signature
+# of SDL_VIDEODRIVER=dummy, under which the game runs, the keystrokes
+# land, the PNG is written, ffmpeg encodes and every count matches --
+# the only symptom being that the movie shows nothing.  The std term
+# additionally rejects a uniform solid colour.
+#
+# THE INVARIANT THIS FILE GUARANTEES, AND THE RESERVATION IS ATOMIC.
 #     exit 0  <=>  exactly one NEW PNG in playthrough/frames/
-# On any failure the frames directory is left exactly as it was found:
-# a frame this invocation wrote is withdrawn to a diagnostic directory
-# outside the working tree, and a pre-existing frame moved aside is put
-# back.  session.py therefore cannot append a manifest row for a frame
-# that does not exist, and the frames-count == manifest-line-count
-# identity that verify_artifacts.sh asserts cannot be broken by a
-# failed capture.  Derived imagery -- the transition frames -- belongs
-# to playthrough/build/transitions/ and is never written here, which is
+#                  AND this invocation's whole output contract was
+#                  delivered
+# Both halves matter.  That reading of the first half is the default
+# production mode (PLAYTHROUGH_CAPTURE_OVERWRITE=0).  With overwrite
+# enabled the index already holds a frame, so `exit 0` means one frame
+# WRITTEN AT THAT INDEX and the PNG count is unchanged; that mode is for
+# a diagnosis, never a session, and it announces itself on stderr.  On
+# any failure in either mode the frames directory is left exactly as it
+# was found: a frame this invocation wrote is withdrawn to a diagnostic
+# directory outside the working tree, and a pre-existing frame moved
+# aside is put back.  The frame is committed -- KEPT=1 -- as the LAST
+# statement before exit 0, after the payload has been written and the
+# telemetry row appended, so a failure to deliver the contract withdraws
+# the frame instead of leaving one nobody was told about; and because a
+# shell killed by a signal never reaches its EXIT trap, PIPE, INT, TERM
+# and HUP are trapped as well.  session.py therefore cannot append a
+# manifest row for a frame that does not exist, nor miss one that does,
+# and the frames-count == manifest-line-count identity that
+# verify_artifacts.sh asserts cannot be broken by a failed capture.
+# Derived imagery -- the transition frames -- belongs to
+# playthrough/build/transitions/ and is never written here, which is
 # what keeps that identity meaningful.
 #
-# TUNABLES -- all optional, all read from the environment
-#     PLAYTHROUGH_CAPTURE_SETTLE     settle seconds
-#                                    (default $PLAYTHROUGH_SETTLE_SECONDS)
-#     PLAYTHROUGH_CAPTURE_CLOCK      on | off      (default on)
-#     PLAYTHROUGH_CAPTURE_PHRASE     auto | off | always  (default auto:
-#                                    read the coarse phrase only when
-#                                    there was no clock to read)
-#     PLAYTHROUGH_CAPTURE_STRICT_CLOCK  1 | 0      (default 1: a clock
-#                                    FAULT is fatal, because the two
-#                                    faults that actually happen -- an
-#                                    off-contract 24_HOUR and an absent
-#                                    OCR toolchain -- would poison every
-#                                    later frame while every count
-#                                    still tallied)
-#     PLAYTHROUGH_CAPTURE_OVERWRITE  0 | 1         (default 0)
-#     PLAYTHROUGH_CAPTURE_RECT       an explicit WxH+X+Y crop
-#     PLAYTHROUGH_CAPTURE_REJECT_DIR where a withdrawn frame is kept
-#     CLONE_INDEX                    read by env.sh; offsets the
-#                                    display and every host-global
-#                                    scratch path so parallel checkouts
-#                                    cannot capture each other's screens
+# EVERY EXTERNAL STAGE IS BOUNDED by timeout(1) -- the grab, identify,
+# the luminance measurement, the crop computation and the OCR read all
+# talk to an X server or an OCR engine, and both can stop answering
+# without exiting.  An expiry is named as an expiry (timeout exits 124)
+# rather than reported as the tool failing, and the EXIT trap still
+# withdraws the frame.
 #
-# THIS FILE MODIFIES NOTHING OUTSIDE playthrough/frames/.  It sends no
-# keystroke, writes no manifest row, touches no save data, starts no
-# server, makes no network call, and never runs a command through a
-# shell string: every external call is an argument list, there is no
-# eval, and there is no unquoted glob.
+# THE MODE PRESERVES THE INVARIANT FROM THE OTHER SIDE.  A diagnostic
+# capture can never exit 0 and leaves the frames directory exactly as
+# it found it, so relaxing a safeguard cannot produce a frame that
+# would be counted as part of the record.
+#
+# TUNABLES -- all optional, all read from the environment, each declared
+# with its default and meaning under "Tunables" below.  Every timeout is
+# a whole number of seconds from 1 to 3600; 0 is refused because it
+# would mean no limit at all.  CLONE_INDEX is read by env.sh and offsets
+# the display and every scratch path so parallel checkouts cannot
+# capture each other's screens.
+#
+# WHAT THIS FILE WRITES, EXHAUSTIVELY
+#   1. exactly one PNG in playthrough/frames/;
+#   2. exactly one JSON row appended to the telemetry sidecar
+#      playthrough/build/observations.jsonl -- the frame's clock AND
+#      the sidebar DATE line, which timeline.py cross-checks its
+#      midnight-rollover and day-count decisions against.  The manifest
+#      schema is exactly six fields and is NOT changed to carry the
+#      date; see THE TELEMETRY SIDECAR below for why the evidence has
+#      to be persisted somewhere and why that somewhere is here;
+#   3. a withdrawn frame into the reject directory, outside the tree,
+#      when a capture fails;
+#   4. a private scratch file for the inline reader's stderr, inside the
+#      mode-0700 per-clone runtime directory env.sh creates, removed on
+#      exit.
+# The date audit is REQUESTED rather than written here: ocr_clock.py
+# owns that sidecar append (--audit) and this file only reports whether
+# the record was made.  Nothing else, anywhere.  It sends no keystroke,
+# writes no manifest row, touches no save data, starts no server, makes
+# no network call, and never runs a command through a shell string:
+# every external call is an argument list, there is no eval, and there
+# is no unquoted glob.
 # ---------------------------------------------------------------------
 
 set -euo pipefail
@@ -266,6 +293,11 @@ readonly EX_GEOMETRY=5
 readonly EX_CLOCK_FAULT=6
 readonly EX_EXISTS=7
 readonly EX_PREREQ=8
+# A diagnostic capture completed and was withdrawn.  Deliberately
+# non-zero: the invariant this file guarantees is "exit 0 <=> exactly one
+# new frame in playthrough/frames/", so a mode that produces no such
+# frame must not be able to report success.
+readonly EX_DIAGNOSTIC=9
 
 # ---------------------------------------------------------------------
 # Constants.
@@ -297,15 +329,48 @@ readonly MAX_SECOND=59
 readonly MIN_FRAME_INDEX=1
 readonly MAX_FRAME_INDEX=99999
 
-# The crop rectangle for the contracted configuration, used ONLY if
-# sidebar_geometry.py cannot be run at all, and announced loudly on
-# stderr when it is.  It is a clearly labelled last resort and never
-# the primary path: the rectangle is computed, because nine
-# sidebar*.json presets ship in data/json/ui/ at eight distinct widths
-# and a hard-coded rectangle would crop the wrong column SILENTLY the
-# moment the layout changed.  Cropping the wrong column cannot
-# fabricate a reading -- the pattern simply stops matching -- so the
-# worst case here is an honest "unreadable", never a wrong clock.
+# ---------------------------------------------------------------------
+# STAGE TIMEOUTS.  Every external command here gets a ceiling.
+#
+# This runs once per keystroke inside a session loop, and every stage
+# talks either to an X server or to an OCR engine -- both of which can
+# stop answering without exiting.  A wedged `import` waiting on a
+# display that has gone away, or a tesseract child that never returns,
+# would hang the capture indefinitely: the game stays running, the
+# session makes no further progress, nothing is written and no error is
+# reported.  A hung tool is a fault to report, not a reason to wait
+# forever, so each stage is bounded and an expiry is named as an expiry.
+#
+# The values are generous multiples of what the stages actually take --
+# a root-window grab and a luminance measurement are sub-second, and a
+# full row-wise OCR pass over the sidebar column is a few seconds -- so
+# a timeout here always means something is wrong rather than slow.
+# `timeout` exits 124 when it fires, which is how the expiry is told
+# apart from the tool's own non-zero status.
+# ---------------------------------------------------------------------
+readonly TIMEOUT_EXPIRED=124
+readonly DEFAULT_GRAB_TIMEOUT=60
+readonly DEFAULT_IDENTIFY_TIMEOUT=30
+readonly DEFAULT_LUMA_TIMEOUT=60
+readonly DEFAULT_GEOMETRY_TIMEOUT=60
+readonly DEFAULT_OCR_TIMEOUT=300
+
+# The crop the computation YIELDS for the contracted configuration,
+# recorded here as documentation and quoted in the diagnostics that
+# explain why it is not substituted.  IT IS NEVER USED AS A VALUE.
+#
+# It was previously a last-resort fallback, which was wrong: it is
+# correct for one configuration only -- the 240x67 grid with a 36-cell
+# right-hand sidebar -- and the moment it would be reached is precisely
+# the moment nothing has confirmed that this run is that configuration.
+# Twelve widgets across data/json/ui declare "style": "sidebar" at
+# eight distinct widths (nine of the twelve files sit at the top level),
+# so the wrong column is a real possibility, and cropping it
+# reads as an unreadable clock rather than as an error: every duration
+# falls to the 0.25 s floor while every count still tallies, and the
+# movie is plausible and meaningless.  A crop that cannot be computed is
+# therefore fatal (EX_GEOMETRY), and an operator who wants a fixed
+# rectangle asks for one by name with PLAYTHROUGH_CAPTURE_RECT.
 readonly FALLBACK_RECT='288x1072+1632+4'
 
 # An ImageMagick geometry, and a bare non-negative decimal number as
@@ -321,7 +386,6 @@ readonly NUMBER_RE='^[0-9]+(\.[0-9]+)?([eE][-+]?[0-9]+)?$'
 # format specifier in the output, which would be a fabricated instant.
 readonly REAL_TS_RE='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}\.[0-9]{3}Z$'
 
-# Delegates.  Both live beside this file; neither is duplicated here.
 readonly GEOMETRY_SCRIPT="${PLAYTHROUGH_TOOLING_DIR}/sidebar_geometry.py"
 readonly OCR_SCRIPT="${PLAYTHROUGH_TOOLING_DIR}/ocr_clock.py"
 
@@ -335,23 +399,102 @@ readonly OCR_SCRIPT="${PLAYTHROUGH_TOOLING_DIR}/ocr_clock.py"
 # mis-times the whole movie.
 # ---------------------------------------------------------------------
 SETTLE="${PLAYTHROUGH_CAPTURE_SETTLE:-${PLAYTHROUGH_SETTLE_SECONDS}}"
+# on | off -- whether the clock is read at all.
 CLOCK_MODE="${PLAYTHROUGH_CAPTURE_CLOCK:-on}"
+# auto | off | always -- auto reads the coarse sidebar phrase only when
+# there was no clock to read.
 PHRASE_MODE="${PLAYTHROUGH_CAPTURE_PHRASE:-auto}"
+# 1 | 0 -- 1 makes a clock FAULT fatal, because the two faults that
+# actually happen (an off-contract 24_HOUR, an absent OCR toolchain)
+# would poison every later frame while every count still tallied.
 STRICT_CLOCK="${PLAYTHROUGH_CAPTURE_STRICT_CLOCK:-1}"
+# 0 | 1 -- 1 recaptures an index that already holds a frame, so a
+# success REPLACES rather than adds.  See THE RESERVATION IS ATOMIC.
 OVERWRITE="${PLAYTHROUGH_CAPTURE_OVERWRITE:-0}"
+# An explicit WxH+X+Y crop.  This is the ONLY way a fixed rectangle is
+# ever used: an operator decision, recorded as CLOCK_RECT_FROM=override,
+# never a silent fallback.
 RECT_OVERRIDE="${PLAYTHROUGH_CAPTURE_RECT:-}"
+# `${VAR-default}` rather than `${VAR:-default}` on the timeouts below:
+# a variable that is set but EMPTY is an operator mistake, and
+# defaulting it silently would hide the mistake behind a working run.
+#
+# on | off -- append this frame's date evidence to the sidecar
+# timeline.py reads, and where that sidecar lives.
+AUDIT_MODE="${PLAYTHROUGH_CAPTURE_AUDIT:-on}"
+AUDIT_PATH="${PLAYTHROUGH_CAPTURE_AUDIT_PATH:-${PLAYTHROUGH_DATE_AUDIT}}"
+GRAB_TIMEOUT="${PLAYTHROUGH_CAPTURE_GRAB_TIMEOUT-${DEFAULT_GRAB_TIMEOUT}}"
+IDENTIFY_TIMEOUT="\
+${PLAYTHROUGH_CAPTURE_IDENTIFY_TIMEOUT-${DEFAULT_IDENTIFY_TIMEOUT}}"
+LUMA_TIMEOUT="${PLAYTHROUGH_CAPTURE_LUMA_TIMEOUT-${DEFAULT_LUMA_TIMEOUT}}"
+GEOMETRY_TIMEOUT="\
+${PLAYTHROUGH_CAPTURE_GEOMETRY_TIMEOUT-${DEFAULT_GEOMETRY_TIMEOUT}}"
+OCR_TIMEOUT="${PLAYTHROUGH_CAPTURE_OCR_TIMEOUT-${DEFAULT_OCR_TIMEOUT}}"
 
-if [ "${PLAYTHROUGH_CLONE_INDEX}" -eq 0 ]; then
-    _cap_suffix=""
-else
-    _cap_suffix="${PLAYTHROUGH_CLONE_INDEX}"
-fi
+# Set when ocr_clock.py's own dependency preflight fails and strict
+# mode is off: the delegate is then skipped in favour of the inline
+# reader, rather than being called once per field to fail twice.
+OCR_PREFLIGHT_FAILED=0
+
+# The telemetry sidecar this file appends one row to, and the only
+# thing it writes outside playthrough/frames/.  env.sh owns the path.
+OBSERVATIONS="${PLAYTHROUGH_CAPTURE_OBSERVATIONS:-\
+${PLAYTHROUGH_OBSERVATIONS}}"
+
+# THE MODE, and why one exists at all.
+#
+# Four properties of this script are what make its output evidence
+# rather than merely a picture: the full settle, an attempted clock
+# read, a fault treated as fatal, and an index that is never reused.
+# All four had correct defaults and all four were reachable through the
+# environment, which means a production run could be made to produce an
+# apparently successful, non-compliant frame -- a stale screenshot with
+# no reading, or a replacement for a frame already counted -- with every
+# downstream count still tallying.  Correct-by-default is not the same
+# as enforced, and a guard that can be switched off is not a guard.
+#
+# So the four are now HARD-ENFORCED whenever this script is producing a
+# frame for the record, and relaxing any of them requires
+# PLAYTHROUGH_CAPTURE_MODE=diagnostic, which cannot produce one:
+#
+#   production  (default)  the four safeguards are unconditional; any
+#                          attempt to relax one is a usage error naming
+#                          this variable.  exit 0 means exactly one new
+#                          frame is in playthrough/frames/.
+#   diagnostic             the four are tunable, and in exchange the
+#                          captured PNG is WITHDRAWN out of the working
+#                          tree before this script returns, FRAME_FILE
+#                          and FRAME_PATH are emitted EMPTY, and the
+#                          exit status is EX_DIAGNOSTIC -- never 0.  A
+#                          caller that treats exit 0 as licence to
+#                          append one manifest row therefore cannot
+#                          accept a diagnostic capture, and there is no
+#                          repository-relative path for it to record
+#                          even if it tried.
+CAPTURE_MODE="${PLAYTHROUGH_CAPTURE_MODE:-production}"
+
 # Withdrawn frames are kept OUTSIDE the working tree.  Inside it they
 # would be re-included by the terminal `!/playthrough/**` negation in
 # .gitignore and could be committed as if they were session frames.
-_cap_reject="${TMPDIR:-/tmp}/playthrough-rejected${_cap_suffix}"
-REJECT_DIR="${PLAYTHROUGH_CAPTURE_REJECT_DIR:-${_cap_reject}}"
-unset _cap_suffix _cap_reject
+#
+# They default into env.sh's PRIVATE RUNTIME ROOT rather than into
+# /tmp/playthrough-rejected<index>, and that is a privacy fix rather
+# than tidiness: a withdrawn frame is a full-resolution photograph of
+# the session -- the survivor's screen, the whole display -- and the old
+# location was a predictable name in a world-writable directory, holding
+# world-readable files.  The runtime root is a 0700 directory this user
+# owns, verified before use, and this script sets a private umask below
+# so nothing it writes there is readable by anyone else either.
+REJECT_DIR="${PLAYTHROUGH_CAPTURE_REJECT_DIR:-${PLAYTHROUGH_REJECT_DIR}}"
+
+# EVERY file this script creates is private.
+#
+# The frames are committed to git, which records only the executable
+# bit, so a private mode on disk costs the pipeline nothing -- while a
+# world-readable withdrawn frame or temporary capture in a shared
+# directory would leak the display to any local account.  Set once, here,
+# so no individual creation site can forget it.
+umask 077
 
 # ---------------------------------------------------------------------
 # Reporting.
@@ -369,11 +512,12 @@ die() {
     exit "${code}"
 }
 
-# emit KEY VALUE -- the machine-readable channel, and the only thing
-# this script ever writes to stdout.
-emit() {
-    printf '%s=%s\n' "$1" "$2"
-}
+# The machine-readable channel is assembled by `line KEY VALUE` and
+# written in ONE printf at the very end of this file -- see OUTPUT,
+# THEN TELEMETRY, THEN THE COMMIT POINT.  There is deliberately no
+# per-key writer: writing keys as they were computed is what allowed a
+# half-delivered contract to sit beside a frame this script had already
+# decided to keep.
 
 usage() {
     # The one place this file writes prose to stdout, and only when
@@ -390,9 +534,18 @@ FRAME_INDEX is required and must be a plain decimal integer from 1 to
 supplied by session.py, which owns the frame counter; this script never
 derives one.
 
-Writes exactly one playthrough/frames/frame_%05d.png, prints KEY=value
-lines on stdout and everything else on stderr.  See the header of this
-file for the full output contract, the exit codes and the tunables.
+Writes exactly one playthrough/frames/frame_%05d.png and appends one
+telemetry row -- the clock and the sidebar date line -- to
+playthrough/build/observations.jsonl, which timeline.py cross-checks
+its rollover decisions against.  Prints KEY=value lines on stdout and
+everything else on stderr.  See the header of this file for the full
+output contract, the exit codes and the tunables.
+
+The default mode is production, in which the 0.3s settle, the clock
+read, fatal fault handling and the refusal to reuse an index are all
+unconditional.  PLAYTHROUGH_CAPTURE_MODE=diagnostic relaxes them and in
+exchange withdraws the frame out of the working tree and exits 9, so a
+diagnostic capture can never be recorded as a session frame.
 USAGE
 }
 
@@ -405,33 +558,100 @@ USAGE
 # and restores anything that was moved aside, so a non-zero exit always
 # leaves playthrough/frames/ exactly as it was found.
 #
-# That is what makes `exit 0 <=> exactly one new frame` structural
-# rather than merely intended, and it is why session.py can treat a
-# successful return as licence to append exactly one manifest row.
+# That is what makes the invariant at the top of this file structural
+# rather than merely intended -- `exit 0 <=> exactly one new frame` in
+# production mode, and exactly one frame written at the requested index
+# when overwrite mode was asked for -- and it is why session.py can
+# treat a successful return as licence to append exactly one manifest
+# row.
 # ---------------------------------------------------------------------
 GRABBED=0
 KEPT=0
 BACKUP=""
 FRAME_PATH=""
+# The exclusive temporary file the grab writes to before it is renamed
+# into place.  Emptied on publish, so the trap only ever withdraws one
+# that is genuinely still unpublished.
+CAPTURE_TMP=""
+
+# Files one rejected capture out of the frames directory.  Reached only
+# from the EXIT trap; see the SC2317 note at the top.
+# shellcheck disable=SC2317
+file_rejected() {
+    local src="$1" name="$2" target
+    # A zero-byte file is the reservation placeholder, or a grab that
+    # wrote nothing: there is no image to inspect, so it is released
+    # rather than filed as though it were evidence.
+    if [ ! -s "${src}" ]; then
+        rm -f -- "${src}" 2>/dev/null || true
+        return 0
+    fi
+    # Keep the rejected capture: it is the evidence of whatever went
+    # wrong.  Outside the working tree, so it can never be mistaken for
+    # -- or committed as -- a session frame, and inside the private 0700
+    # runtime root, because a rejected capture is still a photograph of
+    # the whole session screen and is nobody else's business.
+    target="${REJECT_DIR}/${name}"
+    if playthrough_secure_dir "${REJECT_DIR}" 700 2>/dev/null &&
+       mv -f -- "${src}" "${target}" 2>/dev/null; then
+        chmod 600 -- "${target}" 2>/dev/null || true
+        playthrough_warn "withdrew ${src} from the frames directory" \
+            "and kept it at ${target} for inspection"
+    else
+        rm -f -- "${src}" 2>/dev/null || true
+        playthrough_warn "withdrew and discarded ${src};" \
+            "${REJECT_DIR} could not be written"
+    fi
+}
+
+# Where a delegated stage's stderr is kept while it runs, so that a
+# failure can be DIAGNOSED instead of merely reported.  It lives in the
+# private per-clone runtime directory that env.sh creates at mode 0700
+# with an ownership check -- NOT in the working tree, which this file
+# does not write to outside playthrough/frames/, and not at a
+# predictable shared /tmp path.  $$ keeps two concurrent captures apart.
+#
+# A FILE, not `2>&1`, and that is the whole point: these stages print
+# their VALUE on stdout and their warnings on stderr, and merging the
+# two would feed a warning to whatever parses the value.  Both stages
+# here legitimately warn on a successful run -- sidebar_geometry.py
+# announces every configuration value it had to default -- so the
+# streams stay separate and the warnings are relayed afterwards.
+STAGE_ERR="${PLAYTHROUGH_RUNTIME_DIR}/capture-stage-$$.err"
+# A generous excerpt that still cannot bury the session log: tesseract
+# can emit a page of warnings per frame.
+readonly STAGE_ERR_BYTES=2000
+
+# stage_stderr -- a bounded, single-line excerpt of the last stage's
+# stderr, or the empty string.  NUL bytes are dropped because a stage
+# that fails mid-PNG can emit them, blank lines are dropped because they
+# carry nothing, and newlines become spaces so one warning stays one
+# line in the session log.
+stage_stderr() {
+    [ -s "${STAGE_ERR}" ] || return 0
+    tr -d '\000' <"${STAGE_ERR}" 2>/dev/null |
+        grep -v '^[[:space:]]*$' |
+        head -c "${STAGE_ERR_BYTES}" |
+        tr '\n' ' ' || true
+}
 
 # Reached only from the EXIT trap; see the SC2317 note at the top.
 # shellcheck disable=SC2317
 withdraw() {
-    local target
+    # Everything this invocation put in the frames directory leaves it,
+    # published or not.  The unpublished temporary capture goes FIRST, so
+    # that a failure while filing the published frame cannot leave the
+    # temporary one behind -- and it is KEPT under the frame's own name
+    # rather than discarded, because the checks that reject a capture
+    # before it is published (wrong format, wrong geometry, a blank
+    # screen) are precisely the ones whose evidence has to be looked at.
+    if [ -n "${CAPTURE_TMP}" ] && [ -e "${CAPTURE_TMP}" ]; then
+        file_rejected "${CAPTURE_TMP}" \
+            "${FRAME_NAME:-rejected-capture.png}"
+    fi
+    CAPTURE_TMP=""
     if [ "${GRABBED}" -eq 1 ] && [ -e "${FRAME_PATH}" ]; then
-        # Keep the rejected frame: it is the evidence of whatever went
-        # wrong.  Outside the working tree, so it can never be
-        # mistaken for -- or committed as -- a session frame.
-        target="${REJECT_DIR}/$(basename "${FRAME_PATH}")"
-        if mkdir -p "${REJECT_DIR}" 2>/dev/null &&
-           mv -f "${FRAME_PATH}" "${target}" 2>/dev/null; then
-            playthrough_warn "withdrew ${FRAME_PATH} from the frames" \
-                "directory and kept it at ${target} for inspection"
-        else
-            rm -f "${FRAME_PATH}" 2>/dev/null || true
-            playthrough_warn "withdrew and discarded ${FRAME_PATH};" \
-                "${REJECT_DIR} could not be written"
-        fi
+        file_rejected "${FRAME_PATH}" "$(basename "${FRAME_PATH}")"
     fi
     GRABBED=0
     if [ -n "${BACKUP}" ] && [ -e "${BACKUP}" ]; then
@@ -453,8 +673,40 @@ _cap_on_exit() {
     if [ "$1" -ne 0 ] && [ "${KEPT}" -eq 0 ]; then
         withdraw
     fi
+    # The scratch stderr file is this invocation's alone and carries
+    # nothing that is not already in the warning it produced.
+    rm -f "${STAGE_ERR}" 2>/dev/null || true
 }
 trap '_cap_on_exit "$?"' EXIT
+
+# A KILLING SIGNAL MUST WITHDRAW THE FRAME TOO, and the EXIT trap alone
+# does not achieve that: a shell terminated BY a signal never reaches
+# its EXIT trap, so without these handlers a frame would be left behind
+# by exactly the case F02 is about -- session.py reading this output
+# through a pipe and going away, whereupon the next `emit` takes SIGPIPE
+# and this process dies mid-contract.  Measured before this trap
+# existed: the PNG survived in playthrough/frames/ with no manifest row
+# to describe it, which is the orphan the 1:1 invariant cannot tolerate.
+#
+# Each handler converts the signal into an ordinary non-zero exit, which
+# then runs the EXIT trap and withdraws the frame through the one code
+# path that knows how.  The conventional 128+N status is preserved so a
+# caller can still tell WHICH signal ended the capture.
+#
+# Reached only from a trap; see the SC2317 note at the top.
+# shellcheck disable=SC2317
+_cap_on_signal() {
+    local name="$1" status="$2"
+    # stderr, never stdout: stdout is the stream that just broke.
+    playthrough_warn "capture of ${FRAME_FILE:-the frame} was ended by" \
+        "SIG${name}; withdrawing it so no frame is left that no" \
+        "manifest row describes"
+    exit "${status}"
+}
+trap '_cap_on_signal PIPE 141' PIPE
+trap '_cap_on_signal INT 130' INT
+trap '_cap_on_signal TERM 143' TERM
+trap '_cap_on_signal HUP 129' HUP
 
 # ---------------------------------------------------------------------
 # Arguments.  There is exactly one input -- FRAME_INDEX in the
@@ -547,6 +799,11 @@ fi
 # Validate the tunables.  A typo must not silently disable a guard --
 # PLAYTHROUGH_CAPTURE_CLOCK=of would otherwise read as "not off".
 # ---------------------------------------------------------------------
+case "${CAPTURE_MODE}" in
+    production|diagnostic) ;;
+    *) die "${EX_USAGE}" "PLAYTHROUGH_CAPTURE_MODE=\
+'${CAPTURE_MODE}' is neither 'production' nor 'diagnostic'" ;;
+esac
 case "${CLOCK_MODE}" in
     on|off) ;;
     *) die "${EX_USAGE}" "PLAYTHROUGH_CAPTURE_CLOCK=\
@@ -578,6 +835,136 @@ if [ -n "${RECT_OVERRIDE}" ] &&
 '${RECT_OVERRIDE}' is not an ImageMagick WxH+X+Y geometry"
 fi
 
+# Every stage ceiling is validated before any of them is used, because
+# these values reach `timeout` directly: a non-numeric one would make
+# timeout itself fail with a usage error on every single frame, and a
+# zero would mean "no limit at all", quietly restoring the unbounded
+# behaviour the ceilings exist to remove.
+_cap_check_timeout() {
+    local name="$1" value="$2"
+    if ! [[ "${value}" =~ ^[0-9]+$ ]]; then
+        die "${EX_USAGE}" "${name}='${value}' is not a plain decimal \
+number of seconds"
+    fi
+    # 10# forces base ten so a padded 060 is sixty, not octal.
+    if [ "$((10#${value}))" -lt 1 ] ||
+       [ "$((10#${value}))" -gt 3600 ]; then
+        die "${EX_USAGE}" "${name}='${value}' is outside the supported \
+range of 1 to 3600 seconds; 0 would mean no limit at all, which is the \
+unbounded wait these ceilings exist to prevent"
+    fi
+}
+case "${AUDIT_MODE}" in
+    on|off) ;;
+    *) die "${EX_USAGE}" "PLAYTHROUGH_CAPTURE_AUDIT=\
+'${AUDIT_MODE}' is neither on nor off" ;;
+esac
+if [ "${AUDIT_MODE}" = "on" ] && [ -z "${AUDIT_PATH}" ]; then
+    die "${EX_USAGE}" "the date-audit sidecar path is empty; env.sh \
+exports PLAYTHROUGH_DATE_AUDIT and PLAYTHROUGH_CAPTURE_AUDIT_PATH \
+overrides it"
+fi
+
+_cap_check_timeout PLAYTHROUGH_CAPTURE_GRAB_TIMEOUT "${GRAB_TIMEOUT}"
+_cap_check_timeout PLAYTHROUGH_CAPTURE_IDENTIFY_TIMEOUT \
+    "${IDENTIFY_TIMEOUT}"
+_cap_check_timeout PLAYTHROUGH_CAPTURE_LUMA_TIMEOUT "${LUMA_TIMEOUT}"
+_cap_check_timeout PLAYTHROUGH_CAPTURE_GEOMETRY_TIMEOUT \
+    "${GEOMETRY_TIMEOUT}"
+_cap_check_timeout PLAYTHROUGH_CAPTURE_OCR_TIMEOUT "${OCR_TIMEOUT}"
+
+# `timeout` is what bounds every stage, so its absence is a missing
+# prerequisite rather than something to work around: carrying on without
+# it would silently restore the unbounded waits.
+if ! command -v timeout >/dev/null 2>&1; then
+    die "${EX_PREREQ}" "timeout(1) is not installed, so no capture \
+stage could be bounded; it ships with GNU coreutils"
+fi
+
+# The audit directory is checked BEFORE anything is captured, so a
+# missing one costs no frame.  It is not created here: this file writes
+# only into playthrough/frames/, and directory creation belongs to
+# playthrough_mkdirs in env.sh.  Nor is auditing quietly switched off,
+# because the date is the only evidence that tells a midnight rollover
+# from a misread clock, and losing it silently is how a 22-hour day gets
+# invented downstream.
+if [ "${AUDIT_MODE}" = "on" ]; then
+    _cap_audit_dir="$(dirname "${AUDIT_PATH}")"
+    if [ ! -d "${_cap_audit_dir}" ]; then
+        die "${EX_PREREQ}" "the date-audit directory \
+${_cap_audit_dir} does not exist, so this frame's date evidence could \
+not be recorded.  Run playthrough_mkdirs (playthrough/tooling/env.sh) \
+first, or set PLAYTHROUGH_CAPTURE_AUDIT=off to capture without the \
+evidence timeline.py uses to tell a rollover from a misread clock."
+    fi
+    unset _cap_audit_dir
+fi
+
+# Assembled once, expanded as an array so an empty audit configuration
+# contributes no argument at all rather than an empty string that
+# ocr_clock.py would have to reject.
+AUDIT_ARGS=()
+if [ "${AUDIT_MODE}" = "on" ]; then
+    AUDIT_ARGS=(--audit "${AUDIT_PATH}" --audit-frame "${FRAME_INDEX}")
+fi
+
+# ---------------------------------------------------------------------
+# HARD-ENFORCE THE FOUR SAFEGUARDS ON THE PRODUCTION PATH.
+#
+# Each refusal names the property, the consequence of relaxing it, and
+# the one mode in which it is legal.  Refusing here -- before the
+# display is touched and before any file is created -- means a
+# misconfigured production run produces nothing at all rather than a
+# frame that looks like every other frame and is not evidence.
+#
+# A settle LONGER than the contract is allowed: waiting more cannot
+# photograph a screen that has not finished redrawing.  A shorter one
+# can, and does, which is why only the lower bound is enforced.  The
+# comparison is done with awk because the settle is a decimal and the
+# shell has no floating-point test.
+# ---------------------------------------------------------------------
+if [ "${CAPTURE_MODE}" = "production" ]; then
+    if ! awk -v got="${SETTLE}" -v want="${PLAYTHROUGH_SETTLE_SECONDS}" \
+            'BEGIN { exit !(got + 0 >= want + 0) }'; then
+        die "${EX_USAGE}" "PLAYTHROUGH_CAPTURE_SETTLE=${SETTLE} is \
+shorter than the contracted ${PLAYTHROUGH_SETTLE_SECONDS}s settle.  \
+The game redraws asynchronously: grabbing early photographs the screen \
+as it was BEFORE the key landed, so every clock reading would be one \
+keystroke stale and the whole film mis-timed -- while every count still \
+tallied.  A LONGER settle is accepted; a shorter one needs \
+PLAYTHROUGH_CAPTURE_MODE=diagnostic, which cannot produce a frame for \
+the record."
+    fi
+    if [ "${CLOCK_MODE}" != "on" ]; then
+        die "${EX_USAGE}" "PLAYTHROUGH_CAPTURE_CLOCK=\
+'${CLOCK_MODE}' cannot be used for a frame that is kept.  Each frame's \
+on-screen duration IS the sidebar clock delta between it and its \
+successor, so a frame captured with the clock read switched off has no \
+duration to derive and would silently fall to the floor.  Use \
+PLAYTHROUGH_CAPTURE_MODE=diagnostic to look at a frame without reading \
+it."
+    fi
+    if [ "${STRICT_CLOCK}" -ne 1 ]; then
+        die "${EX_USAGE}" "PLAYTHROUGH_CAPTURE_STRICT_CLOCK=\
+${STRICT_CLOCK} cannot be used for a frame that is kept.  A FAULT is \
+not an unreadable clock: the faults that actually happen -- an \
+off-contract 24_HOUR option, a missing OCR toolchain -- are standing \
+misconfigurations that would report EVERY later frame as unreadable \
+and collapse every duration onto the floor.  Fix the fault and \
+recapture, or investigate with \
+PLAYTHROUGH_CAPTURE_MODE=diagnostic."
+    fi
+    if [ "${OVERWRITE}" -ne 0 ]; then
+        die "${EX_USAGE}" "PLAYTHROUGH_CAPTURE_OVERWRITE=1 cannot be \
+used for a frame that is kept.  A frame already at this index means \
+the counter repeated, and replacing it moves the original OUT of the \
+working tree -- so a keystroke that was photographed and committed \
+would silently lose its frame while the counts still matched.  Take \
+the next index, or investigate with \
+PLAYTHROUGH_CAPTURE_MODE=diagnostic."
+    fi
+fi
+
 # ---------------------------------------------------------------------
 # Preflight.
 #
@@ -585,29 +972,100 @@ fi
 # fallback and is used only when import is absent.  Both photograph the
 # whole root window, which is the point.
 # ---------------------------------------------------------------------
-if command -v import >/dev/null 2>&1; then
+# EVERY external command is resolved through env.sh, which verifies it
+# before handing back the path, and this script then invokes THAT path.
+# Finding a command on PATH is not the same as trusting it: PATH is
+# mutable, this runs unattended, and what these tools produce is the
+# evidence the whole pipeline rests on -- so the binary and every
+# directory above it are checked for third-party ownership and for
+# group- or world-writability first.  A tool that fails the check is
+# treated exactly like a missing one.
+if playthrough_resolve_tool import; then
     CAPTURE_TOOL="import"
-elif command -v scrot >/dev/null 2>&1; then
+    CAPTURE_BIN="${PLAYTHROUGH_BIN_IMPORT}"
+elif playthrough_resolve_tool scrot; then
     CAPTURE_TOOL="scrot"
+    CAPTURE_BIN="${PLAYTHROUGH_BIN_SCROT}"
     playthrough_warn "ImageMagick's import is not installed; falling" \
         "back to scrot.  Both grab the X root window, so the frame is" \
         "equivalent, but import is the contracted capturer."
 else
-    die "${EX_PREREQ}" "no screen capturer: neither ImageMagick's \
-import nor scrot is installed.  See the apt list in \
-playthrough/tooling/requirements.txt."
+    die "${EX_PREREQ}" "no usable screen capturer: neither \
+ImageMagick's import nor scrot is installed and verifiable.  See the \
+apt list in playthrough/tooling/requirements.txt, and any rejection \
+reported above."
 fi
 
-# convert and identify are needed unconditionally: identify proves the
-# frame is a PNG at the contracted geometry and convert measures its
-# luminance, which is the guard against a silently black session.
-playthrough_require_tools convert identify || exit "${EX_PREREQ}"
+# Every non-builtin this file actually runs, asserted before anything
+# is created.  The list is exhaustive on purpose: a command discovered
+# missing halfway through has already written a log line, possibly a
+# pidfile, and -- worst of all -- possibly a frame, and an absent tool
+# that surfaces as some later symptom is a diagnosis nobody can make
+# from the message they are shown.
+#
+#   convert, identify  identify proves the frame is a PNG at the
+#                      contracted geometry and convert measures its
+#                      luminance, the guard against a silently black
+#                      session.  Both are unconditional.
+#   xdpyinfo           playthrough_assert_display below asks it whether
+#                      the root window is the contracted geometry.
+#                      Requiring it HERE is what stops "x11-utils is
+#                      not installed" from being reported as "there is
+#                      no X server on :99" -- two different faults that
+#                      wore the same message before.
+#   date, awk, grep    the real_ts stamp, the luminance comparison and
+#                      the pattern match respectively.
+#   mkdir, mv, rm      the frames directory and the withdrawal path.
+playthrough_require_tools \
+    convert identify xdpyinfo date awk grep mkdir mv rm ||
+    exit "${EX_PREREQ}"
 
 # tesseract is needed by BOTH clock-read paths, so its absence is a
 # prerequisite failure rather than an unreadable clock.
 if [ "${CLOCK_MODE}" = "on" ]; then
     playthrough_require_tools tesseract || exit "${EX_PREREQ}"
 fi
+
+# ---------------------------------------------------------------------
+# PREFLIGHT THE OCR DELEGATE'S OWN DEPENDENCIES, ONCE, BEFORE THE GRAB.
+#
+# ocr_clock.py's exit codes are a contract: 0 carries a reading, 1
+# means the frame was read and held none, 2 means a fault.  A missing
+# Python dependency used to collapse that distinction -- an unguarded
+# import exits Python with status 1, which reads as "no clock on this
+# frame".  The module now guards its imports and reports a fault
+# instead, and `--preflight` asks it to check them without reading
+# anything.
+#
+# Doing it here, before a frame exists, is the difference between one
+# actionable failure and a whole session of frames that each look like
+# an honest unreadable clock while the movie's pacing quietly collapses
+# to the floor.  A fault is fatal under the default strict setting for
+# the same reason.
+# ---------------------------------------------------------------------
+if [ "${CLOCK_MODE}" = "on" ] && [ -f "${OCR_SCRIPT}" ] &&
+   command -v "${PLAYTHROUGH_PYTHON}" >/dev/null 2>&1; then
+    if ! "${PLAYTHROUGH_PYTHON}" "${OCR_SCRIPT}" --preflight; then
+        if [ "${STRICT_CLOCK}" -eq 1 ]; then
+            die "${EX_CLOCK_FAULT}" "ocr_clock.py cannot run: one of \
+its dependencies did not import (see the diagnosis above).  This is a \
+FAULT, not an unreadable clock, and it would otherwise report EVERY \
+frame of the session as unreadable while every count still tallied.  \
+Install playthrough/tooling/requirements.txt into \
+${PLAYTHROUGH_PYTHON}, or set PLAYTHROUGH_CAPTURE_STRICT_CLOCK=0 to \
+capture with the weaker inline reader instead."
+        fi
+        playthrough_warn "ocr_clock.py's dependencies are incomplete" \
+            "and PLAYTHROUGH_CAPTURE_STRICT_CLOCK=0, so the clock is" \
+            "read with the inline convert|tesseract|grep chain"
+        OCR_PREFLIGHT_FAILED=1
+    fi
+fi
+# The platform this is photographing on: ImageMagick and the Xorg stack
+# both parse untrusted-shaped input, so an out-of-support host is
+# reported by name here rather than discovered later.  A warning by
+# default; PLAYTHROUGH_REQUIRE_SUPPORTED_PLATFORM=1 makes it fatal.
+playthrough_check_platform || exit "${EX_PREREQ}"
 
 # The cheap, loud guard against the one completely silent failure mode
 # of this pipeline: the dummy VIDEO backend renders zero pixels, so the
@@ -616,6 +1074,19 @@ fi
 # asserts this at source time as well; asserting it again here costs one
 # string comparison and documents the dependency at the point of use.
 playthrough_assert_video_driver || exit "${EX_LAYOUT}"
+
+# THE DISPLAY MUST BE CLOSED BEFORE ANYTHING IS PHOTOGRAPHED.
+#
+# An X server with no access control hands every local account the same
+# screen this script is about to photograph -- and the same keyboard the
+# session is being driven with.  Either half destroys the value of the
+# result: pixels another process could have painted are not evidence of
+# what the survivor did, and keystrokes another process could have sent
+# break the one-keystroke-per-frame invariant while every count still
+# tallies.  env.sh starts Xvfb with -auth and a fresh cookie; this is the
+# assertion that the server actually in front of us enforces it, made
+# BEFORE the first grab rather than trusted.
+playthrough_assert_x_access_control || exit "${EX_GEOMETRY}"
 
 # The root window must be the contracted geometry BEFORE the grab, so a
 # wrong-sized display is reported as such instead of surfacing later as
@@ -632,20 +1103,60 @@ if ! mkdir -p "${PLAYTHROUGH_FRAMES_DIR}"; then
     die "${EX_CAPTURE}" "cannot create ${PLAYTHROUGH_FRAMES_DIR}"
 fi
 
-# Refusing to clobber is a guard on the 1:1 invariant, not politeness:
-# a frame already sitting at this index means the counter has repeated,
-# and overwriting would leave the frames count one short of the
-# keystroke count with nothing to show that it happened.
-if [ -e "${FRAME_PATH}" ]; then
+# THE DESTINATION IS PROVED, NOT ASSUMED.
+#
+# Both checks matter for a different reason:
+#
+#   * containment plus no symlinked component means a planted link at
+#     playthrough/ or playthrough/frames/ cannot send this capture --
+#     a photograph of the whole screen -- somewhere outside the working
+#     tree, where nothing downstream would look for it and nothing would
+#     notice it had gone;
+#   * the frame path itself must not already be a symlink, dangling or
+#     otherwise, because `import` would follow it and write through.
+#
+# The frames directory is also where the count identity that
+# verify_artifacts.sh asserts lives, so it has to be a real directory
+# holding real files and nothing else.
+playthrough_assert_inside "${PLAYTHROUGH_FRAMES_DIR}" \
+    "${PLAYTHROUGH_REPO_ROOT}" "frames directory" ||
+    exit "${EX_LAYOUT}"
+playthrough_assert_no_symlink "${PLAYTHROUGH_FRAMES_DIR}" \
+    "${PLAYTHROUGH_REPO_ROOT}" "frames directory" ||
+    exit "${EX_LAYOUT}"
+if [ -L "${FRAME_PATH}" ]; then
+    die "${EX_LAYOUT}" "${FRAME_FILE} is a symbolic link.  A frame is \
+a file this pipeline writes, never a link it follows: writing through \
+it would put a full-screen capture wherever the link pointed."
+fi
+
+# RESERVE THE INDEX ATOMICALLY.
+#
+# The old form -- test whether the frame exists, then let the capturer
+# create it -- is two operations, and two captures racing for the same
+# index could both pass the test and both write.  `set -o noclobber`
+# turns the creation into a single O_EXCL open, so exactly one caller can
+# ever own an index and the loser is told so.  The reservation is a
+# zero-byte placeholder; the real capture goes to a temporary file and
+# replaces it with one atomic rename, so no partially written PNG is ever
+# visible at a frame path.
+#
+# Refusing to clobber is a guard on the 1:1 invariant, not politeness: a
+# frame already sitting at this index means the counter has repeated, and
+# overwriting would leave the frames count one short of the keystroke
+# count with nothing to show that it happened.
+if ! ( set -o noclobber; : >"${FRAME_PATH}" ) 2>/dev/null; then
     if [ "${OVERWRITE}" -ne 1 ]; then
-        die "${EX_EXISTS}" "${FRAME_PATH} already exists.  A repeated \
-index means the frame counter went backwards, which would break the \
-one-frame-per-keystroke identity.  Set \
-PLAYTHROUGH_CAPTURE_OVERWRITE=1 only if you mean to recapture this \
-index deliberately."
+        die "${EX_EXISTS}" "${FRAME_PATH} already exists, or another \
+capture holds this index.  A repeated index means the frame counter \
+went backwards, which would break the one-frame-per-keystroke \
+identity.  Take the next index.  Recapturing one deliberately is a \
+DIAGNOSTIC action (PLAYTHROUGH_CAPTURE_MODE=diagnostic with \
+PLAYTHROUGH_CAPTURE_OVERWRITE=1): the existing frame is moved aside, \
+the new capture is withdrawn, and the original is put back."
     fi
     _cap_backup="${REJECT_DIR}/superseded-${FRAME_NAME}"
-    if mkdir -p "${REJECT_DIR}" 2>/dev/null &&
+    if playthrough_secure_dir "${REJECT_DIR}" 700 2>/dev/null &&
        mv -f "${FRAME_PATH}" "${_cap_backup}" 2>/dev/null; then
         BACKUP="${_cap_backup}"
         playthrough_warn "recapturing ${FRAME_FILE}; the earlier frame" \
@@ -656,7 +1167,16 @@ index deliberately."
 aside into ${REJECT_DIR}; refusing to overwrite it in place"
     fi
     unset _cap_backup
+    # Re-reserve the index now that the earlier frame is out of the way,
+    # so the exclusive-ownership property holds on the recapture path too.
+    if ! ( set -o noclobber; : >"${FRAME_PATH}" ) 2>/dev/null; then
+        die "${EX_EXISTS}" "${FRAME_PATH} reappeared while it was \
+being moved aside; another capture is using this index"
+    fi
 fi
+# From here on the placeholder is ours, so it is withdrawn on failure
+# exactly like a captured frame would be.
+GRABBED=1
 
 # ---------------------------------------------------------------------
 # THE SETTLE.  0.3 seconds, from env.sh.
@@ -687,30 +1207,67 @@ if ! [[ "${REAL_TS}" =~ ${REAL_TS_RE} ]]; then
 fi
 
 # ---------------------------------------------------------------------
-# THE GRAB.  The X ROOT window, exactly once.
+# THE GRAB.  The X ROOT window, exactly once, into a temporary file.
 #
-# GRABBED is raised BEFORE the capturer runs, not after: a capturer that
-# creates the file and then fails would otherwise leave a partial PNG
-# behind in the frames directory, and the EXIT trap has to know about it.
+# The capture does NOT go straight to the frame path.  It goes to an
+# exclusive temporary file in the same directory and is renamed over the
+# reservation once it has passed every check, so:
+#
+#   * nothing downstream can ever observe a half-written PNG at a frame
+#     path -- rename within a directory is atomic;
+#   * a capturer that exits non-zero having already created its output
+#     leaves the rubbish in the temporary file, not in the frames
+#     directory;
+#   * the index stays reserved throughout, so a concurrent capture of
+#     the same index still cannot slip in behind this one.
+#
+# GRABBED is already 1 from the reservation above, so the EXIT trap knows
+# about both the placeholder and the temporary file.
 # ---------------------------------------------------------------------
-GRABBED=1
+if ! CAPTURE_TMP="$(mktemp --suffix=.png \
+        "${PLAYTHROUGH_FRAMES_DIR}/.${FRAME_NAME}.XXXXXX" 2>/dev/null)"; then
+    die "${EX_CAPTURE}" "cannot create a temporary file for \
+${FRAME_FILE} in ${PLAYTHROUGH_FRAMES_DIR}"
+fi
 case "${CAPTURE_TOOL}" in
     import)
         # The contracted form.  `-window root` is the whole point: the
-        # root is exactly 1920x1080 while the game window is 1920x1072
-        # at +0+4, so this needs no rescaling and nothing softens the
-        # 8x16 glyphs the clock read depends on.
-        if ! import -window root "${FRAME_PATH}"; then
-            die "${EX_CAPTURE}" "import -window root failed for \
-${FRAME_FILE} on DISPLAY=${DISPLAY}"
+        # root is exactly 1920x1080 while the terminal render grid
+        # inside it is 1920x1072 at +0+4, so this needs no rescaling and
+        # nothing softens the 8x16 glyphs the clock read depends on.
+        # The binary is the one env.sh verified, invoked by the path it
+        # resolved rather than re-searched on PATH here, and the grab is
+        # BOUNDED: an X server that has stopped answering hangs it
+        # rather than failing it.
+        _cap_rc=0
+        timeout "${GRAB_TIMEOUT}" \
+            "${CAPTURE_BIN}" -window root "png:${CAPTURE_TMP}" ||
+            _cap_rc=$?
+        if [ "${_cap_rc}" -eq "${TIMEOUT_EXPIRED}" ]; then
+            die "${EX_CAPTURE}" "import -window root did not finish \
+within ${GRAB_TIMEOUT}s for ${FRAME_FILE} on DISPLAY=${DISPLAY} and \
+was stopped; an X server that has stopped answering hangs the grab \
+rather than failing it"
+        elif [ "${_cap_rc}" -ne 0 ]; then
+            die "${EX_CAPTURE}" "import -window root failed (exit \
+${_cap_rc}) for ${FRAME_FILE} on DISPLAY=${DISPLAY}"
         fi
         ;;
     scrot)
         # scrot grabs the whole screen -- the root window -- when it is
-        # given neither -u nor -s, so the frame is equivalent.
-        if ! scrot "${FRAME_PATH}"; then
-            die "${EX_CAPTURE}" "scrot failed for ${FRAME_FILE} on \
-DISPLAY=${DISPLAY}"
+        # given neither -u nor -s, so the frame is equivalent.  -o
+        # permits the existing (empty) temporary file as the target, and
+        # the grab is bounded for the same reason as import's.
+        _cap_rc=0
+        timeout "${GRAB_TIMEOUT}" \
+            "${CAPTURE_BIN}" -o "${CAPTURE_TMP}" || _cap_rc=$?
+        if [ "${_cap_rc}" -eq "${TIMEOUT_EXPIRED}" ]; then
+            die "${EX_CAPTURE}" "scrot did not finish within \
+${GRAB_TIMEOUT}s for ${FRAME_FILE} on DISPLAY=${DISPLAY} and was \
+stopped"
+        elif [ "${_cap_rc}" -ne 0 ]; then
+            die "${EX_CAPTURE}" "scrot failed (exit ${_cap_rc}) for \
+${FRAME_FILE} on DISPLAY=${DISPLAY}"
         fi
         ;;
     *)
@@ -731,26 +1288,33 @@ esac
 # A capturer that exits 0 having written nothing, or a truncated write,
 # must not be reported as a successful capture.
 # ---------------------------------------------------------------------
-if [ ! -f "${FRAME_PATH}" ]; then
+if [ ! -f "${CAPTURE_TMP}" ]; then
     die "${EX_CAPTURE}" "${CAPTURE_TOOL} reported success but wrote no \
-file at ${FRAME_PATH}"
+file for ${FRAME_FILE}"
 fi
 
-FRAME_BYTES="$(wc -c <"${FRAME_PATH}")"
+FRAME_BYTES="$(wc -c <"${CAPTURE_TMP}")"
 if [ "${FRAME_BYTES}" -le 0 ]; then
-    die "${EX_CAPTURE}" "${FRAME_PATH} is empty; ${CAPTURE_TOOL} wrote \
-a zero-byte file"
+    die "${EX_CAPTURE}" "the capture of ${FRAME_FILE} is empty; \
+${CAPTURE_TOOL} wrote a zero-byte file"
 fi
 
 # identify reports the format and the size in one call.  Multi-frame
 # output is impossible for a screen grab, but the first line is taken
 # explicitly rather than assumed, and without a pipe, so that pipefail
 # cannot turn a SIGPIPE into a spurious capture failure.
-if ! _cap_identify="$(
-        identify -format '%m %wx%h\n' "${FRAME_PATH}" 2>&1
-     )"; then
-    die "${EX_CAPTURE}" "identify could not read ${FRAME_PATH} as an \
-image: ${_cap_identify}"
+_cap_rc=0
+_cap_identify="$(
+    timeout "${IDENTIFY_TIMEOUT}" \
+        "${PLAYTHROUGH_BIN_IDENTIFY}" -format '%m %wx%h\n' \
+            "${CAPTURE_TMP}" 2>&1
+ )" || _cap_rc=$?
+if [ "${_cap_rc}" -eq "${TIMEOUT_EXPIRED}" ]; then
+    die "${EX_CAPTURE}" "identify did not finish within \
+${IDENTIFY_TIMEOUT}s on the capture of ${FRAME_FILE} and was stopped"
+elif [ "${_cap_rc}" -ne 0 ]; then
+    die "${EX_CAPTURE}" "identify could not read the capture of \
+${FRAME_FILE} as an image (exit ${_cap_rc}): ${_cap_identify}"
 fi
 _cap_identify="${_cap_identify%%$'\n'*}"
 FRAME_FORMAT="${_cap_identify%% *}"
@@ -758,8 +1322,9 @@ FRAME_GEOMETRY="${_cap_identify##* }"
 unset _cap_identify
 
 if [ "${FRAME_FORMAT}" != "PNG" ]; then
-    die "${EX_CAPTURE}" "${FRAME_PATH} is a ${FRAME_FORMAT}, not a \
-PNG; the pipeline reads and encodes PNG frames only"
+    die "${EX_CAPTURE}" "the capture of ${FRAME_FILE} is a \
+${FRAME_FORMAT}, not a PNG; the pipeline reads and encodes PNG frames \
+only"
 fi
 
 _cap_want_geometry="\
@@ -790,12 +1355,20 @@ unset _cap_want_geometry
 # fires at frame one instead of after the whole session, and it fails
 # LOUDLY rather than warning.
 # ---------------------------------------------------------------------
-if ! _cap_luma="$(
-        convert "${FRAME_PATH}" -colorspace Gray \
+_cap_rc=0
+_cap_luma="$(
+    timeout "${LUMA_TIMEOUT}" \
+        "${PLAYTHROUGH_BIN_CONVERT}" "${CAPTURE_TMP}" -colorspace Gray \
             -format '%[fx:mean] %[fx:standard_deviation]' info: 2>&1
-     )"; then
+ )" || _cap_rc=$?
+if [ "${_cap_rc}" -eq "${TIMEOUT_EXPIRED}" ]; then
+    die "${EX_CAPTURE}" "the luminance measurement did not finish \
+within ${LUMA_TIMEOUT}s on ${FRAME_PATH} and was stopped; the non-blank \
+gate cannot be skipped, so the frame is withdrawn rather than kept \
+unchecked"
+elif [ "${_cap_rc}" -ne 0 ]; then
     die "${EX_CAPTURE}" "convert could not measure the luminance of \
-${FRAME_PATH}: ${_cap_luma}"
+${FRAME_PATH} (exit ${_cap_rc}): ${_cap_luma}"
 fi
 _cap_luma="${_cap_luma%%$'\n'*}"
 LUMA_MEAN="${_cap_luma%% *}"
@@ -823,6 +1396,24 @@ the display genuinely renders."
 fi
 
 # ---------------------------------------------------------------------
+# PUBLISH.  One atomic rename over the reservation.
+#
+# Everything above ran against the temporary file, so this is the first
+# moment a frame exists at its canonical path -- and it exists complete,
+# verified as a 1920x1080 PNG and proved non-blank, or not at all.  A
+# rename within one directory cannot be observed half-done, so no reader
+# downstream (the OCR read below included) can ever see a partial frame.
+# ---------------------------------------------------------------------
+if ! mv -f -- "${CAPTURE_TMP}" "${FRAME_PATH}"; then
+    die "${EX_CAPTURE}" "cannot publish the verified capture to \
+${FRAME_FILE}"
+fi
+CAPTURE_TMP=""
+if ! chmod 600 -- "${FRAME_PATH}"; then
+    die "${EX_CAPTURE}" "cannot set the mode of ${FRAME_FILE}"
+fi
+
+# ---------------------------------------------------------------------
 # THE CROP RECTANGLE.  Computed, never hard-coded.
 #
 # sidebar_geometry.py derives it as
@@ -833,12 +1424,18 @@ fi
 # prints nothing but the geometry on stdout.  It evaluates to
 # 288x1072+1632+4 for the configuration this pipeline runs under.
 #
-# Computing it matters because nine sidebar*.json presets ship in
-# data/json/ui/ at eight distinct widths: a hard-coded rectangle would
-# crop the wrong column the moment the layout changed, and it would do
-# so silently -- nothing crashes, the pattern simply stops matching,
-# every reading goes empty, every duration collapses to the floor, and
-# the finished movie looks plausible while meaning nothing.
+# Computing it matters because the sidebar is one of many presets.
+# Counted in this checkout: nine files match data/json/ui/sidebar*.json
+# at the top level and twelve match across the whole tree -- the
+# spacebar/, structured/ and zenfs/ bundles add three -- and those
+# twelve files declare twelve widgets with "style": "sidebar" at EIGHT
+# distinct widths: 32, 36, 43, 44, 48, 58, 62 and 66 cells.  (The
+# recursive count is the one the width census is taken over; nine is
+# only the top-level file count.)  A hard-coded rectangle would crop the
+# wrong column the moment the layout changed, and it would do so
+# silently -- nothing crashes, the pattern simply stops matching, every
+# reading goes empty, every duration collapses to the floor, and the
+# finished movie looks plausible while meaning nothing.
 #
 # It also returns the WHOLE sidebar column, never a fixed band: the
 # clock is drawn by the time_desc_label widget bound to time_text
@@ -846,41 +1443,92 @@ fi
 # custom_sidebar widgets array puts it, so its y cannot be known from
 # configuration.  The clock is located BY PATTERN inside the OCR text.
 # ---------------------------------------------------------------------
+#
+# AND A COMPUTATION THAT FAILS IS FATAL -- IT DOES NOT FALL BACK.
+#
+# Substituting the documented literal when the computation cannot be run
+# is the one response that cannot be right here, because the literal is
+# only correct for one configuration and nothing has checked that this
+# run is that configuration -- the check is precisely what just failed.
+# The wrong column then reads as an unreadable clock rather than as an
+# error, so every duration collapses to the 0.25 s floor and the
+# finished movie is plausible and meaningless: the exact silent
+# catastrophe the computation exists to prevent, reintroduced by the
+# fallback meant to be safe.  So a failure to compute stops the capture
+# with EX_GEOMETRY, and the frame is withdrawn by the EXIT trap.
+#
+# An operator who genuinely wants a fixed rectangle -- diagnosing a
+# frame from another configuration, say -- asks for one explicitly with
+# PLAYTHROUGH_CAPTURE_RECT, which is recorded as CLOCK_RECT_FROM=
+# override so the choice is visible in the session record rather than
+# inferred from a warning nobody read.
+# ---------------------------------------------------------------------
 CLOCK_RECT=""
 CLOCK_RECT_FROM=""
-if [ -n "${RECT_OVERRIDE}" ]; then
+if [ "${CLOCK_MODE}" = "off" ]; then
+    # No crop is resolved because none will be applied: with the clock
+    # read off, nothing crops this frame at all.  Reporting a rectangle
+    # here would claim a crop that was never used, and REQUIRING one
+    # would fail a capture over a reading it was told not to take.
+    CLOCK_RECT_FROM="skipped"
+    playthrough_log "the clock read is off, so no sidebar crop is" \
+        "resolved for ${FRAME_FILE} and none is reported"
+elif [ -n "${RECT_OVERRIDE}" ]; then
     CLOCK_RECT="${RECT_OVERRIDE}"
     CLOCK_RECT_FROM="override"
-elif [ -f "${GEOMETRY_SCRIPT}" ]; then
-    if _cap_rect="$("${PLAYTHROUGH_PYTHON}" "${GEOMETRY_SCRIPT}")"; then
-        CLOCK_RECT="${_cap_rect%%$'\n'*}"
-        CLOCK_RECT_FROM="computed"
-    else
-        playthrough_warn "${GEOMETRY_SCRIPT} could not compute the" \
-            "sidebar crop; falling back to the documented rectangle" \
-            "for the contracted configuration"
-    fi
-    unset _cap_rect
+    playthrough_warn "using the EXPLICIT crop override" \
+        "PLAYTHROUGH_CAPTURE_RECT=${CLOCK_RECT} instead of computing" \
+        "it from this run's configuration; the reading is only as" \
+        "right as that rectangle"
 else
-    playthrough_warn "missing ${GEOMETRY_SCRIPT}, which is where the" \
-        "sidebar crop is computed"
+    if [ ! -f "${GEOMETRY_SCRIPT}" ]; then
+        die "${EX_GEOMETRY}" "missing ${GEOMETRY_SCRIPT}, which is \
+where the sidebar crop is computed.  It is not substituted with the \
+documented ${FALLBACK_RECT}: that literal is correct for one \
+configuration only, and nothing has confirmed this run is it.  Cropping \
+the wrong column reads as an unreadable clock rather than as an error, \
+so every duration would fall to the floor while every count still \
+tallied.  Restore the script, or set PLAYTHROUGH_CAPTURE_RECT \
+explicitly to accept a fixed rectangle."
+    fi
+    _cap_rc=0
+    # stdout carries the geometry and NOTHING else, which is why stderr
+    # goes to the scratch file rather than into this capture: every
+    # value sidebar_geometry.py had to default is announced on stderr,
+    # and on a fresh userdir there are several.  They are relayed below.
+    _cap_rect="$(
+        timeout "${GEOMETRY_TIMEOUT}" \
+            "${PLAYTHROUGH_PYTHON}" -B "${GEOMETRY_SCRIPT}" \
+            2>"${STAGE_ERR}"
+     )" || _cap_rc=$?
+    _cap_detail="$(stage_stderr)"
+    if [ "${_cap_rc}" -eq "${TIMEOUT_EXPIRED}" ]; then
+        die "${EX_GEOMETRY}" "sidebar_geometry.py did not finish \
+within ${GEOMETRY_TIMEOUT}s and was stopped, so the sidebar crop for \
+${FRAME_FILE} is unknown.  stderr: ${_cap_detail:-<none>}"
+    elif [ "${_cap_rc}" -ne 0 ]; then
+        die "${EX_GEOMETRY}" "sidebar_geometry.py could not compute \
+the sidebar crop for ${FRAME_FILE} (exit ${_cap_rc}): \
+${_cap_detail:-<no diagnostic>}.  The documented ${FALLBACK_RECT} is \
+NOT substituted -- it is right for one configuration only and this \
+run's configuration is exactly what could not be read.  Fix the \
+configuration, or set PLAYTHROUGH_CAPTURE_RECT explicitly to accept a \
+fixed rectangle."
+    fi
+    # Relayed even on success: a crop computed from defaulted values is
+    # still a crop derived from a configuration nobody confirmed, and
+    # that is worth seeing in the session log.
+    if [ -n "${_cap_detail}" ]; then
+        playthrough_warn "sidebar_geometry.py reported:" \
+            "${_cap_detail}"
+    fi
+    CLOCK_RECT="${_cap_rect%%$'\n'*}"
+    CLOCK_RECT_FROM="computed"
+    unset _cap_rect _cap_detail
 fi
 
-if [ -z "${CLOCK_RECT}" ]; then
-    # LABELLED LAST RESORT.  This literal is the value the computation
-    # yields for the contracted configuration and it is used only when
-    # the computation cannot be run at all.  It cannot fabricate a
-    # reading: a wrong column matches nothing, which reports an honest
-    # "unreadable" rather than a wrong clock.
-    CLOCK_RECT="${FALLBACK_RECT}"
-    CLOCK_RECT_FROM="fallback"
-    playthrough_warn "using the LAST-RESORT crop ${FALLBACK_RECT};" \
-        "this is the computed value for the contracted 240x67 grid" \
-        "with a 36-cell right-hand sidebar and is not derived from" \
-        "this run's configuration"
-fi
-
-if ! [[ "${CLOCK_RECT}" =~ ${GEOMETRY_RE} ]]; then
+if [ "${CLOCK_RECT_FROM}" != "skipped" ] &&
+   ! [[ "${CLOCK_RECT}" =~ ${GEOMETRY_RE} ]]; then
     die "${EX_CLOCK_FAULT}" "the sidebar crop resolved to \
 '${CLOCK_RECT}', which is not an ImageMagick WxH+X+Y geometry"
 fi
@@ -898,7 +1546,7 @@ fi
 # no reading from one invocation to the next, so it cannot silently
 # continue a sequence even if it wanted to.
 #
-# What the engine can legitimately put there [src/display.cpp:207-219]:
+# What the engine can legitimately put there [src/display.cpp:207-218]:
 # an exact time only when the survivor has a watch; otherwise a coarse
 # phrase from display::time_approx() -- "Around dawn", "Dead of night"
 # and the rest -- or "???".  Those are REAL READINGS, not failures, and
@@ -908,10 +1556,50 @@ CLOCK=""
 CLOCK_STATUS=""
 CLOCK_SOURCE="none"
 TIME_PHRASE=""
+CLOCK_DATE=""
 OCR_RC=0
 OCR_OUT=""
+# READER_RC is THE status of the reader that actually ran.  Two readers
+# report into two variables -- OCR_RC for the delegate, INLINE_RC for
+# the inline chain -- and a diagnostic that quotes the wrong one prints
+# a reassuring 0 for a frame that faulted, which is worse than printing
+# nothing.  Whichever branch runs sets this one, and the diagnostics
+# read only this one.
+READER_RC=0
+INLINE_RC=0
+# Whether this frame's date evidence actually reached the sidecar:
+# "yes", "no", or "off" when auditing was not asked for.  Reported on
+# stdout so the session record says which frames timeline.py will have
+# date evidence for, rather than leaving it to be inferred from a
+# warning.  "no" is not a failure -- an inline read cannot produce a
+# record -- but it IS something timeline.py must treat as unknown.
+AUDIT_RECORDED="no"
+if [ "${AUDIT_MODE}" != "on" ]; then
+    AUDIT_RECORDED="off"
+fi
 
-# ocr_field FIELD -- delegate one reading to ocr_clock.py.
+# The sidebar DATE line, and why this file reports it at all.
+#
+# display::date_string (src/display.cpp:194-205) renders either
+# "<Weekday>, <Month> <day>" or "<Season>, day <N>" one row from the
+# clock.  timeline.py needs it because a clock alone cannot tell a
+# crossing of midnight from a misread going backwards: 08:00:00
+# followed by 07:59:00 is indistinguishable from a real wrap unless
+# something says whether the DAY changed.  It also cannot tell a
+# 24-hour action from a zero-second one, because the time of day comes
+# back the same.
+#
+# The manifest schema is exactly six fields and does not change, so the
+# date leaves this file on stdout and is persisted to the telemetry
+# sidecar and to ocr_clock.py's own date audit instead.  It is reported
+# VERBATIM or not at all -- never converted into a time, never inferred
+# from the clock.  DATE_TEXT and DATE_STATUS below are derived from the
+# single OCR pass ocr_readings performs; nothing re-reads the frame.
+DATE_TEXT=""
+DATE_STATUS="skipped"
+
+# ocr_readings -- one delegate call for ALL THREE readings, and the date
+# evidence persisted in the same breath.
 #
 # Delegation is preferred over a second implementation precisely so the
 # two cannot disagree about the crop or the pattern: the rectangle
@@ -923,22 +1611,68 @@ OCR_OUT=""
 # Results come back in globals because a `$( ... )` capture of a
 # function runs in a subshell, where the exit status of the delegate --
 # 0 read, 1 unreadable, 2 fault -- is exactly what must not be lost.
-ocr_field() {
+#
+# --kv returns CLOCK=, TIME_PHRASE= and CLOCK_DATE= from a SINGLE OCR
+# pass, which matters for more than speed: three separate passes could
+# disagree about the same pixels, and then nothing could say which
+# reading the frame actually showed.
+#
+# --audit is what closes the date-evidence gap.  timeline.py has to tell
+# a midnight rollover from a misread clock, and from the clock alone it
+# cannot: 08:00:00 followed by 06:00:00 is either a 22-hour day or a bad
+# digit, and assuming rollover invents 22 hours nobody played.  The
+# sidebar draws the date on its own line [src/display.cpp:193-205], so
+# THAT is the evidence, and ocr_clock.py appends one record per frame to
+# $PLAYTHROUGH_DATE_AUDIT for timeline.py to read back.
+#
+# ocr_clock.py owns that write deliberately: THIS FILE MODIFIES NOTHING
+# OUTSIDE playthrough/frames/, so it asks for the record rather than
+# writing one, and the sidecar lives beside the build products instead
+# of in the manifest -- whose schema is exactly six fields, and a
+# seventh would create the second source of truth for timing that the
+# whole pipeline is built to avoid.
+#
+# The values are parsed with `IFS='=' read`, never eval: they are OCR
+# text off a game screen, and text is not code.  A trailing empty value
+# is the honest form of "not read".
+ocr_readings() {
+    local line key value
     OCR_OUT=""
     OCR_RC=0
+    CLOCK=""
+    TIME_PHRASE=""
+    CLOCK_DATE=""
     if OCR_OUT="$(
-            "${PLAYTHROUGH_PYTHON}" "${OCR_SCRIPT}" \
+            timeout "${OCR_TIMEOUT}" \
+                "${PLAYTHROUGH_PYTHON}" -B "${OCR_SCRIPT}" \
+                --kv \
                 --strict-path \
                 --frames-dir "${PLAYTHROUGH_FRAMES_DIR}" \
                 --rect "${CLOCK_RECT}" \
-                --field "$1" \
+                "${AUDIT_ARGS[@]}" \
                 "${FRAME_PATH}"
          )"; then
         OCR_RC=0
     else
         OCR_RC=$?
     fi
-    OCR_OUT="${OCR_OUT%%$'\n'*}"
+    # Parsed even on a non-zero exit: 1 means "read, nothing there",
+    # and the empty values it prints are the honest answer.  Only a
+    # fault (2 and above) prints nothing to parse.
+    while IFS= read -r line; do
+        [ -n "${line}" ] || continue
+        key="${line%%=*}"
+        value="${line#*=}"
+        case "${key}" in
+            CLOCK) CLOCK="${value}" ;;
+            TIME_PHRASE) TIME_PHRASE="${value}" ;;
+            CLOCK_DATE) CLOCK_DATE="${value}" ;;
+            *)
+                playthrough_warn "ignoring unrecognised reading" \
+                    "'${key}' from ${OCR_SCRIPT} for ${FRAME_FILE}"
+                ;;
+        esac
+    done <<<"${OCR_OUT}"
     return 0
 }
 
@@ -983,15 +1717,49 @@ possible_clock() {
 # here, so nothing is masked by being called in a condition.
 INLINE_OUT=""
 inline_clock() {
-    local text="" matches="" candidate=""
+    local text="" matches="" candidate="" rc=0 detail=""
     INLINE_OUT=""
-    if ! text="$(
-            convert "${FRAME_PATH}" -crop "${CLOCK_RECT}" +repage \
-                -colorspace Gray -resize 200% -normalize png:- |
-                tesseract stdin stdout 2>/dev/null
-         )"; then
-        playthrough_warn "the inline convert|tesseract chain failed on" \
-            "${FRAME_FILE}; reporting no reading rather than guessing"
+    # Both stages' stderr is kept, not discarded.  "the chain failed" on
+    # its own names no cause: the diagnosis is in what convert or
+    # tesseract said -- an unreadable PNG, a crop outside the image, a
+    # missing tessdata -- and without it the operator is left guessing
+    # at a failure that will repeat on every frame.  It goes to a
+    # private scratch file rather than into the pipe, because merging it
+    # into stdout would corrupt the very text being read for a clock.
+    #
+    # The excerpt is BOUNDED: tesseract can be voluble, and a page of
+    # warnings per frame would bury the session log it is meant to
+    # inform.  Both binaries are the ones env.sh verified and resolved.
+    : >"${STAGE_ERR}"
+    # `cmd || rc=$?`, NOT `if ! cmd; then rc=$?`: inside the body of an
+    # `if !` the special parameter holds the status of the NEGATION,
+    # which is always 0.  Written that way the reported code would be a
+    # constant zero and the expiry check below could never match, so the
+    # status is taken from the command itself.
+    text="$(
+        timeout "${OCR_TIMEOUT}" \
+            "${PLAYTHROUGH_BIN_CONVERT}" "${FRAME_PATH}" \
+                -crop "${CLOCK_RECT}" +repage \
+                -colorspace Gray -resize 200% -normalize png:- \
+                2>"${STAGE_ERR}" |
+            timeout "${OCR_TIMEOUT}" \
+                "${PLAYTHROUGH_BIN_TESSERACT}" stdin stdout \
+                    2>>"${STAGE_ERR}"
+     )" || rc=$?
+    if [ "${rc}" -ne 0 ]; then
+        detail="$(stage_stderr)"
+        if [ "${rc}" -eq "${TIMEOUT_EXPIRED}" ]; then
+            playthrough_warn "the inline convert|tesseract chain did" \
+                "not finish within ${OCR_TIMEOUT}s on ${FRAME_FILE}" \
+                "and was stopped; reporting no reading rather than" \
+                "guessing.  stderr: ${detail:-<none>}"
+        else
+            playthrough_warn "the inline convert|tesseract chain" \
+                "failed (exit ${rc}) reading the clock from" \
+                "${FRAME_FILE} at crop ${CLOCK_RECT}; reporting no" \
+                "reading rather than guessing.  stderr:" \
+                "${detail:-<none>}"
+        fi
         return 2
     fi
     # `|| true` is required, not lazy: no match is an EXPECTED outcome
@@ -1020,20 +1788,49 @@ inline_clock() {
 
 if [ "${CLOCK_MODE}" = "off" ]; then
     CLOCK_STATUS="skipped"
-elif [ -f "${OCR_SCRIPT}" ] &&
-     command -v "${PLAYTHROUGH_PYTHON}" >/dev/null 2>&1; then
+elif [ "${OCR_PREFLIGHT_FAILED}" -eq 0 ] && [ -f "${OCR_SCRIPT}" ] &&
+     [ -x "${PLAYTHROUGH_PYTHON}" ]; then
+    # env.sh has already VERIFIED this interpreter -- ownership and
+    # writability of the binary and of every directory above it -- and
+    # refused to finish sourcing if it did not pass.  So the test here is
+    # only whether it is present and executable; `command -v` is
+    # deliberately not used, because it would search PATH again and could
+    # answer with something other than the interpreter that was checked.
     CLOCK_SOURCE="ocr_clock.py"
-    ocr_field clock
-    case "${OCR_RC}" in
+    ocr_readings
+    READER_RC="${OCR_RC}"
+    # ocr_clock.py writes the audit record before it prints anything, so
+    # a clean read (0) or an honest "nothing there" (1) both mean the
+    # record reached the sidecar; a fault means it did not.
+    if [ "${AUDIT_MODE}" = "on" ] && [ "${READER_RC}" -le 1 ]; then
+        AUDIT_RECORDED="yes"
+    fi
+    case "${READER_RC}" in
         0)
-            CLOCK="${OCR_OUT}"
             CLOCK_STATUS="read"
             ;;
         1)
+            # Read, and there was no clock on this screen -- which is
+            # what most menu keystrokes photograph.  A phrase or a date
+            # may still have come back, and both are kept.
+            CLOCK=""
             CLOCK_STATUS="unreadable"
             ;;
-        *)
+        "${TIMEOUT_EXPIRED}")
             CLOCK_STATUS="fault"
+            CLOCK=""
+            playthrough_warn "${OCR_SCRIPT} did not finish within" \
+                "${OCR_TIMEOUT}s on ${FRAME_FILE} and was stopped"
+            ;;
+        *)
+            # A FAULT CARRIES NO READING.  ocr_clock.py prints nothing
+            # on a fault, so this is normally already empty -- but the
+            # emptiness is asserted here rather than inherited, because
+            # a reading kept beside CLOCK_STATUS=fault is a value the
+            # manifest would record and timeline.py would difference,
+            # produced by a read this file just declared unreliable.
+            CLOCK_STATUS="fault"
+            CLOCK=""
             ;;
     esac
 else
@@ -1048,7 +1845,8 @@ else
     else
         INLINE_RC=$?
     fi
-    case "${INLINE_RC}" in
+    READER_RC="${INLINE_RC}"
+    case "${READER_RC}" in
         0)
             CLOCK="${INLINE_OUT}"
             CLOCK_STATUS="read"
@@ -1058,8 +1856,27 @@ else
             ;;
         *)
             CLOCK_STATUS="fault"
+            CLOCK=""
             ;;
     esac
+    # The inline chain reads a clock and nothing else: the date and the
+    # coarse phrase are recognised by ocr_clock.py's own patterns, and
+    # duplicating them here is exactly the divergence delegation exists
+    # to prevent.  So it is said out loud, unconditionally, that this
+    # frame carries no date -- the statement is about the reader's
+    # capability and is true whether or not the audit was asked for.
+    playthrough_warn "the inline reader performs no date extraction," \
+        "so no date is reported for ${FRAME_FILE} and DATE_STATUS is" \
+        "'unavailable' rather than 'unreadable': nothing looked"
+    # And when the audit WAS asked for, the consequence downstream is
+    # named too -- timeline.py must treat a frame with no record as
+    # UNKNOWN, never as a day that did not turn.
+    if [ "${AUDIT_MODE}" = "on" ]; then
+        playthrough_warn "no date evidence was recorded for" \
+            "${FRAME_FILE}, so timeline.py has no date for this frame" \
+            "and must reconcile rather than assume the day did not" \
+            "turn"
+    fi
 fi
 
 # Whatever produced it, a reading leaves this file only if it is
@@ -1086,59 +1903,376 @@ fi
 if [ "${CLOCK_STATUS}" = "fault" ]; then
     if [ "${STRICT_CLOCK}" -eq 1 ]; then
         die "${EX_CLOCK_FAULT}" "the clock read faulted on \
-${FRAME_FILE} (${CLOCK_SOURCE} exit ${OCR_RC:-2}).  This is a fault, \
+${FRAME_FILE} (${CLOCK_SOURCE} exit ${READER_RC}).  This is a fault, \
 not an unreadable clock: fix it -- seed_options.py sets 24_HOUR=24h -- \
-and recapture.  Set PLAYTHROUGH_CAPTURE_STRICT_CLOCK=0 to carry on \
-with the fault recorded instead."
+and recapture.  Carrying on with the fault recorded is a DIAGNOSTIC \
+action (PLAYTHROUGH_CAPTURE_MODE=diagnostic with \
+PLAYTHROUGH_CAPTURE_STRICT_CLOCK=0), and such a capture is withdrawn \
+rather than kept: a frame whose clock could not be read has no \
+duration to derive."
     fi
     playthrough_warn "the clock read faulted on ${FRAME_FILE} and" \
         "PLAYTHROUGH_CAPTURE_STRICT_CLOCK=0, so the frame is kept with" \
         "CLOCK_STATUS=fault and no reading"
 fi
 
-# The coarse phrase, read only when it is the reading that matters:
-# without a watch the sidebar shows a phrase INSTEAD of a clock, so
-# 'auto' asks for it exactly when there was no clock to read.  It is
-# reported verbatim; it is never converted into a time.
-if [ "${PHRASE_MODE}" != "off" ] &&
-   [ "${CLOCK_SOURCE}" = "ocr_clock.py" ] &&
-   { [ "${PHRASE_MODE}" = "always" ] ||
-     [ "${CLOCK_STATUS}" = "unreadable" ]; }; then
-    ocr_field phrase
-    if [ "${OCR_RC}" -eq 0 ]; then
-        TIME_PHRASE="${OCR_OUT}"
+# ---------------------------------------------------------------------
+# THE TELEMETRY SIDECAR
+#
+# One JSON object per captured frame, appended to
+# playthrough/build/observations.jsonl (env.sh's
+# PLAYTHROUGH_OBSERVATIONS).  Together with the date audit ocr_clock.py
+# appends as it reads, it is the only thing this invocation records
+# outside playthrough/frames/, and the exception is deliberate and
+# narrow rather than incidental:
+#
+#   * timeline.py is required to cross-check its midnight-rollover and
+#     day-count decisions against the sidebar DATE line, because a
+#     clock alone cannot distinguish a real wrap from a misread going
+#     backwards, nor a 24-hour action from a zero-second one;
+#   * the manifest schema is exactly six fields -- frame, file,
+#     real_ts, ingame_clock, action, commentary -- and is not being
+#     changed to carry a seventh;
+#   * so the date is persisted HERE, keyed by frame, in a file that is
+#     an intermediate observation record rather than a delivered
+#     artifact.
+#
+# This row carries the WHOLE per-frame observation -- the clock, the
+# phrase, the date, the crop it was read from, the luminance and the
+# geometry -- from values already in memory.  It performs no OCR of its
+# own, so recording it costs one append and cannot disagree with the
+# reading it describes.  ocr_clock.py's audit (DATE_AUDIT) is the same
+# evidence recorded by the module that produced it; timeline.py reads
+# both and treats a disagreement as unobserved rather than as fact.
+#
+# APPEND-ONLY, and a frame captured twice therefore has two rows: the
+# LAST row for a frame key wins, which is the same last-occurrence rule
+# the engine applies to duplicated option entries.  Nothing is ever
+# rewritten -- the record of what was observed is evidence.
+#
+# JSON is built with python's own encoder through the resolved
+# interpreter, never by string-concatenating quotes: a commentary
+# string, an OCR misread or a path could otherwise carry a quote or a
+# backslash and produce a file that is not JSON.  The fallback path,
+# used only when no interpreter is available, escapes the four
+# characters JSON requires and is documented as the weaker route.
+# ---------------------------------------------------------------------
+write_observation() {
+    local dir
+    dir="$(dirname "${OBSERVATIONS}")"
+    if ! mkdir -p "${dir}"; then
+        playthrough_warn "cannot create ${dir} for the telemetry" \
+            "sidecar"
+        return 1
+    fi
+    # THE SECOND DESTINATION IS PROVED TOO.
+    #
+    # The frames directory is checked above for containment and for a
+    # symlinked component; this file is the other thing this script
+    # writes, it is APPENDED to, and its path is settable from the
+    # environment -- so it gets the same two proofs.  A link planted at
+    # playthrough/build/ or at the sidecar itself would otherwise append
+    # a row of telemetry to whatever it pointed at, and the append would
+    # report success.
+    playthrough_assert_inside "${OBSERVATIONS}" \
+        "${PLAYTHROUGH_REPO_ROOT}" "telemetry sidecar" || return 1
+    playthrough_assert_no_symlink "${OBSERVATIONS}" \
+        "${PLAYTHROUGH_REPO_ROOT}" "telemetry sidecar" || return 1
+    if [ -L "${OBSERVATIONS}" ]; then
+        playthrough_warn "${OBSERVATIONS} is a symbolic link; the" \
+            "telemetry row is evidence and is not appended through" \
+            "a link"
+        return 1
+    fi
+    if command -v "${PLAYTHROUGH_PYTHON}" >/dev/null 2>&1; then
+        # The values arrive as ARGUMENTS, not as interpolated source:
+        # there is no eval here and no code built from a reading.
+        "${PLAYTHROUGH_PYTHON}" -c '
+import json
+import sys
+
+keys = sys.argv[2::2]
+values = sys.argv[3::2]
+row = dict(zip(keys, values))
+row["frame"] = int(row["frame"])
+with open(sys.argv[1], "a", encoding="utf-8") as handle:
+    handle.write(json.dumps(row, sort_keys=True) + "\n")
+    handle.flush()
+' "${OBSERVATIONS}" \
+            frame "${FRAME_INDEX}" \
+            file "${FRAME_FILE}" \
+            real_ts "${REAL_TS}" \
+            ingame_clock "${CLOCK}" \
+            clock_status "${CLOCK_STATUS}" \
+            clock_source "${CLOCK_SOURCE}" \
+            clock_rect "${CLOCK_RECT}" \
+            clock_rect_from "${CLOCK_RECT_FROM}" \
+            time_phrase "${TIME_PHRASE}" \
+            date "${DATE_TEXT}" \
+            date_status "${DATE_STATUS}" \
+            frame_geometry "${FRAME_GEOMETRY}" \
+            luma_mean "${LUMA_MEAN}" \
+            luma_stddev "${LUMA_STDDEV}" \
+            capture_tool "${CAPTURE_TOOL}" || return 1
+        observation_recorded
+        return "$?"
+    fi
+    playthrough_warn "no ${PLAYTHROUGH_PYTHON} is available, so the" \
+        "telemetry row is written with the shell's own JSON escaping," \
+        "which is the weaker route"
+    local clock phrase date_text
+    clock="$(json_escape "${CLOCK}")"
+    phrase="$(json_escape "${TIME_PHRASE}")"
+    date_text="$(json_escape "${DATE_TEXT}")"
+    printf '{"capture_tool":"%s","clock_rect":"%s",' \
+        "$(json_escape "${CAPTURE_TOOL}")" \
+        "$(json_escape "${CLOCK_RECT}")" >>"${OBSERVATIONS}" || return 1
+    printf '"clock_rect_from":"%s","clock_source":"%s",' \
+        "$(json_escape "${CLOCK_RECT_FROM}")" \
+        "$(json_escape "${CLOCK_SOURCE}")" \
+        >>"${OBSERVATIONS}" || return 1
+    printf '"clock_status":"%s","date":"%s","date_status":"%s",' \
+        "$(json_escape "${CLOCK_STATUS}")" "${date_text}" \
+        "$(json_escape "${DATE_STATUS}")" \
+        >>"${OBSERVATIONS}" || return 1
+    printf '"file":"%s","frame":%s,"frame_geometry":"%s",' \
+        "$(json_escape "${FRAME_FILE}")" "${FRAME_INDEX}" \
+        "$(json_escape "${FRAME_GEOMETRY}")" \
+        >>"${OBSERVATIONS}" || return 1
+    printf '"ingame_clock":"%s","luma_mean":"%s",' \
+        "${clock}" "$(json_escape "${LUMA_MEAN}")" \
+        >>"${OBSERVATIONS}" || return 1
+    printf '"luma_stddev":"%s","real_ts":"%s","time_phrase":"%s"}\n' \
+        "$(json_escape "${LUMA_STDDEV}")" \
+        "$(json_escape "${REAL_TS}")" "${phrase}" \
+        >>"${OBSERVATIONS}" || return 1
+    observation_recorded
+    return "$?"
+}
+
+# observation_recorded -- prove the row for THIS frame is really there.
+#
+# Verified rather than assumed, because a writer that exits 0 without
+# writing is a real possibility: PLAYTHROUGH_PYTHON is resolved by
+# env.sh from whatever is available, `command -v` only proves the file
+# is executable, and an executable that is not a Python interpreter
+# would return 0 and record nothing.  The check is one tail: this
+# frame's own filename is unique to its row, so finding it on the last
+# line proves the append landed and landed last.
+observation_recorded() {
+    local last=""
+    last="$(tail -n 1 "${OBSERVATIONS}" 2>/dev/null || true)"
+    case "${last}" in
+        *"${FRAME_NAME}"*"}")
+            return 0
+            ;;
+    esac
+    playthrough_warn "the telemetry row for ${FRAME_NAME} is not the" \
+        "last line of ${OBSERVATIONS}; the writer reported success" \
+        "without recording anything, so nothing about the date" \
+        "evidence for this frame can be believed"
+    return 1
+}
+
+# json_escape TEXT -- the four escapes a JSON string requires.
+#
+# Backslash first, so that the backslashes introduced by the other
+# three are not escaped a second time.  Control characters are not
+# expected in any of these values -- every one of them is either a path
+# this pipeline built, a fixed status word, or OCR output already
+# constrained to a pattern -- and a literal newline cannot reach here
+# because manifest.py and this file both refuse one.
+json_escape() {
+    local text="$1"
+    text="${text//\\/\\\\}"
+    text="${text//\"/\\\"}"
+    text="${text//$'\t'/\\t}"
+    text="${text//$'\n'/\\n}"
+    printf '%s' "${text}"
+}
+
+# The coarse phrase and the date come back from the SAME read as the
+# clock, so there is nothing left to fetch here -- one OCR pass per
+# frame, and three readings that therefore cannot disagree about the
+# same pixels.  What remains is the discard: 'auto' means the phrase is
+# the reading that matters only when there was no clock, because without
+# a watch the sidebar shows a phrase INSTEAD of a time
+# [src/display.cpp:207-218].  With a clock in hand a phrase is noise, so
+# it is dropped from the output rather than reported beside a time it
+# does not qualify.  Nothing is ever converted between the two.
+#
+# The date is NOT subject to that rule: it is evidence for the rollover
+# guard whether or not the clock was read, so it is always reported.
+if [ "${PHRASE_MODE}" = "off" ] ||
+   { [ "${PHRASE_MODE}" = "auto" ] &&
+     [ "${CLOCK_STATUS}" = "read" ]; }; then
+    TIME_PHRASE=""
+fi
+
+# ---------------------------------------------------------------------
+# The date's status, derived from the read that already happened.
+#
+# An unreadable date is ORDINARY -- the menu and character-creation
+# frames have no sidebar at all -- so it is recorded as such and is
+# never fatal.  A FAULT is already fatal above under
+# PLAYTHROUGH_CAPTURE_STRICT_CLOCK, and is recorded here rather than
+# re-raised.  The inline chain has no date extraction at all, and that
+# is stated as 'unavailable' rather than passed off as 'unreadable':
+# timeline.py must treat a frame with no date as UNKNOWN, never as a day
+# that did not turn.  Nothing is ever inferred -- no date is derived
+# from the clock, from the previous frame, or from the wall clock.
+# ---------------------------------------------------------------------
+if [ "${CLOCK_MODE}" != "on" ]; then
+    DATE_STATUS="skipped"
+elif [ "${CLOCK_SOURCE}" != "ocr_clock.py" ]; then
+    DATE_STATUS="unavailable"
+elif [ -n "${CLOCK_DATE}" ]; then
+    DATE_TEXT="${CLOCK_DATE}"
+    DATE_STATUS="read"
+elif [ "${CLOCK_STATUS}" = "fault" ]; then
+    DATE_STATUS="fault"
+else
+    DATE_STATUS="unreadable"
+fi
+
+# ---------------------------------------------------------------------
+# OUTPUT, THEN TELEMETRY, THEN -- LAST OF ALL -- THE COMMIT POINT.
+#
+# The order below is the whole of this file's atomicity guarantee, and
+# it is deliberate to the line.
+#
+# `exit 0` means "there is exactly one new frame AND this invocation's
+# output is complete", because session.py reads that as licence to
+# append exactly one manifest row.  Setting KEPT=1 before the output
+# was produced broke the second half of that promise: if a write to
+# stdout failed -- a closed pipe, a full disk -- this script exited
+# non-zero while the EXIT trap, seeing KEPT=1, left the frame in place.
+# The caller then had no row for a frame that existed, and the
+# frames-count == manifest-line-count identity that verify_artifacts.sh
+# asserts was already broken before the session had properly begun.
+#
+# So: the payload is assembled in ONE buffer, written with ONE printf,
+# and only then is the frame committed.  A failure anywhere before the
+# commit point withdraws the frame, which is the honest outcome -- the
+# caller sees a non-zero status, discards whatever it read, and no
+# frame is left unaccounted for.  A signal is covered too: a shell
+# killed by SIGPIPE never reaches its EXIT trap, so the PIPE, INT, TERM
+# and HUP traps installed above withdraw the frame themselves.
+# ---------------------------------------------------------------------
+
+# Build the complete payload first.  `line KEY VALUE` appends to it
+# rather than writing, so a partially-written contract is impossible:
+# either every key reaches stdout or none of them does.
+PAYLOAD=""
+line() {
+    PAYLOAD="${PAYLOAD}$1=$2
+"
+}
+
+# The mode comes first because it decides what the rest of the payload
+# describes.  In diagnostic mode FRAME_FILE and FRAME_PATH are EMPTY --
+# the frame is about to leave the working tree, so there is no such path
+# to report -- and DIAGNOSTIC_PATH says where it went instead.  Both keys
+# are always present: a key that sometimes disappears is a key a
+# consumer papers over with a default.
+line CAPTURE_MODE "${CAPTURE_MODE}"
+line FRAME_INDEX "${FRAME_INDEX}"
+line FRAME_NAME "${FRAME_NAME}"
+if [ "${CAPTURE_MODE}" = "production" ]; then
+    line FRAME_FILE "${FRAME_FILE}"
+    line FRAME_PATH "${FRAME_PATH}"
+    line DIAGNOSTIC_PATH ""
+else
+    line FRAME_FILE ""
+    line FRAME_PATH ""
+    line DIAGNOSTIC_PATH "${REJECT_DIR}/${FRAME_NAME}"
+fi
+line FRAME_BYTES "${FRAME_BYTES}"
+line FRAME_FORMAT "${FRAME_FORMAT}"
+line FRAME_GEOMETRY "${FRAME_GEOMETRY}"
+line REAL_TS "${REAL_TS}"
+line CAPTURE_TOOL "${CAPTURE_TOOL}"
+line LUMA_MEAN "${LUMA_MEAN}"
+line LUMA_STDDEV "${LUMA_STDDEV}"
+line CLOCK_RECT "${CLOCK_RECT}"
+line CLOCK_RECT_FROM "${CLOCK_RECT_FROM}"
+line CLOCK_SOURCE "${CLOCK_SOURCE}"
+line CLOCK_STATUS "${CLOCK_STATUS}"
+line CLOCK "${CLOCK}"
+line TIME_PHRASE "${TIME_PHRASE}"
+line CLOCK_DATE "${CLOCK_DATE}"
+line DATE "${DATE_TEXT}"
+line DATE_STATUS "${DATE_STATUS}"
+line DATE_AUDIT "${AUDIT_RECORDED}"
+if [ "${CAPTURE_MODE}" = "production" ]; then
+    line OBSERVATIONS "${OBSERVATIONS}"
+else
+    # No row is appended for a frame that is being withdrawn, so there
+    # is no sidecar to name.  A telemetry row for a frame no manifest
+    # will ever mention is an orphan record, and the sidecar's whole
+    # value to timeline.py is that it lines up with the rows one for one.
+    line OBSERVATIONS ""
+fi
+
+# One write.  A failure here is fatal and the frame is withdrawn: the
+# caller must never be left believing a frame is unreported when it is
+# on disk, or reported when it is not.
+if ! printf '%s' "${PAYLOAD}"; then
+    die "${EX_CAPTURE}" "the output contract could not be written to \
+stdout for ${FRAME_FILE}; the frame is withdrawn so that no frame \
+exists without a caller that knows about it"
+fi
+
+# The telemetry row, appended after the payload is out and before the
+# frame is committed.  See OBSERVATIONS above and env.sh's
+# PLAYTHROUGH_OBSERVATIONS for why the date cannot live in the manifest.
+# A diagnostic capture appends nothing: its frame never joins the record,
+# and a row for a frame no manifest mentions would be an orphan in a
+# sidecar whose value is that it lines up with the rows one for one.
+if [ "${CAPTURE_MODE}" = "production" ]; then
+    if ! write_observation; then
+        die "${EX_CAPTURE}" "the telemetry row for ${FRAME_FILE} \
+could not be appended to ${OBSERVATIONS}; the frame is withdrawn \
+rather than kept without the date evidence timeline.py cross-checks \
+against"
     fi
 fi
 
 # ---------------------------------------------------------------------
-# The frame has passed every check, so it is ours to keep: the EXIT trap
-# will no longer withdraw it, and a superseded frame moved aside stays
-# aside.  Nothing below this line can fail in a way that would leave an
+# THE COMMIT POINT.  The frame has passed every check and this
+# invocation's whole contract has been delivered, so the frame is ours
+# to keep: the EXIT trap will no longer withdraw it, and a superseded
+# frame moved aside stays aside.
+#
+# These two assignments are the last statements before `exit 0` for
+# exactly that reason.  Neither can fail: they are shell assignments,
+# not commands, so nothing between the commit and the exit can leave an
 # unaccounted frame in the capture directory.
+#
+# DIAGNOSTIC: the frame is NOT ours to keep, and KEPT deliberately stays
+# 0.  The script exits EX_DIAGNOSTIC, which sends the EXIT trap down the
+# same withdrawal path a failure takes: the PNG is moved out of the
+# working tree into the private 0700 reject directory under its own
+# name, so it can be looked at and can never be committed as a session
+# frame or counted against the manifest.  Combined with an empty
+# FRAME_FILE and a non-zero status, a diagnostic capture is structurally
+# unusable as evidence -- which is what makes the relaxed safeguards
+# above safe to offer at all.
 # ---------------------------------------------------------------------
-KEPT=1
-BACKUP=""
+if [ "${CAPTURE_MODE}" = "production" ]; then
+    KEPT=1
+    BACKUP=""
+    playthrough_log "captured ${FRAME_FILE} (${FRAME_GEOMETRY}," \
+        "${FRAME_BYTES} bytes) clock=${CLOCK:-<none>}" \
+        "status=${CLOCK_STATUS} date=${DATE_TEXT:-<none>}"
+    exit "${EX_OK}"
+fi
 
-emit FRAME_INDEX "${FRAME_INDEX}"
-emit FRAME_NAME "${FRAME_NAME}"
-emit FRAME_FILE "${FRAME_FILE}"
-emit FRAME_PATH "${FRAME_PATH}"
-emit FRAME_BYTES "${FRAME_BYTES}"
-emit FRAME_FORMAT "${FRAME_FORMAT}"
-emit FRAME_GEOMETRY "${FRAME_GEOMETRY}"
-emit REAL_TS "${REAL_TS}"
-emit CAPTURE_TOOL "${CAPTURE_TOOL}"
-emit LUMA_MEAN "${LUMA_MEAN}"
-emit LUMA_STDDEV "${LUMA_STDDEV}"
-emit CLOCK_RECT "${CLOCK_RECT}"
-emit CLOCK_RECT_FROM "${CLOCK_RECT_FROM}"
-emit CLOCK_SOURCE "${CLOCK_SOURCE}"
-emit CLOCK_STATUS "${CLOCK_STATUS}"
-emit CLOCK "${CLOCK}"
-emit TIME_PHRASE "${TIME_PHRASE}"
-
-playthrough_log "captured ${FRAME_FILE} (${FRAME_GEOMETRY}," \
-    "${FRAME_BYTES} bytes) clock=${CLOCK:-<none>}" \
-    "status=${CLOCK_STATUS}"
-
-exit "${EX_OK}"
+playthrough_warn "DIAGNOSTIC capture of index ${FRAME_INDEX}" \
+    "(${FRAME_GEOMETRY}, ${FRAME_BYTES} bytes)" \
+    "clock=${CLOCK:-<none>} status=${CLOCK_STATUS}.  The frame is" \
+    "being withdrawn to ${REJECT_DIR}/${FRAME_NAME}; no frame was" \
+    "added to ${PLAYTHROUGH_FRAMES_DIR}, no telemetry row was" \
+    "appended, and this invocation exits ${EX_DIAGNOSTIC} so it" \
+    "cannot be mistaken for a capture that belongs to the record."
+exit "${EX_DIAGNOSTIC}"

@@ -5,209 +5,290 @@ Crop the computed sidebar column out of a captured PNG, preprocess it
 for legibility, run OCR over it, extract the clock by regular
 expression, and return the matched string -- or NOTHING AT ALL.
 
-THE HONESTY CONTRACT
+THE HONESTY CONTRACT: None VERSUS AN EXCEPTION
 This module is the single place where "never fabricate" is enforced in
-code.  Everything downstream -- every frame duration, the pacing of the
-movie, the caption timings, the honesty of the whole film -- rests on
-it never inventing a number.  Therefore:
+code, because every frame duration, the pacing of the movie and the
+caption timings rest on it never inventing a number.
 
   * a genuine ``HH:MM:SS`` reading is returned verbatim;
   * anything else returns ``None``: never ``"00:00:00"``, never the
     previous frame's value, never an interpolation, and never a repair
     of a partial match such as ``08:1S:32``;
-  * this module is STATELESS.  It holds no reading from one call to the
-    next, so it CANNOT silently continue a sequence.  Reconciling a
-    missing or non-monotonic reading is ``timeline.py``'s job, and it
-    happens downstream, visibly, against the previous frame;
-  * a genuine fault RAISES: a missing input file, an unreadable file, a
-    path outside the frames directory under a strict caller, an absent
-    toolchain, a misconfigured ``24_HOUR`` option.  Only a genuinely
+  * this module is STATELESS, so it CANNOT silently continue a
+    sequence.  Reconciling a missing or non-monotonic reading is
+    ``timeline.py``'s job, downstream and visibly;
+  * a genuine fault RAISES -- a missing or unreadable input, a path
+    outside the frames directory under a strict caller, an absent
+    toolchain, a misconfigured ``24_HOUR``.  Only a genuinely
     unreadable clock is allowed to be quiet, and even then it is an
     explicit ``None`` that ``manifest.py`` records as JSON ``null``.
 
-THE REFERENCE PIPELINE
-The preprocessing chain is prescribed, and this is its canonical
-shell form::
+THE CANONICAL PREPROCESSING
+The prescribed chain, in its shell form::
 
-    convert "$FRAME" -crop "$RECT" +repage -colorspace Gray \\
-        -resize 200% -normalize png:- \\
-      | tesseract stdin stdout \\
+    convert "$FRAME" -crop "$RECT" +repage -colorspace Gray \
+        -resize 200% -normalize png:- \
+      | tesseract stdin stdout \
       | grep -Eo '[0-9]{2}:[0-9]{2}:[0-9]{2}'
 
-Every operator is load-bearing and none is dropped or reordered here.
+Every operator is load-bearing and none is dropped or reordered:
 ``-crop "$RECT" +repage`` takes the sidebar column and resets the
-virtual canvas; ``-colorspace Gray`` removes chroma noise from coloured
-text on a dark background; ``-resize 200%`` enlarges 8x16 terminal
-glyphs, which tesseract cannot read at native size; ``-normalize``
-stretches contrast so the strokes separate from the background.
-``$RECT`` is COMPUTED at run time by :mod:`sidebar_geometry` -- never
-hard-coded -- and evaluates to ``288x1072+1632+4`` for the
-configuration this pipeline runs under.
+virtual canvas, ``-colorspace Gray`` removes chroma noise from coloured
+text on a dark background, ``-resize 200%`` enlarges 8x16 terminal
+glyphs that tesseract cannot read at native size, and ``-normalize``
+stretches contrast so the strokes separate.  ``$RECT`` is COMPUTED at
+run time by :mod:`sidebar_geometry`, never hard-coded.
 
-TWO MEASURED REFINEMENTS, AND THE EVIDENCE FOR THEM
-Both were measured against a real captured 1920x1080 frame whose
-sidebar clock was read directly off the pixels, magnified 800%, as
-``08:00:00``.  That observation is the authority; the OCR is the assist.
-
-1.  ROW-WISE OCR.  Applied to the whole column at once, the chain
-    yields NO ``[0-9]{2}:[0-9]{2}:[0-9]{2}`` match at all: tesseract's
-    layout analysis mangles the clock line into ``48:48; 48``.  Across
-    thirty-two whole-column configurations (four resample filters, two
-    scales, two crop widths, page-segmentation modes 3 and 6) only two
-    matched, and both matched WRONGLY (``48:48:48``, ``88:48:48``).
-    Applied to the single 16 px clock row with ``--psm 7`` -- one text
-    line -- the same chain reads ``08:00:08``.  Rows are therefore read
-    one text row at a time, and each row is normalised locally: a
-    column-global ``-normalize`` leaves the clock dim and kills the
-    match.  All rows are still scanned and the clock is still located
-    BY REGEX, never at a fixed ``y``; see "Finding the row" below.
-
-2.  ONE APPENDED OPERATOR, ``-gaussian-blur 0x0.5``.  The game's
-    Terminus face draws a SLASHED ZERO, and tesseract 5.5.0 reads that
-    slash as an ``8``: hence ``08:00:08`` for a clock that says
-    ``08:00:00``.  A half-pixel blur after ``-normalize`` softens the
-    slash and the same row then reads ``08:00:00`` exactly -- confirmed
-    at ``0x0.5`` and ``0x0.8``, and at 600% with ``0x2``.  Nothing is
-    dropped or reordered: the four prescribed operators remain, in
-    order, and this is appended after them.  The unblurred chain is
-    still run, as its own pass, so the prescribed form is exercised on
-    every frame that the blurred form cannot read.
-
-The passes are ordered, documented and deterministic (:data:`PASSES`).
-``cross_check=True`` runs all of them and reports whether they agree,
-which is how a slashed-zero style misread becomes visible rather than
+Two refinements are appended rather than substituted.  ``--psm 7`` is
+used ROW BY ROW with per-row normalisation, because tesseract's layout
+analysis mangles the clock line when the whole column is read at once
+and a column-global ``-normalize`` leaves the clock too dim to match.
+And ``-gaussian-blur 0x0.5`` follows ``-normalize``, because the game's
+Terminus face draws a SLASHED ZERO that tesseract reads as an ``8``; the
+half-pixel blur softens the slash.  The unblurred prescribed chain is
+still run as its own pass on every frame the blurred form cannot read.
+The passes are ordered, documented and deterministic (:data:`PASSES`),
+and ``cross_check=True`` runs all of them and reports whether they
+agree, so a style-induced misread becomes visible rather than
 authoritative.
 
-IMPOSSIBLE READINGS ARE DECLINED, NOT REPAIRED
-``48:48:48`` matches the pattern but cannot be a clock: the engine
-cannot render hour 48.  Such a reading is declined with a warning and
-the search continues through the same real OCR output.  Declining is
-not repair -- no digit is ever substituted, no value is ever
-reconstructed, and if nothing possible is found the answer is ``None``.
-
 FINDING THE ROW
-``sidebar_geometry`` returns the WHOLE sidebar column, because the
+:mod:`sidebar_geometry` returns the WHOLE sidebar column, because the
 clock's row cannot be derived from configuration: it is drawn by the
 ``time_desc_label`` widget bound to ``time_text``
 [data/json/ui/time.json:2-8] at whatever position the enclosing
 ``custom_sidebar`` ``widgets`` array puts it
-[data/json/ui/sidebar.json:3-40], and eight distinct sidebar widths
-ship in ``data/json/ui``.  Every row of the column is therefore read
-and the clock is located by pattern inside the OCR text.  When more
-than one possible clock appears, the FIRST in reading order (top row
-to bottom row, left to right within a row) wins; that rule is fixed
-here so the same PNG always reads the same way.
+[data/json/ui/sidebar.json:3-40], and eight distinct sidebar widths ship
+in ``data/json/ui``.  Every row is therefore read and the clock located
+BY REGEX, never at a fixed ``y``.  When more than one possible clock
+appears the FIRST in reading order wins, so the same PNG always reads
+the same way.
+
+IMPOSSIBLE READINGS ARE DECLINED, NOT REPAIRED
+``48:48:48`` matches the pattern but cannot be a clock -- the engine
+cannot render hour 48.  Such a reading is declined with a warning and
+the search continues through the same real OCR output.  Declining is not
+repair: no digit is ever substituted, no value reconstructed, and if
+nothing possible is found the answer is ``None``.
 
 WHAT THE ENGINE CAN LEGITIMATELY RENDER
 ``display::time_string( const Character &u )``
-[src/display.cpp:207-218] renders one of three things:
-
-  * with a watch, an exact time from ``to_string_time_of_day()``;
-  * otherwise, if the survivor can see the sky, a coarse phrase from
-    ``display::time_approx()`` [src/display.cpp:159-186];
-  * otherwise ``"???"`` [src/display.cpp:216].
-
-The coarse phrases and ``"???"`` are REAL READINGS, not failures, so
-:func:`read_time_phrase` returns them verbatim for ``manifest.py`` to
-record honestly -- while :func:`read_clock` still returns ``None``,
-because they are not parseable clocks.  Second-resolution deltas
-require a watch, and acquiring one is a character decision made in
-play; this module never works around its absence.
-
-A measured caveat on ``"???"``: the coarse phrases are words and OCR
-reads them reliably, but three question marks rendered in the game's
-8x16 face come back from tesseract 5.5.0 as ``222?``, so a ``"???"``
-sidebar usually reads as no phrase at all.  That is reported as
-``None`` -- the honest answer, since the marker was not actually
-recognised -- and never as an invented time.  The recogniser itself
-handles the literal marker, so a cleaner render is reported verbatim.
+[src/display.cpp:207-218] renders one of three things: with a watch, an
+exact time from ``to_string_time_of_day()``; otherwise, if the survivor
+can see the sky, a coarse phrase from ``display::time_approx()``
+[src/display.cpp:159-186]; otherwise ``"???"``
+[src/display.cpp:216].  The phrases and ``"???"`` are REAL READINGS, not
+failures, so :func:`read_time_phrase` returns them verbatim for
+``manifest.py`` to record honestly -- while :func:`read_clock` still
+returns ``None``, because they are not parseable clocks.
+Second-resolution deltas require a watch, and acquiring one is a
+character decision made in play; this module never works around its
+absence.  A ``"???"`` sidebar frequently comes back from OCR as
+something other than the literal marker, and that is reported as
+``None`` -- the honest answer, since nothing was recognised -- never as
+an invented time.
 
 WHY THE PATTERN IS EXACTLY ``[0-9]{2}:[0-9]{2}:[0-9]{2}``
 ``to_string_time_of_day()`` [src/calendar.cpp:638-663] branches three
-ways on the ``24_HOUR`` option:
+ways on ``24_HOUR``: ``"military"`` gives ``"%02d%02d.%02d"``
+(``0815.32``) which is colon-free and silently defeats the pattern;
+``"24h"`` gives the fixed-width colon-delimited ``"%02d:%02d:%02d"``
+[src/calendar.cpp:649], the only form the pattern matches; and the
+shipped ``"12h"`` default [src/options.cpp:1868-1877] gives a
+variable-width AM/PM form.  ``seed_options.py`` sets ``24_HOUR=24h``
+precisely so the pattern is deterministic, and
+:func:`assert_24_hour_option` REFUSES to read frames under any other
+value -- and just as firmly when the value cannot be established at all,
+because "unknown format" and "wrong format" have the same consequence:
+zero matches, every duration collapsed to the floor, and a movie that
+looks plausible and means nothing.  The one way past it is the
+explicitly diagnostic ``--no-check-options``, which reports what it
+found, refuses nothing, and yields a reading that must not be treated as
+evidence for timing.
 
-  * ``"military"`` -> ``"%02d%02d.%02d"``, e.g. ``0815.32``
-    [src/calendar.cpp:646] -- which would silently defeat the pattern;
-  * ``"24h"`` -> ``"%02d:%02d:%02d"`` [src/calendar.cpp:649], fixed
-    width, the only OCR-friendly form;
-  * otherwise ``"12h"``, the shipped default
-    [src/options.cpp:1868-1877] -> ``"%d:%02d:%02d%sAM"`` or ``PM``
-    with variable padding [src/calendar.cpp:657-661].
+TRUSTED TOOL RESOLUTION, NO SHELL, AND ONE DECLARED WRITE
+The legacy ``convert`` and ``identify`` commands are called directly:
+they exist on both the ImageMagick 6.x and 7.x branches, whereas the
+unified version-7 entry point does not exist on 6.x at all, so calling
+only the legacy names is what lets this module run against either.
+Code written against version-7 examples fails on 6.x with a
+command-not-found error.  Every external command runs through
+``subprocess.run([...])`` with an argument LIST and a timeout -- never a
+shell, never a command assembled by string interpolation -- nothing is
+evaluated dynamically, no path is joined without validation, and there
+is no network surface of any kind.
 
-``seed_options.py`` sets ``24_HOUR=24h`` precisely so the pattern is
-deterministic, and :func:`assert_24_hour_option` refuses to read
-frames under any other value: ``military`` produces zero matches, so
-every duration would collapse to the floor and the movie would look
-plausible and mean nothing.  That is the failure mode this assertion
-exists to make loud.
+The frame and the game-written ``options.json`` are opened for READING
+only, and no game state, save file or memory is ever consulted: the
+clock comes from rendered pixels and nothing else.  Every reading --
+the clock, the coarse phrase, the date line, the per-pass evidence
+behind ``--json`` -- leaves on STDOUT, with diagnostics on stderr, and
+is not persisted here.  That is a boundary rather than an omission:
+this module is called from the capture step, whose declared output is
+one PNG, so a file written here would be a second output of a capture
+and an artifact nobody asked for.
 
-IMAGEMAGICK 6, NOT 7
-The legacy ``convert`` and ``identify`` commands are called directly.
-They exist on both the 6.x and 7.x branches, whereas the unified
-version-7 entry point does not exist on 6.x at all, where this
-pipeline is specified to run.  Code written against version-7 examples
-fails there with a command-not-found error.
+THE ONE EXCEPTION IS ASKED FOR BY NAME.  When a caller passes
+``--audit``, :func:`append_date_audit` appends one record per frame to
+``$PLAYTHROUGH_DATE_AUDIT`` -- the date evidence ``timeline.py`` needs
+to tell a midnight rollover from a misread clock.  It lives outside the
+manifest because that schema is exactly six fields, and it is written
+HERE because reading the date in the same OCR pass as the clock is what
+stops the two from ever disagreeing.  Without ``--audit`` there is no
+write at all, and the caller that owns the session record decides
+whether any of this evidence is kept and where.  No bytecode is written
+either (``sys.dont_write_bytecode``, plus ``-B`` on every standalone
+command, so importing the sibling cannot leave a ``__pycache__`` inside
+the committed ``playthrough/`` tree).
 
-READ-ONLY, OFFLINE, NO SHELL
-Nothing here writes to disk.  The frame and the game-written
-``options.json`` are opened for reading only; no game state, save file
-or memory is ever consulted -- the clock comes from rendered pixels
-and nothing else.  Every external command is run through
-``subprocess.run([...])`` with an argument LIST and a timeout, never
-through a shell and never with a command assembled by string
-interpolation; nothing is evaluated or executed dynamically, no path is
-joined without validation, and there is no network surface of any kind.
+A VERIFIED TOOLCHAIN
+Two further conditions hold before any pixels are parsed, because this
+module's output is what every duration in the finished movie is
+computed from.  ``convert`` and ``tesseract`` are resolved to absolute
+paths -- preferring env.sh's already-checked ``$PLAYTHROUGH_BIN_*`` --
+and the binary and every directory above it are checked for
+third-party ownership and group- or world-writability; one that fails
+is treated as absent rather than run, which for ``convert`` means the
+Pillow engine takes over loudly.  And the installed Pillow must be at
+least PILLOW_MIN_VERSION, since every frame is decoded by Pillow and no
+earlier release is free of published advisories.  Both refusals have a
+documented, per-invocation override for diagnosis
+(``$PLAYTHROUGH_ALLOW_UNVERIFIED_EXECUTABLES=1``,
+``$PLAYTHROUGH_ALLOW_VULNERABLE_PILLOW=1``); neither is ever the
+default.
 
-USAGE
-    $ python3 playthrough/tooling/ocr_clock.py \\
-          playthrough/frames/frame_00042.png
+CLI CHANNELS
+    $ python3 -B playthrough/tooling/ocr_clock.py FRAME
     08:00:00
 
-    $ python3 playthrough/tooling/ocr_clock.py --field date FRAME
+    $ python3 -B playthrough/tooling/ocr_clock.py --field date FRAME
     Thursday, Dec 21
 
-    >>> import ocr_clock
-    >>> ocr_clock.read_clock("playthrough/frames/frame_00042.png")
-    '08:00:00'
+    $ python3 -B playthrough/tooling/ocr_clock.py --kv \
+          --audit "$PLAYTHROUGH_DATE_AUDIT" --audit-frame 42 FRAME
+    CLOCK=08:00:00
+    TIME_PHRASE=
+    CLOCK_DATE=Thursday, Dec 21
 
 Standard output carries exactly the reading and nothing else, so
-``CLOCK="$(ocr_clock.py "$FRAME")"`` is safe; an unreadable clock
-prints nothing and exits 1, and a fault prints a diagnosis on stderr
-and exits 2.  Every warning, note and derivation goes to stderr, which
-keeps engineering observations out of the in-character record.
+``CLOCK="$(ocr_clock.py "$FRAME")"`` is safe; an unreadable clock prints
+nothing and exits 1, and a fault prints a diagnosis on stderr and exits
+2.  Every warning, note and derivation goes to stderr, which keeps
+engineering observations out of the in-character record.
 
-Diagnostic level is calibrated so that the noisy case stays quiet:
-anything MISCONFIGURED or suspicious -- an off-contract ``24_HOUR``, a
-crop that read no pixels at all, OCR passes that disagree, a reading
-declined as impossible -- is a warning and needs no logging setup,
-while an ORDINARY unreadable frame, which is what most menu keystrokes
-capture, is explained at INFO and surfaces with ``-v``.
+Status 1 means ONE thing and nothing else: this module ran, read the
+frame, and the frame held no such reading.  It is never the status of a
+module that failed to start, because ``capture.sh`` acts on that
+distinction -- it carries on past an unreadable clock and stops on a
+fault -- and a missing dependency reported as "no clock on this frame"
+would collapse every duration in the film to the floor while every
+count still tallied.  Every import that can fail is therefore guarded
+(see BOOTSTRAP IMPORTS below) and ``--preflight`` checks them all
+before the session starts.
+
+Anything MISCONFIGURED or suspicious is a warning and needs no logging
+setup, while an ORDINARY unreadable frame -- what most menu keystrokes
+capture -- is explained at INFO and surfaces with ``-v``.
 """
+# Annotations are strings under PEP 563, which is what lets this module
+# keep its `-> Image.Image` and `rect: sidebar_geometry.Rect`
+# signatures while importing Pillow and the sibling module DEFENSIVELY
+# below.  Without it, every annotation would be evaluated at def time
+# and a missing dependency would take the module down before it could
+# report the fault properly -- which is the exact defect the guarded
+# imports exist to fix.
+from __future__ import annotations
+
 import argparse
+import errno
 import io
 import json
 import logging
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 
-from PIL import Image, ImageFilter, ImageOps
+# ---------------------------------------------------------------------
+# BOOTSTRAP IMPORTS -- WHY EVERY ONE OF THEM IS GUARDED
+#
+# This module's command line reserves its exit codes for meanings a
+# shell caller acts on:
+#
+#     0  a reading was produced
+#     1  the frame was read successfully and held no such reading
+#     2  a FAULT -- something about the setup is wrong
+#
+# capture.sh treats 1 as a legitimate observation of a watchless
+# survivor's sidebar and carries on; it treats 2 as a standing
+# misconfiguration and stops.  An UNGUARDED import turns a missing
+# dependency into a Python traceback and exit status 1, which the
+# caller then records as "the clock could not be read" -- for every
+# frame of the session, while every count still tallies and every
+# duration collapses to the floor.  That is precisely the silent,
+# plausible-looking failure this pipeline is built to make loud.
+#
+# So nothing that can be absent is imported bare.  Each failure is
+# captured, and the point of use raises ToolchainError, which main()
+# turns into the dedicated fault status with a diagnostic naming the
+# package to install.
+# ---------------------------------------------------------------------
+
+# Pillow is a HARD runtime dependency of both preprocessing engines --
+# even the ImageMagick path decodes convert's output with it -- so its
+# absence is a fault, never an unreadable frame.  Its VERSION is
+# imported in the same guarded breath, because the version floor below
+# is a security condition and an unreadable version would otherwise
+# have to be treated as a passing one.
+try:
+    from PIL import Image, ImageFilter, ImageOps
+    from PIL import __version__ as PILLOW_VERSION
+    PILLOW_IMPORT_ERROR: Optional[BaseException] = None
+except ImportError as _pillow_import_error:  # pragma: no cover
+    Image = None  # type: ignore[assignment]
+    ImageFilter = None  # type: ignore[assignment]
+    ImageOps = None  # type: ignore[assignment]
+    PILLOW_VERSION = ""
+    PILLOW_IMPORT_ERROR = _pillow_import_error
+
+# Set BEFORE the sibling import below, which is the only import that
+# can write into the repository working tree.  env.sh exports
+# PYTHONDONTWRITEBYTECODE=1, but this module is documented as runnable
+# on its own -- and a standalone `python3 playthrough/tooling/
+# ocr_clock.py ...` without that environment would compile the sibling
+# to playthrough/tooling/__pycache__/, which .gitignore's terminal
+# `!/playthrough/**` negation then makes COMMITTABLE.  A stray .pyc in
+# a committed evidence tree is an artifact nobody authored, so the
+# module refuses to create one whatever environment it is run under.
+# The flag only suppresses .pyc writing; it changes nothing else, and
+# it must be set before the import it protects because the interpreter
+# consults it at compile time.
+sys.dont_write_bytecode = True
 
 try:
     import pytesseract
 except ImportError:  # pragma: no cover - exercised only without the pin
     pytesseract = None
 
+# The sibling module, imported flat as the repository's own tools/ do.
+# A second failure means the checkout is broken rather than merely
+# unpinned, but it is still recorded rather than raised: raising here
+# would exit 1 and be read as an unreadable clock.
+SIDEBAR_GEOMETRY_IMPORT_ERROR: Optional[BaseException] = None
 try:
     import sidebar_geometry
 except ImportError:  # pragma: no cover - flat sibling, as tools/ does
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    import sidebar_geometry
+    try:
+        import sidebar_geometry
+    except ImportError as _geometry_import_error:  # pragma: no cover
+        sidebar_geometry = None  # type: ignore[assignment]
+        SIDEBAR_GEOMETRY_IMPORT_ERROR = _geometry_import_error
 
 LOG = logging.getLogger("playthrough.ocr_clock")
 
@@ -235,8 +316,8 @@ TWELVE_HOUR_RE = re.compile(r"[0-9]{1,2}:[0-9]{2}:[0-9]{2} ?[AP]M")
 
 # An hour, minute and second the engine could actually have rendered.
 # hour_of_day is 0-23 and minute_of_hour and the seconds term are
-# 0-59 [src/calendar.cpp:640-642], so 48:48:48 -- a real OCR reading of
-# a real frame, measured on this host -- is impossible and is declined.
+# 0-59 [src/calendar.cpp:640-642], so 48:48:48 -- a shape the OCR
+# really does return for a real frame -- is impossible and is declined.
 MAX_HOUR = 23
 MAX_MINUTE = 59
 MAX_SECOND = 59
@@ -303,6 +384,31 @@ OPT_24_HOUR_12H = "12h"
 CONVERT_BIN = "convert"
 TESSERACT_BIN = "tesseract"
 
+# The lowest Pillow this module will decode a captured frame with.
+#
+# Every frame goes through Pillow -- the convert path decodes convert's
+# output with it, the Pillow path does the whole chain in it, and
+# _assert_rect_fits() opens the PNG with it -- so Pillow parses
+# attacker-shaped input on the pipeline's ONLY hot path.  Pillow 12.3.0
+# is pinned in playthrough/tooling/requirements.txt because it is the
+# first release with no open advisory against it: queried against OSV,
+# 11.3.0 answers 36 records, 12.0.0 answers 38, 12.1.1 answers 36,
+# 12.2.0 answers 26 and 12.3.0 answers none.  11.3.0 is the last 11.x,
+# so there is no in-series patch to move to instead.
+PILLOW_MIN_VERSION = (12, 3, 0)
+
+# The documented, deliberate override, for diagnosing on a host that
+# cannot yet be moved to the pinned release.  It is loud, it is
+# per-invocation, and it never becomes the default.
+ENV_ALLOW_VULNERABLE_PILLOW = "PLAYTHROUGH_ALLOW_VULNERABLE_PILLOW"
+
+# env.sh exports the tool paths it has already verified as
+# PLAYTHROUGH_BIN_<NAME>; this module prefers them and verifies
+# whatever it uses either way.  The same variable env.sh reads is the
+# one escape hatch.
+TOOL_ENV_PREFIX = "PLAYTHROUGH_BIN_"
+ENV_ALLOW_UNVERIFIED = "PLAYTHROUGH_ALLOW_UNVERIFIED_EXECUTABLES"
+
 # The prescribed enlargement, in the two forms the two engines need.
 # THEY MUST AGREE: RESIZE_PERCENT is what convert is told and
 # SCALE_FACTOR is how the band offsets are computed afterwards, so a
@@ -311,10 +417,10 @@ TESSERACT_BIN = "tesseract"
 RESIZE_PERCENT = "200%"
 SCALE_FACTOR = 2
 
-# The one appended operator, and the measurement that earned it: the
-# game's Terminus face draws a slashed zero that tesseract 5.5.0 reads
-# as an 8, and half a pixel of blur after -normalize turns a real
-# frame's "08:00:08" misread into the "08:00:00" the pixels actually say.
+# The one appended operator, and the reason it is needed: the game's
+# Terminus face draws a slashed zero that the OCR engine reads as an 8,
+# and half a pixel of blur after -normalize turns that "08:00:08" misread
+# back into the "08:00:00" the pixels actually say.
 DESLASH_BLUR = "0x0.5"
 
 # The Pillow equivalent of the appended blur.  Measured on the same
@@ -375,10 +481,23 @@ REFERENCE_PIPELINE = (
 # resolved, checked for containment and checked for existence.
 # ---------------------------------------------------------------------
 ENV_FRAMES_DIR = "PLAYTHROUGH_FRAMES_DIR"
+
+# The date-evidence sidecar, exported by playthrough/tooling/env.sh as
+# playthrough/build/frame_dates.jsonl.  Named here only so the help
+# text can cite it; nothing is written unless --audit asks for it.
+ENV_DATE_AUDIT = "PLAYTHROUGH_DATE_AUDIT"
+
 FRAMES_REL_PARTS = ("playthrough", "frames")
 FRAMES_DIR_NAME = "frames"
 PNG_SUFFIX = ".png"
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+
+# The repository-relative frame path, the one format capture.sh writes
+# and manifest.py records.  Used only to label a date-audit record, so
+# that a record identifies its own frame without the reader having to
+# rebuild the name.
+FRAME_FILE_FORMAT = "/".join(FRAMES_REL_PARTS) + "/frame_%05d" + \
+    PNG_SUFFIX
 
 # An ImageMagick geometry, the form sidebar_geometry prints and the
 # only textual rectangle accepted here.
@@ -443,6 +562,82 @@ class OptionsError(OcrClockError):
     """
 
 
+class BootstrapError(ToolchainError):
+    """A dependency this module cannot work without did not import.
+
+    A subclass of :class:`ToolchainError` because that is exactly what
+    it is -- a missing part of the toolchain -- and because every
+    caller that already treats a toolchain fault as a fault then
+    treats this one the same way.  It exists as its own class so the
+    diagnostic can name the import that failed and the file that
+    declares it.
+    """
+
+
+def _require_pillow() -> None:
+    """Fail as a FAULT when Pillow is unavailable.
+
+    Called at every point Pillow is actually used, rather than at
+    import time, so that ``--explain``, ``--help`` and the module's
+    pure text helpers keep working on a host where the pin has not
+    been installed -- and so that the failure, when it comes, carries
+    the dedicated fault status instead of the status that means "this
+    frame held no clock".
+
+    :raises BootstrapError: when ``PIL`` could not be imported.
+    """
+    if Image is None:
+        raise BootstrapError(
+            "Pillow (PIL) is not importable (%s), so no frame can be "
+            "decoded at all.  This is a FAULT, not an unreadable "
+            "clock: install playthrough/tooling/requirements.txt "
+            "(pillow==11.3.0) into the interpreter running this "
+            "module" % PILLOW_IMPORT_ERROR)
+
+
+def _require_sidebar_geometry() -> None:
+    """Fail as a FAULT when the sibling geometry module is missing.
+
+    :raises BootstrapError: when ``sidebar_geometry`` could not be
+        imported from beside this file.
+    """
+    if sidebar_geometry is None:
+        raise BootstrapError(
+            "playthrough/tooling/sidebar_geometry.py is not importable "
+            "(%s), so the sidebar crop cannot be computed.  This is a "
+            "FAULT, not an unreadable clock: the module must sit "
+            "beside this one"
+            % SIDEBAR_GEOMETRY_IMPORT_ERROR)
+
+
+def bootstrap_problems() -> List[str]:
+    """Return one diagnostic per dependency that did not import.
+
+    Exposed so a caller can PREFLIGHT the toolchain before it starts
+    capturing -- ``capture.sh`` runs ``--preflight`` once before the
+    first frame -- instead of discovering a missing package one
+    unreadable-looking frame at a time.
+    """
+    problems = []
+    for require in (_require_pillow, _require_sidebar_geometry):
+        try:
+            require()
+        except BootstrapError as exc:
+            problems.append(str(exc))
+    return problems
+
+
+class AuditError(OcrClockError):
+    """The per-frame date evidence could not be recorded.
+
+    Distinct from an unreadable date, which is recorded as ``null``.
+    This is raised only when the sidecar itself cannot be written --
+    a bad path, a bad frame index, or a write the module could not
+    complete -- because timeline.py's rollover rule is only as good as
+    the evidence it can read back.
+    """
+
+
 # ---------------------------------------------------------------------
 # Diagnostics
 #
@@ -483,13 +678,26 @@ def _warn_once(key: str, message: str,
 
 
 def reset_diagnostics() -> None:
-    """Forget which one-shot warnings have already been emitted.
+    """Forget this session's environmental bookkeeping.
 
-    Provided for tests and for long-lived callers that want each
-    session's diagnostics complete.  It clears warning bookkeeping
-    only; there is no reading to reset, because none is ever kept.
+    Two caches, and both are about the ENVIRONMENT rather than about any
+    reading -- there is no reading to reset, because none is ever kept:
+
+    * the one-shot warnings, so a long-lived caller that wants each
+      session's diagnostics complete gets them again rather than having
+      them suppressed by a previous session's copy;
+    * the verified-tool paths, because a tool is trusted on the strength
+      of a check made when it was first resolved.  A caller whose PATH
+      or whose filesystem has changed since then is entitled to have
+      that check made again rather than inherited.
+
+    Forward reference: ``_VERIFIED_TOOLS`` is defined further down, with
+    ``verified_tool`` that populates it.  It is cleared here rather than
+    beside it so that there is ONE way to say "start again", instead of
+    a caller having to know how many caches this module keeps.
     """
     _WARNED.clear()
+    _VERIFIED_TOOLS.clear()
 
 
 # ---------------------------------------------------------------------
@@ -655,11 +863,15 @@ class SidebarReading:
 # Everything :func:`resolve_rect` accepts.  A bare sequence is
 # ``(width, height, x, y)`` -- the order of the geometry string, so
 # that reading a call and reading the crop are the same exercise.
+# The two sibling types are named as forward references so that this
+# alias -- which IS evaluated at import time, unlike an annotation --
+# does not require the sibling module to have imported.  See BOOTSTRAP
+# IMPORTS above.
 RectLike = Union[
     None,
     str,
-    sidebar_geometry.Rect,
-    sidebar_geometry.SidebarGeometry,
+    "sidebar_geometry.Rect",
+    "sidebar_geometry.SidebarGeometry",
     Sequence[int],
 ]
 
@@ -778,6 +990,7 @@ def assert_24_hour_option(
     options_json: Optional[str] = None,
     options: Optional[Dict[str, str]] = None,
     notes: Optional[List[str]] = None,
+    require: bool = True,
 ) -> Optional[str]:
     """Refuse to read frames unless the clock is the fixed-width form.
 
@@ -788,31 +1001,81 @@ def assert_24_hour_option(
     every count still tallied.  The 12h default is equally hostile:
     variable padding and an AM/PM suffix [src/calendar.cpp:657-661].
 
-    An ABSENT options file is an ordinary state, not a fault: the
-    engine writes it on its first launch [src/path_info.cpp:167], so a
-    fresh userdir has none.  That case warns once and returns ``None``.
+    AN UNCONFIRMABLE FORMAT IS A FAULT, NOT A WARNING.  A missing
+    options file and a missing ``24_HOUR`` key both mean the same thing
+    -- that nothing here knows which of the three renderings the
+    sidebar is using -- and reading on regardless is how the whole
+    session becomes worthless without a single error: under ``military``
+    or ``12h`` every frame reports an unreadable clock, every duration
+    falls to the floor, every count still tallies, and the movie plays
+    at a pace that means nothing.  The evidence that the format is right
+    must exist BEFORE the frames are read, so this raises.
 
-    :returns: the option's value when it is ``24h``, or ``None`` when
-        no options file exists yet.
-    :raises OptionsError: when the value is anything other than ``24h``,
-        or when the options file exists but cannot be parsed.
+    That the engine only writes ``options.json`` on its first launch
+    [src/path_info.cpp:167] is exactly why the file's absence matters
+    here: it means the capture is running ahead of
+    ``seed_options.py``, which is a mis-sequenced pipeline rather than
+    an ordinary state to warn about.
+
+    ``require=False`` is the explicitly diagnostic path, for inspecting
+    a frame captured under some other configuration by hand.  It NEVER
+    raises: it reports what it found on stderr, says plainly that the
+    assertion was skipped, and returns whatever the value was.  A
+    reading obtained that way carries no assurance about its format and
+    must not feed a timeline.  :func:`read_time_phrase` and
+    :func:`read_date_line` take that path because neither the coarse
+    phrase nor the date line depends on the clock rendering at all --
+    both read identically under all three values -- so refusing them
+    over ``24_HOUR`` would reject a legitimate read.
+
+    :returns: the option's value when it is ``24h``; the value found,
+        or ``None`` when there was none, in the diagnostic mode.
+    :raises OptionsError: when ``require`` is true and the value is
+        anything other than ``24h``, including the cases where the
+        options file cannot be read or carries no such value.
     """
     if options is None:
         try:
             options = sidebar_geometry.load_options(path=options_json)
         except sidebar_geometry.GeometryError as exc:
-            raise OptionsError(
-                "the game options file could not be read, so the clock "
-                "format cannot be confirmed: %s" % exc) from exc
+            if require:
+                raise OptionsError(
+                    "the game options file could not be read, so the "
+                    "clock format cannot be confirmed: %s" % exc) from exc
+            _warn_once(
+                "24-hour-unreadable",
+                "the game options file could not be read (%s); the "
+                "format assertion was explicitly skipped, so this "
+                "reading proves nothing about the clock rendering"
+                % exc,
+                notes)
+            return None
 
     raw = options.get(OPT_24_HOUR)
     if raw is None:
+        where = options_json or "the game options file"
+        detail = (
+            "no '%s' value could be found (looked in %s), so the clock "
+            "rendering is unknown.  It is one of three: the fixed-width "
+            "'%s' this module reads, '%s' which renders '0815.32', or "
+            "'%s' which renders '8:15:32 AM' -- and under either of the "
+            "latter two every frame reads as unreadable while every "
+            "count still tallies"
+            % (OPT_24_HOUR, where, OPT_24_HOUR_REQUIRED,
+               OPT_24_HOUR_MILITARY, OPT_24_HOUR_12H))
+        if require:
+            raise OptionsError(
+                "%s.  Run seed_options.py to set '%s' = '%s' before "
+                "capturing, or pass require=False "
+                "(--no-check-options) to inspect this frame as a "
+                "diagnostic, accepting that its reading proves nothing "
+                "about the format"
+                % (detail, OPT_24_HOUR, OPT_24_HOUR_REQUIRED))
         _warn_once(
             "24-hour-absent",
-            "the game options file carries no '%s' value, so the clock "
-            "format is unconfirmed; the engine writes options.json on "
-            "its first launch and seed_options.py then sets '%s'"
-            % (OPT_24_HOUR, OPT_24_HOUR_REQUIRED),
+            "%s; the format assertion was explicitly skipped, so this "
+            "reading must not be treated as evidence for timing"
+            % detail,
             notes)
         return None
 
@@ -823,21 +1086,30 @@ def assert_24_hour_option(
         return value
 
     if value == OPT_24_HOUR_MILITARY:
-        raise OptionsError(
+        message = (
             "%s is '%s', which renders the clock as '0815.32' "
             "[src/calendar.cpp:646].  Nothing here matches that, so "
             "every frame would report an unreadable clock and every "
             "duration would collapse to the floor.  Set '%s' with "
             "seed_options.py and recapture."
             % (OPT_24_HOUR, value, OPT_24_HOUR_REQUIRED))
+    else:
+        message = (
+            "%s is '%s', not '%s'.  The '%s' form renders '8:15:32 AM' "
+            "with variable padding [src/calendar.cpp:657-661], which is "
+            "not the fixed-width reading this module and timeline.py "
+            "depend on.  Set '%s' with seed_options.py and recapture."
+            % (OPT_24_HOUR, value, OPT_24_HOUR_REQUIRED,
+               OPT_24_HOUR_12H, OPT_24_HOUR_REQUIRED))
 
-    raise OptionsError(
-        "%s is '%s', not '%s'.  The '%s' form renders '8:15:32 AM' with "
-        "variable padding [src/calendar.cpp:657-661], which is not the "
-        "fixed-width reading this module and timeline.py depend on.  "
-        "Set '%s' with seed_options.py and recapture."
-        % (OPT_24_HOUR, value, OPT_24_HOUR_REQUIRED, OPT_24_HOUR_12H,
-           OPT_24_HOUR_REQUIRED))
+    if require:
+        raise OptionsError(message)
+    # Diagnostic mode reports the same finding without refusing: the
+    # caller has said it is reading a frame from some other
+    # configuration, and a phrase or a date line reads the same under
+    # every value of this option.
+    _warn_once("24-hour-offcontract", message, notes)
+    return value
 
 
 # ---------------------------------------------------------------------
@@ -860,6 +1132,7 @@ def parse_geometry(text: str) -> sidebar_geometry.Rect:
         raise RectError(
             "a crop geometry must be a string, got %s"
             % type(text).__name__)
+    _require_sidebar_geometry()
     match = GEOMETRY_RE.match(text.strip())
     if match is None:
         raise RectError(
@@ -883,6 +1156,7 @@ def _probe_row_height(notes: Optional[List[str]] = None) -> int:
     the engine's documented FONT_HEIGHT default is used and the
     substitution is announced, never made silently.
     """
+    _require_sidebar_geometry()
     try:
         geometry = sidebar_geometry.compute_sidebar_geometry()
     except sidebar_geometry.GeometryError as exc:
@@ -924,6 +1198,7 @@ def resolve_rect(
     :returns: ``(rect, row_height)``.
     :raises RectError: for a malformed rectangle or row height.
     """
+    _require_sidebar_geometry()
     resolved_rows = row_height
 
     if rect is None:
@@ -998,10 +1273,220 @@ def resolve_rect(
 # External commands
 #
 # ARGUMENT LISTS ONLY.  No shell, no string interpolation into a
-# command, no PATH search by the shell: shutil.which resolves the tool
-# first so an absent one is reported as an absent one, and every call
-# carries a timeout so a hung tool is a fault rather than a hang.
+# command, no PATH search by the shell.  Beyond that, FINDING a tool on
+# PATH is not the same as trusting it: PATH is mutable, this runs
+# unattended, and what convert and tesseract produce is the clock
+# reading every duration in the finished movie is computed from.  So
+# the binary is resolved to an absolute path, and that path -- and every
+# directory above it -- is checked for third-party ownership and for
+# group- or world-writability before it is run.  A tool that fails the
+# check is treated exactly like a missing one, with the reason given.
 # ---------------------------------------------------------------------
+
+def _tool_env_var(name: str) -> str:
+    """Return env.sh's exported variable name for a tool."""
+    safe = "".join(
+        char if char.isalnum() else "_" for char in name)
+    return TOOL_ENV_PREFIX + safe.upper()
+
+
+def _writable_by_others(info: os.stat_result) -> bool:
+    """True when group or other may write the thing described."""
+    return bool(info.st_mode & (stat.S_IWGRP | stat.S_IWOTH))
+
+
+def _owned_by_a_third_party(info: os.stat_result) -> bool:
+    """True when neither root nor this user owns the thing."""
+    return info.st_uid not in (0, os.geteuid())
+
+
+def _executable_complaint(path: str) -> Optional[str]:
+    """Return why `path` cannot be trusted, or None when it can.
+
+    The realpath is what is inspected, because a link's own permissions
+    say nothing about the file that would actually run, and every
+    ancestor directory is inspected too: a writable directory anywhere
+    above the binary means it can be replaced between this check and
+    the next invocation.
+    """
+    real = os.path.realpath(path)
+    try:
+        info = os.stat(real)
+    except OSError as exc:
+        return "%s cannot be examined: %s" % (real, exc)
+    if not stat.S_ISREG(info.st_mode):
+        return "%s is not a regular file" % real
+    if not os.access(real, os.X_OK):
+        return "%s is not executable" % real
+    if _writable_by_others(info):
+        return ("%s is mode %o, i.e. group- or world-writable"
+                % (real, stat.S_IMODE(info.st_mode)))
+    if _owned_by_a_third_party(info):
+        return ("%s is owned by uid %d, which is neither root nor this "
+                "user" % (real, info.st_uid))
+    current = os.path.dirname(real)
+    while True:
+        try:
+            directory = os.stat(current)
+        except OSError as exc:
+            return "%s cannot be examined: %s" % (current, exc)
+        if _writable_by_others(directory):
+            return ("%s is mode %o, i.e. group- or world-writable, so "
+                    "%s can be replaced by another account"
+                    % (current, stat.S_IMODE(directory.st_mode), real))
+        if _owned_by_a_third_party(directory):
+            return ("%s is owned by uid %d, which is neither root nor "
+                    "this user" % (current, directory.st_uid))
+        parent = os.path.dirname(current)
+        if parent == current:
+            return None
+        current = parent
+
+
+_VERIFIED_TOOLS: Dict[str, str] = {}
+
+
+def verified_tool(name: str) -> str:
+    """Return an absolute, verified path for the tool called `name`.
+
+    ``$PLAYTHROUGH_BIN_<NAME>`` is preferred, because env.sh has
+    already verified it and using the same path keeps this module and
+    the shell stages in step; otherwise PATH is searched once.  Either
+    way the result is verified here rather than trusted.
+
+    The returned path is NOT dereferenced through its final symlink:
+    ImageMagick dispatches on argv[0], so ``/usr/bin/convert`` must stay
+    spelled that way even though it links to ``magick-im7.q16``.  The
+    link's TARGET is what gets inspected.
+
+    :raises ToolchainError: when the tool is absent, or present and
+        untrustworthy.  ``$PLAYTHROUGH_ALLOW_UNVERIFIED_EXECUTABLES=1``
+        downgrades the refusal to a warning for a diagnostic run.
+    """
+    cached = _VERIFIED_TOOLS.get(name)
+    if cached is not None:
+        return cached
+    from_env = os.environ.get(_tool_env_var(name), "").strip()
+    if from_env and os.path.isabs(from_env):
+        candidate: Optional[str] = from_env
+        origin = "$%s" % _tool_env_var(name)
+    else:
+        candidate = shutil.which(name)
+        origin = "PATH"
+    if not candidate:
+        raise ToolchainError(
+            "%s is not on PATH.  The capture and OCR toolchain is "
+            "listed in playthrough/tooling/requirements.txt; on this "
+            "host it comes from the imagemagick and tesseract-ocr "
+            "packages." % name)
+    complaint = _executable_complaint(candidate)
+    if complaint is not None:
+        if os.environ.get(ENV_ALLOW_UNVERIFIED, "") != "1":
+            raise ToolchainError(
+                "refusing to run %s from %s ('%s'): %s.  A tool that "
+                "can be replaced by another account decides every "
+                "clock reading in this session.  Fix the permissions, "
+                "or set %s=1 to accept the risk explicitly for a "
+                "diagnostic run."
+                % (name, origin, candidate, complaint,
+                   ENV_ALLOW_UNVERIFIED))
+        _warn_once(
+            "unverified-%s" % name,
+            "running the unverified %s at '%s' because %s=1: %s"
+            % (name, candidate, ENV_ALLOW_UNVERIFIED, complaint))
+    _VERIFIED_TOOLS[name] = candidate
+    LOG.debug("%s resolved from %s to %s", name, origin, candidate)
+    return candidate
+
+
+def tool_available(name: str) -> bool:
+    """True when `name` is installed AND passes verification.
+
+    A tool that cannot be trusted is reported and then treated as
+    absent, which is what lets the caller fall back to another engine
+    rather than run something it cannot vouch for.
+    """
+    try:
+        verified_tool(name)
+    except ToolchainError as exc:
+        LOG.debug("%s is unusable: %s", name, exc)
+        return False
+    return True
+
+
+def _pillow_version() -> Tuple[int, ...]:
+    """Return the installed Pillow version as a tuple of integers."""
+    parts: List[int] = []
+    for piece in str(PILLOW_VERSION).split("."):
+        digits = ""
+        for char in piece:
+            if not char.isdigit():
+                break
+            digits += char
+        if not digits:
+            break
+        parts.append(int(digits))
+    return tuple(parts)
+
+
+def _at_least(
+    found: Sequence[int],
+    wanted: Sequence[int],
+) -> bool:
+    """True when version `found` is at least version `wanted`.
+
+    Both are padded to the same length before comparing, so 12.3 and
+    12.3.0 are the same version, and each field is compared as a NUMBER
+    -- 12.10 is newer than 12.3, which a string comparison gets wrong.
+    """
+    length = max(len(found), len(wanted))
+    left = tuple(found) + (0,) * (length - len(found))
+    right = tuple(wanted) + (0,) * (length - len(wanted))
+    return left >= right
+
+
+def pillow_complaint() -> Optional[str]:
+    """Return why the installed Pillow is unfit, or None when it is.
+
+    An unparseable version is reported rather than assumed to be fine:
+    the point of the check is to be certain, and "I could not tell" is
+    not certainty.
+    """
+    found = _pillow_version()
+    wanted = ".".join(str(part) for part in PILLOW_MIN_VERSION)
+    if not found:
+        return ("the installed Pillow reports version %r, which cannot "
+                "be compared against the required %s."
+                % (PILLOW_VERSION, wanted))
+    if not _at_least(found, PILLOW_MIN_VERSION):
+        return ("Pillow %s is installed, but %s or newer is required: "
+                "every captured frame is decoded by Pillow, and no "
+                "release below %s is free of published advisories.  "
+                "Install playthrough/tooling/requirements.lock."
+                % (PILLOW_VERSION, wanted, wanted))
+    return None
+
+
+def assert_pillow_supported(
+    notes: Optional[List[str]] = None,
+) -> None:
+    """Refuse to decode a frame with a Pillow that has advisories.
+
+    :raises ToolchainError: unless
+        ``$PLAYTHROUGH_ALLOW_VULNERABLE_PILLOW=1``, which downgrades the
+        refusal to a warning recorded in the reading's notes.
+    """
+    complaint = pillow_complaint()
+    if complaint is None:
+        return
+    if os.environ.get(ENV_ALLOW_VULNERABLE_PILLOW, "") != "1":
+        raise ToolchainError(
+            "%s  Set %s=1 to read frames with it anyway for a "
+            "diagnostic run." % (complaint, ENV_ALLOW_VULNERABLE_PILLOW))
+    _warn(
+        "%s Continuing because %s=1"
+        % (complaint, ENV_ALLOW_VULNERABLE_PILLOW), notes)
+
 
 def _run(
     command: List[str],
@@ -1010,12 +1495,7 @@ def _run(
     stdin_bytes: Optional[bytes] = None,
 ) -> bytes:
     """Run one external command and return its standard output."""
-    if shutil.which(command[0]) is None:
-        raise ToolchainError(
-            "%s is not on PATH.  The capture and OCR toolchain is "
-            "listed in playthrough/tooling/requirements.txt; on this "
-            "host it comes from the imagemagick and tesseract-ocr "
-            "packages." % command[0])
+    command = [verified_tool(command[0])] + list(command[1:])
     LOG.debug("%s: %s", what, " ".join(command))
     try:
         completed = subprocess.run(
@@ -1058,7 +1538,7 @@ def resolve_engine(requested: Optional[str] = None,
         raise ToolchainError(
             "unknown preprocessing engine %r; choose one of %s"
             % (engine, ", ".join(ENGINES)))
-    if engine == ENGINE_CONVERT and shutil.which(CONVERT_BIN) is None:
+    if engine == ENGINE_CONVERT and not tool_available(CONVERT_BIN):
         _warn_once(
             "convert-missing",
             "ImageMagick's '%s' is not on PATH, so preprocessing falls "
@@ -1114,6 +1594,7 @@ def _convert_strip(
     ocr_pass: OcrPass,
 ) -> Image.Image:
     """Build the preprocessed strip with ImageMagick ``convert``."""
+    _require_pillow()
     command = [
         CONVERT_BIN, png_path,
         "-crop", rect.geometry, "+repage",
@@ -1168,6 +1649,7 @@ def _pillow_strip(
     ocr_pass: OcrPass,
 ) -> Image.Image:
     """Build the preprocessed strip with Pillow alone."""
+    _require_pillow()
     try:
         source = Image.open(png_path)
         source.load()
@@ -1226,8 +1708,17 @@ def ocr_image(image: Image.Image, psm: int,
               ocr_engine: str = OCR_PYTESSERACT) -> str:
     """Run tesseract over one image and return its text.
 
-    :raises ToolchainError: when tesseract is absent or fails.  A blank
-        result is NOT an error: an empty band legitimately reads empty.
+    BOTH front ends are bounded by :data:`TESSERACT_TIMEOUT`.  The
+    subprocess path always was; the pytesseract path defaults to
+    ``timeout=0``, meaning no limit at all, so it is passed explicitly.
+    Without it a single wedged tesseract child would hang the capture
+    loop indefinitely, mid-session, with the game still running and no
+    error to show for it -- and a hung tool is a fault to report, not a
+    reason to wait forever.
+
+    :raises ToolchainError: when tesseract is absent, exceeds the
+        timeout, or fails.  A blank result is NOT an error: an empty
+        band legitimately reads empty.
     """
     config = "--psm %d" % psm
     if ocr_engine == OCR_PYTESSERACT:
@@ -1236,8 +1727,28 @@ def ocr_image(image: Image.Image, psm: int,
                 "pytesseract is not importable; install "
                 "playthrough/tooling/requirements.txt or pass "
                 "ocr_engine='%s'" % OCR_TESSERACT)
+        # pytesseract would otherwise search PATH itself, bypassing the
+        # verification above; pointing it at the checked binary keeps
+        # both OCR front ends on exactly the same tesseract.
+        pytesseract.pytesseract.tesseract_cmd = verified_tool(
+            TESSERACT_BIN)
         try:
-            return pytesseract.image_to_string(image, config=config)
+            return pytesseract.image_to_string(
+                image, config=config, timeout=TESSERACT_TIMEOUT)
+        except RuntimeError as exc:
+            # pytesseract's own timeout_manager raises exactly
+            # RuntimeError("Tesseract process timeout") when the child
+            # outlives the limit; it is reported as the timeout it is
+            # rather than as an anonymous runtime failure.
+            if "timeout" in str(exc).lower():
+                raise ToolchainError(
+                    "tesseract did not finish within %d s via "
+                    "pytesseract and was stopped; the frame was left "
+                    "unread rather than waited on indefinitely"
+                    % TESSERACT_TIMEOUT) from exc
+            raise ToolchainError(
+                "pytesseract failed with %s: %s"
+                % (type(exc).__name__, exc)) from exc
         except Exception as exc:  # pytesseract raises its own types
             raise ToolchainError(
                 "pytesseract failed with %s: %s"
@@ -1265,9 +1776,9 @@ def is_possible_clock(value: object) -> bool:
     """True when a reading is a time the engine could have rendered.
 
     ``hour_of_day`` is 0-23 and both the minute and the second term are
-    0-59 [src/calendar.cpp:640-642].  ``48:48:48`` -- a real OCR
-    reading of a real frame on this host -- is therefore impossible,
-    and saying so is how a confident misread is kept out of the record.
+    0-59 [src/calendar.cpp:640-642].  ``48:48:48`` -- a shape the OCR
+    really does return for a real frame -- is therefore impossible, and
+    saying so is how a confident misread is kept out of the record.
     """
     if not isinstance(value, str) or not CLOCK_RE.fullmatch(value):
         return False
@@ -1468,6 +1979,7 @@ def _scan_strip(
 def _assert_rect_fits(png_path: str,
                       rect: sidebar_geometry.Rect) -> Tuple[int, int]:
     """Confirm the crop lies inside the frame, or fail loudly."""
+    _require_pillow()
     try:
         with Image.open(png_path) as image:
             size = image.size
@@ -1540,11 +2052,20 @@ def read_sidebar(
     resolved_png = validate_frame_path(
         png_path, frames_dir=frames_dir, strict=strict_path, notes=notes)
 
-    if check_options:
-        assert_24_hour_option(options_json=options_json, notes=notes)
+    # Always consulted, never skipped silently.  `check_options` selects
+    # which of the two documented behaviours applies -- the production
+    # gate that refuses an unconfirmed clock rendering, or the
+    # explicitly diagnostic report that names what it found and refuses
+    # nothing -- so there is no path on which the format simply goes
+    # unmentioned.
+    assert_24_hour_option(
+        options_json=options_json, notes=notes, require=check_options)
 
     rectangle, rows = resolve_rect(
         rect, row_height, notes, options_json=options_json)
+    # Pillow decodes this frame whichever engine is chosen, so its
+    # fitness is asserted before a single byte of the PNG is parsed.
+    assert_pillow_supported(notes)
     chosen_engine = resolve_engine(engine, notes)
     chosen_ocr = resolve_ocr_engine(ocr_engine, notes)
     frame_size = _assert_rect_fits(resolved_png, rectangle)
@@ -1552,10 +2073,32 @@ def read_sidebar(
               resolved_png, frame_size[0], frame_size[1],
               rectangle.geometry, rows, chosen_engine, chosen_ocr)
 
-    selected = tuple(passes) if passes else PASSES
-    if not selected:
-        raise OcrClockError(
-            "no OCR passes were given, so nothing would be read")
+    # `passes is None` means "use the default table"; an explicitly
+    # supplied sequence is honoured exactly as given, INCLUDING an empty
+    # one, which is refused.  Treating an empty list as "no preference"
+    # -- which a plain truthiness test does -- would silently substitute
+    # the defaults for a caller who had computed a pass list and got
+    # nothing, reading the frame with passes it never asked for and
+    # making this error unreachable.
+    if passes is None:
+        selected = PASSES
+        if not selected:
+            # Reachable only if the module's own table were emptied,
+            # which is exactly the regression this guards: reading
+            # NOTHING must be an error, never an unreadable frame,
+            # because an unreadable frame is an ordinary answer and
+            # would hide the defect behind every menu keystroke.
+            raise OcrClockError(
+                "no OCR pass is configured at all, so nothing would "
+                "be read and every frame would report as unreadable; "
+                "the PASSES table must not be empty")
+    else:
+        selected = tuple(passes)
+        if not selected:
+            raise OcrClockError(
+                "an empty OCR pass list was given explicitly, so "
+                "nothing would be read; pass None to use the default "
+                "table of %d passes" % len(PASSES))
 
     clock: Optional[str] = None
     winner: Optional[str] = None
@@ -1761,6 +2304,256 @@ def read_date_line(
 
 
 # ---------------------------------------------------------------------
+# The per-frame date audit
+#
+# WHY THIS EXISTS.  timeline.py has to decide, for every pair of
+# consecutive frames, whether a clock that went backwards means the
+# night rolled over or means the reading was wrong.  From the clock
+# alone those two are indistinguishable -- 08:00:00 followed by
+# 06:00:00 is either a 22-hour day or a misread digit, and guessing
+# "rollover" invents 22 hours of game time that nobody played.  The
+# sidebar draws the date on its own line [src/display.cpp:193-205], and
+# THAT is the evidence which settles it.
+#
+# This module could already read that line; what was missing was a
+# place to keep it.  The manifest cannot hold it: its schema is exactly
+# six fields and adding a seventh would create the second source of
+# truth the pipeline is built to avoid.  So the date is persisted
+# beside the build products, in an append-only JSONL sidecar at
+# $PLAYTHROUGH_DATE_AUDIT (playthrough/build/frame_dates.jsonl), one
+# record per captured frame, written by the SAME read that capture.sh
+# already performs for the clock -- no second OCR pass, no second
+# opportunity for the two to disagree.
+#
+# The record, one JSON object per line:
+#
+#     {"frame": 42,
+#      "file": "playthrough/frames/frame_00042.png",
+#      "clock": "08:15:32",       # or null
+#      "phrase": null,            # or the coarse phrase, verbatim
+#      "date": "Spring, day 3",   # or null
+#      "agreement": true}         # false when passes disagreed
+#
+# Every field is what was READ, never what would be convenient:
+# `null` is the honest answer for an unreadable value and the consumer
+# is required to treat it as unknown rather than as unchanged.
+# timeline.py reads this file with the standard library alone -- it must
+# never import this module, which would make Pillow and pytesseract
+# hard dependencies of the render stage -- so DATE_AUDIT_FIELDS below
+# is the contract between the two, and the round-trip is asserted by
+# test_timeline.py against a sidecar this writer produced.
+# ---------------------------------------------------------------------
+
+DATE_AUDIT_FIELDS = ("frame", "file", "clock", "phrase", "date",
+                     "agreement")
+
+# The frame index bounds manifest.py enforces, restated rather than
+# imported for the same reason the clock vocabulary is: this module's
+# only declared internal dependency is sidebar_geometry.
+MIN_FRAME_INDEX = 1
+MAX_FRAME_INDEX = 99999
+
+
+def _validated_audit_frame(frame: object) -> int:
+    """Return `frame` as a usable frame index, or raise."""
+    if isinstance(frame, bool) or not isinstance(frame, int):
+        raise AuditError(
+            "the audit frame index must be an integer, got %s (%r)"
+            % (type(frame).__name__, frame))
+    if frame < MIN_FRAME_INDEX or frame > MAX_FRAME_INDEX:
+        raise AuditError(
+            "the audit frame index must be between %d and %d, got %d"
+            % (MIN_FRAME_INDEX, MAX_FRAME_INDEX, frame))
+    return frame
+
+
+def approved_artifact_root(root: Optional[str] = None) -> str:
+    """Return the tree this module may write inside, absolute.
+
+    Derived from THIS FILE's location and from nothing else: the
+    ``playthrough`` directory that holds ``tooling``.  No environment
+    variable participates, because the one thing this module writes is
+    evidence about a captured session, and a variable that could move
+    it somewhere else could move it on top of something else.
+
+    ``root`` is a CALL SITE's argument and nothing else -- argparse
+    never produces one and ``main()`` never passes one.  It exists so a
+    test can hold this writer to a temporary directory it owns instead
+    of appending to the committed evidence, which is the same seam
+    timeline.py and manifest.py already carry.
+    """
+    if root is None:
+        tooling = os.path.dirname(os.path.abspath(__file__))
+        return os.path.realpath(os.path.dirname(tooling))
+    if isinstance(root, os.PathLike):
+        root = os.fspath(root)
+    if not isinstance(root, str) or not root.strip():
+        raise AuditError(
+            "the approved root must be a non-empty string path, got %r"
+            % (root,))
+    resolved = os.path.realpath(root)
+    if not os.path.isdir(resolved):
+        raise AuditError("no approved root at %s" % resolved)
+    return resolved
+
+
+def _validated_audit_path(path: object,
+                          root: Optional[str] = None) -> str:
+    """Return an absolute audit path that is safe to append to.
+
+    THE ONE WRITE THIS MODULE MAKES IS HELD TO THE SAME CONTRACT AS
+    EVERY OTHER WRITE IN THIS TREE.  Shape first -- a non-empty string
+    or os.PathLike with no NUL byte, naming a regular file rather than
+    a directory -- then position: the fully resolved path must stay
+    inside :func:`approved_artifact_root`, and neither it nor any
+    component below that root may be a symbolic link.  Containment
+    alone would not be enough, because a link planted inside the tree
+    still points at something else inside the tree, and the sidecar is
+    appended to: one link could grow the manifest, a frame or the
+    movie by a line of JSON while this function reported success.
+
+    The parent directory must already exist: creating it here would let
+    a mistyped path grow a second sidecar somewhere else in the tree,
+    and directory creation is playthrough_mkdirs()' job in
+    playthrough/tooling/env.sh.
+    """
+    if isinstance(path, os.PathLike):
+        path = os.fspath(path)
+    if not isinstance(path, str):
+        raise AuditError(
+            "the audit path must be a string, got %s"
+            % type(path).__name__)
+    if not path.strip():
+        raise AuditError("the audit path must not be empty")
+    if "\x00" in path:
+        raise AuditError("the audit path must not contain a NUL byte")
+    resolved = os.path.abspath(path)
+    if os.path.isdir(resolved):
+        raise AuditError(
+            "the audit path names a directory, not a file: %s"
+            % resolved)
+    if os.path.exists(resolved) and not os.path.isfile(resolved):
+        raise AuditError(
+            "the audit path is not a regular file: %s" % resolved)
+
+    approved = approved_artifact_root(root)
+    canonical = os.path.realpath(resolved)
+    if not _is_inside(canonical, approved):
+        raise AuditError(
+            "the audit path must stay inside %s, but %s resolves to "
+            "%s.  This module appends evidence about a captured "
+            "session; it does not write anywhere else"
+            % (approved, resolved, canonical))
+    if os.path.islink(resolved):
+        raise AuditError(
+            "the audit path is a symbolic link: %s.  This module "
+            "appends to files, it does not follow links to them"
+            % resolved)
+    walked = approved
+    for part in os.path.relpath(resolved, approved).split(os.sep):
+        if part in ("", os.curdir):
+            continue
+        walked = os.path.join(walked, part)
+        if os.path.islink(walked):
+            raise AuditError(
+                "the audit path has a symlinked component at %s; a "
+                "link there could append this record to another "
+                "artifact inside %s" % (walked, approved))
+
+    parent = os.path.dirname(resolved)
+    if not os.path.isdir(parent):
+        raise AuditError(
+            "the directory for the date audit does not exist: %s -- "
+            "run playthrough_mkdirs (playthrough/tooling/env.sh) first"
+            % parent)
+    return resolved
+
+
+def _audit_scalar(value: Optional[str]) -> Optional[str]:
+    """Return a one-line reading, or None.  Never a guess."""
+    if value is None:
+        return None
+    text = str(value).replace("\r", " ").replace("\n", " ").strip()
+    return text or None
+
+
+def date_audit_record(frame: int,
+                      reading: SidebarReading) -> Dict[str, object]:
+    """Build the audit record for one frame's reading.
+
+    Pure: it touches no file, so a caller can inspect exactly what
+    would be written.  The frame index is the caller's -- session.py
+    owns the counter and this module never generates one.
+    """
+    index = _validated_audit_frame(frame)
+    return {
+        "frame": index,
+        "file": FRAME_FILE_FORMAT % index,
+        "clock": _audit_scalar(reading.clock),
+        "phrase": _audit_scalar(reading.phrase),
+        "date": _audit_scalar(reading.date),
+        "agreement": bool(reading.agreement),
+    }
+
+
+def append_date_audit(path: str, frame: int,
+                      reading: SidebarReading,
+                      root: Optional[str] = None
+                      ) -> Dict[str, object]:
+    """Append one frame's date evidence to the sidecar.
+
+    Append-only, one line, flushed and forced to the device: this is
+    evidence about what the sidebar showed, and evidence is neither
+    rewritten nor reported as stored until it is.  A repeated frame
+    index is NOT an error here -- a recapture legitimately produces a
+    second record for the same frame -- and resolving that is the
+    consumer's job, which takes the last record for an index and warns
+    when two disagree.
+
+    :returns: the record exactly as written.
+    :raises AuditError: for a bad path, a bad index, or a write this
+        module could not complete.
+    """
+    resolved = _validated_audit_path(path, root)
+    record = date_audit_record(frame, reading)
+    line = json.dumps(record, ensure_ascii=False) + "\n"
+    # O_NOFOLLOW as well as the check above: the check reads the path
+    # and the open acts on it, and a link planted between the two
+    # would otherwise be followed.  The kernel refuses the final
+    # component instead, so the race has no window at all.
+    try:
+        descriptor = os.open(
+            resolved,
+            os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW,
+            0o600)
+    except OSError as exc:
+        if exc.errno in (errno.ELOOP, errno.EMLINK):
+            raise AuditError(
+                "the audit path became a symbolic link: %s.  Refusing "
+                "to append through it" % resolved) from exc
+        raise AuditError(
+            "could not open the date-evidence sidecar %s (%s)"
+            % (resolved, exc)) from exc
+    try:
+        with os.fdopen(descriptor, "a", encoding="utf-8",
+                       newline="\n") as handle:
+            handle.write(line)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except OSError as exc:
+        raise AuditError(
+            "could not append frame %d's date evidence to %s (%s); the "
+            "sidecar is what lets timeline.py tell a midnight rollover "
+            "from a misread clock, so a write that cannot be completed "
+            "is reported rather than passed over"
+            % (record["frame"], resolved, exc)) from exc
+    LOG.debug("date audit: frame %d -> %s (date %r, clock %r)",
+              record["frame"], resolved, record["date"],
+              record["clock"])
+    return record
+
+
+# ---------------------------------------------------------------------
 # Command line
 #
 # STDOUT CARRIES EXACTLY THE READING AND NOTHING ELSE, so that
@@ -1780,24 +2573,38 @@ _EPILOG = """\
 exit codes:
   0  the requested field was read
   1  the frame was read and held no such reading (stdout is empty)
-  2  a fault: bad or missing frame, unusable crop, missing tool, or a
-     24_HOUR option that is not 24h
+  2  a fault: bad or missing frame, unusable crop, missing tool, a
+     24_HOUR option that is not 24h, or a date audit that could not be
+     written
 
-examples:
+examples (run from the repository root; this file is tracked mode 644
+and is not on PATH, so it is always invoked through the interpreter,
+with -B so no __pycache__ is left in the tree):
   # the pipeline's own call, crop computed from configuration
-  ocr_clock.py playthrough/frames/frame_00042.png
+  python3 -B playthrough/tooling/ocr_clock.py \\
+      playthrough/frames/frame_00042.png
 
   # the crop capture.sh already has in hand
-  ocr_clock.py --rect "$(sidebar_geometry.py)" "$FRAME"
+  python3 -B playthrough/tooling/ocr_clock.py --rect \\
+      "$(python3 -B playthrough/tooling/sidebar_geometry.py)" "$FRAME"
 
   # audit one frame: run every pass and show the evidence
-  ocr_clock.py --cross-check -v "$FRAME"
+  python3 -B playthrough/tooling/ocr_clock.py --cross-check -v "$FRAME"
 
   # the whole reading, for a tool rather than a human
-  ocr_clock.py --json "$FRAME"
+  python3 -B playthrough/tooling/ocr_clock.py --json "$FRAME"
 
   # what a watchless survivor's sidebar says
-  ocr_clock.py --field phrase "$FRAME"
+  python3 -B playthrough/tooling/ocr_clock.py --field phrase "$FRAME"
+
+  # capture.sh's own call: every reading from ONE OCR pass, and the
+  # date evidence timeline.py needs persisted in the same breath
+  python3 -B playthrough/tooling/ocr_clock.py --kv \\
+      --audit "$PLAYTHROUGH_DATE_AUDIT" --audit-frame 42 "$FRAME"
+
+note on --kv: the values are printed unquoted as KEY=value, one per
+line, so a shell reads them with `while IFS='=' read -r key value`.
+NEVER eval that output -- a sidebar phrase is OCR text, not code.
 """
 
 
@@ -1859,6 +2666,21 @@ def build_parser() -> argparse.ArgumentParser:
         help=("print the whole reading, with its candidates and notes, "
               "as JSON instead of one value"))
     parser.add_argument(
+        "--kv", action="store_true",
+        help=("print CLOCK=, TIME_PHRASE= and CLOCK_DATE= as unquoted "
+              "KEY=value lines, so one read serves a shell caller that "
+              "needs all three; parse with IFS='=' read, never eval"))
+    parser.add_argument(
+        "--audit", metavar="PATH",
+        help=("append this frame's date evidence to an append-only "
+              "JSONL sidecar (the pipeline passes "
+              "$%s); requires --audit-frame" % ENV_DATE_AUDIT))
+    parser.add_argument(
+        "--audit-frame", type=int, metavar="N",
+        help=("the frame index to record in the audit sidecar; "
+              "session.py owns this counter, so it is never derived "
+              "from the file name"))
+    parser.add_argument(
         "--cross-check", action="store_true",
         help=("run every pass even after one succeeds, so that "
               "disagreement between them is reported"))
@@ -1885,6 +2707,13 @@ def build_parser() -> argparse.ArgumentParser:
         dest="check_options",
         help=("skip the 24_HOUR assertion; only for reading a frame "
               "captured under some other configuration"))
+    parser.add_argument(
+        "--preflight", action="store_true",
+        help=("check that every dependency this module needs is "
+              "importable and exit: 0 when it is, 2 when it is not.  "
+              "Run it ONCE before capturing, so a missing package is a "
+              "fault reported before any frame exists rather than an "
+              "unreadable clock reported for every frame"))
     parser.add_argument(
         "--explain", action="store_true",
         help="describe the pipeline and the passes, then read if asked")
@@ -1913,10 +2742,33 @@ def _configure_cli_logging(verbosity: int) -> None:
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    """Read one frame and print the requested reading, or nothing."""
+    """Read one frame and print the requested reading, or nothing.
+
+    The three exit codes are a contract with ``capture.sh`` and are
+    kept strictly apart: 0 carries a reading on stdout, 1 means the
+    frame was read and held no such reading, and 2 means a FAULT --
+    including a dependency that did not import, which is why the
+    bootstrap check below runs before anything else and why every
+    fragile import in this module is guarded.
+    """
     parser = build_parser()
     args = parser.parse_args(argv)
     _configure_cli_logging(args.verbose)
+
+    problems = bootstrap_problems()
+    if args.preflight:
+        for problem in problems:
+            LOG.error("%s", problem)
+        if problems:
+            return EXIT_FAULT
+        LOG.info("every dependency of ocr_clock.py is importable")
+        return EXIT_OK
+    if problems:
+        # Reported here rather than at import time so that this status
+        # is 2 (a fault) and never 1 (an unreadable observation).
+        for problem in problems:
+            LOG.error("%s", problem)
+        return EXIT_FAULT
 
     if args.explain:
         # Only ever stdout when there is no reading to print there.
@@ -1926,6 +2778,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return EXIT_OK
     if args.frame is None:
         parser.error("a frame is required unless --explain is given")
+    if args.audit and args.audit_frame is None:
+        parser.error(
+            "--audit needs --audit-frame N: the record identifies the "
+            "frame it describes, and that index belongs to the session "
+            "counter rather than being guessed from a file name")
+    if args.audit_frame is not None and not args.audit:
+        parser.error(
+            "--audit-frame is only meaningful with --audit PATH")
+    if args.json and args.kv:
+        parser.error(
+            "--json and --kv are two different output shapes; ask for "
+            "one")
 
     try:
         reading = read_sidebar(
@@ -1948,8 +2812,29 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.verbose:
         print(reading.describe(), file=sys.stderr)
 
+    # The audit is written BEFORE anything reaches stdout, so a sidecar
+    # that could not be recorded is a fault with an empty stdout rather
+    # than a value the caller banks while the evidence behind it was
+    # lost.
+    if args.audit:
+        try:
+            append_date_audit(args.audit, args.audit_frame, reading)
+        except OcrClockError as exc:
+            LOG.error("%s", exc)
+            return EXIT_FAULT
+
     if args.json:
         print(json.dumps(reading.as_dict(), indent=2, sort_keys=True))
+        return EXIT_OK if reading.readable else EXIT_UNREADABLE
+
+    if args.kv:
+        # Empty on the right of the '=' is the honest form of "not
+        # read": the shell then holds an empty variable rather than a
+        # placeholder that looks like a reading.
+        for key, raw in (("CLOCK", reading.clock),
+                         ("TIME_PHRASE", reading.phrase),
+                         ("CLOCK_DATE", reading.date)):
+            print("%s=%s" % (key, _audit_scalar(raw) or ""))
         return EXIT_OK if reading.readable else EXIT_UNREADABLE
 
     value = {
