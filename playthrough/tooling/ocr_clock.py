@@ -204,6 +204,7 @@ from __future__ import annotations
 
 import argparse
 import errno
+import functools
 import io
 import json
 import logging
@@ -249,15 +250,27 @@ from typing import Dict, List, Optional, Sequence, Tuple, Union
 # is a security condition and an unreadable version would otherwise
 # have to be treated as a passing one.
 try:
-    from PIL import Image, ImageFilter, ImageOps
+    from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
     from PIL import __version__ as PILLOW_VERSION
     PILLOW_IMPORT_ERROR: Optional[BaseException] = None
 except ImportError as _pillow_import_error:  # pragma: no cover
     Image = None  # type: ignore[assignment]
+    ImageDraw = None  # type: ignore[assignment]
     ImageFilter = None  # type: ignore[assignment]
+    ImageFont = None  # type: ignore[assignment]
     ImageOps = None  # type: ignore[assignment]
     PILLOW_VERSION = ""
     PILLOW_IMPORT_ERROR = _pillow_import_error
+
+# NumPy is the same kind of dependency for the exact glyph reader: a
+# cell-by-cell comparison against the game's own font is a boolean
+# array operation, and the pin is already required by the render stage.
+try:
+    import numpy
+    NUMPY_IMPORT_ERROR: Optional[BaseException] = None
+except ImportError as _numpy_import_error:  # pragma: no cover
+    numpy = None  # type: ignore[assignment]
+    NUMPY_IMPORT_ERROR = _numpy_import_error
 
 # Set BEFORE the sibling import below, which is the only import that
 # can write into the repository working tree.  env.sh exports
@@ -459,6 +472,79 @@ PSM_FULL_PAGE = 3
 # FONT_HEIGHT's documented default [src/options.cpp:2435-2438], used
 # only when the real value cannot be resolved, and never silently.
 DEFAULT_ROW_HEIGHT = 16
+
+# ---------------------------------------------------------------------
+# THE GLYPH GRID, and why an exact reader had to be added
+#
+# Every OCR pass below fails on this host in one specific way, measured
+# on a real captured frame whose Time row says 08:00:00: the prescribed
+# chain reads "Time: 08:80:88", and no amount of blur, threshold,
+# morphology or upscaling recovers it.  The cause is the game's own
+# typeface.  data/font/Terminus.ttf draws a SLASHED zero, and a slashed
+# zero is an 8 to every engine tesseract has -- 200% + -normalize +
+# -gaussian-blur 0x0.5 was calibrated against a frame where it happened
+# to survive, and it does not survive here.
+#
+# The sidebar, however, is not a photograph of text.  It is a character
+# grid: FONT_WIDTH x FONT_HEIGHT cells, no anti-aliasing under the
+# "Bitmap" hinting the engine's own config/fonts.json asks for, drawn
+# from a font file that ships in this repository.  So each cell can be
+# compared against the SAME font rendered by Pillow, and the comparison
+# is exact rather than statistical: at size 16 Pillow reproduces the
+# engine's slashed-zero bitmap pixel for pixel (verified against the
+# captured frame before this was written).
+#
+# That makes this pass strictly more truthful than the OCR ones -- it
+# either matches the pixels the game drew or it declines -- so it runs
+# FIRST, and the tesseract passes remain in place behind it for any
+# frame it cannot decode.  It is also free: it spends no OCR calls at
+# all, which removes ~139 tesseract invocations from every captured
+# frame.
+#
+# It reads only what the game can draw in that column, and it never
+# guesses: a cell that matches no template within GLYPH_MAX_DISTANCE
+# becomes a space, and a row that decodes to nothing is dropped.  The
+# resulting text is handed to the very same find_clocks(),
+# extract_date() and extract_phrase() the OCR passes feed, so the
+# honesty rules downstream -- impossible clocks declined, nothing
+# repaired -- apply unchanged.
+# ---------------------------------------------------------------------
+
+GLYPH_PASS_NAME = "glyph-grid"
+
+# The engine's interface typeface, from config/fonts.json's own
+# `typeface` list.  Resolved relative to the repository root, which is
+# this module's grandparent: playthrough/tooling -> playthrough -> root.
+GLYPH_FONT_PARTS = ("data", "font", "Terminus.ttf")
+
+# Everything the sidebar's clock, date and coarse-time rows can contain.
+# Ordered so that a tie prefers a digit over a letter, which matters for
+# nothing except reproducibility.
+GLYPH_ALPHABET = (
+    "0123456789"
+    ":,.-?!/%()+'"
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    "abcdefghijklmnopqrstuvwxyz"
+)
+
+# A cell is ink where the grayscale value clears this, matching the
+# threshold the bitmaps were verified at.  The sidebar is drawn as
+# bright text on black, so the split is wide and not delicate.
+GLYPH_INK_THRESHOLD = 100
+
+# The most differing pixels a match may carry over a cell of
+# FONT_WIDTH x FONT_HEIGHT.  Zero would be ideal and is what a clean
+# capture actually produces; a small allowance absorbs a colour whose
+# dimmest stroke pixel falls near the threshold, without ever letting a
+# 0 be answered by an 8 (those differ by 6 pixels in this face, so the
+# ceiling is deliberately below that).
+GLYPH_MAX_DISTANCE = 4
+
+# Cell width is derived from the row height rather than read from the
+# options file: every font the engine ships for this grid is drawn at
+# FONT_WIDTH = FONT_HEIGHT / 2 [src/options.cpp:2408-2438], and the
+# ratio is asserted against the crop width before it is used.
+GLYPH_WIDTH_DIVISOR = 2
 
 # Wall-clock ceilings for the two external commands.  A hung tool is a
 # fault to report, not a reason to wait forever.
@@ -730,6 +816,183 @@ def reset_diagnostics() -> None:
 # cross_check=True every pass runs and disagreement is reported instead
 # of hidden.  Nothing here repairs, substitutes or interpolates.
 # ---------------------------------------------------------------------
+
+def _glyph_font_path() -> str:
+    """Return the engine's interface font, from this checkout."""
+    root = os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))))
+    return os.path.join(root, *GLYPH_FONT_PARTS)
+
+
+@functools.lru_cache(maxsize=4)
+def _glyph_templates(
+    cell_width: int, row_height: int
+) -> Tuple[Dict[bytes, str], Tuple[Tuple[str, "numpy.ndarray"], ...]]:
+    """Render one template per glyph from the game's own font.
+
+    Returns an exact index, keyed by the template's raw bytes so that a
+    cell the engine drew from this font is recognised by lookup rather
+    than by comparison, and the same templates as an ordered list for
+    the near-match fallback.  Cached, because a session reads the same
+    grid on every frame of the film.
+    """
+    _require_pillow()
+    font = ImageFont.truetype(_glyph_font_path(), row_height)
+    exact: Dict[bytes, str] = {}
+    ordered = []
+    for character in GLYPH_ALPHABET:
+        cell = Image.new("L", (cell_width, row_height), 0)
+        ImageDraw.Draw(cell).text((0, 0), character, fill=255, font=font)
+        mask = numpy.ascontiguousarray(
+            numpy.asarray(cell) > GLYPH_INK_THRESHOLD)
+        exact.setdefault(mask.tobytes(), character)
+        ordered.append((character, mask))
+    return exact, tuple(ordered)
+
+
+def _glyph_cells(
+    band: "numpy.ndarray", cell_width: int
+) -> Tuple["numpy.ndarray", ...]:
+    """Split one grid row into contiguous per-character cells."""
+    columns = band.shape[1] // cell_width
+    return tuple(
+        numpy.ascontiguousarray(
+            band[:, index * cell_width:(index + 1) * cell_width])
+        for index in range(columns))
+
+
+def _glyph_bands(
+    ink: "numpy.ndarray", phase: int, row_height: int
+) -> Tuple[Tuple[int, "numpy.ndarray"], ...]:
+    """Return the inked grid rows at one vertical phase."""
+    bands = []
+    top = phase
+    while top + row_height <= ink.shape[0]:
+        band = ink[top:top + row_height]
+        if band.any():
+            bands.append((top, band))
+        top += row_height
+    return tuple(bands)
+
+
+def _glyph_phase(
+    ink: "numpy.ndarray",
+    exact: Dict[bytes, str],
+    cell_width: int,
+    row_height: int,
+) -> int:
+    """Find which vertical phase the engine's cell grid actually sits on.
+
+    THE PHASE IS MEASURED, NOT ASSUMED, and that is the whole reason
+    this helper exists.  sidebar_geometry.py places the crop from the
+    window's letterbox, while the engine anchors its character grid to
+    the window itself; on this host the two differed by 14 pixels, and
+    slicing on the wrong phase splits every glyph across two bands and
+    reads nothing at all.  So every candidate phase is scored by how
+    many cells it makes EXACTLY equal to a glyph of the game's own
+    font, and the winner is the one the engine was really drawing on.
+    """
+    best_phase, best_score = 0, -1
+    for phase in range(row_height):
+        score = 0
+        for _, band in _glyph_bands(ink, phase, row_height):
+            for cell in _glyph_cells(band, cell_width):
+                if cell.any() and cell.tobytes() in exact:
+                    score += 1
+        if score > best_score:
+            best_phase, best_score = phase, score
+    return best_phase
+
+
+def _decode_glyph_row(
+    band: "numpy.ndarray",
+    exact: Dict[bytes, str],
+    ordered: Tuple[Tuple[str, "numpy.ndarray"], ...],
+    cell_width: int,
+) -> str:
+    """Decode one grid row of cells into text.
+
+    An exact match answers immediately.  Anything else is resolved to
+    the nearest template within GLYPH_MAX_DISTANCE, and a cell no
+    template comes that close to becomes a space -- never a guess at
+    what it might have been.
+    """
+    out = []
+    for cell in _glyph_cells(band, cell_width):
+        if not cell.any():
+            out.append(" ")
+            continue
+        hit = exact.get(cell.tobytes())
+        if hit is not None:
+            out.append(hit)
+            continue
+        best, distance = " ", GLYPH_MAX_DISTANCE + 1
+        for character, template in ordered:
+            differing = int(numpy.count_nonzero(cell != template))
+            if differing < distance:
+                best, distance = character, differing
+        out.append(best)
+    return "".join(out).rstrip()
+
+
+def read_column_by_glyphs(
+    png_path: str,
+    rect: sidebar_geometry.Rect,
+    row_height: int,
+    notes: Optional[List[str]] = None,
+) -> str:
+    """Decode the sidebar column cell by cell against the game's font.
+
+    Returns the column's text, one grid row per line, with rows that
+    decoded to nothing dropped.  Returns "" when the grid cannot be
+    established or the font is unavailable -- never a partial guess.
+    """
+    _require_pillow()
+    if numpy is None or ImageFont is None or ImageDraw is None:
+        _warn("the exact glyph reader needs numpy and Pillow's font "
+              "modules (%s), so the OCR passes answer for this frame"
+              % (NUMPY_IMPORT_ERROR or "unavailable"), notes)
+        return ""
+    if row_height < GLYPH_WIDTH_DIVISOR * 2:
+        return ""
+    cell_width = row_height // GLYPH_WIDTH_DIVISOR
+    if rect.width < cell_width or rect.x % cell_width:
+        _warn(
+            "the crop %s does not sit on the %d-pixel character grid, "
+            "so the exact glyph reader is skipped and the OCR passes "
+            "answer for this frame" % (rect.geometry, cell_width),
+            notes)
+        return ""
+    try:
+        font_path = _glyph_font_path()
+        if not os.path.isfile(font_path):
+            _warn("the interface font %s is not in this checkout, so "
+                  "the exact glyph reader is skipped" % font_path, notes)
+            return ""
+        with Image.open(png_path) as opened:
+            grey = opened.convert("L")
+            column = grey.crop(
+                (rect.x, rect.y,
+                 rect.x + rect.width, rect.y + rect.height))
+        ink = numpy.ascontiguousarray(
+            numpy.asarray(column) > GLYPH_INK_THRESHOLD)
+        exact, ordered = _glyph_templates(cell_width, row_height)
+    except (OSError, ValueError) as exc:
+        _warn("the exact glyph reader could not prepare %s (%s), so "
+              "the OCR passes answer for this frame"
+              % (png_path, exc), notes)
+        return ""
+
+    if not ink.any():
+        return ""
+    phase = _glyph_phase(ink, exact, cell_width, row_height)
+    lines = []
+    for _, band in _glyph_bands(ink, phase, row_height):
+        text = _decode_glyph_row(band, exact, ordered, cell_width)
+        if text.strip():
+            lines.append(text)
+    return "\n".join(lines)
+
 
 @dataclass(frozen=True)
 class OcrPass:
@@ -2165,7 +2428,36 @@ def read_sidebar(
     attempted: List[str] = []
     calls = 0
 
+    # THE EXACT PASS RUNS FIRST.  It spends no OCR calls, it either
+    # matches the pixels the game drew or declines, and its output goes
+    # through the same find_clocks() as every OCR pass -- so an
+    # impossible reading is declined here exactly as it would be there.
+    glyph_text = read_column_by_glyphs(
+        resolved_png, rectangle, rows, notes)
+    if glyph_text.strip():
+        attempted.append(GLYPH_PASS_NAME)
+        found, impossible = find_clocks(glyph_text)
+        for value in impossible:
+            if value not in declined:
+                declined.append(value)
+                _warn(
+                    "pass '%s' read %r, which no in-game clock can say "
+                    "(hour <= %d, minute and second <= %d); declined, "
+                    "and NOT repaired into a plausible time"
+                    % (GLYPH_PASS_NAME, value, MAX_HOUR, MAX_MINUTE),
+                    notes)
+        if found is not None:
+            candidates.append(found)
+            clock, winner, winning_text = (
+                found, GLYPH_PASS_NAME, glyph_text)
+            LOG.debug("pass '%s' read the clock as %s",
+                      GLYPH_PASS_NAME, found)
+        elif not fallback_text.strip():
+            fallback_text = glyph_text
+
     for ocr_pass in selected:
+        if clock is not None and not cross_check:
+            break
         strip, band_height = preprocess(
             resolved_png, rectangle, rows, ocr_pass, chosen_engine)
         text, pass_calls = _scan_strip(

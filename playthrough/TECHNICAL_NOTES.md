@@ -167,3 +167,314 @@ twenty-two years of the work, which is the person the dossier describes.
 *If the creator's own display disagrees with any number on this page, the
 creator is right and this page is wrong: correct it here before the day is
 played, never reconcile it afterwards.*
+
+---
+
+## Session log — engineering observations from the recorded run
+
+Everything below was observed during the captured session of 3 August 2026 on
+this host (`CLONE_INDEX=2`, `DISPLAY=:101`). It is here rather than in
+`playthrough/transcript.md` or `playthrough/manifest.jsonl` because none of it
+is Delphine's, and because `playthrough/manifest.jsonl` is append-only: a row
+that was recorded wrongly is corrected *here* and by a later row, never by
+editing the record.
+
+### Corrections to the record
+
+* **`frame` 116 — the `action` text is wrong.** It reads
+  `press 'X' -- nothing; see note` with the commentary `placeholder`. The key
+  actually delivered was `-`, which lowered Perception from 9 back to 8. It was
+  an operator slip: a scratch third step was left in the command that drove the
+  two Perception keystrokes. Frame 117 restores Perception to 9 and says so in
+  its own `action` field. Both rows stand exactly as written, because the
+  manifest is evidence and evidence is not rewritten — the sequence
+  116 → 117 is the honest account of a mistake and its repair.
+* **`frame` 13 — `press '/' -- open the scenario filter`.** The filter box *did*
+  open, but it is drawn at the bottom of the right-hand description pane
+  (around `x` 828, `y` 529) rather than near the list, so it was missed on the
+  first read. Frames 14 and 15–20 (`Page Down`, then six `Down` presses) were
+  therefore delivered into that text box and moved nothing. The two states
+  differ by 21 pixels — a 2 × 14 px blinking text cursor — which is what
+  finally identified it.
+* **`frame` 94 — the wrong trait was ticked.** The `healer` filter left the list
+  cursor on row 2, *Imperceptive Healer* (−8), not row 1, *Fast Healer* (+2);
+  the points line moved 7 → 15 instead of 7 → 5, which is how it was caught on
+  the SUMMARY tab. Frame 98 unticks it, frame 100 moves up one row and frame 101
+  takes *Fast Healer*, with the cursor confirmed from the pixels first. Lesson
+  applied for the rest of the run: read the highlighted row before every
+  `Return`, never assume a freshly filtered list is on row 1.
+
+### Corrections to the pre-play character build
+
+The page above says that if the creator's own display disagrees with any number
+on it, the creator is right. Two things disagreed:
+
+* **Six backgrounds arrive free with the profession.** Choosing *Mechanical
+  Engineer* selected *Driving License*, *Simple Home Cooking*, *Computer
+  Literate*, *Social Skills*, *High School Graduate* and *Mundane Survival*
+  automatically, which is why the starting sheet carries applied science 1,
+  computers 1, electronics 1, fabrication 1, food handling 1, health care 1,
+  social 1 and vehicles 2 without anything being bought. *Driving License* was
+  on the planned list and did not have to be taken separately.
+* **The pools are displayed as points REMAINING, not as totals.** The header
+  reads `Points left: <stat>+<trait>+<skill>`. It opened at `6+0+2=8` under
+  *Legacy: Multiple pools* — the 4 × 8 stat baseline is already spent, so the 38
+  quoted above is the same number counted from zero rather than from the
+  baseline.
+
+### Environment observations
+
+* A fresh userdir opens on `Select your language`, not the main menu, exactly as
+  planned for. On this host the prompt is a small dialog on an otherwise black
+  1920 × 1080 root: only 4 635 non-black pixels, in a 176 × 60 box at
+  `x` 871–1047, `y` 505–565. `LUMA_MEAN` 0.000555 with `LUMA_STDDEV` 0.0181
+  still passes the non-blank gate, correctly — the frame is dark, not empty.
+* That black screen with the engine at ~48 % CPU for four minutes looked like a
+  hung tileset load and was not: the main thread's `wchan` was
+  `hrtimer_nanosleep` with sixty-odd workers parked in `futex_wait`, which is an
+  idle input loop waiting on the prompt.
+* **The computed sidebar crop is `352x1072+1568+4`, not the 288-px rectangle the
+  plan illustrated.** `panel_options.json` does not exist until the game saves
+  its panel settings, so the live layout is the engine's own default
+  `legacy_labels_sidebar` at 44 cells, not `custom_sidebar`'s 36: 44 × 8 = 352,
+  right-aligned at 1920 − 352 = 1568. This is exactly why the rectangle is
+  derived at run time instead of being written down.
+* The 0.3 s settle can photograph a frame mid-redraw, before a `query_yn` popup
+  has been drawn — which is how the first `f` at frame 4 appeared to do nothing.
+  The captured session ran with `PLAYTHROUGH_CAPTURE_SETTLE=0.9`; capture.sh
+  refuses anything *shorter* than the contracted 0.3 s and allows longer.
+* `query_yn` on this build is case sensitive and says so: `y` at frame 7 was
+  ignored and `Y` at frame 8 was accepted.
+* There is no `FILTER` action anywhere in `src/newcharacter.cpp`, yet `/` opens a
+  filter box on the creator's tabs. Re-opening it presents the previous text
+  *selected*, and `BackSpace` does not clear it (six presses at frames 64–69
+  changed nothing) — the first printable character typed replaces the whole
+  selection, which is the way to reuse the box.
+* `+` and `-` (`INCREASE_VALUE` / `DECREASE_VALUE`) adjust a stat or a skill;
+  the arrow keys do not. `session.py` splits a chord on `+`, so the keystroke is
+  spelled `plus` and `minus`.
+
+### The interrupted capture at frame 177, and the abandoned first creation run
+
+Frames 1–177 are a first pass at character creation that never reached a save.
+Both facts below are recorded because the film and the record contain them, and
+a viewer is owed the explanation rather than left to wonder why the creator gets
+filled in twice.
+
+* **The record was repaired, not rewritten.** The harness that drives this
+  session terminates a command that produces no output for 300 s. Eighteen
+  keystrokes of the name were driven through a single `tail`-buffered pipe, which
+  emitted nothing for longer than that, so the command's whole process group was
+  killed — mid-step, between capture.sh writing `frame_00177.png` and session.py
+  appending its row. That left 177 PNGs against 176 rows: the exact break in the
+  count identity session.py's own documentation anticipates, offering two
+  remedies — withdraw the PNG, or repair the record.
+  The record was repaired. `frame_00177.png` was verified independently against
+  every gate capture.sh would have applied — PNG, 1920 × 1080, grayscale mean
+  0.0154484 and standard deviation 0.0867151 (both > 0), clock unreadable — and
+  its row was appended through `manifest.append_row()` so that the same
+  validation, locking and durability applied as to every other row. Its
+  `real_ts`, `2026-08-03T19:47:57.429Z`, is the PNG's own mtime: the instant
+  `import` wrote the file, measured, not invented. The row's `action` says
+  plainly that its capture was interrupted and that the row was repaired
+  afterwards. `session.py status` then reported `RECORD_PROBLEMS=0`.
+* **The same kill took the engine and the X server with it.** Both had been
+  started detached from an ordinary shell, so the process-group kill reached
+  them. No character had been saved — CDDA writes one only at the end of
+  creation — so the creator state was lost with them, and creation had to be
+  driven again from the main menu. The first pass stands in the record exactly as
+  it happened; frames from 178 on are the second pass.
+* **The fix, applied before redoing the work.** The instance is now owned by
+  supervisord rather than by a shell: `/etc/supervisor/conf.d/playthrough-clone2.conf`
+  runs `/usr/local/bin/playthrough-guard-2.sh`, which is
+  `launch_game.sh guard` with `CLONE_INDEX=2`, holding the game in the
+  foreground of a supervised process. `autorestart` is deliberately `false`,
+  because the session is meant to end with the game's own Save & Quit and a
+  restart after that would raise a second instance behind the recorded
+  session's back. Driver output is now written to a log and read back rather
+  than piped through `tail`, so no command can go silent long enough to be
+  killed again.
+
+### The keystroke with no frame, at the start of play
+
+The `Y` that confirmed the finished character sheet has no frame and no manifest
+row. capture.sh measured the screen it produced at grayscale mean 0 and standard
+deviation 0 — genuinely, entirely black, because the engine was generating the
+world — and the non-blank gate did exactly what it exists for: refused to add a
+black frame to the record, withdrew the PNG to the reject directory outside the
+working tree, and stopped the session, since a keystroke cannot be un-pressed
+and a frame cannot be invented for it. Fifteen seconds later the same screen
+measured mean 0.0910 with standard deviation 0.1480 and play resumed from the
+next keystroke. The gap is left as a gap: recording a black frame, or
+back-filling one from a later capture, would both be worse than being one frame
+short and saying so.
+
+### The sidebar clock could not be read at all, and how it was fixed
+
+This is the defect that would have silently cost the film its entire pacing
+model, because an unreadable clock is an *ordinary* answer — every frame would
+have carried `"ingame_clock": null`, every gate would have passed, and
+timeline.py would have had no deltas to work from.
+
+**Two causes, both measured from the pixels rather than guessed at.**
+
+* **The row grid was out of phase by 14 pixels.** sidebar_geometry.py places the
+  crop from the window's letterbox and produced `352x1072+1568+4`, but the engine
+  anchors its 8 × 16 character grid to the window, which openbox had sized to the
+  whole 1920 × 1080 root. The measured ink bands are 258–267 (`Date`), 274–286
+  (`Time`) and 290–299 (`Wind`), so cell tops are at 256, 272 and 288 — a grid
+  anchored at y = 0. Slicing 16-pixel bands from y = 4 cuts every glyph across
+  two bands, and reading nothing is the result.
+* **`data/font/Terminus.ttf` draws a slashed zero.** Aligned to the true row, the
+  prescribed chain reads `Time: 08:80:88`: the zeros come back as eights. Nine
+  preprocessing variants were tried and measured — 200/300/400/500/800 %
+  upscaling, `-normalize`, `-threshold 40%`, `-negate`, `-gaussian-blur` at
+  0x0.5, 0x1.0, 0x1.5 and 0x3, `-morphology Open 3x1` and `1x3`,
+  `-morphology Erode Diamond:1`, `-morphology Close Disk:1.5`, and a digit
+  whitelist. Every one returns `08:80:88`, `88:88:88`, `08:60:60` or nothing. No
+  OCR preprocessing recovers a slashed zero here; the module's own
+  `DESLASH_BLUR` of `0x0.5` was calibrated on a frame where it happened to
+  survive.
+
+**The fix is an exact reader, not a better guess.** The sidebar is not a
+photograph of text — it is a character grid of 8 × 16 cells with no
+anti-aliasing, because the engine's own `config/fonts.json` asks for `"Bitmap"`
+hinting on a font that ships in this repository. Dumping the raw cells confirmed
+crisp one-bit glyphs on an exact grid, and Pillow's
+`ImageFont.truetype("data/font/Terminus.ttf", 16)` reproduces the engine's
+slashed-zero bitmap pixel for pixel. So `ocr_clock.py` gained a `glyph-grid`
+pass that compares each cell against the very font that drew it:
+
+* the vertical phase is **measured**, not assumed — every candidate phase is
+  scored by how many cells it makes *exactly* equal to a glyph of that font, and
+  the best-scoring phase wins, which fixes the 14-pixel problem in general
+  rather than by hard-coding an offset;
+* an exact byte-for-byte match answers immediately; anything else resolves to the
+  nearest template within four differing pixels, deliberately below the six that
+  separate this face's `0` from its `8`; a cell nothing comes that close to
+  becomes a space, never a guess;
+* the decoded text is handed to the same `find_clocks()`, `extract_date()` and
+  `extract_phrase()` the tesseract passes feed, so an impossible reading is still
+  declined and nothing is repaired;
+* the four OCR passes are untouched and still run behind it, and still under
+  `--cross-check`.
+
+Measured on a real captured frame: `clock=08:00:00`, `date=Thursday, May 20`,
+`pass=glyph-grid`, `ocr_calls=0`, 0.425 s — against no reading at all in 19.25 s
+before. The whole column decodes, not just the clock: `Str: 10`, `Dex: 7`,
+`Int: 12`, `Per: 9`, `Place: golf course servic…`, `Weather: Clear`,
+`Moon: New moon`, `Wield: fists` and the message log all read back exactly.
+capture.sh now reports `CLOCK_STATUS=read` in 2.8 s per frame.
+
+One test had to change with it. `test_ocr_clock.py` asserted that a slashed-zero
+frame must read as `None`, on the reasoning that "the honest answer is no reading
+at all". That was true of a tesseract-only reader and is not true of this one, so
+the test now asserts the exact value, that `glyph-grid` is the winning pass, and
+that the tesseract misreads still appear in `declined` with the "NOT repaired"
+note intact — the original intent kept, the obsolete limitation dropped. Two
+tests were added: that the exact pass spends zero OCR calls, and that a
+deliberately mis-phased crop still reads the clock. 152 tests pass and
+`flake8 playthrough/` reports nothing.
+
+### Corrections to the record, during play
+
+The gameplay run produced three more of these, all handled the same way: the
+offending row stands, and the next row says so in Delphine's own voice.
+
+* **`frame` 512 — the `action` text describes an intention, not what happened.**
+  It reads `press 'k' -- close the door to the north, behind her`. `k` is
+  *move* north. Walking into a closed door opens it and does **not** move you,
+  so the press re-opened the door that frame 511 had just shut, and frame 512's
+  commentary claims a closed door the picture does not show. The root cause is
+  worth recording: `c` (`close`) **auto-selects when exactly one closable door
+  is adjacent** — it does not prompt for a direction — so frame 511 had already
+  finished the job and frame 512 was a direction press with nowhere to go.
+* **`frame` 513 — the correction was itself imprecise.** It says she walked back
+  into the doorway. She did not. Reading the log at frames 512 and 514 settles
+  it: `You open the closed wood door.` followed by
+  `There is nothing that can be closed nearby.` proves `k` never moved her, and
+  that the subsequent `j` then carried her *two* tiles from the door, out of
+  `c`'s reach. Frame 515 states this exactly and closes the door for good at
+  516. Two corrections for one door is not a good look, and it is in the record
+  because it happened.
+* **`frame` 539 — a bench seat she had not reached.** The commentary reads
+  `Onto the seat proper.` while the move cost was 0 and the clock did not
+  advance: the golf cart's red bodywork occupies the tiles on its west face and
+  is impassable, so both attempts to board from that side simply failed. She
+  goes round the nose and in from the north at frames 540–541, and says so.
+* **`frame` 553 — `S` was not accepted.** The sleep prompt offers
+  `Y Yes. / S Yes, and save game before sleeping. / N No.`, and `shift+s` left
+  it standing unchanged. That was verified rather than assumed, by checking the
+  save files' mtimes: `#<b64>.sav` and `master.gsav` were last written at
+  23:18:25, which belongs to the autosave during the preceding night-wait, not
+  to this press. Frame 554 records the fact in its own `action` field and takes
+  plain `Y`.
+
+### Two advisory hits on the word "frame", and why the rows stand
+
+`playthrough/manifest.jsonl` carries two commentary lines containing the word
+*frame*: `Three. Standing in the doorway with one hand on the frame.` (509) and
+`Through the frame.` (523). Both mean a door frame, the wooden thing in the
+doorway she is standing in. Neither refers to a captured picture, to timing, or
+to any part of the tooling.
+
+The check for out-of-character wording is a fixed vocabulary match with no word
+sense and no word boundaries, so it flags the ordinary English noun. Three
+separate tools report it and all three call it advisory:
+`manifest.py verify` prints `advisory only, nothing was altered` and still exits
+`0` with `manifest ok: 560 row(s)`; `timeline.py` and `make_srt.py` each repeat
+it and point here. That is the correct behaviour and the rows are **not**
+edited, because the substantive rule — keep meta and "gamey" remarks out of the
+in-character record — is satisfied, and because editing two rows to satisfy a
+string match would be exactly the after-the-fact tidying that makes an
+append-only record worthless. Scanned for the vocabulary that actually names the
+apparatus (screenshot, capture, OCR, ffmpeg, MoviePy, manifest, timeline,
+keystroke, xdotool, pipeline, tileset, sidebar, commit, option) the record
+returns **zero** hits across all 560 rows.
+
+### Input facts learned during play
+
+* **Movement is vikeys.** `h j k l y u b n`. The arrow keys are ambiguous in
+  `DEFAULTMODE` — `UP` is *eat*, `LEFT` is *wear*, `DOWN` is *drop* — so they
+  were not used once play began.
+* **Shifted punctuation must be sent as an explicit chord.** A bare `!` is
+  delivered unshifted and arrives as `1`, i.e. `KEYPAD_1`, a south-west move.
+  That is what happened at frame 406, where safe mode stayed on and the move was
+  blocked; `shift+1` at frame 408 produced `Safe mode OFF!` immediately. The
+  same applies to `@`, `$`, `^`, `|`, `C`, `I`, `S`, `W` and `Y`.
+* **`.` must be spelled `period`.** `xdotool` rejects the bare character with
+  `Invalid key sequence '.'`. That failure happens before anything is sent, so
+  it costs no frame and leaves the session usable.
+* **`e` (`examine`) reaches terrain and furniture only.** Items on an adjacent
+  tile are taken with `g` (`pickup`), which prompts
+  `Pick up items where? (Direction button or mouse)` and accepts diagonals. A
+  *broken* vending machine has no examine action at all, which is why `e` kept
+  answering `There is nothing that can be examined nearby` beside three of them.
+* **The sidebar message log is oldest-first**, newest at the bottom. Confirmed at
+  frame 544, where `The Golf Cart's engine starts up.` is the last line.
+
+### The stalled sleep, and how its state was read without adding a frame
+
+`$` (`shift+4`) at frame 552 started the sleep, but the activity then sat at
+`19:54:29` for 168 s of real time without advancing. The cause was a standing
+prompt the game was waiting on — `You start having withdrawals! Stop trying to
+fall asleep?` — with a second one behind it, `You have trouble sleeping, keep
+trying?`, which is the Insomniac trait.
+
+Finding that out needed a look at the screen, and a screenshot with no keystroke
+behind it would have broken the one invariant this record exists to prove. So the
+state was read with `capture.sh` in diagnostic mode:
+
+```bash
+PLAYTHROUGH_CAPTURE_MODE=diagnostic FRAME_INDEX=99999 playthrough/tooling/capture.sh
+```
+
+which exits `9`, withdraws the image to
+`$XDG_RUNTIME_DIR/playthrough/rejected/frame_99999.png`, and adds nothing to
+`playthrough/frames/`. Two such polls were taken. `frames/` still holds exactly
+560 files, one per keystroke, and `frame_99999.png` is not among them.
+
+For the long waits the settle was raised instead — `PLAYTHROUGH_CAPTURE_SETTLE`
+up to 120 s for a single step — so that the frame shows the *completed* wait
+rather than a mid-simulation state. `capture.sh` only refuses settles shorter
+than the contracted 0.3 s, so raising it is within the contract.

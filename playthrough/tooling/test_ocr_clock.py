@@ -1630,23 +1630,50 @@ class TestTheRealPipeline(OcrFixture):
                 path = self.render("frame_00011.png", {3: clock})
                 self.assertEqual(self.read_real(path).clock, clock)
 
-    def test_a_slashed_zero_is_declined_and_never_repaired(self):
-        # Terminus draws a slashed zero and tesseract reads it as an 8,
-        # so this frame really does yield 88:15:32 -- an hour no clock
-        # can show.  The honest answer is no reading at all.
+    def test_a_slashed_zero_is_read_exactly_and_never_repaired(self):
+        # Terminus draws a slashed zero and every tesseract pass reads
+        # it as an 8, so those passes really do yield 88:15:32 -- an
+        # hour no clock can show, which is declined rather than
+        # repaired into something plausible.  The glyph-grid pass reads
+        # the same pixels against the very font that drew them and gets
+        # the true value, which is why it runs first: an exact reading
+        # is better than an honest refusal, and both beat a guess.
         path = self.render("frame_00012.png", {3: SLASHED_CLOCK})
         reading = self.read_real(path, cross_check=True)
-        self.assertIsNone(
-            reading.clock,
-            msg=("a confident misread is kept out of the record; "
-                 "declined=%r" % (reading.declined,)))
-        self.assertTrue(reading.declined)
+        self.assertEqual(
+            reading.clock, SLASHED_CLOCK,
+            msg="the exact pass reads what the pixels actually say")
+        self.assertEqual(reading.pass_name, ocr_clock.GLYPH_PASS_NAME)
+        self.assertIn(ocr_clock.GLYPH_PASS_NAME, reading.passes_run)
+        self.assertTrue(
+            reading.declined,
+            msg="the tesseract misreads are still reported, not hidden")
         for value in reading.declined:
             with self.subTest(value=value):
                 self.assertFalse(ocr_clock.is_possible_clock(value))
         self.assertTrue(
             any("NOT repaired" in note for note in reading.notes),
             msg=repr(reading.notes))
+
+    def test_the_exact_pass_spends_no_ocr_call_and_still_answers(self):
+        path = self.render("frame_00021.png", {3: CLEAN_CLOCK})
+        reading = self.read_real(path, full_scan=False)
+        self.assertEqual(reading.clock, CLEAN_CLOCK)
+        self.assertEqual(reading.pass_name, ocr_clock.GLYPH_PASS_NAME)
+        self.assertEqual(
+            reading.ocr_calls, 0,
+            msg=("matching the game's own font needs no OCR engine at "
+                 "all, which is what makes it affordable per frame"))
+
+    def test_the_grid_phase_is_measured_rather_than_assumed(self):
+        # The crop's own y offset and the engine's character grid need
+        # not share a phase -- on the capture host they differed by 14
+        # pixels -- so a reader that assumed the crop's offset would
+        # split every glyph across two bands and read nothing.
+        path = self.render("frame_00022.png", {3: CLEAN_CLOCK})
+        rect = ocr_clock.sidebar_geometry.Rect(288, 1072, 1632, 4 + 7)
+        text = ocr_clock.read_column_by_glyphs(path, rect, ROW_HEIGHT, [])
+        self.assertIn(CLEAN_CLOCK, text)
 
     def test_a_watchless_sidebar_reads_its_phrase_and_date(self):
         path = self.render("frame_00013.png",
