@@ -478,3 +478,181 @@ For the long waits the settle was raised instead — `PLAYTHROUGH_CAPTURE_SETTLE
 up to 120 s for a single step — so that the frame shows the *completed* wait
 rather than a mid-simulation state. `capture.sh` only refuses settles shorter
 than the contracted 0.3 s, so raising it is within the contract.
+
+---
+
+## Post-capture verification of `playthrough/frames/`
+
+The 560 captures were re-verified after the fact, in a separate working clone
+of this branch on the same host, and **nothing was re-captured, re-rendered,
+resized, recompressed or renumbered** to make any gate pass. The session had
+already ended legitimately — sleep, waking, then the in-game Save & Quit at
+frames 558-560 — and a save exists, so re-running would have replaced real
+evidence with a second, contradictory set rather than confirming the first.
+What follows is measurement of the frames that are committed.
+
+**The toolchain, as resolved here.** Read back with `command -v`, each tool's
+own `--version`, and `dpkg-query -W`:
+
+| Tool | apt version | Self-report |
+| --- | --- | --- |
+| imagemagick | 8:7.1.2.3+dfsg1-1ubuntu0.1 | ImageMagick 7.1.2-3 Q16 x86_64 |
+| ffmpeg / ffprobe | 7:7.1.1-1ubuntu4.2 | ffmpeg version 7.1.1-1ubuntu4.2 |
+| tesseract-ocr | 5.5.0-1 | tesseract 5.5.0 |
+| xdotool | 1:3.20160805.1-5.1 | xdotool version 3.20160805.1 |
+| xvfb | 2:21.1.18-1ubuntu1.1 | X.Org version 21.1.18 |
+| x11-utils | 7.7+7 | `xdpyinfo`, `xwininfo` |
+| openbox | 3.6.1-12ubuntu2 | Openbox 3.6.1 |
+| scrot | 1.12.1-1 | scrot version 1.12.1 |
+
+Two version facts are worth stating because guidance written elsewhere
+assumes otherwise. **ImageMagick here is the 7.x branch, not 6.x**, and it
+carries the legacy `import`, `convert` and `identify` entry points *as well
+as* `magick`; the pipeline calls the legacy three, which is the spelling that
+works on both branches, so nothing had to change. And the interpreters are
+two: the system `python3` is 3.13.7 and PEP 668 externally-managed, while the
+pipeline's own is `/opt/playthrough-venv/bin/python`, **CPython 3.12.13**,
+which is what `requirements.txt` contracts for and what `env.sh` resolves.
+
+**The platform is out of support, and the tooling says so out loud.** This is
+Ubuntu 25.10, which reached end of life on 2026-07-09, and `env.sh` prints a
+named warning to that effect on every run because ImageMagick, ffmpeg and the
+Xorg/Xvfb stack all parse untrusted-shaped input in this pipeline. It is
+recorded rather than suppressed; `PLAYTHROUGH_REQUIRE_SUPPORTED_PLATFORM=1`
+turns it into a hard failure for anyone who wants that.
+
+**The tileset that was actually resolved: `MshockXottoplus`.** Not a claim
+about what was installed but a reading of what the engine loaded — its own
+log says so, twice, at the launch that recorded this session:
+
+```
+20:35:54.978 INFO : Loaded tileset: MshockXottoplus
+20:35:55.083 INFO : Loaded tileset: Larwick Overmap
+```
+
+[playthrough/userdir/config/debug.log], matching `"name": "TILES", "value":
+"MshockXottoplus"` in [playthrough/userdir/config/options.json] and the id
+`NAME: MshockXottoplus` in [gfx/MShockXotto+/tileset.txt]. The close-range
+art in the gameplay frames is MSXotto+; `Larwick Overmap` is the *overmap*
+tileset the engine loaded alongside it, and no frame in this session shows the
+overmap screen, so it appears in the log and not in the film.
+`ASCIITiles` is installed and was **not** used. `gfx/` is excluded by
+[.gitignore:52] with four negations, so the installed pack is deliberately
+untracked and `.gitignore` was **not** edited to change that.
+
+**The environment gate, re-run.** With `CLONE_INDEX=002`, `env.sh` yields
+`DISPLAY=:101` — the contract's `:99` offset by the clone index so parallel
+checkouts cannot collide — `SDL_VIDEODRIVER=x11`, `SDL_AUDIODRIVER=dummy`,
+`LIBGL_ALWAYS_SOFTWARE=1` and `XDG_RUNTIME_DIR=/tmp/xdg2` at mode 0700.
+`xdpyinfo` then reports `dimensions: 1920x1080 pixels` and `depth of root
+window: 24 planes`. `./cataclysm-tiles --version` reports
+`Cataclysm Dark Days Ahead: 6dea631409-dirty` and `+tiles, +sound` — and that
+same version string is rendered in the frames themselves (frame 1 and frame
+560 both read `Version: 6dea631409-dirty`), which ties the committed sequence
+to this binary rather than to an assertion about it.
+
+**The capture path was proved without touching the committed userdir.** A
+bare root grab measured `mean=0 std=0` — the empty desktop, and a live
+demonstration of exactly what the luminance gate catches. The game was then
+launched against a **throwaway userdir outside the working tree**
+(`--userdir /tmp/cata_probe_002/`), found with
+`xdotool search --class cataclysm-tiles`, captured with
+`import -window root` at 1920x1080 measuring `mean=0.000555 std=0.0181`, and
+read by tesseract as `Select your lanquage / 1English` — the documented
+first-launch prompt, with the reader's genuine `q`-for-`g` slip left exactly
+as it came out rather than tidied up.
+The probe was stopped by its own pid and its userdir deleted;
+`git status --porcelain` stayed empty throughout. Nothing was written into
+`playthrough/frames/` and no capture was taken against
+`playthrough/userdir/`, which holds committed engine state.
+
+**What the frames measure.** Every gate below was run over all 560, not a
+sample: 560 directory entries, every one matching `frame_%05d.png`, no
+subdirectory, no symlink, no `.gitkeep` and no stray file; indices contiguous
+`1..560`; `identify` reporting `PNG 1920x1080` for every frame; grayscale
+`mean > 0` **and** `std > 0` for every frame, with the means spanning
+`0.878 … 56.485` on the 0-255 scale; and a second, independent decode of all
+560 through Pillow returning exactly one distinct size, `(1920, 1080)`. The
+manifest relation is a strict bijection — 560 rows, 560 unique `file` values,
+row `frame` numbers equal to the on-disk indices, every row carrying all six
+schema fields with a non-empty `action` and `commentary`. `timeline.json`
+holds 560 entries, `transcript.srt` 560 cues and `transcript.md` 560
+timestamped entries. Durations sit inside `[0.25, 10.0]` with `min=0.25` and
+`max=10.0`; the 482 zero-delta frames are all at the floor, none dropped;
+`transition_after` is set exactly where the raw delta exceeded 10 s; and
+`326.500 s` of frame time plus `11.000 s` of transition equals the
+`337.500 s` total and the final cue end, to the millisecond.
+
+**The honesty gate, at full scale.** 153 of the 560 rows carry an exact
+`HH:MM:SS` reading; the other 407 are `null` (402 creation frames, which have
+no in-game clock at all, plus frames 420, 421, 505, 536 and 560 where the
+sidebar was momentarily unreadable) and the arithmetic closes exactly:
+153 + 5 = 158 = 560 − 402. Every one of the 153 was **re-read from the
+committed PNG** with the pipeline's own `ocr_clock.py --kv`, and all 153
+agreed with the manifest character for character — 153 agree, 0 differ, 0
+reader errors. A deliberately crude hand-rolled alternative
+(`convert … -resize 200% -normalize | tesseract`) matched only 4 of 18
+sampled frames, reading `48:48:48` for `08:00:00` and `15:28:67` for
+`15:28:07`, which is worth recording twice over: it shows the module's
+preprocessing is load-bearing rather than decorative, and it shows the
+manifest values agree with the careful reader and not with a guess.
+
+**The spawn was a golf course service building, and that is a legitimate
+`missed` spawn rather than an anomaly.** The sidebar on the first gameplay
+frame reads `Place: golf course servic…` [playthrough/frames/frame_00403.png],
+and the scenario's own `allowed_locs` list runs to twenty-five locations —
+`sloc_house` and `sloc_house_boarded`, but also `sloc_grocery_store`,
+`sloc_garage`, `sloc_furniture_store`, `sloc_library`, `sloc_church`,
+`sloc_golfcourse_mid_course` and `sloc_golfcourse_clubhouse` among them
+[data/json/scenarios.json, `id: missed`]. "The survivor wakes up in a house"
+would therefore have been a narrowed claim rather than a reading, which is
+why the record says what the frame says instead.
+
+**The crop is computed, and it is not the value the plan predicted.**
+`sidebar_geometry.py` resolves `352x1072+1568+4` here — 44 cells × 8 px —
+because `playthrough/userdir/config/panel_options.json` does not exist, so the
+layout is the engine's own default `legacy_labels_sidebar`
+[src/panels.cpp:413-419, assigned at :418] and not the 36-cell
+`custom_sidebar` that would give `288x1072+1632+4`. The module says so in a
+warning before it prints the rectangle, rather than resolving a wrong number
+quietly.
+
+What the difference costs was measured rather than asserted. Cropping frame
+403 at the predicted `288x1072+1632+4` loses the leftmost 64 px — the label
+column — and a crude `convert … -resize 200% -normalize | tesseract` read of
+that narrower strip returns no `Time` line and no `HH:MM:SS` at all, while
+`ocr_clock.py` still recovers `08:00:00` from it because its preprocessing is
+more careful than that. So the hard-coded rectangle would not have failed
+loudly; it would have quietly leaned on the reader's robustness on this
+layout and had nothing to lean on when a wider or left-positioned sidebar
+moved the column further. Computing the rectangle is what removes the
+dependence.
+
+**Frame 1 shows the cursor on `Preset Character`, and that is the engine's
+own default.** [src/main_menu.h:76] initialises `int sel2 = 1;`, so the New
+Game sub-menu opens with its cursor already on the second entry. Frame 2
+presses `Up` to move off it, and frame 3 activates `Custom Character`
+[src/main_menu.cpp:476]. A forbidden entry is *shown* under the cursor in the
+first frame because the engine put it there; none was ever activated, and no
+action in the 560 rows selects `Preset Character`, `Random Character`, either
+`Play Now!` entry or the tutorial.
+
+**Git state.** All 560 frames are tracked at mode `100644`; the tracked set
+equals the on-disk set; `git check-attr` reports `binary: set`, `text: unset`
+and `diff: unset` for a frame, from `*.png binary` [.gitattributes:39], which
+is what keeps the bytes the luminance gate measures byte-identical through a
+checkout; `git check-ignore` exits non-zero for a frame, i.e. no pattern
+excludes it; and `git status --porcelain playthrough/` is empty, with
+`playthrough/tooling/__pycache__/` the only ignored entry in the tree. Across
+the whole feature, `git diff --name-status` against the pre-feature base
+touches `.gitignore` and 740 `playthrough/**` paths and nothing else — no
+`src/`, no `tests/`, no `data/`, no `Makefile`, no `CMakeLists.txt`, no
+`.github/`. `.gitattributes` needed no change at all: its `*.gsav`, `*.mp4`,
+`*.sav`, `*.zzip`, `*.jsonl` and `*.srt` entries were already in place at the
+base commit.
+
+**The tooling's own suites, run in full:** 1179 tests across the nine
+`playthrough/tooling/test_*.py` modules, all passing (95 capture, 87 env, 149
+launch_game, 102 make_srt, 100 manifest, 152 ocr_clock, 107 seed_options, 78
+sidebar_geometry, 309 timeline with one skip). `flake8 playthrough/` reports
+zero findings and `make python-check` exits 0 repo-wide.
