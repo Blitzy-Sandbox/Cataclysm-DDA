@@ -150,16 +150,53 @@ fi
 # shell, including an interactive one.  Consumers run with
 # `set -euo pipefail`, so a non-zero return aborts them anyway.
 # ---------------------------------------------------------------------
+# playthrough_redact TEXT
+#   Strip host locations out of one diagnostic line.
+#
+#   EVERY LINE THESE HELPERS PRINT GOES THROUGH THIS.  Diagnostics are
+#   retained: they are captured into log files, quoted into reports and
+#   read by people who have no business knowing where somebody else's
+#   clone lives or how this host lays out its runtime state.  Doing the
+#   redaction here rather than at each of the fifty-odd call sites is
+#   deliberate -- it cannot be forgotten at a new one, and it cannot
+#   change the argument structure of an existing one.
+#
+#   Two substitutions, both purely textual:
+#     * the checkout's absolute path becomes its repository-relative
+#       form, so /long/host/path/playthrough/manifest.jsonl reads as
+#       playthrough/manifest.jsonl -- which is what a reader would type;
+#     * the runtime scratch root becomes "<runtime>", keeping the file
+#       name that matters while dropping the location that does not.
+#
+#   It is a no-op until those variables exist, which is correct: the
+#   handful of lines printed before the layout is derived cannot contain
+#   a path derived from it.  playthrough_rel is the same rule applied to
+#   a single path on purpose, and manifest.relative_to_repo() is the
+#   Python half.
+playthrough_redact() {
+    local text="${1-}"
+    if [ -n "${PLAYTHROUGH_REPO_ROOT:-}" ]; then
+        text="${text//"${PLAYTHROUGH_REPO_ROOT}/"/}"
+        text="${text//"${PLAYTHROUGH_REPO_ROOT}"/.}"
+    fi
+    if [ -n "${PLAYTHROUGH_RUNTIME_DIR:-}" ]; then
+        text="${text//"${PLAYTHROUGH_RUNTIME_DIR}"/<runtime>}"
+    fi
+    printf '%s' "${text}"
+}
+
 playthrough_log() {
-    printf 'playthrough: %s\n' "$*" >&2
+    printf 'playthrough: %s\n' "$(playthrough_redact "$*")" >&2
 }
 
 playthrough_warn() {
-    printf 'playthrough: WARNING: %s\n' "$*" >&2
+    printf 'playthrough: WARNING: %s\n' \
+        "$(playthrough_redact "$*")" >&2
 }
 
 playthrough_die() {
-    printf 'playthrough: FATAL: %s\n' "$*" >&2
+    printf 'playthrough: FATAL: %s\n' \
+        "$(playthrough_redact "$*")" >&2
     return 1
 }
 
@@ -905,6 +942,37 @@ export PYTHONUNBUFFERED=1
 # for the reasons given under WORKING DIRECTORY above.
 # ---------------------------------------------------------------------
 export PLAYTHROUGH_REPO_ROOT="${_playthrough_repo_root}"
+
+# playthrough_rel PATH
+#   PATH spelled relative to the repository root.  THE ONLY FORM A
+#   MACHINE SUMMARY OR A DIAGNOSTIC REPORTS.
+#
+#   An absolute path discloses where this checkout lives on the host,
+#   and these lines are kept in logs, quoted into reports and read by
+#   people who have no business knowing that.  Every artifact this
+#   pipeline touches is inside the checkout, so the relative form is
+#   complete as well as smaller: it is what a reader would type.
+#
+#   A path genuinely OUTSIDE the checkout is reduced to its basename
+#   behind a marker rather than printed, and rather than spelled as a
+#   traversal -- "../.." still discloses depth, and an outside path is a
+#   fault to notice, not a location to publish.  manifest.py's
+#   relative_to_repo() is the Python half of exactly this rule.
+playthrough_rel() {
+    local path="${1-}"
+    case "${path}" in
+        "") printf '%s' "" ;;
+        "${PLAYTHROUGH_REPO_ROOT}")
+            printf '%s' "." ;;
+        "${PLAYTHROUGH_REPO_ROOT}"/*)
+            printf '%s' "${path#"${PLAYTHROUGH_REPO_ROOT}"/}" ;;
+        /*)
+            printf '%s' \
+                "<outside the checkout>/$(basename -- "${path}")" ;;
+        *) printf '%s' "${path}" ;;
+    esac
+}
+
 export PLAYTHROUGH_DIR="${_playthrough_repo_root}/playthrough"
 export PLAYTHROUGH_TOOLING_DIR="${PLAYTHROUGH_DIR}/tooling"
 export PLAYTHROUGH_FRAMES_DIR="${PLAYTHROUGH_DIR}/frames"
@@ -2522,80 +2590,190 @@ playthrough_os_release() {
 }
 
 # playthrough_check_platform
-#   Report -- once -- whether this host is still receiving security
-#   fixes, because a version number is only as good as the archive still
-#   publishing updates for it.
+#   Decide -- and by default REFUSE -- whether this host is still
+#   receiving security fixes, because a version number is only as good
+#   as the archive still publishing updates for it.
 #
 #   ImageMagick, ffmpeg and the Xorg/Xvfb stack all parse
 #   untrusted-shaped input, and on an end-of-life release their known
 #   issues stay unfixed by definition however current `dpkg-query`
-#   looks.  This is a WARNING by default because the pipeline must still
-#   be runnable for diagnosis on whatever host it finds itself on;
-#   PLAYTHROUGH_REQUIRE_SUPPORTED_PLATFORM=1 makes it a hard failure,
-#   which is the right setting for a recorded session.
+#   looks.
+#
+#   THIS USED TO BE A WARNING, WITH THE HARD FAILURE OPT-IN VIA
+#   PLAYTHROUGH_REQUIRE_SUPPORTED_PLATFORM=1.  That was the wrong way
+#   round.  A warning is the correct shape for something an operator
+#   might reasonably accept after reading it; this is a condition on the
+#   whole toolchain that nobody reads a warning about in the middle of a
+#   six-hundred-keystroke session, and the session's own record is
+#   COMMITTED, so the consequence of getting it wrong is a permanent
+#   artifact produced on an unmaintained parser stack with a note about
+#   it in a log nobody re-reads.  An opt-in safeguard is a safeguard
+#   that is off.
+#
+#   SO THE DEFAULT IS A REFUSAL, and it applies to BOTH unsupported
+#   verdicts:
+#
+#     "no"          the table knows this release and it is past its
+#                   end-of-life date.
+#     "unverified"  the table does not know this release at all.  Also a
+#                   refusal, because "cannot tell" is not "supported" --
+#                   the table is deliberately small, so an operator on
+#                   an untabulated release is the one who has to
+#                   confirm support, and confirming it is what the
+#                   waiver below records them doing.
+#
+#   THE WAIVER: PLAYTHROUGH_ALLOW_EOL_PLATFORM=<reason>
+#
+#   Set it to a NON-EMPTY REASON rather than to 1.  That is deliberate:
+#   the reason is the only part a later reader of the evidence actually
+#   needs, and a variable that has to be given a sentence cannot be set
+#   by reflex.  The reason is warned once at run time, exported as
+#   PLAYTHROUGH_PLATFORM_WAIVER, and printed in the environment summary
+#   -- which is the record of what a session ran under -- so a film
+#   recorded under a waiver says so in its own contract.
+#
+#   IT IS DELIBERATELY *NOT* IN THE TRUST-BYPASS REGISTRY, and that is a
+#   judgement worth writing down rather than leaving to be rediscovered.
+#   A bypass in that registry means "a check that establishes the
+#   evidence was relaxed, so a reading might be wrong" -- an
+#   unauthenticated X server, for instance, means another local account
+#   could have injected keystrokes into the session, which falsifies the
+#   record directly.  An end-of-life platform makes no reading wrong: it
+#   raises the risk that a parser has an unfixed defect, which requires
+#   hostile input to matter, and the only images this pipeline decodes
+#   are the PNGs it captured itself on a host that opens no network
+#   connection.  Putting it in the registry would refuse every recorded
+#   session on such a host -- capture.sh refuses production capture
+#   while any bypass is active -- while adding nothing the summary does
+#   not already carry.  The two claims are different, and conflating
+#   them would trade a real, documented residual risk for an
+#   undeliverable pipeline.
+#
+#   PLAYTHROUGH_REQUIRE_SUPPORTED_PLATFORM IS RETIRED, and it is
+#   recognised rather than ignored: =1 is now the default and says so,
+#   and =0 no longer weakens anything and says THAT, because an operator
+#   who set a variable believing it configured something has to be told
+#   it did not.
 #
 #   The table below is dated: end-of-life dates are facts about the
 #   world, not about this repository, so it is small on purpose, states
 #   when it was compiled, and treats anything it does not know as
 #   unverified rather than as supported.
+
+# playthrough_platform_waiver
+#   The reason an out-of-support platform was accepted, or nothing.
+#   Read at every call rather than memoised, because a caller may set it
+#   after sourcing this file.
+playthrough_platform_waiver() {
+    local value="${PLAYTHROUGH_ALLOW_EOL_PLATFORM-}"
+    case "${value}" in
+        ''|0) printf '%s' "" ;;
+        *) printf '%s' "${value}" ;;
+    esac
+}
+
 playthrough_check_platform() {
-    if [ -n "${PLAYTHROUGH_PLATFORM_CHECKED:-}" ]; then
-        [ "${PLAYTHROUGH_PLATFORM_SUPPORTED}" != "no" ] && return 0
-        [ "${PLAYTHROUGH_REQUIRE_SUPPORTED_PLATFORM:-0}" != "1" ] &&
-            return 0
+    # The CLASSIFICATION is memoised -- it reads /etc/os-release and
+    # cannot change during a run.  The VERDICT is recomputed every call,
+    # because the waiver can be set after this file was sourced and an
+    # answer cached then would be a statement about the past.
+    if [ -z "${PLAYTHROUGH_PLATFORM_CHECKED:-}" ]; then
+        local id version pretty eol=""
+        id="$(playthrough_os_release ID)"
+        version="$(playthrough_os_release VERSION_ID)"
+        pretty="$(playthrough_os_release PRETTY_NAME)"
+        # Compiled 2026-08-04 from the distributions' own published
+        # schedules.  Recheck it when this pipeline is next provisioned.
+        case "${id}:${version}" in
+            ubuntu:26.04) eol="2031-04" ;;
+            ubuntu:24.04) eol="2029-04" ;;
+            ubuntu:25.10) eol="2026-07-09" ;;
+            ubuntu:25.04) eol="2026-01-15" ;;
+            ubuntu:24.10) eol="2025-07-10" ;;
+            debian:13) eol="2030-06" ;;
+            debian:12) eol="2028-06" ;;
+        esac
+        export PLAYTHROUGH_PLATFORM="${pretty:-${id:-unknown}}"
+        export PLAYTHROUGH_PLATFORM_EOL="${eol:-unknown}"
+        if [ -z "${eol}" ]; then
+            export PLAYTHROUGH_PLATFORM_SUPPORTED="unverified"
+        else
+            local today
+            today="$(date -u +%Y-%m-%d)"
+            # Both sides are ISO-8601, so a lexical comparison is a date
+            # comparison; a table entry of "2031-04" compares as
+            # "2031-04" < "2031-04-01", which errs towards refusing
+            # early rather than late.
+            if [ "${today}" '>' "${eol}" ]; then
+                export PLAYTHROUGH_PLATFORM_SUPPORTED="no"
+            else
+                export PLAYTHROUGH_PLATFORM_SUPPORTED="yes"
+            fi
+        fi
+        export PLAYTHROUGH_PLATFORM_CHECKED=1
+    fi
+
+    # The retired knob, answered rather than ignored.
+    case "${PLAYTHROUGH_REQUIRE_SUPPORTED_PLATFORM-}" in
+        ''|1) ;;
+        *)
+            if [ -z "${PLAYTHROUGH_PLATFORM_KNOB_WARNED:-}" ]; then
+                export PLAYTHROUGH_PLATFORM_KNOB_WARNED=1
+                playthrough_warn \
+                    "PLAYTHROUGH_REQUIRE_SUPPORTED_PLATFORM=\
+${PLAYTHROUGH_REQUIRE_SUPPORTED_PLATFORM} is" \
+                    "set, and it no longer weakens this check: an" \
+                    "out-of-support platform is refused by default" \
+                    "now.  The only way past it is" \
+                    "PLAYTHROUGH_ALLOW_EOL_PLATFORM=<reason>, which" \
+                    "records the reason in the session's own contract."
+            fi
+            ;;
+    esac
+
+    local waiver
+    waiver="$(playthrough_platform_waiver)"
+    export PLAYTHROUGH_PLATFORM_WAIVER="${waiver}"
+
+    if [ "${PLAYTHROUGH_PLATFORM_SUPPORTED}" = "yes" ]; then
+        return 0
+    fi
+
+    local what remedy
+    if [ "${PLAYTHROUGH_PLATFORM_SUPPORTED}" = "no" ]; then
+        what="'${PLAYTHROUGH_PLATFORM}' reached end of life on \
+${PLAYTHROUGH_PLATFORM_EOL}, so its ImageMagick, ffmpeg and Xorg/Xvfb \
+packages receive no further security fixes, and all three parse \
+untrusted-shaped input in this pipeline."
+        remedy="Move the capture and render workload to a supported \
+release -- Ubuntu 26.04 LTS is the migration target this pipeline is \
+documented against -- and apply outstanding updates before recording."
+    else
+        what="cannot tell whether '${PLAYTHROUGH_PLATFORM}' is still \
+receiving security updates: it is not in this pipeline's dated support \
+table, and 'cannot tell' is not 'supported'."
+        remedy="Either run on a release the table knows (Ubuntu 26.04 \
+LTS, 24.04 LTS, Debian 13 or 12) or confirm this one is in support and \
+fully patched and record that in the waiver."
+    fi
+
+    if [ -z "${waiver}" ]; then
+        playthrough_die "refusing to run because ${what}  ${remedy}" \
+            "If this host is the only one available, set" \
+            "PLAYTHROUGH_ALLOW_EOL_PLATFORM to a short reason -- it is" \
+            "warned once, exported as PLAYTHROUGH_PLATFORM_WAIVER and" \
+            "printed in the environment summary, so a session" \
+            "recorded under it says so in its own contract."
         return 1
     fi
-    local id version pretty eol=""
-    id="$(playthrough_os_release ID)"
-    version="$(playthrough_os_release VERSION_ID)"
-    pretty="$(playthrough_os_release PRETTY_NAME)"
-    # Compiled 2026-08-03 from the distributions' own published
-    # schedules.  Recheck it when this pipeline is next provisioned.
-    case "${id}:${version}" in
-        ubuntu:26.04) eol="2031-04" ;;
-        ubuntu:24.04) eol="2029-04" ;;
-        ubuntu:25.10) eol="2026-07-09" ;;
-        ubuntu:25.04) eol="2026-01-15" ;;
-        ubuntu:24.10) eol="2025-07-10" ;;
-        debian:13) eol="2030-06" ;;
-        debian:12) eol="2028-06" ;;
-    esac
-    export PLAYTHROUGH_PLATFORM="${pretty:-${id:-unknown}}"
-    export PLAYTHROUGH_PLATFORM_EOL="${eol:-unknown}"
-    export PLAYTHROUGH_PLATFORM_CHECKED=1
-    local today
-    today="$(date -u +%Y-%m-%d)"
-    if [ -z "${eol}" ]; then
-        export PLAYTHROUGH_PLATFORM_SUPPORTED="unverified"
-        playthrough_warn "cannot tell whether" \
-            "'${PLAYTHROUGH_PLATFORM}' is still receiving security" \
-            "updates; confirm it is in support and fully patched" \
-            "before recording a session"
-        return 0
+
+    if [ -z "${PLAYTHROUGH_PLATFORM_WARNED:-}" ]; then
+        export PLAYTHROUGH_PLATFORM_WARNED=1
+        playthrough_warn "PROCEEDING UNDER A PLATFORM WAIVER:" \
+            "${what}  The reason given is '${waiver}'.  ${remedy}" \
+            "This is recorded in the environment summary and travels" \
+            "with the session's contract."
     fi
-    # Both sides are ISO-8601, so a lexical comparison is a date
-    # comparison; a table entry of "2031-04" compares as "2031-04" <
-    # "2031-04-01", which errs towards warning early rather than late.
-    if [ "${today}" '>' "${eol}" ]; then
-        export PLAYTHROUGH_PLATFORM_SUPPORTED="no"
-        playthrough_warn "'${PLAYTHROUGH_PLATFORM}' reached end of" \
-            "life on ${eol}, so its ImageMagick, ffmpeg and" \
-            "Xorg/Xvfb packages receive no further security fixes." \
-            "All three parse untrusted-shaped input in this" \
-            "pipeline.  Move to a supported release (Ubuntu 26.04" \
-            "LTS or later) and apply outstanding updates before" \
-            "recording a session; set" \
-            "PLAYTHROUGH_REQUIRE_SUPPORTED_PLATFORM=1 to make this" \
-            "a hard failure."
-        if [ "${PLAYTHROUGH_REQUIRE_SUPPORTED_PLATFORM:-0}" = "1" ]; then
-            playthrough_die "refusing to run on the end-of-life" \
-                "platform '${PLAYTHROUGH_PLATFORM}' because" \
-                "PLAYTHROUGH_REQUIRE_SUPPORTED_PLATFORM=1"
-            return 1
-        fi
-        return 0
-    fi
-    export PLAYTHROUGH_PLATFORM_SUPPORTED="yes"
     return 0
 }
 
@@ -2626,6 +2804,11 @@ playthrough_env_summary() {
     # `bash -n` accepts it, because nothing is syntactically wrong.
     # Inside ( ... ) no continuations are needed at all, so that failure
     # cannot happen here again.  KEEP IT THIS WAY.
+    # `|| true` because a refusal is the CALLER's business, not the
+    # summary's: this function exists to record what a session ran
+    # under, and a platform refusal that stopped the record from being
+    # printed would destroy the one artifact that names the platform.
+    # launch_game.sh and capture.sh call the same function and DO stop.
     playthrough_check_platform >/dev/null 2>&1 || true
     # The trust state is recomputed here for the same reason: this is
     # the record of what a session ran under, and "diagnostic" is the
@@ -2648,6 +2831,10 @@ playthrough_env_summary() {
         "PLAYTHROUGH_PLATFORM" "${PLAYTHROUGH_PLATFORM:-<unchecked>}"
         "PLAYTHROUGH_PLATFORM_SUPPORTED"
         "${PLAYTHROUGH_PLATFORM_SUPPORTED:-<unchecked>}"
+        "PLAYTHROUGH_PLATFORM_EOL"
+        "${PLAYTHROUGH_PLATFORM_EOL:-<unchecked>}"
+        "PLAYTHROUGH_PLATFORM_WAIVER"
+        "${PLAYTHROUGH_PLATFORM_WAIVER:-<none>}"
         "PLAYTHROUGH_SCREEN" "${PLAYTHROUGH_SCREEN}"
         "PLAYTHROUGH_WINDOW_CLASS" "${PLAYTHROUGH_WINDOW_CLASS}"
         "PLAYTHROUGH_TILESET" "${PLAYTHROUGH_TILESET}"
@@ -2676,8 +2863,44 @@ playthrough_env_summary() {
         "PLAYTHROUGH_TRUST_BYPASSES"
         "${PLAYTHROUGH_TRUST_BYPASSES:-<none>}"
     )
-    printf '%s\n' "playthrough environment contract"
-    printf '  %-26s %s\n' "${_playthrough_summary_fields[@]}"
+    printf '%s\n' "playthrough environment contract" || return 1
+    # EVERY VALUE GOES THROUGH playthrough_redact, for the same reason
+    # every diagnostic line does: this report is retained -- captured
+    # into logs, quoted into reports, read by people who have no
+    # business knowing where somebody else's clone lives -- and half of
+    # these fields are absolute paths inside the checkout.  Printed
+    # raw, PLAYTHROUGH_MANIFEST disclosed the full host path of the
+    # working tree on every single line that named an artifact, which
+    # is the same disclosure playthrough_log was fixed for.  Redaction
+    # leaves paths OUTSIDE the checkout legible -- an interpreter under
+    # /opt is a package location, not a per-operator one -- and reduces
+    # the runtime scratch root to <runtime>, keeping the file name that
+    # matters and dropping the location that does not.
+    #
+    # A PAIRWISE LOOP RATHER THAN ONE printf OVER THE WHOLE ARRAY,
+    # because a substitution has to be applied per value; the field
+    # list is still built as an array above, so the truncation hazard
+    # the array exists to prevent is unchanged.
+    #
+    # THE STATUS OF EVERY printf IS KEPT, and that is load-bearing rather
+    # than tidy.  A loop's own status is its condition's, so a printf
+    # that failed inside one is swallowed -- and the direct run of this
+    # file exists to PRINT the contract, so a summary that could not be
+    # written is a failed run and has to say so.  A full disk or a
+    # closed descriptor is exactly the case where a caller must not read
+    # exit 0 as "the record landed".
+    local _playthrough_i=0
+    local _playthrough_status=0
+    while [ "${_playthrough_i}" -lt \
+            "${#_playthrough_summary_fields[@]}" ]; do
+        printf '  %-26s %s\n' \
+            "${_playthrough_summary_fields[${_playthrough_i}]}" \
+            "$(playthrough_redact \
+                "${_playthrough_summary_fields[$((_playthrough_i + 1))]}")" ||
+            _playthrough_status=1
+        _playthrough_i=$((_playthrough_i + 2))
+    done
+    return "${_playthrough_status}"
 }
 
 # ---------------------------------------------------------------------

@@ -1,0 +1,717 @@
+#!/usr/bin/env python3
+"""Regression suite for playthrough/tooling/session.py.
+
+session.py owns the one irreversible act in this pipeline.  A keystroke
+cannot be un-pressed, so every guarantee the record makes about a
+captured session is a guarantee about the order and the durability of
+what this module does around that act -- and none of those guarantees
+can be checked afterwards from the artifacts alone.  That is what this
+suite is for.
+
+    python3 playthrough/tooling/test_session.py
+    python3 -B -m unittest discover -s playthrough/tooling -p 'test_*.py'
+
+WHAT IS ASSERTED, AND WHY EACH ONE EXISTS
+
+* THE CHORD POLICY.  `shift` is the only modifier that may be sent.
+  data/raw/keybindings.json ships five DEBUG_DIALOGUE_* toggles ALREADY
+  BOUND to ctrl chords -- ctrl+c, ctrl+d, ctrl+t, ctrl+y, ctrl+r -- so
+  those need no user override to be reachable, and the game binds no
+  action at all to alt, super or meta, which makes every such chord the
+  window manager's (alt+F4 closes the engine).  A test asserts each is
+  refused and that ordinary play is unaffected.
+
+* THE DERIVED ACTION.  A row's `action` must name the key that was
+  really sent.  The first recorded session contains a row reading
+  `press 'X'` for a step that delivered `-`; it satisfied every schema
+  check, so nothing downstream could tell.  build_action() and
+  assert_action_derived() make that impossible, and the sidecar stores
+  the validated key itself, so the prose can be checked against a
+  machine value rather than believed.
+
+* THE PRE-SEND JOURNAL AND SAME-INDEX RECOVERY.  The intent to press a
+  key is durable BEFORE the key leaves.  The tests drive the three
+  recovery states -- a stale entry, an interrupted step whose frame was
+  captured, and an interrupted step whose frame was not -- and assert
+  the record comes out complete at the SAME index, because the failure
+  this replaces left a permanent gap: a delivered `Y` with no frame and
+  no row.
+
+* THE STEP LOCK.  Two processes must never both decide the next index is
+  N.  A test proves a second session cannot open while the first holds
+  the lock, and that the lock is released when the session closes.
+
+* THE MANDATORY AUDITS.  The no-debug-binding audit and the
+  create-versus-resume pin run on every step rather than when somebody
+  remembers to ask, and a bound debug action is refused before a key is
+  sent.
+
+* SYMLINK REFUSAL IN THE SAVE TREE.  A link at save/<World>/ or at a
+  character file would make the engine write this session's save outside
+  the committed tree while every count still matched.
+
+* REPOSITORY-RELATIVE REPORTING.  Machine summaries must not disclose
+  where the checkout lives.
+
+WHAT IS DELIBERATELY NOT ASSERTED
+Nothing here runs the engine, opens an X display, or touches the real
+playthrough/manifest.jsonl, playthrough/frames/ or the real userdir.
+Every test works inside a temporary tree it owns, with the capturer
+replaced by a stub script, and a final test asserts the committed
+artifacts were untouched.  Standard library only.
+"""
+
+import json
+import os
+import shutil
+import stat
+
+import sys
+import tempfile
+import unittest
+
+sys.dont_write_bytecode = True
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import manifest  # noqa: E402  (path set above, as the siblings do)
+import session  # noqa: E402
+
+FIXED_REAL_TS = "2026-08-03T19:14:42.507Z"
+
+# A capturer stand-in.  It writes the PNG the real capture.sh would
+# commit and prints the same payload contract, so the transaction can be
+# exercised without an X server.  FRAME_INDEX is its only input, exactly
+# as the real one documents.
+STUB_CAPTURE = """#!/bin/sh
+set -eu
+index="${FRAME_INDEX}"
+name="$(printf 'frame_%05d.png' "${index}")"
+path="${STUB_FRAMES}/${name}"
+if [ -n "${STUB_FAIL:-}" ]; then
+    exit 4
+fi
+printf 'stub' > "${path}"
+cat <<PAYLOAD
+CAPTURE_MODE=production
+FRAME_INDEX=${index}
+FRAME_NAME=${name}
+FRAME_FILE=playthrough/frames/${name}
+FRAME_PATH=${path}
+FRAME_GEOMETRY=1920x1080
+REAL_TS=__REAL_TS__
+CAPTURE_TOOL=stub
+LUMA_MEAN=0.27
+LUMA_STDDEV=0.19
+CLOCK_RECT=288x1072+1632+4
+CLOCK_RECT_FROM=computed
+CLOCK_SOURCE=stub
+CLOCK_STATUS=exact
+CLOCK=08:15:33
+TIME_PHRASE=
+DATE=Spring, day 61
+DATE_STATUS=read
+OBSERVATIONS=${STUB_OBSERVATIONS}
+PAYLOAD
+""".replace("__REAL_TS__", FIXED_REAL_TS)
+
+
+class SessionFixture(unittest.TestCase):
+    """A temporary artifact tree with a stubbed capturer and window."""
+
+    def setUp(self):
+        self.directory = tempfile.mkdtemp(prefix="cata_session_")
+        self.addCleanup(shutil.rmtree, self.directory, True)
+        self.root = os.path.join(self.directory, "playthrough")
+        self.frames = os.path.join(self.root, "frames")
+        self.build = os.path.join(self.root, "build")
+        self.save = os.path.join(self.root, "userdir", "save")
+        self.config = os.path.join(self.root, "userdir", "config")
+        for path in (self.frames, self.build, self.save, self.config):
+            os.makedirs(path)
+        self.manifest = os.path.join(self.root, "manifest.jsonl")
+        self.observations = os.path.join(
+            self.build, "observations.jsonl")
+        self.capture = os.path.join(self.directory, "capture.sh")
+        with open(self.capture, "w", encoding="utf-8") as handle:
+            handle.write(STUB_CAPTURE)
+        os.chmod(self.capture, 0o755)
+        self.runtime = os.path.join(self.directory, "runtime")
+        os.makedirs(self.runtime, mode=0o700)
+        self._environment()
+        session.reset_advisories()
+
+    def _environment(self):
+        """Point every environment hook at this test's own tree.
+
+        Every PLAYTHROUGH_* variable env.sh exports is cleared first, so
+        the suite behaves identically inside a sourced shell and outside
+        one: those exports name the COMMITTED artifact tree, and a test
+        that picked one up would be checking the real record.
+        """
+        for name in sorted(os.environ):
+            if name.startswith("PLAYTHROUGH_"):
+                previous = os.environ.pop(name)
+                self.addCleanup(self._restore, name, previous)
+        for name, value in (
+            (session.ENV_RUNTIME_DIR, self.runtime),
+            ("STUB_FRAMES", self.frames),
+            ("STUB_OBSERVATIONS", self.observations),
+            (session.ENV_SESSION_MODE, ""),
+            (session.ENV_RESUME_WORLD, ""),
+            ("STUB_FAIL", ""),
+        ):
+            previous = os.environ.get(name)
+            if value:
+                os.environ[name] = value
+            else:
+                os.environ.pop(name, None)
+            self.addCleanup(self._restore, name, previous)
+
+    @staticmethod
+    def _restore(name, previous):
+        """Put one environment variable back as it was."""
+        if previous is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = previous
+
+    def open_session(self, **extra):
+        """Open a Session against the temporary tree."""
+        opened = session.Session(
+            manifest_path=self.manifest,
+            frames_dir=self.frames,
+            observations_path=self.observations,
+            capture_script=self.capture,
+            window_id=None,
+            root=self.root,
+            **extra)
+        self.addCleanup(opened.close)
+        return opened
+
+    def stub_window(self, opened, window=4242):
+        """Replace window resolution and delivery with recorders.
+
+        The window and the keystroke are the two things this suite must
+        NOT really do, so both are recorded instead.  Everything else --
+        the journal, the lock, the capture, the manifest, the sidecar --
+        is the production code path.
+        """
+        self.sent = []
+
+        def record(identifier, key, timeout=None):
+            """Stand in for send_key, recording what was asked for."""
+            self.sent.append(key)
+            return key
+
+        opened.refresh_window = lambda: window
+        original_focus = session.focus_window
+        original_send = session.send_key
+        session.focus_window = lambda identifier, timeout=None: window
+        session.send_key = record
+        self.addCleanup(
+            setattr, session, "focus_window", original_focus)
+        self.addCleanup(setattr, session, "send_key", original_send)
+
+    def rows(self):
+        """Return the manifest rows written so far."""
+        if not os.path.isfile(self.manifest):
+            return []
+        with open(self.manifest, "r", encoding="utf-8") as handle:
+            return [json.loads(line) for line in handle if line.strip()]
+
+    def sidecar(self):
+        """Return the telemetry rows written so far."""
+        if not os.path.isfile(self.observations):
+            return []
+        with open(self.observations, "r", encoding="utf-8") as handle:
+            return [json.loads(line) for line in handle if line.strip()]
+
+    def world(self, name="Fern Creek", characters=("#QQ==",)):
+        """Create a world directory that probe_save_resume believes."""
+        directory = os.path.join(self.save, name)
+        os.makedirs(directory, exist_ok=True)
+        with open(os.path.join(directory, session.SAVE_MASTER_NAME),
+                  "w", encoding="utf-8") as handle:
+            handle.write("{}")
+        for character in characters:
+            with open(os.path.join(directory, character + ".sav"),
+                      "w", encoding="utf-8") as handle:
+                handle.write("{}")
+        return directory
+
+
+class ChordPolicy(unittest.TestCase):
+    """Finding 19: no chord may reach a debug action or the process."""
+
+    def test_shift_is_the_only_modifier(self):
+        self.assertEqual(set(session.MODIFIER_KEYS), {"shift"})
+        self.assertEqual(
+            set(session.REFUSED_MODIFIER_KEYS),
+            {"ctrl", "alt", "super", "meta"})
+
+    def test_default_bound_debug_chords_are_refused(self):
+        for chord in session.PROHIBITED_DEBUG_CHORDS:
+            for spelling in (chord, chord.upper(), chord.title()):
+                with self.subTest(chord=spelling):
+                    with self.assertRaises(session.KeyRejected):
+                        session.validate_key(spelling)
+
+    def test_window_and_process_chords_are_refused(self):
+        for chord in ("alt+F4", "alt+Tab", "alt+space",
+                      "ctrl+alt+Delete", "super+e", "meta+q",
+                      "shift+alt+F4", "ctrl+u", "ctrl+v", "ctrl+s"):
+            with self.subTest(chord=chord):
+                with self.assertRaises(session.KeyRejected):
+                    session.validate_key(chord)
+
+    def test_the_keys_real_play_needs_still_pass(self):
+        # Every chord the first recorded session actually used, plus the
+        # bare keys that carry the rest of it.
+        for key in ("shift+Tab", "shift+2", "shift+4", "shift+s",
+                    "j", "k", "h", "l", "Y", "Return", "Escape",
+                    "plus", "period", "KP_7", "F1"):
+            with self.subTest(key=key):
+                self.assertEqual(session.validate_key(key), key)
+
+    def test_every_prohibited_chord_names_its_reason(self):
+        for chord, reason in session.PROHIBITED_CHORDS.items():
+            with self.subTest(chord=chord):
+                self.assertTrue(reason.strip())
+                self.assertEqual(chord, chord.lower())
+
+
+class DerivedAction(unittest.TestCase):
+    """Finding 12: a row cannot name a key other than the one sent."""
+
+    def test_identity_is_derived_from_the_key(self):
+        self.assertEqual(session.build_action("j"), "press 'j'")
+        self.assertEqual(
+            session.build_action("j", "step one tile south"),
+            "press 'j' -- step one tile south")
+
+    def test_the_row_116_defect_is_refused(self):
+        # The real defect, verbatim: the row said 'X' and '-' was sent.
+        with self.assertRaises(session.RecordError):
+            session.assert_action_derived(
+                "-", "press 'X' -- nothing; see note")
+
+    def test_a_derived_action_is_accepted_either_shape(self):
+        self.assertEqual(
+            session.assert_action_derived("j", "press 'j'"),
+            "press 'j'")
+        self.assertEqual(
+            session.assert_action_derived(
+                "j", "press 'j' -- step south"),
+            "press 'j' -- step south")
+
+    def test_a_note_may_not_forge_a_second_identity(self):
+        with self.assertRaises(session.RecordError):
+            session.build_action("j", "press 'X' -- something else")
+        with self.assertRaises(session.RecordError):
+            session.build_action("j", "two\nlines")
+
+
+class TheStep(SessionFixture):
+    """The transaction: one key, one frame, one row, one attestation."""
+
+    def test_a_step_records_all_four(self):
+        opened = self.open_session()
+        self.stub_window(opened)
+        result = opened.step(
+            "j", commentary="Shelves first.",
+            note="step one tile south")
+        self.assertEqual(self.sent, ["j"])
+        self.assertEqual(result.frame, 1)
+        self.assertEqual(result.action, "press 'j' -- step one tile "
+                                        "south")
+        rows = self.rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(list(rows[0]), list(manifest.FIELDS))
+        self.assertEqual(rows[0]["action"], result.action)
+        self.assertEqual(rows[0]["ingame_clock"], "08:15:33")
+        self.assertTrue(os.path.isfile(
+            os.path.join(self.frames, "frame_00001.png")))
+
+    def test_the_sidecar_stores_the_immutable_key(self):
+        opened = self.open_session()
+        self.stub_window(opened)
+        opened.step("shift+4", commentary="Sleep.", note="lie down")
+        row = self.sidecar()[0]
+        for field in session.ATTESTED_FIELDS:
+            self.assertIn(field, row)
+        self.assertEqual(row["key"], "shift+4")
+        self.assertEqual(row["action"], "press 'shift+4' -- lie down")
+        self.assertEqual(row["capture_attempts"], 1)
+        self.assertIs(row["recovered"], False)
+
+    def test_a_contradicting_action_sends_nothing(self):
+        opened = self.open_session()
+        self.stub_window(opened)
+        with self.assertRaises(session.RecordError):
+            opened.step("-", action="press 'X' -- nothing",
+                        commentary="No.")
+        self.assertEqual(self.sent, [])
+        self.assertEqual(self.rows(), [])
+
+    def test_a_refused_chord_sends_nothing(self):
+        opened = self.open_session()
+        self.stub_window(opened)
+        with self.assertRaises(session.KeyRejected):
+            opened.step("ctrl+r", commentary="No.")
+        self.assertEqual(self.sent, [])
+        self.assertEqual(self.rows(), [])
+
+    def test_the_journal_is_cleared_once_the_row_is_durable(self):
+        opened = self.open_session()
+        self.stub_window(opened)
+        opened.step("j", commentary="South.")
+        self.assertFalse(
+            os.path.isfile(session.journal_path(self.root)))
+
+
+class JournalRecovery(SessionFixture):
+    """Finding 1: an interrupted step leaves no gap in the record."""
+
+    def test_a_delivered_key_with_no_frame_is_captured_at_that_index(
+            self):
+        # Exactly the committed defect: the key went in, the capture was
+        # refused, and the session stopped with nothing recorded for it.
+        session.write_journal(
+            session.journal_path(self.root),
+            {"version": session.JOURNAL_VERSION,
+             "phase": session.JOURNAL_PHASE_INTENT,
+             "frame": 1, "key": "Y",
+             "action": "press 'Y' -- confirm the character sheet",
+             "commentary": "Sign it and open the door.",
+             "capture_attempts": 1})
+        opened = self.open_session()
+        rows = self.rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["frame"], 1)
+        self.assertEqual(
+            rows[0]["action"],
+            "press 'Y' -- confirm the character sheet")
+        self.assertEqual(opened.frame, 1)
+        self.assertTrue(opened.recovered)
+        attested = self.sidecar()[0]
+        self.assertEqual(attested["key"], "Y")
+        self.assertIs(attested["recovered"], True)
+        self.assertEqual(attested["capture_attempts"], 2)
+        self.assertTrue(os.path.isfile(
+            os.path.join(self.frames, "frame_00001.png")))
+        self.assertFalse(
+            os.path.isfile(session.journal_path(self.root)))
+
+    def test_a_captured_frame_completes_from_the_stored_payload(self):
+        with open(os.path.join(self.frames, "frame_00001.png"),
+                  "w", encoding="utf-8") as handle:
+            handle.write("stub")
+        session.write_journal(
+            session.journal_path(self.root),
+            {"version": session.JOURNAL_VERSION,
+             "phase": session.JOURNAL_PHASE_CAPTURED,
+             "frame": 1, "key": "Return",
+             "action": "press 'Return'",
+             "commentary": "English, same as every form.",
+             "capture_attempts": 1,
+             "payload": {"REAL_TS": FIXED_REAL_TS,
+                         "CLOCK": "08:00:00",
+                         "CLOCK_STATUS": "exact",
+                         "DATE": "Spring, day 61"}})
+        opened = self.open_session()
+        rows = self.rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["real_ts"], FIXED_REAL_TS)
+        self.assertEqual(rows[0]["ingame_clock"], "08:00:00")
+        self.assertEqual(opened.frame, 1)
+        self.assertIs(self.sidecar()[0]["recovered"], True)
+
+    def test_a_stale_entry_is_discarded_not_replayed(self):
+        opened = self.open_session()
+        self.stub_window(opened)
+        opened.step("j", commentary="South.")
+        opened.close()
+        session.write_journal(
+            session.journal_path(self.root),
+            {"version": session.JOURNAL_VERSION,
+             "phase": session.JOURNAL_PHASE_INTENT,
+             "frame": 1, "key": "j", "action": "press 'j'",
+             "commentary": "South.", "capture_attempts": 1})
+        again = self.open_session()
+        self.assertEqual(len(self.rows()), 1)
+        self.assertEqual(again.frame, 1)
+        self.assertTrue(again.recovered)
+
+    def test_an_unbelievable_journal_stops_the_session(self):
+        with open(session.journal_path(self.root), "w",
+                  encoding="utf-8") as handle:
+            handle.write("{not json")
+        with self.assertRaises(session.RecordError):
+            self.open_session()
+
+    def test_a_journal_ahead_of_the_record_is_refused(self):
+        session.write_journal(
+            session.journal_path(self.root),
+            {"version": session.JOURNAL_VERSION,
+             "phase": session.JOURNAL_PHASE_INTENT,
+             "frame": 9, "key": "j", "action": "press 'j'",
+             "commentary": "South.", "capture_attempts": 1})
+        with self.assertRaises(session.RecordError):
+            self.open_session()
+
+    def test_a_failed_capture_leaves_the_journal_for_the_next_open(self):
+        opened = self.open_session()
+        self.stub_window(opened)
+        os.environ["STUB_FAIL"] = "1"
+        with self.assertRaises(session.CaptureError):
+            opened.step("Y", commentary="Sign it.")
+        self.assertEqual(self.sent, ["Y"])
+        self.assertEqual(self.rows(), [])
+        record = session.read_journal(session.journal_path(self.root))
+        self.assertIsNotNone(record)
+        self.assertEqual(record["frame"], 1)
+        self.assertEqual(record["key"], "Y")
+        self.assertEqual(record["phase"], session.JOURNAL_PHASE_INTENT)
+        opened.close()
+        # And the next session finishes it at the same index.
+        os.environ["STUB_FAIL"] = ""
+        again = self.open_session()
+        self.assertEqual(again.frame, 1)
+        self.assertEqual(len(self.rows()), 1)
+        self.assertEqual(self.sidecar()[0]["key"], "Y")
+
+
+class TheStepLock(SessionFixture):
+    """Finding 13: exactly one process may advance the counter."""
+
+    def test_a_second_session_cannot_open_while_one_is_held(self):
+        first = self.open_session()
+        self.assertTrue(first._lock.held)
+        with self.assertRaises(session.SessionError):
+            self.open_session(lock_timeout=1)
+        first.close()
+        second = self.open_session(lock_timeout=1)
+        self.assertTrue(second._lock.held)
+
+    def test_closing_releases_the_lock(self):
+        opened = self.open_session()
+        opened.close()
+        self.assertFalse(opened._lock.held)
+        self.open_session(lock_timeout=1)
+
+    def test_the_lock_lives_outside_the_working_tree(self):
+        path = session.step_lock_path(self.root)
+        self.assertFalse(path.startswith(self.root + os.sep))
+        # No group or world access: another account must not be able to
+        # plant a lock or a journal in this session's scratch directory.
+        mode = stat.S_IMODE(os.lstat(os.path.dirname(path)).st_mode)
+        self.assertEqual(mode & 0o077, 0, msg=oct(mode))
+
+    def test_the_lock_is_per_checkout(self):
+        mine = session.step_lock_path(self.root)
+        other = os.path.join(self.directory, "second")
+        os.makedirs(other)
+        self.assertNotEqual(mine, session.step_lock_path(other))
+
+
+class MandatoryAudits(SessionFixture):
+    """Findings 2 and 3: the integrity checks are not optional."""
+
+    def _bind_debug(self, identifier="debug"):
+        path = os.path.join(self.config, "keybindings.json")
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump([{"id": identifier, "category": "DEBUG",
+                        "bindings": [{"input_method": "keyboard_char",
+                                      "key": "f"}]}], handle)
+        return path
+
+    def test_a_bound_debug_action_stops_the_step(self):
+        opened = self.open_session()
+        self.stub_window(opened)
+        self._bind_debug()
+        with self.assertRaises(session.CheatGuard):
+            opened.step("j", commentary="South.")
+        self.assertEqual(self.sent, [])
+        self.assertEqual(self.rows(), [])
+
+    def test_every_debug_action_is_audited_not_only_three(self):
+        for identifier in ("DEBUG_DIALOGUE_SHOW_ALL_RESPONSE",
+                           "debug_hour_timer", "some_new_debug_thing"):
+            with self.subTest(identifier=identifier):
+                self.assertTrue(session.is_debug_action(identifier))
+        self.assertFalse(session.is_debug_action("sleep"))
+
+    def test_a_changed_keybindings_file_is_re_read(self):
+        opened = self.open_session()
+        self.stub_window(opened)
+        opened.step("j", commentary="South.")
+        self._bind_debug("DEBUG_DIALOGUE_DL_EFFECT")
+        with self.assertRaises(session.CheatGuard):
+            opened.step("k", commentary="North.")
+
+    def test_the_mode_is_pinned_and_a_declaration_must_agree(self):
+        opened = self.open_session()
+        self.assertEqual(opened.pin.mode, session.SESSION_MODE_CREATE)
+        opened.close()
+        self.world()
+        again = self.open_session()
+        self.assertEqual(again.pin.mode, session.SESSION_MODE_RESUME)
+        self.assertEqual(again.pin.world, "Fern Creek")
+        again.close()
+        os.environ[session.ENV_SESSION_MODE] = (
+            session.SESSION_MODE_CREATE)
+        with self.assertRaises(session.SessionError):
+            self.open_session()
+
+    def test_a_create_run_may_continue_once_its_survivor_exists(self):
+        # A create run writes the save part-way through itself, so the
+        # tree says 'resume' from that frame onward.  With rows already
+        # recorded that is the same session, not somebody else's save.
+        opened = self.open_session()
+        self.stub_window(opened)
+        opened.step("u", commentary="Custom Character.")
+        opened.close()
+        self.world()
+        os.environ[session.ENV_SESSION_MODE] = (
+            session.SESSION_MODE_CREATE)
+        again = self.open_session()
+        self.assertEqual(again.pin.mode, session.SESSION_MODE_RESUME)
+        self.assertEqual(again.frame, 1)
+
+    def test_a_declared_resume_against_an_empty_tree_is_refused(self):
+        os.environ[session.ENV_SESSION_MODE] = (
+            session.SESSION_MODE_RESUME)
+        with self.assertRaises(session.SessionError):
+            self.open_session()
+
+    def test_a_second_character_during_a_resume_is_refused(self):
+        self.world()
+        opened = self.open_session()
+        self.stub_window(opened)
+        opened.step("j", commentary="South.")
+        self.world("Fern Creek", ("#QQ==", "#UkI="))
+        with self.assertRaises(session.CheatGuard):
+            opened.step("k", commentary="North.")
+
+    def test_a_deleted_character_is_refused(self):
+        self.world()
+        opened = self.open_session()
+        self.stub_window(opened)
+        os.unlink(os.path.join(self.save, "Fern Creek", "#QQ==.sav"))
+        with self.assertRaises(session.CheatGuard):
+            opened.step("j", commentary="South.")
+
+    def test_the_survivor_may_appear_once_on_a_create_run(self):
+        opened = self.open_session()
+        self.stub_window(opened)
+        opened.step("u", commentary="Custom Character.")
+        self.world()
+        opened.step("Return", commentary="Sign it.")
+        self.assertEqual(len(self.rows()), 2)
+
+
+class SaveTreeConfinement(SessionFixture):
+    """Finding 28: no descendant of the save tree may be a link."""
+
+    def test_a_symlinked_world_is_refused(self):
+        outside = os.path.join(self.directory, "elsewhere")
+        os.makedirs(outside)
+        with open(os.path.join(outside, session.SAVE_MASTER_NAME),
+                  "w", encoding="utf-8") as handle:
+            handle.write("{}")
+        os.symlink(outside, os.path.join(self.save, "Linked World"))
+        with self.assertRaises(session.SessionError):
+            session.probe_save_resume(self.save, None, self.root)
+
+    def test_a_symlinked_character_save_is_refused(self):
+        directory = self.world("Fern Creek", ())
+        target = os.path.join(self.directory, "somebody-elses.sav")
+        with open(target, "w", encoding="utf-8") as handle:
+            handle.write("{}")
+        os.symlink(target, os.path.join(directory, "#QQ==.sav"))
+        with self.assertRaises(session.SessionError):
+            session.probe_save_resume(self.save, None, self.root)
+
+    def test_a_symlinked_save_root_is_refused(self):
+        shutil.rmtree(self.save)
+        outside = os.path.join(self.directory, "outside-save")
+        os.makedirs(outside)
+        os.symlink(outside, self.save)
+        with self.assertRaises(session.SessionError):
+            session.probe_save_resume(self.save, None, self.root)
+
+    def test_a_real_world_is_still_found(self):
+        self.world()
+        probe = session.probe_save_resume(self.save, None, self.root)
+        self.assertTrue(probe.resume)
+        self.assertEqual(probe.character_count, 1)
+
+
+class RelativeReporting(unittest.TestCase):
+    """Finding 18: a summary discloses no host path."""
+
+    def test_a_tracked_artifact_is_reported_relative(self):
+        self.assertEqual(
+            manifest.relative_to_repo("playthrough/manifest.jsonl"),
+            os.path.join("playthrough", "manifest.jsonl"))
+
+    def test_an_outside_path_discloses_no_location(self):
+        reported = manifest.relative_to_repo("/etc/hostname")
+        self.assertNotIn("/etc", reported)
+        self.assertTrue(reported.endswith("hostname"))
+
+    def test_the_step_payload_carries_no_absolute_path(self):
+        # The command line's own contract, read off the source of truth
+        # rather than by running a session: every path it emits goes
+        # through relative_to_repo().
+        source = os.path.join(
+            os.path.dirname(os.path.abspath(session.__file__)),
+            "session.py")
+        with open(source, "r", encoding="utf-8") as handle:
+            text = handle.read()
+        for emitted in ('_emit("MANIFEST"', '_emit("FRAME_PATH"',
+                        '_emit("OBSERVATIONS"', '_emit("FRAMES_DIR"'):
+            start = text.find(emitted)
+            self.assertNotEqual(start, -1, msg=emitted)
+            window = text[start:start + 160]
+            self.assertIn("relative_to_repo", window, msg=emitted)
+
+
+class CommittedArtifactsUntouched(unittest.TestCase):
+    """This suite writes nothing into the captured record."""
+
+    def test_the_real_artifacts_are_not_written(self):
+        root = manifest.approved_root()
+        watched = (os.path.join(root, "manifest.jsonl"),
+                   os.path.join(root, "frames"),
+                   os.path.join(root, "timeline.json"),
+                   os.path.join(root, "userdir"))
+        before = []
+        for path in watched:
+            before.append((path, os.path.exists(path),
+                           _fingerprint(path)))
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertTrue(
+                session.step_lock_path(directory).startswith("/"))
+        for path, existed, mark in before:
+            with self.subTest(path=path):
+                self.assertEqual(os.path.exists(path), existed)
+                self.assertEqual(_fingerprint(path), mark)
+
+
+def _fingerprint(path):
+    """Return a cheap signature of a path, or None when absent."""
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return None
+    if stat.S_ISDIR(info.st_mode):
+        return len(os.listdir(path))
+    return info.st_size
+
+
+if __name__ == "__main__":
+    # Wired up so that `python3 playthrough/tooling/test_session.py`
+    # runs the suite and exits non-zero on any failure, which is how the
+    # acceptance gate invokes it.
+    unittest.main(verbosity=2)

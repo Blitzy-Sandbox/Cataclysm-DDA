@@ -561,6 +561,20 @@ class CaptureFixture(unittest.TestCase):
         env = {
             "PATH": self.bin,
             "PLAYTHROUGH_STUB_LOG": self.stub_log,
+            # THE PLATFORM GATE IS SATISFIED, NOT SWITCHED OFF.
+            # playthrough_check_platform REFUSES an out-of-support or
+            # untabulated release by default, and the host this suite
+            # runs on may well be one -- so without a waiver every test
+            # here would exercise the prerequisite refusal and assert
+            # nothing about the subject.  The waiver takes a REASON,
+            # which is what makes declaring it in a fixture honest: it
+            # says why, in the same words a run on this host would.  It
+            # is not a trust bypass, so the enforced production path is
+            # unaffected, and the gate itself has its own tests in
+            # test_env.py.
+            "PLAYTHROUGH_ALLOW_EOL_PLATFORM":
+                "test fixture; the platform gate has its own coverage "
+                "in test_env.py",
             "PLAYTHROUGH_PYTHON": self.python_stub,
             "PLAYTHROUGH_CAPTURE_REJECT_DIR": self.reject,
             # THE TELEMETRY DESTINATION IS NOT NOMINATED HERE.  There is

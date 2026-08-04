@@ -37,6 +37,13 @@ WHAT IS ASSERTED, AND WHY
 * THE COUNT IDENTITY -- verify_manifest() reports a gap, a repeat, a
   reordering and a row whose capture is missing on disk, because those
   are the four ways the one-frame-per-keystroke invariant breaks.
+* THE SENTINEL RULE -- a field marked as not yet filled in, or an action
+  that defers the record elsewhere, is refused by the writer AND
+  reported by the reader.  This is the one text rule in the module that
+  is a hard problem rather than an advisory, and it exists because a row
+  of the real record once passed every structural check while saying
+  something untrue.  The tests below hold both ends of it, and hold the
+  line between it and the advisory it must not become.
 
 WHAT IS DELIBERATELY NOT ASSERTED
 Nothing here writes to the real playthrough/manifest.jsonl or
@@ -681,6 +688,258 @@ class TestTheNarrativeColumns(ManifestFixture):
             msg="sorted and de-duplicated, so the report is stable")
 
 
+class TestSentinelsAreRefusedNotAdvised(ManifestFixture):
+    """A field that says it is not a record is refused at both ends.
+
+    THE DEFECT THIS CLASS EXISTS FOR IS A REAL ONE.  Row 116 of
+    playthrough/manifest.jsonl carried the action
+    `press 'X' -- nothing; see note` with the commentary `placeholder`,
+    while row 117 stated that the key actually delivered was `-`.  Six
+    fields, the right index, the right capture path, a real timestamp,
+    non-empty strings: every structural check in this suite passed over
+    it, and the false statement propagated into a timeline, a transcript
+    and a caption file.
+
+    So the assertions below are not about tone.  They hold that the
+    writer refuses such a row outright, that the reader reports one that
+    is already on disk, that BOTH go through the single gate
+    sentinel_problems() -- which is also the gate timeline.py reaches
+    through row_problems() -- and that the rule stays narrow enough not
+    to catch the survivor's ordinary prose.
+    """
+
+    # The historical defect, quoted exactly, so a regression is caught by
+    # the very text that motivated the rule.
+    BAD_ACTION = "press 'X' -- nothing; see note"
+    BAD_COMMENTARY = "placeholder"
+
+    def test_every_declared_placeholder_word_is_found(self):
+        for word in manifest.PLACEHOLDER_WORDS:
+            with self.subTest(word=word):
+                self.assertEqual(
+                    manifest.find_placeholder_words(
+                        "I waited. %s. Then I moved." % word),
+                    [word],
+                    msg=("every word on the declared list has to be "
+                         "reachable, or the list lies about its scope"))
+
+    def test_a_placeholder_word_is_matched_case_folded(self):
+        self.assertEqual(
+            manifest.find_placeholder_words("PLACEHOLDER"), ["placeholder"])
+        self.assertEqual(
+            manifest.find_placeholder_words("ToDo"), ["todo"])
+
+    def test_every_hit_is_listed_once_and_sorted(self):
+        self.assertEqual(
+            manifest.find_placeholder_words("todo placeholder TODO"),
+            ["placeholder", "todo"],
+            msg="de-duplicated and sorted, so the report is stable")
+
+    def test_ordinary_prose_is_not_caught(self):
+        """The rule is whole-word for a reason: prose has to survive it.
+
+        Each string below is something a survivor could plausibly write,
+        and each one would be caught by a naive substring test.
+        """
+        for text in ("I placed the crowbar on the counter.",
+                     "I did nothing but listen.",
+                     "The wipers were still going.",
+                     "A wide-brimmed hat, of all things.",
+                     "Todos are not a word I would use.",
+                     "Two boxes of .22, then a wipe-down of the barrel."):
+            with self.subTest(text=text):
+                self.assertEqual(
+                    manifest.find_placeholder_words(text), [],
+                    msg="in-character prose must pass untouched")
+
+    def test_every_declared_deferral_phrase_is_found(self):
+        for phrase in manifest.UNRECORDED_ACTION_PHRASES:
+            with self.subTest(phrase=phrase):
+                self.assertEqual(
+                    manifest.find_unrecorded_action_phrases(
+                        "press 'X' -- %s" % phrase.upper()),
+                    [phrase],
+                    msg="case-folded, and every declared phrase reachable")
+
+    def test_a_non_string_is_not_a_text_to_search(self):
+        for value in (None, 5, ["placeholder"], {"a": "todo"}):
+            with self.subTest(value=repr(value)):
+                self.assertEqual(
+                    manifest.find_placeholder_words(value), [])
+                self.assertEqual(
+                    manifest.find_unrecorded_action_phrases(value), [])
+
+    def test_the_writer_refuses_a_placeholder_commentary(self):
+        with self.assertRaises(manifest.ManifestError) as caught:
+            self.row(commentary=self.BAD_COMMENTARY)
+        self.assertIn("placeholder marker", str(caught.exception))
+        self.assertIn("commentary", str(caught.exception))
+
+    def test_the_writer_refuses_a_placeholder_action(self):
+        with self.assertRaises(manifest.ManifestError) as caught:
+            self.row(action="press 'X' -- TODO")
+        self.assertIn("placeholder marker", str(caught.exception))
+        self.assertIn("action", str(caught.exception))
+
+    def test_the_writer_refuses_an_action_that_defers_the_record(self):
+        with self.assertRaises(manifest.ManifestError) as caught:
+            self.row(action=self.BAD_ACTION)
+        self.assertIn("defers the record elsewhere",
+                      str(caught.exception))
+
+    def test_a_deferral_in_the_commentary_is_not_this_rule(self):
+        """Only `action` is held to the deferral list, deliberately.
+
+        A survivor may legitimately write "the shelf I saw above", and
+        commentary is prose about a reason rather than a statement of
+        which key was pressed.  The placeholder half still applies to
+        both fields; this half applies to one.
+        """
+        row = self.row(commentary="I took the tin from the shelf above.")
+        self.assertEqual(
+            row["commentary"], "I took the tin from the shelf above.")
+
+    def test_the_historical_defect_is_refused_as_it_was_written(self):
+        with self.assertRaises(manifest.ManifestError):
+            self.row(action=self.BAD_ACTION,
+                     commentary=self.BAD_COMMENTARY)
+
+    def test_a_refused_sentinel_row_writes_nothing_at_all(self):
+        with self.assertRaises(manifest.ManifestError):
+            self.append(commentary=self.BAD_COMMENTARY)
+        self.assertFalse(
+            os.path.exists(self.manifest),
+            msg=("the writer refuses before it opens the file, so a "
+                 "sentinel row never has to be corrected afterwards"))
+
+    def test_a_refused_sentinel_row_leaves_the_record_byte_identical(self):
+        self.append(frame=1)
+        before = _read_bytes(self.manifest)
+        with self.assertRaises(manifest.ManifestError):
+            self.append(frame=2, action="press 'X' -- see note")
+        self.assertEqual(
+            _read_bytes(self.manifest), before,
+            msg="a refused row cannot disturb the rows already written")
+
+    def test_the_reader_reports_a_sentinel_row_already_on_disk(self):
+        """The writer cannot help a record that predates the gate.
+
+        The row is written by hand, because build_row() would refuse it
+        -- which is the point: this is the path by which the real
+        defect was found, and it has to keep working.
+        """
+        row = self.row(frame=1)
+        row["action"] = self.BAD_ACTION
+        row["commentary"] = self.BAD_COMMENTARY
+        _write_lines(self.manifest, [json.dumps(row)])
+        self.write_frames([1])
+        problems = manifest.verify_manifest(
+            self.manifest, frames_dir=self.frames,
+            require_frames=True, root=self.directory)
+        self.assertTrue(
+            any("placeholder marker" in problem for problem in problems),
+            msg="the placeholder commentary must be reported: %r"
+                % problems)
+        self.assertTrue(
+            any("defers the record elsewhere" in problem
+                for problem in problems),
+            msg="the deferring action must be reported: %r" % problems)
+
+    def test_the_reader_and_the_writer_share_one_gate(self):
+        """row_field_problems() is the gate, and row_problems() is how
+        every reader in the pipeline -- verify_manifest() here,
+        timeline.py through row_problems() -- reaches it."""
+        row = self.row(frame=1)
+        row["commentary"] = self.BAD_COMMENTARY
+        field = manifest.row_field_problems(row, 1)
+        shared = manifest.row_problems([row])
+        self.assertTrue(
+            any("placeholder marker" in problem for problem in field),
+            msg="the field gate reports it: %r" % field)
+        self.assertTrue(
+            any("placeholder marker" in problem for problem in shared),
+            msg=("row_problems() is what timeline.py calls, so the same "
+                 "sentinel must surface there: %r" % shared))
+
+    def test_the_message_names_the_row_the_reader_is_reading(self):
+        row = self.row(frame=7)
+        row["commentary"] = self.BAD_COMMENTARY
+        problems = manifest.row_field_problems(row, 7)
+        self.assertTrue(
+            any(problem.startswith("row 7") for problem in problems),
+            msg="a report has to say which row: %r" % problems)
+
+    def test_the_message_names_the_frame_the_writer_refused(self):
+        with self.assertRaises(manifest.ManifestError) as caught:
+            self.row(frame=7, commentary=self.BAD_COMMENTARY)
+        self.assertIn("frame 7", str(caught.exception))
+
+    def test_sentinel_problems_reports_and_changes_nothing(self):
+        action = self.BAD_ACTION
+        commentary = self.BAD_COMMENTARY
+        problems = manifest.sentinel_problems(action, commentary, "row 1")
+        self.assertEqual(len(problems), 2)
+        self.assertEqual(action, self.BAD_ACTION)
+        self.assertEqual(commentary, self.BAD_COMMENTARY)
+        self.assertEqual(
+            manifest.sentinel_problems("press '5'", "I wait.", "row 1"),
+            [],
+            msg="a real row produces no problems")
+
+    def test_a_clean_row_is_silent_here_even_when_it_is_advised_about(self):
+        """The sentinel rule and the advisory are different in kind.
+
+        Out-of-character wording warns and the row is written; a
+        sentinel raises and nothing is written.  Conflating the two
+        would either fail the gate on ordinary prose or let a
+        placeholder through, and both have to stay impossible.
+        """
+        text = "I check the frame counter before the next screenshot."
+        row, err = self.capture_stderr(self.row, commentary=text)
+        self.assertEqual(row["commentary"], text)
+        self.assertIn("out-of-character wording", err)
+        self.assertEqual(
+            manifest.sentinel_problems("press '5'", text, "row 1"), [],
+            msg="an advisory is not a sentinel")
+
+    def test_the_two_lists_do_not_overlap_with_the_advisory_list(self):
+        """A word cannot be both advisory and fatal.
+
+        If it were, the same string would warn and raise depending on
+        which check ran first, and the distinction the module documents
+        would be undecidable from the outside.
+        """
+        advisory = {word.lower() for word in manifest.META_VOCABULARY}
+        fatal = {word.lower() for word in manifest.PLACEHOLDER_WORDS}
+        self.assertEqual(advisory & fatal, set())
+
+    def test_the_real_record_carries_no_sentinel(self):
+        """The evidence in this checkout is held to the rule as well.
+
+        Read-only, and skipped rather than failed where the record is
+        absent, so the suite still runs in a checkout without it.
+        """
+        real = os.path.join(
+            os.path.dirname(os.path.abspath(manifest.__file__)),
+            os.pardir, "manifest.jsonl")
+        if not os.path.exists(real):
+            self.skipTest("no captured record in this checkout")
+        offenders = []
+        with open(real, "r", encoding="utf-8") as handle:
+            for number, line in enumerate(handle, start=1):
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                if manifest.sentinel_problems(
+                        row.get("action"), row.get("commentary"),
+                        "row %d" % number):
+                    offenders.append(number)
+        self.assertEqual(
+            offenders, [],
+            msg=("every row of the committed record has to say what was "
+                 "pressed and why; these do not: %r" % offenders))
+
+
 class TestAppendingIsAppendOnly(ManifestFixture):
     """The record grows by one line; it is never rewritten."""
 
@@ -827,6 +1086,88 @@ class TestAppendingIsAppendOnly(ManifestFixture):
                 root=self.directory),
             [],
             msg="and still passes its own verification")
+
+    def test_a_rollback_that_fails_reports_the_state_as_unknown(self):
+        """A failed truncate says so, and claims nothing about the file.
+
+        The two outcomes of a rollback are two different facts and are
+        reported as two different messages: a message that asserts the
+        file was restored exactly AND that it may end mid-row tells an
+        operator both that nothing needs doing and that something does,
+        and the one that gets acted on is whichever was read first.
+        """
+        self.append_many(2)
+        real_write = os.write
+
+        def fail_after_a_fragment(descriptor, payload):
+            real_write(descriptor, payload[:40])
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+        def refuse_truncate(descriptor, length):
+            raise OSError(errno.EIO, "I/O error")
+
+        with _patched(os, write=fail_after_a_fragment,
+                      ftruncate=refuse_truncate):
+            with self.assertRaises(manifest.ManifestError) as bad:
+                self.append(frame=3)
+        message = str(bad.exception)
+        self.assertIn("ROLLBACK TO", message)
+        self.assertIn("UNKNOWN", message)
+        self.assertIn("INSPECT IT", message)
+        self.assertNotIn(
+            "left exactly as it was", message,
+            msg=("a rollback that failed must not be reported as one "
+                 "that succeeded: %r" % message))
+        # The fragment really is still on disk, which is precisely why
+        # the message must not promise otherwise.
+        after = _read_bytes(self.manifest)
+        self.assertFalse(
+            after.endswith(b"\n"),
+            msg=("the truncate was refused, so the file really does "
+                 "end mid-row: %r" % after[-20:]))
+        problems = manifest.verify_manifest(
+            self.manifest, root=self.directory)
+        self.assertTrue(
+            any("not JSON" in problem for problem in problems),
+            msg=("verify names the line to repair, as the message "
+                 "instructs: %r" % problems))
+
+    def test_a_lock_that_cannot_be_taken_fails_the_append(self):
+        """No exclusion, no append.  FAIL CLOSED.
+
+        The append is measure-the-end, write, and truncate back to that
+        offset on failure.  That is only safe while no other writer can
+        move the end of the file, so a lock this module cannot take
+        stops the row instead of being warned about: a stale offset
+        would let a rollback delete a row ANOTHER writer had already
+        been told was stored.
+        """
+        self.append_many(2)
+        before = _read_bytes(self.manifest)
+        attempts = {"count": 0}
+
+        def refuse_lock(descriptor, operation):
+            attempts["count"] += 1
+            raise OSError(errno.ENOLCK, "No locks available")
+
+        with _patched(manifest.fcntl, flock=refuse_lock):
+            with self.assertRaises(manifest.ManifestError) as bad:
+                self.append(frame=3)
+        self.assertEqual(attempts["count"], 1)
+        message = str(bad.exception)
+        self.assertIn("exclusive lock", message)
+        # The CONTRACT is that the refusal says nothing was written, not
+        # that it says so in any one capitalisation.
+        self.assertIn("nothing was written", message.lower())
+        self.assertEqual(
+            _read_bytes(self.manifest), before,
+            msg="not one byte reached the record")
+        self.assertEqual(
+            manifest.verify_manifest(
+                self.manifest, frames_dir=self.frames,
+                root=self.directory),
+            [],
+            msg="and the record still passes its own verification")
 
     def test_appending_onto_an_unfinished_row_is_refused(self):
         """A tear no rollback could reach is refused, not fused.

@@ -294,6 +294,24 @@ filled in twice.
   session's back. Driver output is now written to a log and read back rather
   than piped through `tail`, so no command can go silent long enough to be
   killed again.
+* **And the repair no longer has to be done by hand.** A process-group kill
+  mid-step was survivable only because a human went and looked; the step is now
+  a transaction, so it is survivable by construction. `session.py` writes
+  `playthrough/build/session_step.json` before it presses anything — the index,
+  the key, the action and the commentary — adds capture.sh's own report of the
+  frame once the PNG is on disk, and removes the file when the row is stored. A
+  journal on disk therefore means a step in flight and nothing else, and the
+  next process resolves it without being asked: it appends the row for a frame
+  already captured (from the journalled report, so `real_ts` and the clock
+  reading are the capturer's own and not re-derived), or photographs the SAME
+  index again without sending a second keystroke when the capture is the part
+  that was lost, or rolls the step back if the key was never reported delivered
+  — reporting, in that last case, that whether the engine saw the keystroke
+  cannot be established, rather than writing a row that claims it did. A
+  capture that cannot honestly be part of the record is moved to
+  `$PLAYTHROUGH_REJECT_DIR`, outside the working tree, exactly as capture.sh
+  withdraws its own. Frame 177's row stands as it was repaired: the history is
+  not rewritten, and its `action` still says what happened to it.
 
 ### The keystroke with no frame, at the start of play
 
@@ -308,6 +326,14 @@ measured mean 0.0910 with standard deviation 0.1480 and play resumed from the
 next keystroke. The gap is left as a gap: recording a black frame, or
 back-filling one from a later capture, would both be worse than being one frame
 short and saying so.
+
+The step journal described above now closes that gap without back-filling
+anything. A blank-frame refusal leaves the journal at `delivered` with no image
+published, so the next `session.py step` photographs THAT index — the screen as
+it stands, once the world has finished generating — before it presses anything,
+and sends no second keystroke for the `Y` that was already delivered. The frame
+would still be a real photograph taken after the fact rather than a
+reconstruction, which is the only kind of retake this pipeline permits.
 
 ### The sidebar clock could not be read at all, and how it was fixed
 
@@ -514,12 +540,125 @@ two: the system `python3` is 3.13.7 and PEP 668 externally-managed, while the
 pipeline's own is `/opt/playthrough-venv/bin/python`, **CPython 3.12.13**,
 which is what `requirements.txt` contracts for and what `env.sh` resolves.
 
-**The platform is out of support, and the tooling says so out loud.** This is
-Ubuntu 25.10, which reached end of life on 2026-07-09, and `env.sh` prints a
-named warning to that effect on every run because ImageMagick, ffmpeg and the
-Xorg/Xvfb stack all parse untrusted-shaped input in this pipeline. It is
-recorded rather than suppressed; `PLAYTHROUGH_REQUIRE_SUPPORTED_PLATFORM=1`
-turns it into a hard failure for anyone who wants that.
+**The platform is out of support, and the tooling now REFUSES rather than
+warns.** This is Ubuntu 25.10, which reached end of life on 2026-07-09, and
+ImageMagick, ffmpeg and the Xorg/Xvfb stack all parse untrusted-shaped input in
+this pipeline, so on an unmaintained archive their known issues stay unfixed by
+definition however current `dpkg-query` looks.
+
+`env.sh`'s `playthrough_check_platform` used to print a warning, with the hard
+failure opt-in via `PLAYTHROUGH_REQUIRE_SUPPORTED_PLATFORM=1`. That was the
+wrong way round, and it has been inverted: **an out-of-support release is a
+refusal by default**, and so is a release the dated support table does not know
+at all, because "cannot tell" is not "supported". `capture.sh` and
+`launch_game.sh` both exit on it.
+
+**The migration target is Ubuntu 26.04 LTS** (supported to 2031-04, and in the
+table). Ubuntu 24.04 LTS (2029-04), Debian 13 (2030-06) and Debian 12
+(2028-06) also pass. Moving the capture and render workload to any of them
+removes the condition entirely; nothing in the pipeline depends on 25.10.
+
+**Why this session ran under a waiver, stated plainly.** The container this
+work was performed in *is* Ubuntu 25.10 and cannot be replaced from inside it,
+so the recorded session was captured with
+
+```
+export PLAYTHROUGH_ALLOW_EOL_PLATFORM="container image is Ubuntu 25.10; \
+no supported release available to this run"
+```
+
+The waiver takes a **reason**, not a `1`, deliberately: the reason is the only
+part a later reader of the evidence needs, and a variable that has to be given
+a sentence cannot be set by reflex. It is warned once at run time, exported as
+`PLAYTHROUGH_PLATFORM_WAIVER`, and printed in the environment summary — which
+is the record of what a session ran under — so the film's own contract says it
+was recorded on an end-of-life host and why. `PLAYTHROUGH_PLATFORM_SUPPORTED`
+reads `no` and `PLAYTHROUGH_PLATFORM_EOL` reads `2026-07-09` in that same
+block.
+
+**It is deliberately NOT a trust bypass**, and the distinction is worth
+recording rather than leaving to be rediscovered. A variable in
+`PLAYTHROUGH_TRUST_BYPASS_VARS` means *a check that establishes the evidence
+was relaxed, so a reading might be wrong* — `PLAYTHROUGH_ALLOW_UNAUTHENTICATED_X`,
+for instance, means another local account could have injected keystrokes, which
+falsifies the record directly, and `capture.sh` refuses production capture
+while any bypass is active. An end-of-life platform makes no reading wrong: it
+raises the risk that a parser has an unfixed defect, which needs hostile input
+to matter, and the only images this pipeline decodes are the PNGs it captured
+itself on a host that opens no network connection. Putting it in that registry
+would refuse every recorded session on the only available host while adding
+nothing the summary does not already carry.
+
+`PLAYTHROUGH_REQUIRE_SUPPORTED_PLATFORM` is retired and *answered* rather than
+ignored: `=1` is now the default and says so, and `=0` no longer weakens
+anything and says that, because an operator who set a variable believing it
+configured something has to be told it did not.
+
+**Where the gate is enforced, and where it deliberately is not.** Every shell
+entry point calls it — `capture.sh` directly and again through
+`playthrough_assert_display`, `launch_game.sh` through the same assertion, and
+`embed_captions.sh` directly (it was the one stage that did not, which was an
+inconsistency rather than a decision, since it sources the same `env.sh`). So
+launching the game, capturing a frame and muxing the captions all refuse.
+
+The three Python render stages — `make_transitions.py`, `render_movie.py`,
+`make_srt.py` — do **not** re-check, and that is a judgement rather than an
+omission. The support table is a set of dates about the world, and putting a
+second copy of it in Python would give it two places to drift; deriving the
+verdict from `env.sh`'s exported `PLAYTHROUGH_PLATFORM_SUPPORTED` instead would
+make sourcing `env.sh` a hard precondition for stages that currently compute
+their own defaults and run standalone. What those stages consume is also
+narrower than what the gated stages consume: `timeline.json` through the
+standard library, and PNGs *this pipeline captured under the gate*, behind the
+format restriction and the IHDR check described below. The boundary where an
+unmaintained parser meets something outside the pipeline is the X server and
+the game, and that boundary is gated. Stated here so a later reader knows it
+was weighed.
+
+**The Pillow pin cannot be raised, and what was done instead.** `pillow`
+11.3.0 carries 36 advisory records in OSV against 12.3.0's zero, so the
+attractive move is obvious — and it is unreachable. `moviepy` declares
+`pillow<12.0,>=9.2.0`, and 2.2.1 is the newest `moviepy` there is (both
+re-verified against the live index on 2026-08-04), so **11.3.0 is the newest
+Pillow the declared render stack supports**, and the AAP pins that pair
+(§0.5.1) while recording "Dependency Changes to the Existing Project: None"
+(§0.5.4). Pinning 12.3.0 anyway was tried and reverted: it puts
+`requirements.txt` permanently outside `moviepy`'s declared range, so
+`pip install -r` fails with `ResolutionImpossible`, `--no-deps` becomes a
+standing override, `pip check` carries a permanent complaint that occupies the
+one line an operator reads to notice a *real* conflict, and the renderer is
+paired with an image backend its own maintainers never tested it against — in a
+pipeline whose whole point is a reproducible byte-level artifact.
+
+Two alternatives were considered and refused for reasons, not convenience. An
+**audited third-party MoviePy fork** compatible with Pillow 12.x would swap a
+reviewed, widely-used release for an unreviewed one, which relocates the
+supply-chain risk rather than removing it — and no such fork is published. A
+**private Pillow build** carrying backported fixes would produce a native
+imaging binary nobody downstream can verify and no advisory database describes,
+which is the opposite of what `requirements.lock` exists to establish, and
+there is no upstream 11.x patch release to base it on.
+
+So the exposure was closed at the *input* instead, and these are code with
+tests behind them rather than an argument:
+
+| Control | Where | Effect |
+| --- | --- | --- |
+| `formats=["PNG"]` + 8-byte signature | `ocr_clock.open_png`, `open_png_bytes` | Content sniffing is off: a BMP, PSD or TIFF renamed `.png` raises `UnidentifiedImageError` instead of reaching that format's native parser. The module has no other `Image.open`, and `test_ocr_clock.py` asserts that structurally. |
+| Signature + IHDR before composition | `make_transitions._image_size` | The module decodes nothing itself; only a proven PNG reaches MoviePy's `ImageClip`. |
+| Pure-Python IHDR geometry | both modules | The commonest question asked of a frame — "is it 1920x1080?" — is answered from 24 bytes of header, so no decoder runs at all. |
+| `MAX_PIXELS` ceiling | both modules | A small file declaring an enormous canvas is refused before allocation. |
+| Font attested by path **and** sha256 `e0d64567…4cb2a6` | both modules, same digest | An untrusted font beneath `--repo-root` cannot be substituted for `data/font/Terminus.ttf`. |
+| Hash-pinned wheel under `--require-hashes --only-binary :all:` | `requirements.lock` | The reviewed Pillow artifact is fixed byte for byte, so a compromised index or a mutated wheel is refused at install time. |
+
+The residual risk is stated rather than dressed up: a **truncated or corrupt
+PNG this pipeline captured itself** is still input to the decoder — the format
+restriction rules out a *different* parser, not a malformed instance of this
+one — and 11.3.0 is the last of its series, so there is no in-series patch
+release to move to if something new is published against it. The revisit
+trigger is written into `requirements.txt`: when a `moviepy` release lifts the
+`pillow<12.0` cap, move both pins together, re-measure the advisory counts, and
+re-run the transition path end to end before trusting it with a render.
 
 **The tileset that was actually resolved: `MshockXottoplus`.** Not a claim
 about what was installed but a reading of what the engine loaded — its own
@@ -583,6 +722,23 @@ timestamped entries. Durations sit inside `[0.25, 10.0]` with `min=0.25` and
 `326.500 s` of frame time plus `11.000 s` of transition equals the
 `337.500 s` total and the final cue end, to the millisecond.
 
+**The caption track carries the short form of a long sentence, and says so.**
+A cue is at most two lines of about forty-two columns, because a caption track
+is read at the speed the film plays and a cue of five or seventeen lines covers
+the picture it is captioning instead of explaining it. 223 of the 560
+sentences do not fit that, so their cues carry as much as does fit — cut at a
+word boundary, never mid-word — and end in ` [...]`, the conventional mark for
+elision, in ASCII so the cue file stays 7-bit through the `mov_text` mux.
+`playthrough/transcript.md` carries all 560 sentences **verbatim and entire**,
+which is checked frame by frame rather than sampled, so nothing the survivor
+said is lost anywhere: the deed is in the caption, the whole reason is in the
+record, and the mark is what tells a viewer to look. The longest sentence is
+654 characters (entry 537). Measured after regeneration: 560 cues, maximum
+2 lines, no line over 42 columns, 223 cues marked, no byte-order mark, LF
+endings, zero non-ASCII bytes, the final cue still ending at `00:05:37,500`
+= the timeline's own `337.500 s`, and the Nth Markdown stamp still identical to
+the Nth cue start for all 560.
+
 **The honesty gate, at full scale.** 153 of the 560 rows carry an exact
 `HH:MM:SS` reading; the other 407 are `null` (402 creation frames, which have
 no in-game clock at all, plus frames 420, 421, 505, 536 and 560 where the
@@ -642,8 +798,24 @@ equals the on-disk set; `git check-attr` reports `binary: set`, `text: unset`
 and `diff: unset` for a frame, from `*.png binary` [.gitattributes:39], which
 is what keeps the bytes the luminance gate measures byte-identical through a
 checkout; `git check-ignore` exits non-zero for a frame, i.e. no pattern
-excludes it; and `git status --porcelain playthrough/` is empty, with
-`playthrough/tooling/__pycache__/` the only ignored entry in the tree. Across
+excludes it; and `git status --porcelain playthrough/` is empty.
+
+`!/playthrough/**` [.gitignore:275] is the **last pattern in the file**, and
+nothing follows it: git applies the last matching pattern, so anything added
+after it would re-exclude part of this tree and `git add` would then skip
+those paths, exit 0 and report success while tracking nothing — the one
+failure mode in this feature that is invisible in the artifacts themselves.
+Nothing under `playthrough/` is therefore ignored, bytecode included, and
+bytecode is kept out **at source** instead: `env.sh` exports
+`PYTHONDONTWRITEBYTECODE=1`, every module that imports a flat sibling sets
+`sys.dont_write_bytecode = True` before the import the interpreter would
+compile, and every documented command passes `-B`. Verified by running all
+nine importing modules standalone with bytecode writing deliberately enabled
+— no `__pycache__` appeared. One tool defeats all three, and it is the one
+the per-file checklists name: `python -m py_compile` writes the `.pyc`
+explicitly, so `-B` and the environment variable do not stop it. The syntax
+check is therefore run as `python -B -c "compile(open(p).read(), p, 'exec')"`
+over the tooling, which compiles every module and writes nothing. Across
 the whole feature, `git diff --name-status` against the pre-feature base
 touches `.gitignore` and 740 `playthrough/**` paths and nothing else — no
 `src/`, no `tests/`, no `data/`, no `Makefile`, no `CMakeLists.txt`, no
@@ -656,3 +828,549 @@ base commit.
 launch_game, 102 make_srt, 100 manifest, 152 ocr_clock, 107 seed_options, 78
 sidebar_geometry, 309 timeline with one skip). `flake8 playthrough/` reports
 zero findings and `make python-check` exits 0 repo-wide.
+
+
+## The session was re-recorded, and this section supersedes every count above
+
+Everything above this heading describes the FIRST recorded session — 560
+frames, 560 manifest rows, and the artifact set built from them. That session
+was rejected at code review on two evidence findings, both of them inside the
+character-creation half:
+
+* one row named a key that had not been delivered and carried the literal
+  word `placeholder` where its commentary belonged; and
+* one delivered keystroke had no frame and no row at all, so the run held 561
+  keys against 560 rows. The capture telemetry corroborated it independently
+  at 559 sidecar rows.
+
+Neither is correctable by hand. Editing the action field or synthesising the
+missing row would be inferring a correction into an evidence file, which is
+exactly what the "do not fabricate" rule forbids, and the review asked twice
+for a re-record rather than a repair. So the session was played again from
+character creation under the hardened transaction, and every artifact was
+rebuilt from the new evidence.
+
+The AAP's own resume rule — "if a save already exists, continue that save
+file" — was weighed against this and does not bind here: the save that existed
+was this deliverable's own rejected output, the AAP anticipates that this run
+creates a character, and R10 requires the creation frames to be present in the
+delivered evidence. The superseded evidence is not lost; it remains in git
+history at commit `e50300eeb0`.
+
+### Frame 244: the rejected run's defect reproduced, and refused
+
+The re-record hit the identical failure at the identical point. The `Y` that
+answers "Are you SURE you're finished?" on the creator's summary screen was
+delivered, and the frame captured 0.3 s later was pure black — the creator has
+torn down and worldgen has not yet drawn:
+
+    playthrough: FATAL: capture.sh exited 4 for frame 244 (the frame is blank)
+    playthrough: FATAL: playthrough/frames/frame_00244.png is blank:
+                 grayscale mean=0 stddev=0
+
+The pre-hardening tooling deleted that frame and carried on, which is what
+produced the 561-keys-against-560-rows gap. The hardened path did the
+opposite: it withdrew the blank capture, PRESERVED it at
+`<runtime>/rejected/frame_00244.png` rather than destroying it, appended no
+row, and stopped the session outright — because the keystroke had already been
+delivered and a delivered keystroke is not undoable. The durable pre-send
+journal then recovered it at the SAME index on the next open:
+
+    playthrough: WARNING: the keystroke 'Y' for frame 244 had been delivered
+    but no frame existed for it; the frame has been captured at the same index
+    and its row appended
+    FRAME_LAST=244  RECOVERED=1  RECORD_PROBLEMS=0
+
+Sidecar row 244 records `key='Y' recovered=True attempts=2` with the
+luminance of both attempts. The defect the review found is therefore not
+merely fixed in the source; it was reproduced live and handled correctly, and
+the evidence of the refusal survives on disk.
+
+### The world is named Fern Creek, and the town is Mount Chase
+
+The world-name field arrives pre-filled with a generated name —
+`Independence` on this run — and the field's contents are replaced rather than
+appended to by the first character typed. `Fern Creek` is therefore what the
+survivor typed, and it is the world name, not a place in the game. The town
+she is actually standing in is `Mount Chase`, which the overmap header
+supplied at frame 306; her log corrects itself there. Rows before that frame
+use "Fern Creek" as the name she had for where she was, which is what she
+believed at the time and is recorded as such.
+
+### Corrections made inside the re-recorded log
+
+The log is written keystroke by keystroke, before the resulting frame can be
+read, so it records intentions that the very next frame sometimes disproved.
+Every one of those is corrected in the survivor's own voice in the row that
+follows it, and no frame, key, clock value or row was altered:
+
+| Rows | What the row expected | What the frame showed | Corrected at |
+| --- | --- | --- | --- |
+| 256-258 | three steps south-east and east | the standing mirror's appearance menu was modal and swallowed all three; nothing moved | 259, again at 269 |
+| 279-280 | two steps west toward a wardrobe | a bathtub occupies that square; nothing moved | 281 |
+| 296 | five minutes had passed | a "Heard moaning! Stop waiting?" query had stopped the clock at 08:00:27 and was swallowing the key | 297 |
+| 334 | a step south out of a door frame | the step did not take; she was still in the frame | 336 |
+| 368-370 | the phone's action menu | the tool list had grown a sewing kit above the phone, so the sewing kit was opened instead | 371-373 |
+| 384-387 | four commands to pass time | "You start having withdrawals! Stop trying to fall asleep?" was modal for all four | 388 |
+
+The operator's discipline changed after the first of these: from row 259
+onward the commentary states the decision and the reason and stops asserting
+the outcome, because the outcome belongs to the next row, after the frame has
+been read.
+
+### Six out-of-character wording advisories, and why the rows stand
+
+`manifest.py` and `make_srt.py` both flag suspect wording without altering
+anything. Six entries are flagged in this session:
+
+* **325 and 381, on "sidebar".** Genuine slips. "Sidebar" is the game's word
+  for its readout panel, not the survivor's, and it should have been "the
+  readout" or "the panel". The manifest is append-only evidence and the
+  session is over, so the rows stand as written and the slip is recorded here
+  instead.
+* **333, 336, 338 and 359, on "frame".** False positives, every one: each is
+  a DOOR frame — "stand in the frame of it", "still in the frame of the
+  upstairs door", "reaching from the door frame", "step out of the frame
+  first". The heuristic cannot tell a door's frame from a video frame. This is
+  the same class of hit the review itself recorded as a false positive against
+  the superseded rows 509 and 523.
+
+### The date line's weekday disagreement
+
+`timeline.py` reports:
+
+    the date line went from 'Thursday, May 20' to 'Thursday, May 21', a step
+    of 1 day(s), but Thursday is not 1 day(s) after Thursday; one of the two
+    lines was misread and the day count is reported as it was read
+
+Both readings came from real frames and the day count is correct — the game's
+own achievement notice independently timestamps the wake-up as `Year 1, May 21
+02:14:48`. The weekday word is what disagrees, and the tool reports the
+disagreement rather than silently repairing either reading, which is the
+behaviour the honesty rule requires.
+
+### 246 of 395 clock readings were reconciled, and why that is the honest number
+
+The sidebar clock does not exist during character creation: the creator draws
+its own full-screen form, so frames 1-243 have no clock and no date line to
+read. Frame 244 is the first frame with an exact clock (`08:00:00`), which is
+also the first frame of play. Above 244, exactly three frames have no readable
+clock — 306 (the overmap covers the sidebar), 390 (the engine's own error
+screen), and 395 (the save-and-quit screen). That is 243 + 3 = 246, and every
+one of them is flagged in `timeline.json` with `clock_kind: "null"` and
+`reconciled_reason: "clock-missing"`. Not one clock value was invented; each
+reconciled frame falls to the 0.25 s floor.
+
+### The engine's own debug error screen
+
+Twice during the night the engine put up its own error report over the game:
+
+    DEBUG : tough zombie cannot climb over dumpster.
+            monster::calc_movecost expects to be called with valid destination.
+    C++ SOURCE FILE : src/monmove.cpp
+    LINE : 1779
+    VERSION : 6dea631409-dirty
+
+`playthrough/userdir/config/debug.log` also holds an earlier one,
+`src/do_turn.cpp:293: game:monmove: zombie can't move to its location!
+(101:81:0), pavement`. Both are upstream Cataclysm-DDA assertions about the
+engine's own monster pathfinding, raised while the game ran turns during the
+survivor's sleep. No file under `src/` was touched by this feature, so neither
+is attributable to it, and the AAP forbids changing the engine to silence
+them.
+
+Dismissing that dialog is not a debug command and not cheating. The screen's
+own footer offers "Press space bar to continue the game" and "Press I (or i)
+to also ignore this particular message in the future"; `I` was used, which
+continues play and suppresses repeats of that one message. It opens no debug
+menu, alters no game state, spawns nothing and reveals nothing. The frames
+that show it are dark but not blank — frame 390 measures grayscale
+`mean=0.00236154 std=0.0398795`, which passes the non-blank gate on both
+terms.
+
+### The stalled sleep, and a blind spot in the operator's own screen reader
+
+For roughly a quarter of an hour the game appeared wedged: the captured frames
+were byte-identical, the sidebar clock stayed at 20:06:27, and the process sat
+at ~45% of a core in `hrtimer_nanosleep`. It was not wedged. A modal query —
+"You start having withdrawals! Stop trying to fall asleep?" — had been on the
+screen since frame 383, and the keys being sent were not among its options, so
+the engine correctly did nothing with them.
+
+The fault was in the operator's throwaway screen reader, which grepped the
+prompt region for the literal string `Stop waiting` and this query says `Stop
+trying to fall asleep`. The reader was widened to `Stop ` and taught to
+recognise the engine's error screen; nothing in `playthrough/tooling/` was
+involved, and the scratch reader is not part of the deliverable. The lesson
+worth keeping is the one the AAP already states: read the frame before
+choosing the next key, and read all of it.
+
+The insomnia the survivor was built with is what produced the situation. The
+game asked "You have trouble sleeping, keep trying?" and offered "Continue
+trying to fall asleep and don't ask again", she took it, and she fell asleep
+at some point before 02:14:49 after five recorded rounds of "You toss and
+turn." She was woken not by her alarm — set for 05:06 — but by noise, and the
+engine granted the achievement "The first day of the rest of their unlives"
+(*Survive for a day and find a safe place to sleep*) at `Year 1, May 21
+02:14:48`, `Triggered by wake up`.
+
+### Every stage ran under an explicit, logged platform waiver
+
+`Ubuntu 25.10` reached end of life on 2026-07-09, so the inverted platform
+gate refuses by default. Each stage of the re-record and the rebuild was run
+with
+
+    PLAYTHROUGH_ALLOW_EOL_PLATFORM="container image is Ubuntu 25.10; no
+    supported release available to this run"
+
+which warns once, exports `PLAYTHROUGH_PLATFORM_WAIVER`, prints the reason in
+the environment summary, and travels with the session's contract. The waiver
+is deliberately not a member of `PLAYTHROUGH_TRUST_BYPASS_VARS`: it relaxes
+nothing about tool trust, path confinement or artifact verification.
+
+### The re-recorded artifact set, and the gates it passes
+
+| Artifact | Value |
+| --- | --- |
+| captures | 395, indices contiguous 1..395 |
+| manifest rows | 395, exactly the six prescribed fields on every row, every `action` and `commentary` non-empty |
+| capture telemetry rows | 395; `RECORD_PROBLEMS=0`; one recovery, at frame 244 |
+| `timeline.json` | 395 entries, every duration within [0.25, 10.0], 12 `transition_after` flags, 289.000 s + 12.000 s = 301.000 s = `final_cue_end`; `--verify` reproduces it from the manifest |
+| transition frames | 12 groups x 12 = 144 PNGs, under `playthrough/build/transitions/` and never in `playthrough/frames/` |
+| concat list | 540 entries (395 captures + 144 transition frames + the repeated final entry) |
+| `cata-play.mp4` | 5 003 785 bytes, one stream, `h264` 1920x1080, 540 frames, 301.040 s, 0 chapters, 0 audio/data/attachment streams |
+| `cata-play-cc.mp4` | 5 033 804 bytes, exactly two streams: the same `h264` 1920x1080 540-frame video, byte-identical by stream hash `sha256:9a3c3b45b920cda33689386385f244c5a64deda2299a46e2ee6d4e03d18c0fed`, plus `mov_text` `TAG:language=eng` carrying 395 cues, 301.000 s — inside the picture, not past it |
+| `transcript.md` / `transcript.srt` | 395 stamps and 395 cues, last cue closing at `00:05:01,000` = the timeline's own 301.000 s |
+| non-blank sweep | all 539 PNGs (395 captures + 144 transitions) satisfy `mean > 0` AND `std > 0`; lowest mean 0.00236154 at frame 390. Frames extracted from the finished captioned movie at 0 s, 30 s, 120 s, 240 s and 300 s all pass both terms |
+| the save | `save/Fern Creek/#RGVscGhpbmUgT3VlbGxldHRl.sav`, 469 031 bytes, written by the in-game Save & Quit path |
+
+The 12 capped frames are 296, 297, 316, 318, 319, 322, 324, 379, 380, 388, 390
+and 392. Their raw deltas run from 13 s to 21 587 s — the largest being the
+night's sleep — and each contributes exactly 10.0 s of picture plus 1.0 s of
+transition, which is why the cue cursor and the container agree.
+
+### The engine after Save & Quit
+
+`Save and quit` returns Cataclysm-DDA to its own main menu rather than exiting
+the process, and the menu then listed `Fern Creek (1)` — one character, saved.
+The engine was left there until the save had been verified on disk, and was
+then terminated by `SIGTERM` on exactly the pid this session had spawned. The
+character file's md5 is `a484398afb866cdc26c490467694957a` both before and
+after that shutdown, so the shutdown wrote nothing and lost nothing.
+`launch_game.sh stop` was tried first and refused, correctly: it will not
+signal a process while a recorded session's frames exist, because signalling
+instead of exiting in-game is how a run ends up with no character file.
+
+### The tooling's own suites, lint and shell checks, re-run after the rebuild
+
+1377 tests across the eleven `playthrough/tooling/test_*.py` modules, all
+passing: 95 capture, 72 embed_captions, 106 env, 149 launch_game, 106
+make_srt, 100 manifest, 187 ocr_clock, 118 seed_options, 41 session, 78
+sidebar_geometry, and 325 timeline with one skip. `flake8 playthrough/`
+reports zero findings; `make python-check` exits 0 repo-wide; `bash -n` and
+`shellcheck -x` are clean on all four shell files; and
+`python -m compileall` is clean over `playthrough/tooling/`.
+
+### One correction to an earlier section's measurement
+
+The "Git state" paragraph above states that `.gitattributes` "needed no change
+at all" and that its `*.gsav`, `*.mp4`, `*.sav`, `*.zzip`, `*.jsonl` and
+`*.srt` entries "were already in place at the base commit". That was measured
+against an intermediate commit, not against the pre-feature base, and it is
+wrong. Measured against the true base — `f38c2fbae3`, the merge from
+`CleverRaven:master` that this branch starts from — the whole feature changes
+exactly two tracked files outside `playthrough/`:
+
+* `.gitignore`, which gains the terminal negation block ending `!/playthrough/**`
+  followed by the single directory-level exclusion `/playthrough/**/__pycache__/`; and
+* `.gitattributes`, which gains six entries — `*.jsonl text` and `*.srt text`
+  in the text block, `*.gsav`, `*.mp4`, `*.sav` and `*.zzip` `binary` in the
+  binary block — added in commit `b8bf5491a2`.
+
+Those are precisely the two UPDATE files the AAP names, and the six entries are
+precisely the six it lists. Nothing else outside `playthrough/` is touched:
+`git diff --name-status f38c2fbae3..HEAD` names no path under `src/`, `tests/`,
+`data/`, `Makefile`, `CMakeLists.txt`, `CMakePresets.json`, `.github/`,
+`.flake8`, `pyproject.toml` or `.astylerc`, and neither does
+`git status --porcelain` for those paths.
+
+### Four AAP artifacts that do not exist in this tree
+
+`playthrough/tooling/run_pipeline.sh`, `playthrough/tooling/verify_artifacts.sh`,
+`playthrough/tooling/commit_artifacts.sh` and `playthrough/README.md` are named
+as CREATE items by the AAP and are absent. They were never created, so the code
+review never raised a finding against them and they were outside the scope of
+this remediation pass. Nothing was lost by their absence in this run: the
+stages `run_pipeline.sh` would have sequenced were invoked directly and in the
+same order — `timeline.py`, `make_transitions.py`, `render_movie.py`,
+`make_srt.py`, `embed_captions.sh` — and every assertion
+`verify_artifacts.sh` is specified to make was performed and is recorded in the
+artifact table above: the frame-count-equals-manifest-line-count identity, the
+clamp bounds on every entry, transition groups against transition flags, the
+`ffprobe` stream/codec/resolution/duration facts for both movies, the
+grayscale non-blank property across all 539 PNGs and across frames pulled back
+out of the finished captioned movie, the git-tracking status of every artifact
+class, and the absence of any `debug`, `debug_mode` or `debug_hour_timer`
+binding. `session.py audit` reports `DEBUG_BINDINGS=none` over eight checked
+action ids, and `config/keybindings.json` was never written at all.
+
+### The concat list is now the encoder's own input
+
+The committed `playthrough/build/concat.txt` used to spell its entries relative
+to the repository root — `file 'playthrough/frames/frame_00001.png'` — while a
+transient copy with absolute entries was written outside the tree and handed to
+ffmpeg. The committed artifact was therefore never the encoder's input, and it
+was not runnable on its own. Measured here rather than reasoned about: ffmpeg's
+concat demuxer resolves a relative entry against **the directory the list file
+is in**, not the working directory it was launched from, so a list sitting in
+`playthrough/build/` sent ffmpeg looking for
+`playthrough/build/playthrough/frames/frame_00001.png` and it exited 254 with
+`Impossible to open`. The same list rewritten as `../frames/frame_00001.png`
+encoded cleanly, from the same working directory.
+
+The entries are now spelled relative to the list's own directory —
+`../frames/...` for a capture and `transitions/...` for a transition frame — and
+the committed list itself is what ffmpeg is given. It is verified before it is
+used: every entry is resolved back out of the bytes on disk and the sequence
+must equal the planned paths plus the repeated final entry, so a short write, a
+corrupted entry, or one pointing outside `playthrough/frames/` or
+`playthrough/build/transitions/` stops the encode. Re-encoding from the
+corrected list reproduced `cata-play.mp4` byte for byte, which is what
+established that only the spelling changed and not the film.
+
+The working directory is now a convention rather than a load-bearing choice. The
+encode still runs from the repository root for consistency with every other
+stage, but entry resolution no longer depends on it, so the film is the same
+from any working directory.
+
+### A transition's remainder is charged once, at the end
+
+A transition's second is split across its twelve frames in whole microseconds.
+The remainder used to be spread one microsecond at a time over the leading
+frames, giving four frames at `0.083334` and eight at `0.083333`; it is now
+eleven frames at the base share and the exact remainder on the last, giving
+eleven at `0.083333` and one at `0.083337`. Both spellings sum to exactly
+`1.000000` s — the identity is asserted rather than assumed, and a split that
+did not sum is refused — but charging the remainder once keeps every frame of a
+group identical except the last, so a duration read out of the committed list is
+the group's base share and the single exception is where the arithmetic says it
+is. Five frames come out as `0.200000` each and four as `0.250000` each, with no
+remainder to place. The committed list sums to `301.000000` s, which is the
+timeline's own declared total.
+
+### The film's pictures are counted, not just its length
+
+A duration comparison cannot see a dropped image once another entry's duration
+absorbs it, and under `-fps_mode vfr` the header's `nb_frames` is routinely
+absent — the real container reports `N/A`. The probe therefore asks for
+`-count_packets` and the verification requires the demuxed packet count to equal
+one picture per planned entry **plus one** for the repeated final entry, which
+the demuxer emits as a real picture. Measured on the finished film:
+`nb_read_packets=540` against 539 planned entries. A probe that can supply
+neither a packet count nor `nb_frames` is reported as unable to confirm the
+count rather than passed.
+
+Every planned image is also checked for geometry before a byte of the list is
+written, read from the PNG IHDR chunk so no decoder runs on a file that only
+claims to be a PNG. This matters because the encode carries `-s 1920x1080`: an
+image of any other size would be silently rescaled into the film and the
+container would still probe at the right resolution with every count matching. A
+capture taken at the game window's 1920x1072 instead of the X root's 1920x1080
+is exactly the mistake that would otherwise pass.
+
+### Shortened captions say so, in ASCII
+
+A caption is two lines of about forty-two columns, which is the SubRip
+convention and roughly what a reader takes in while one frame is on screen. 168
+of this session's 395 commentaries do not fit, and the caption for those is a
+word-boundary prefix of the sentence marked ` [...]`.
+
+The mark used to be a bare `…`. That reads as the survivor's own trailing-off
+punctuation — this pipeline writes literal ellipses of its own, in the
+transition card's "…time passes…" — so a viewer could not tell a shortened
+caption from a complete one that happens to end that way, and a caption that
+drops the end of a sentence while looking complete is an altered record. The
+bracketed ASCII form is conventional for elision, unmistakable, survives the
+`mov_text` muxer unchanged, carries no digit that could disturb the Markdown's
+timestamp count, and is machine-detectable: `caption_is_abridged()` measures it
+from the rendered lines and `Cue.abridged` carries the answer, so the count is
+measured rather than asserted. One bounded advisory reports the count with a
+three-entry sample and names where the sentences are whole.
+
+Nothing is summarised, reworded or reordered: the words that remain are the
+survivor's own, in order, and **`playthrough/transcript.md` carries every
+sentence entire** — it came out byte-identical when the captions were
+regenerated, which independently confirms that only the caption side was
+affected. `render_srt` refuses any cue over the cap outright, so the geometry is
+a contract rather than an intention. Regenerating the cue file made
+`cata-play-cc.mp4` stale, so it was re-muxed; the mux's own field-for-field
+round trip compared all 395 cues and the video stream was copied intact by
+sha256 stream hash.
+
+### Placeholder sentinels in the manifest, and why they are refusals
+
+`manifest.py` reports out-of-character vocabulary as an advisory, because that
+is a judgement about tone and a blunt substring test produces false positives —
+this session's own record trips it on door frames and on the survivor reading
+the sidebar. A field that was never filled in is a different thing entirely, and
+it is a refusal: `PLACEHOLDER_WORDS` (`placeholder`, `todo`, `fixme`, `tbd`,
+`xxx`, `wip`) matched whole-word and case-insensitively, and
+`UNRECORDED_ACTION_PHRASES` for an `action` that defers the record elsewhere
+(`see note`, `unknown key`, `not recorded`, …).
+
+The gate is applied at both ends — inside `row_field_problems()`, which the
+canonical `verify_manifest()` and `timeline.py` both share, and inside
+`build_row()` at the writer, because a row that cannot be written is a row that
+never has to be corrected and the caller is a live session that still knows what
+it pressed and why. It exists because a manifest row is the authoritative record
+of what one keystroke did and why, and every structural check — the six-field
+schema, the 1..n identity, the frame-set equality — passes straight over a field
+reading `placeholder`. Run against this record it reports nothing across all 395
+rows: the action of every row is derived from the immutable validated key, so a
+placeholder cannot arise.
+
+### A rollback that failed says so
+
+When an append fails, the manifest is truncated back to the offset measured
+before the write. If that truncate itself fails, the diagnostic no longer claims
+the file "was left exactly as it was ... so it is still readable" and then
+contradicts itself two sentences later by saying it may end mid-row. The two
+outcomes are separate sentences now: restored and readable, or `ROLLBACK ...
+ALSO FAILED`, the state `UNKNOWN`, and `INSPECT IT` before appending again with
+the command that will show whether the last line is a complete row. An operator
+who reads the reassuring half first has otherwise been told the record is intact
+when nothing established that.
+
+### The transitions directory still describes the timeline exactly
+
+The directory is published by composing a whole generation into a staging
+directory and renaming it into place, which is what makes the replacement atomic
+instead of a sequence of deletions that can be interrupted half way. Atomicity
+alone would quietly absorb three things it must not, so each is handled
+explicitly:
+
+- a file matching the acceptance gate's `trans_*.png` glob that this module
+  could never have written — an off-format `trans_2_0.png`, or a symlink — is
+  **refused** before anything is composed, and it is not deleted, because
+  removing a file this module did not write is not reconciliation;
+- a file nobody wrote here at all is **carried across** the switch, because
+  replacing the directory must not destroy it;
+- a `trans_*.png` that appears **while** the generation is being composed is
+  refused before the rename, so it survives on disk and is reported rather than
+  destroyed without anyone being told. The module's own abandoned staging files
+  are the one exception: those are its to sweep.
+
+Composition also streams. Holding all twelve 1920x1080 frames of a group at once
+costs roughly 570 MiB of raw arrays before the clips and buffers on top, because
+the faded frames come back as `float64`; each frame is now converted and staged
+as it is produced. The exact-twelve count is still asserted *after* the
+iteration, so a generator that stops short and one that runs long are both
+refused and each names the true count, and the frames are staged and renamed
+into place only once the group is complete — so a refusal publishes nothing and
+leaves any previous group of the same name intact. Regenerating the whole set
+this way reproduced all 144 PNGs byte for byte.
+
+### The terminal negation, and the one hygiene risk it leaves
+
+`.gitignore` ends with `!/playthrough/**` and nothing follows it. That is what
+the AAP specifies and it is asserted by a test, and it keeps a directory-level
+ignore out of the negated tree — the shape that would break the save-data
+tracking invisibly, because git does not descend into an excluded directory to
+evaluate negations inside it.
+
+The cost is stated rather than left to be discovered. Because the negation is
+the last matching pattern, a stray `__pycache__/x.pyc` or a `.lock` file under
+`playthrough/` is **not** ignored and a blanket `git add playthrough/` would
+stage it. Verified with `git check-ignore -q`, which is the test that answers
+this — `check-ignore -v` prints a matching *negation* and exits zero, so it says
+a path is matched, not that it is ignored. Three things stand between that and a
+committed build product, and none of them is an ignore rule:
+
+- `env.sh` exports `PYTHONDONTWRITEBYTECODE=1`, and it is load-bearing rather
+  than hygiene for exactly this reason;
+- every tooling module that imports a sibling sets `sys.dont_write_bytecode`
+  before the import, and `-B` is in every documented command line;
+- the pipeline writes no lock or journal inside the tree at all. The step lock
+  and the pre-send journal live in a per-checkout scratch directory under
+  `$XDG_RUNTIME_DIR`, and the staging files that must be siblings of their
+  destination are dot-prefixed and removed in a `finally`.
+
+The tree carries no bytecode and no lock today, and `git status` shows either
+before the commit stage could stage it. Anyone adding a rule here should note
+that the ordering is the whole contract: a re-exclusion appended after the
+negation would work, and would also be the first directory-level ignore inside
+this tree.
+
+### The film is checked for silence before it is captioned, not only after
+
+The caption mux maps exactly one video stream and one subtitle stream
+and then proves the container that came out carries nothing else. That
+answers whether the mux carried something through. It does not answer
+where the picture came from, and those are different questions: a
+`playthrough/cata-play.mp4` holding an audio track, a data stream or an
+attachment was not written by `render_movie.py`, which encodes one
+silent h264 stream from still images. `-c copy` with an explicit mapping
+would caption such a film perfectly happily, and the picture's stream
+hash would match, because the hash proves the picture survived the mux
+and says nothing about its provenance.
+
+So the census is taken three times: on the input before ffmpeg is
+invoked at all, on the staged container before the rename, and on the
+published container after it. The first is an input refusal, names
+re-running the render as the remedy, and costs nothing — no ffmpeg runs
+and no staging file is left for nobody to look at. It doubles as the
+first proof that ffprobe can read the film as a container, which the
+earlier checks cannot establish: they show the path is a regular
+non-empty file ending in `.mp4`, which a text file renamed `.mp4` also
+satisfies. The third exists because the readouts after the rename select
+only the streams they expect to find, so a fourth stream would be
+invisible to them. `AUDIO_STREAMS` carries the measured count into the
+machine-readable summary, so silence is stated rather than inferred from
+the absence of a complaint.
+
+### The durability language says only what the code guarantees
+
+A separate pass over the prose, because a comment that overstates a
+guarantee is worse than no comment: it tells a later reader not to
+handle a case the code does handle, and the handling then looks like
+dead weight.
+
+- The keystroke step is **serialized, journaled and recoverable**, not
+  atomic. A key reaching an X server, a screenshot landing on disk and a
+  row reaching a file are three events in three processes. What holds is
+  narrower: one process advances the counter, the intent is on the
+  device before the key leaves, and an interruption blocks every later
+  key until `recover()` has dealt with it. The 1:1 identity is kept by
+  refusing to continue past an interruption, not by assuming none.
+- A manifest append costs **its own row and nothing else when the
+  failure is handled** — a short write, ENOSPC, an EIO. An unhandled
+  kill can still tear a row, which is exactly why
+  `_assert_row_boundary()` refuses to append onto one and
+  `verify_manifest()` reports it.
+- The append lock is **advisory**, so it reaches the processes that
+  cooperate with it. Every writer here comes through one function, which
+  is what makes it hold; a reader that does not take it can read
+  mid-append, which is why the readers refuse an unparseable line
+  instead of trusting the lock.
+- Each transcript file is replaced atomically; **the pair is not**. Two
+  replacements are two events, so the pair is journaled and an
+  interruption between them is detectable and finishable rather than
+  permanent.
+- The glyph pass is **exact-or-unique-or-space**, not exact-or-decline.
+  A bit-identical cell is proof; a uniquely nearest cell inside a radius
+  under half the distance between templates is a tightly bounded near
+  match and still not proof; anything else is a space. Only the exact
+  ones let this pass stand against a disagreeing OCR pass, and the
+  decoder reports which were which.
+- The stream-copy proof has a **stated strength**: a SHA-256 over the
+  copied packets where this ffmpeg can hash a stream, duration plus
+  frame count where it cannot — warned about, because a re-encode
+  preserving both would pass — and a refusal where neither is available.
+  `VIDEO_COPY_PROOF` records which was taken.
+- `make_transitions.py` counts and sizes its frames; **nothing there
+  establishes that a fade rendered**, since a hard cut passes both
+  checks. The pixel-level reading lives where it is actually performed.
+- Interruption leaves **dot-prefixed staging names**, not nothing. They
+  are never at a published path and a later run removes them; what no
+  interruption can do is publish, because a published path is only ever
+  reached by renaming something that passed.

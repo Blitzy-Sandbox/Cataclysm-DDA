@@ -808,6 +808,20 @@ class LaunchFixture(unittest.TestCase):
             # Each refusal keeps its own test, which arranges the
             # untrustworthy condition on purpose.
             "PLAYTHROUGH_STUB_LOG": self.stub_log,
+            # THE PLATFORM GATE IS SATISFIED, NOT SWITCHED OFF.
+            # playthrough_check_platform REFUSES an out-of-support or
+            # untabulated release by default, and the host this suite
+            # runs on may well be one -- so without a waiver every test
+            # here would exercise the prerequisite refusal and assert
+            # nothing about the subject.  The waiver takes a REASON,
+            # which is what makes declaring it in a fixture honest: it
+            # says why, in the same words a run on this host would.  It
+            # is not a trust bypass, so the enforced production path is
+            # unaffected, and the gate itself has its own tests in
+            # test_env.py.
+            "PLAYTHROUGH_ALLOW_EOL_PLATFORM":
+                "test fixture; the platform gate has its own coverage "
+                "in test_env.py",
             "PLAYTHROUGH_PYTHON": interpreter,
             "PLAYTHROUGH_WINDOW_TIMEOUT": "10",
             "PLAYTHROUGH_STOP_TIMEOUT": "10",
@@ -2933,9 +2947,20 @@ class TestTheSuiteTouchesNothingReal(LaunchFixture):
         self.install_game()
         status, out, _ = self.run_launch("build")
         self.assertEqual(status, EX_OK)
+        # The payload reports the binary REPOSITORY-RELATIVE, so an
+        # absolute host path cannot leak into a retained log.  The claim
+        # this test makes -- that the sandbox copy is what was described
+        # -- is therefore checked on the file itself: the emitted name
+        # resolves against the sandbox root and exists there, and the
+        # real checkout's binary was never consulted.
+        reported = self.emitted(out)["PLAYTHROUGH_GAME_BIN"]
+        self.assertEqual(reported, "cataclysm-tiles")
+        self.assertFalse(
+            os.path.isabs(reported),
+            msg=("a retained diagnostic must not disclose where this "
+                 "clone lives on the host"))
         self.assertTrue(
-            self.emitted(out)["PLAYTHROUGH_GAME_BIN"].startswith(
-                self.root),
+            os.path.isfile(os.path.join(self.checkout, reported)),
             msg=("env.sh resolves every path from its own location, so "
                  "the sandbox copy describes the sandbox"))
 

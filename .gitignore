@@ -273,10 +273,3 @@ VERSION.txt
 # not descend into an excluded directory to evaluate negations inside it,
 # so a pattern such as `playthrough/` would break this block invisibly.
 !/playthrough/**
-# ...but not Python bytecode.  The wholesale negation above also re-admits
-# the tree to `__pycache__` and `*.pyc` (both above), and interpreter
-# bytecode is a build product, not a captured artifact.  This is the one
-# directory-level ignore the note above tolerates, precisely because a
-# bytecode cache holds nothing this feature is required to commit -- so
-# refusing to descend into it costs no save file, frame, or transcript.
-/playthrough/**/__pycache__/

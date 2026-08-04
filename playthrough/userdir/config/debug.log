@@ -1,82 +1,193 @@
 
 
 -----------------------------------------
-17:46:33.570 : Starting log.
-17:46:33.570 INFO : Cataclysm DDA version 6dea631409-dirty
-17:46:33.570 INFO : [main] C locale set to LC_CTYPE=C.UTF-8;LC_NUMERIC=C;LC_TIME=C;LC_COLLATE=C;LC_MONETARY=C;LC_MESSAGES=C;LC_PAPER=C;LC_NAME=C;LC_ADDRESS=C;LC_TELEPHONE=C;LC_MEASUREMENT=C;LC_IDENTIFICATION=C
-17:46:33.570 INFO : [main] C++ locale set to LC_CTYPE=C.UTF-8;LC_NUMERIC=C;LC_TIME=C;LC_COLLATE=C;LC_MONETARY=C;LC_MESSAGES=C;LC_PAPER=C;LC_NAME=C;LC_ADDRESS=C;LC_TELEPHONE=C;LC_MEASUREMENT=C;LC_IDENTIFICATION=C
-17:46:33.570 INFO : SDL version used during compile is 2.32.4
-17:46:33.570 INFO : SDL version used during linking and in runtime is 2.32.4
-17:46:33.589 INFO : SDL render devices: software, opengl, opengles2
-17:46:33.589 INFO : [options] C locale set to LC_CTYPE=C.UTF-8;LC_NUMERIC=C;LC_TIME=C;LC_COLLATE=C;LC_MONETARY=C;LC_MESSAGES=C;LC_PAPER=C;LC_NAME=C;LC_ADDRESS=C;LC_TELEPHONE=C;LC_MEASUREMENT=C;LC_IDENTIFICATION=C
-17:46:33.589 INFO : [options] C++ locale set to LC_CTYPE=C.UTF-8;LC_NUMERIC=C;LC_TIME=C;LC_COLLATE=C;LC_MONETARY=C;LC_MESSAGES=C;LC_PAPER=C;LC_NAME=C;LC_ADDRESS=C;LC_TELEPHONE=C;LC_MEASUREMENT=C;LC_IDENTIFICATION=C
-17:46:33.589 INFO : Setting language to: 'en'
-17:46:33.589 INFO : [i18n] Scanning mod translations from playthrough/userdir/mods/
-17:46:33.590 INFO : [i18n] Scanning core translations from lang/mo/
-17:46:34.005 INFO : USE_COLOR_MODULATED_TEXTURES is set to 0
-17:46:34.034 INFO : Setting language to: 'en'
-17:46:34.034 INFO : [i18n] Scanning mod translations from playthrough/userdir/mods/
-17:46:34.034 INFO : [i18n] Scanning core translations from lang/mo/
-17:56:17.000 INFO : Setting language to: 'en'
-17:56:17.000 INFO : [i18n] Scanning mod translations from playthrough/userdir/mods/
-17:56:17.000 INFO : [i18n] Scanning core translations from lang/mo/
-18:02:19.063 INFO : src/mod_tracker.h:68: Tried check if 'vector_null' had a duplicate, but type 'attack_vector' does not track object sources
-18:02:21.119 WARNING : Dark Days Ahead pack load time:: 1948470us (avg: 1948470us) (count: 1)
-18:02:21.119 WARNING : Disable NPC Needs pack load time:: 182us (avg: 182us) (count: 1)
-18:02:21.119 WARNING : Portal Storms Ignore NPCs pack load time:: 397us (avg: 397us) (count: 1)
-18:02:34.449 INFO : Loaded tileset: MshockXottoplus
-18:02:34.571 INFO : Loaded tileset: Larwick Overmap
+06:53:15.180 : Starting log.
+06:53:15.180 INFO : Cataclysm DDA version 6dea631409-dirty
+06:53:15.180 INFO : [main] C locale set to LC_CTYPE=C.UTF-8;LC_NUMERIC=C;LC_TIME=C;LC_COLLATE=C;LC_MONETARY=C;LC_MESSAGES=C;LC_PAPER=C;LC_NAME=C;LC_ADDRESS=C;LC_TELEPHONE=C;LC_MEASUREMENT=C;LC_IDENTIFICATION=C
+06:53:15.180 INFO : [main] C++ locale set to LC_CTYPE=C.UTF-8;LC_NUMERIC=C;LC_TIME=C;LC_COLLATE=C;LC_MONETARY=C;LC_MESSAGES=C;LC_PAPER=C;LC_NAME=C;LC_ADDRESS=C;LC_TELEPHONE=C;LC_MEASUREMENT=C;LC_IDENTIFICATION=C
+06:53:15.180 INFO : SDL version used during compile is 2.32.4
+06:53:15.180 INFO : SDL version used during linking and in runtime is 2.32.4
+06:53:15.199 INFO : SDL render devices: software, opengl, opengles2
+06:53:15.200 INFO : [options] C locale set to LC_CTYPE=C.UTF-8;LC_NUMERIC=C;LC_TIME=C;LC_COLLATE=C;LC_MONETARY=C;LC_MESSAGES=C;LC_PAPER=C;LC_NAME=C;LC_ADDRESS=C;LC_TELEPHONE=C;LC_MEASUREMENT=C;LC_IDENTIFICATION=C
+06:53:15.200 INFO : [options] C++ locale set to LC_CTYPE=C.UTF-8;LC_NUMERIC=C;LC_TIME=C;LC_COLLATE=C;LC_MONETARY=C;LC_MESSAGES=C;LC_PAPER=C;LC_NAME=C;LC_ADDRESS=C;LC_TELEPHONE=C;LC_MEASUREMENT=C;LC_IDENTIFICATION=C
+06:53:15.200 INFO : Setting language to: 'en'
+06:53:15.200 INFO : [i18n] Scanning mod translations from playthrough/userdir/mods/
+06:53:15.200 INFO : [i18n] Scanning core translations from lang/mo/
+06:53:15.625 INFO : USE_COLOR_MODULATED_TEXTURES is set to 0
+06:53:15.654 INFO : Setting language to: 'en'
+06:53:15.654 INFO : [i18n] Scanning mod translations from playthrough/userdir/mods/
+06:53:15.654 INFO : [i18n] Scanning core translations from lang/mo/
+06:53:53.836 INFO : Setting language to: 'en'
+06:53:53.836 INFO : [i18n] Scanning mod translations from playthrough/userdir/mods/
+06:53:53.836 INFO : [i18n] Scanning core translations from lang/mo/
+07:02:42.404 INFO : src/mod_tracker.h:68: Tried check if 'vector_null' had a duplicate, but type 'attack_vector' does not track object sources
+07:02:44.379 WARNING : Dark Days Ahead pack load time:: 1890881us (avg: 1890881us) (count: 1)
+07:02:44.379 WARNING : Disable NPC Needs pack load time:: 164us (avg: 164us) (count: 1)
+07:02:44.379 WARNING : Portal Storms Ignore NPCs pack load time:: 231us (avg: 231us) (count: 1)
+07:02:58.354 INFO : Loaded tileset: MshockXottoplus
+07:02:58.457 INFO : Loaded tileset: Larwick Overmap
+10:23:57.410 ERROR GAME : (error message will follow backtrace)
+    ./cataclysm-tiles(+0xd65aa0) [0x582fca218aa0]
+    ./cataclysm-tiles(+0xd67f44) [0x582fca21af44]
+    ./cataclysm-tiles(+0xe97271) [0x582fca34a271]
+    ./cataclysm-tiles(+0xe9881b) [0x582fca34b81b]
+    ./cataclysm-tiles(+0x5d18f8) [0x582fc9a848f8]
+    /lib/x86_64-linux-gnu/libc.so.6(+0x2a575) [0x7aed6dd16575]
+    /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x88) [0x7aed6dd16628]
+    ./cataclysm-tiles(_start+0x25) [0x582fc9c1b495]
 
------------------------------------------
-19:52:17.087 : Starting log.
-19:52:17.087 INFO : Cataclysm DDA version 6dea631409-dirty
-19:52:17.088 INFO : [main] C locale set to LC_CTYPE=C.UTF-8;LC_NUMERIC=C;LC_TIME=C;LC_COLLATE=C;LC_MONETARY=C;LC_MESSAGES=C;LC_PAPER=C;LC_NAME=C;LC_ADDRESS=C;LC_TELEPHONE=C;LC_MEASUREMENT=C;LC_IDENTIFICATION=C
-19:52:17.088 INFO : [main] C++ locale set to LC_CTYPE=C.UTF-8;LC_NUMERIC=C;LC_TIME=C;LC_COLLATE=C;LC_MONETARY=C;LC_MESSAGES=C;LC_PAPER=C;LC_NAME=C;LC_ADDRESS=C;LC_TELEPHONE=C;LC_MEASUREMENT=C;LC_IDENTIFICATION=C
-19:52:17.088 INFO : SDL version used during compile is 2.32.4
-19:52:17.088 INFO : SDL version used during linking and in runtime is 2.32.4
-19:52:17.104 INFO : SDL render devices: software, opengl, opengles2
-19:52:17.104 INFO : [options] C locale set to LC_CTYPE=C.UTF-8;LC_NUMERIC=C;LC_TIME=C;LC_COLLATE=C;LC_MONETARY=C;LC_MESSAGES=C;LC_PAPER=C;LC_NAME=C;LC_ADDRESS=C;LC_TELEPHONE=C;LC_MEASUREMENT=C;LC_IDENTIFICATION=C
-19:52:17.104 INFO : [options] C++ locale set to LC_CTYPE=C.UTF-8;LC_NUMERIC=C;LC_TIME=C;LC_COLLATE=C;LC_MONETARY=C;LC_MESSAGES=C;LC_PAPER=C;LC_NAME=C;LC_ADDRESS=C;LC_TELEPHONE=C;LC_MEASUREMENT=C;LC_IDENTIFICATION=C
-19:52:17.104 INFO : Setting language to: 'en'
-19:52:17.104 INFO : [i18n] Scanning mod translations from playthrough/userdir/mods/
-19:52:17.104 INFO : [i18n] Scanning core translations from lang/mo/
-19:52:17.524 INFO : USE_COLOR_MODULATED_TEXTURES is set to 0
-19:52:17.553 INFO : Setting language to: 'en'
-19:52:17.553 INFO : [i18n] Scanning mod translations from playthrough/userdir/mods/
-19:52:17.553 INFO : [i18n] Scanning core translations from lang/mo/
-19:53:53.887 INFO : Setting language to: 'en'
-19:53:53.887 INFO : [i18n] Scanning mod translations from playthrough/userdir/mods/
-19:53:53.887 INFO : [i18n] Scanning core translations from lang/mo/
-19:54:30.807 INFO : src/mod_tracker.h:68: Tried check if 'vector_null' had a duplicate, but type 'attack_vector' does not track object sources
-19:54:32.874 WARNING : Dark Days Ahead pack load time:: 1973378us (avg: 1973378us) (count: 1)
-19:54:32.874 WARNING : Disable NPC Needs pack load time:: 236us (avg: 236us) (count: 1)
-19:54:32.874 WARNING : Portal Storms Ignore NPCs pack load time:: 256us (avg: 256us) (count: 1)
-19:54:48.245 INFO : Loaded tileset: MshockXottoplus
-19:54:48.356 INFO : Loaded tileset: Larwick Overmap
+    Attempting to repeat stack trace using debug symbols…
+    ??
+    ??:0
+    ??
+    ??:0
+    ??
+    ??:0
+    ??
+    ??:0
+    ??
+    ??:0
+    ??
+    ??:0
+    ??
+    ??:0
+    _start
+    ??:?
+Backtrace emission took 11 seconds.
+(continued from above) ERROR : src/do_turn.cpp:293: game:monmove: zombie can't move to its location!  (101:81:0), pavement
+11:24:56.378 ERROR : (error message will follow backtrace)
+    ./cataclysm-tiles(+0xd65aa0) [0x582fca218aa0]
+    ./cataclysm-tiles(+0xd67f44) [0x582fca21af44]
+    ./cataclysm-tiles(+0xd68354) [0x582fca21b354]
+    ./cataclysm-tiles(+0x19e1b68) [0x582fcae94b68]
+    ./cataclysm-tiles(+0x19e7529) [0x582fcae9a529]
+    ./cataclysm-tiles(+0x19e9e1a) [0x582fcae9ce1a]
+    ./cataclysm-tiles(+0x19edee1) [0x582fcaea0ee1]
+    ./cataclysm-tiles(+0xe96b05) [0x582fca349b05]
+    ./cataclysm-tiles(+0xe9881b) [0x582fca34b81b]
+    ./cataclysm-tiles(+0x5d18f8) [0x582fc9a848f8]
+    /lib/x86_64-linux-gnu/libc.so.6(+0x2a575) [0x7aed6dd16575]
+    /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x88) [0x7aed6dd16628]
+    ./cataclysm-tiles(_start+0x25) [0x582fc9c1b495]
 
+    Attempting to repeat stack trace using debug symbols…
+    ??
+    ??:0
+    ??
+    ??:0
+    ??
+    ??:0
+    ??
+    ??:0
+    ??
+    ??:0
+    ??
+    ??:0
+    ??
+    ??:0
+    ??
+    ??:0
+    ??
+    ??:0
+    ??
+    ??:0
+    ??
+    ??:0
+    ??
+    ??:0
+    _start
+    ??:?
+Backtrace emission took 11 seconds.
+(continued from above) ERROR : src/monmove.cpp:1779 [int monster::calc_movecost(const map&, const tripoint_bub_ms&, const tripoint_bub_ms&, bool) const] tough zombie cannot climb over dumpster. monster::calc_movecost expects to be called with valid destination.
+11:26:23.185 ERROR : (error message will follow backtrace)
+    ./cataclysm-tiles(+0xd65aa0) [0x582fca218aa0]
+    ./cataclysm-tiles(+0xd67f44) [0x582fca21af44]
+    ./cataclysm-tiles(+0xd68354) [0x582fca21b354]
+    ./cataclysm-tiles(+0x19e1b68) [0x582fcae94b68]
+    ./cataclysm-tiles(+0x19e7529) [0x582fcae9a529]
+    ./cataclysm-tiles(+0x19e9e1a) [0x582fcae9ce1a]
+    ./cataclysm-tiles(+0x19edee1) [0x582fcaea0ee1]
+    ./cataclysm-tiles(+0xe96b05) [0x582fca349b05]
+    ./cataclysm-tiles(+0xe9881b) [0x582fca34b81b]
+    ./cataclysm-tiles(+0x5d18f8) [0x582fc9a848f8]
+    /lib/x86_64-linux-gnu/libc.so.6(+0x2a575) [0x7aed6dd16575]
+    /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x88) [0x7aed6dd16628]
+    ./cataclysm-tiles(_start+0x25) [0x582fc9c1b495]
+
+    Attempting to repeat stack trace using debug symbols…
+    ??
+    ??:0
+    ??
+    ??:0
+    ??
+    ??:0
+    ??
+    ??:0
+    ??
+    ??:0
+    ??
+    ??:0
+    ??
+    ??:0
+    ??
+    ??:0
+    ??
+    ??:0
+    ??
+    ??:0
+    ??
+    ??:0
+    ??
+    ??:0
+    _start
+    ??:?
+Backtrace emission took 12 seconds.
+(continued from above) ERROR : src/monmove.cpp:1779 [int monster::calc_movecost(const map&, const tripoint_bub_ms&, const tripoint_bub_ms&, bool) const] tough zombie cannot climb over dumpster. monster::calc_movecost expects to be called with valid destination.
+11:26:35.290 ERROR : src/monmove.cpp:1779 [int monster::calc_movecost(const map&, const tripoint_bub_ms&, const tripoint_bub_ms&, bool) const] tough zombie cannot climb over dumpster. monster::calc_movecost expects to be called with valid destination.
+11:28:59.921 INFO : npc::set_omt_destination - new goal for NPC [Lidia Riley] with [need_weapon] is [s_camping] in (231,79,0).
+11:29:03.012 ERROR : (error message will follow backtrace)
+    ./cataclysm-tiles(+0xd65aa0) [0x582fca218aa0]
+    ./cataclysm-tiles(+0xd67f44) [0x582fca21af44]
+    ./cataclysm-tiles(+0xd68354) [0x582fca21b354]
+    ./cataclysm-tiles(+0x19e1b68) [0x582fcae94b68]
+    ./cataclysm-tiles(+0x19e7529) [0x582fcae9a529]
+    ./cataclysm-tiles(+0x19edca5) [0x582fcaea0ca5]
+    ./cataclysm-tiles(+0xe96b05) [0x582fca349b05]
+    ./cataclysm-tiles(+0xe9881b) [0x582fca34b81b]
+    ./cataclysm-tiles(+0x5d18f8) [0x582fc9a848f8]
+    /lib/x86_64-linux-gnu/libc.so.6(+0x2a575) [0x7aed6dd16575]
+    /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x88) [0x7aed6dd16628]
+    ./cataclysm-tiles(_start+0x25) [0x582fc9c1b495]
+
+    Attempting to repeat stack trace using debug symbols…
+    ??
+    ??:0
+    ??
+    ??:0
+    ??
+    ??:0
+    ??
+    ??:0
+    ??
+    ??:0
+    ??
+    ??:0
+    ??
+    ??:0
+    ??
+    ??:0
+    ??
+    ??:0
+    ??
+    ??:0
+    ??
+    ??:0
+    _start
+    ??:?
+Backtrace emission took 11 seconds.
+(continued from above) ERROR : src/monmove.cpp:1779 [int monster::calc_movecost(const map&, const tripoint_bub_ms&, const tripoint_bub_ms&, bool) const] zombie cannot climb over dumpster. monster::calc_movecost expects to be called with valid destination.
+[ Previous repeated 6 times ]
+11:29:14.420 ERROR : src/monmove.cpp:1779 [int monster::calc_movecost(const map&, const tripoint_bub_ms&, const tripoint_bub_ms&, bool) const] zombie cannot climb over dumpster. monster::calc_movecost expects to be called with valid destination.
+11:44:20.247 : Log shutdown.
 -----------------------------------------
-20:31:54.138 : Starting log.
-20:31:54.138 INFO : Cataclysm DDA version 6dea631409-dirty
-20:31:54.138 INFO : [main] C locale set to LC_CTYPE=C.UTF-8;LC_NUMERIC=C;LC_TIME=C;LC_COLLATE=C;LC_MONETARY=C;LC_MESSAGES=C;LC_PAPER=C;LC_NAME=C;LC_ADDRESS=C;LC_TELEPHONE=C;LC_MEASUREMENT=C;LC_IDENTIFICATION=C
-20:31:54.138 INFO : [main] C++ locale set to LC_CTYPE=C.UTF-8;LC_NUMERIC=C;LC_TIME=C;LC_COLLATE=C;LC_MONETARY=C;LC_MESSAGES=C;LC_PAPER=C;LC_NAME=C;LC_ADDRESS=C;LC_TELEPHONE=C;LC_MEASUREMENT=C;LC_IDENTIFICATION=C
-20:31:54.138 INFO : SDL version used during compile is 2.32.4
-20:31:54.138 INFO : SDL version used during linking and in runtime is 2.32.4
-20:31:54.154 INFO : SDL render devices: software, opengl, opengles2
-20:31:54.155 INFO : [options] C locale set to LC_CTYPE=C.UTF-8;LC_NUMERIC=C;LC_TIME=C;LC_COLLATE=C;LC_MONETARY=C;LC_MESSAGES=C;LC_PAPER=C;LC_NAME=C;LC_ADDRESS=C;LC_TELEPHONE=C;LC_MEASUREMENT=C;LC_IDENTIFICATION=C
-20:31:54.155 INFO : [options] C++ locale set to LC_CTYPE=C.UTF-8;LC_NUMERIC=C;LC_TIME=C;LC_COLLATE=C;LC_MONETARY=C;LC_MESSAGES=C;LC_PAPER=C;LC_NAME=C;LC_ADDRESS=C;LC_TELEPHONE=C;LC_MEASUREMENT=C;LC_IDENTIFICATION=C
-20:31:54.155 INFO : Setting language to: 'en'
-20:31:54.155 INFO : [i18n] Scanning mod translations from playthrough/userdir/mods/
-20:31:54.155 INFO : [i18n] Scanning core translations from lang/mo/
-20:31:54.595 INFO : USE_COLOR_MODULATED_TEXTURES is set to 0
-20:31:54.631 INFO : Setting language to: 'en'
-20:31:54.631 INFO : [i18n] Scanning mod translations from playthrough/userdir/mods/
-20:31:54.631 INFO : [i18n] Scanning core translations from lang/mo/
-20:35:26.153 INFO : Setting language to: 'en'
-20:35:26.153 INFO : [i18n] Scanning mod translations from playthrough/userdir/mods/
-20:35:26.153 INFO : [i18n] Scanning core translations from lang/mo/
-20:35:38.812 INFO : src/mod_tracker.h:68: Tried check if 'vector_null' had a duplicate, but type 'attack_vector' does not track object sources
-20:35:40.976 WARNING : Dark Days Ahead pack load time:: 2061992us (avg: 2061992us) (count: 1)
-20:35:40.976 WARNING : Disable NPC Needs pack load time:: 161us (avg: 161us) (count: 1)
-20:35:40.976 WARNING : Portal Storms Ignore NPCs pack load time:: 216us (avg: 216us) (count: 1)
-20:35:54.978 INFO : Loaded tileset: MshockXottoplus
-20:35:55.083 INFO : Loaded tileset: Larwick Overmap
+

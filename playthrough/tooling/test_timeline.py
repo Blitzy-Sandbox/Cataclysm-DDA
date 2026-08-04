@@ -13,141 +13,80 @@ arithmetic is held to account.
 
 The first form is an acceptance gate in its own right, which is why
 unittest.main() is wired up at the bottom of the file.  The -B on the
-second is not decoration: the discovery loader compiles the modules it
-imports, and .gitignore's terminal `!/playthrough/**` negation -- the
-one that makes the save data trackable at all -- re-includes any
-__pycache__ that lands under playthrough/tooling/.  env.sh exports
-PYTHONDONTWRITEBYTECODE=1 for the pipeline; -B is the same thing for a
-hand-run.
+second is not decoration: the discovery loader compiles what it imports,
+and .gitignore's `!/playthrough/**` negation would re-include a
+__pycache__ landing under playthrough/tooling/.
 
-WHAT IS ASSERTED, AND WHY THESE NUMBERS
-Eight areas.  The first four are the arithmetic, in the order the
-requirements fix them:
+WHAT IS ASSERTED
+Four arithmetic areas, in the order the requirements fix them:
 
 * THE CLAMP -- duration = min(max(raw, FLOOR), CEIL), including the
-  boundary that a raw delta of exactly CEIL is NOT a transition,
-  because the comparison is strictly greater;
-* THE ROLLOVER GUARD -- 23:59:58 -> 00:00:04 is a POSITIVE six-second
-  step WHEN THE SIDEBAR DATE IS OBSERVED TO TURN WITH IT, while a
-  reading that cannot be parsed, or that moves backwards without date
-  evidence, is reconciled against its predecessor AND FLAGGED rather
-  than quietly replaced by a plausible-looking number.  From the clock
-  alone 08:00:00 -> 06:00:00 is indistinguishable from a misread digit,
-  and assuming a rollover there would invent 22 hours nobody played, so
-  the day advances on captured evidence only;
-* THE CUE ARITHMETIC -- the transition second is charged to VIDEO time,
-  which is why the cue after the first transition of the reference
-  sequence starts at 00:00:17,250 and not 00:00:16,250.  That single
-  assertion is all that stands between the film and captions that drift
-  further out of step with every transition;
-* THE SUBRIP FORMATTER -- 3661.5 s is 01:01:01,500 exactly, with a comma
-  and not a full stop.
+  boundary that a raw delta of exactly CEIL is NOT a transition, because
+  the comparison is strictly greater;
+* THE ROLLOVER GUARD -- midnight is crossed as a positive step only WHEN
+  THE SIDEBAR DATE IS OBSERVED TO TURN WITH IT.  A reading that cannot
+  be parsed, or that moves backwards with no date evidence, is
+  reconciled against its predecessor AND FLAGGED: from the clock alone a
+  backwards step is indistinguishable from a misread digit, and assuming
+  a rollover would invent hours nobody played;
+* THE CUE ARITHMETIC -- a transition's duration is charged to VIDEO time,
+  advancing the shared cursor before the following cue begins.  That is
+  all that stands between the film and captions that drift further out
+  of step with every transition;
+* THE SUBRIP FORMATTER -- a comma before the milliseconds, not a full
+  stop.
 
-The last two are what the arithmetic alone cannot vouch for:
+Then the two things the arithmetic alone cannot vouch for:
 
-* the VALIDATOR, branch by branch -- every check in timeline.py is
-  paired with a stable problem code, and every test names the code of
-  the check it means.  Several invariants legitimately fail together, so
-  a test that asserted only "something was reported" would stay green
-  with the very check it is named after deleted; measured on this
-  fixture, six such tests did exactly that.  Asserting the code, plus
-  the structural proof that each code has exactly one check site, is
-  what turns each of those tests into a real mutation kill;
-* the COMMAND LINE and the FILE CONTRACT -- reading the manifest,
-  reading the capture telemetry, choosing where to write, verifying what
-  is already on disk, and the exit status each of those produces.  A
-  run_pipeline.sh stage reads only the exit status, so an exit status
-  that is wrong is a whole stage that appears to have worked.  Those
-  tests run main(argv) against files in a temporary directory with the
-  artifact-layout environment variables redirected into it.
+* the VALIDATOR, branch by branch.  Every check in timeline.py carries a
+  stable problem code and every test names the code it means, because
+  several invariants legitimately fail together and a test asserting
+  only "something was reported" stays green with the very check it is
+  named after deleted.  Asserting the code, plus the structural proof
+  that each code has exactly one check site, is what makes these
+  mutation kills;
+* the COMMAND LINE and the FILE CONTRACT, including the exit status of
+  each path -- a run_pipeline.sh stage reads only the exit status, so a
+  wrong one is a whole stage that appears to have worked -- and the
+  manifest gate, which holds generation and verification to ONE
+  canonical validator so --verify cannot degenerate into a
+  self-consistency check over a manifest describing other frames.
 
-A SEVENTH area is asserted because it was found broken rather than
-because a requirement enumerates it: the command line's manifest gate.
-Generation and verification must hold their rows to ONE canonical
-validator, or --verify degenerates into a self-consistency check that
-approves a timeline faithfully computed from a manifest describing
-another frame entirely.  TestTheCommandLineGatesTheManifest exercises
-the real main(), exit status included, against a temporary directory
-passed as the approved root.
-
-The EIGHTH area asserts something about this suite rather than about
-the module: that it can FAIL, and that it does not disturb what it
-reads.
-TestTheSuiteCatchesABrokenAlgorithm substitutes a deliberately wrong
-transition predicate (`>=` where the requirement says `>`) and a cue
-walk that forgets to charge the transition second, and proves that the
-canonical expectations stop holding -- including that 00:00:17,250
-becomes 00:00:16,250, which is the one assertion this whole file exists
-for.  The substitution is a module rebinding undone by addCleanup, so
-the check is permanent and safe rather than something an author has to
-remember to do by hand and remember to undo.  The same class asserts
-that build_timeline() and validate_timeline() leave their inputs
-byte-for-byte alone, compared against a deepcopy: manifest rows are the
-committed record of a session, and a builder that quietly repaired one
-would be rewriting evidence.
-
-Every expected value in this file is a MEASURED value: the reference
-sequence below was run through timeline.py and the numbers recorded
-from its output, rather than being reasoned out and hoped for.  The
-same applies to the engine strings -- the coarse time phrases and the
-"???" fallback are quoted verbatim from src/display.cpp, and the
-military clock shape from src/calendar.cpp, so a test that claims the
-parser refuses a real engine reading is refusing a string the engine
-really emits.
-
-The reference sequence is the published adversarial table ROW FOR ROW:
-seven readings, seven (raw delta, duration, transition) rows, totals of
-32.500 + 2.000 == 34.500.  It is kept exactly that size on purpose.  An
-extra frame -- even an unremarkable one-second step -- turns every total
-here into a figure that appears nowhere in the specification, so the
-step that deserved covering is covered on its own sequence in
-TestAnOrdinaryStepAfterWaking, which asserts 33.500 + 2.000 == 35.500
-and states the relationship to the canonical totals so the two cannot
-drift apart unnoticed.
-
-WHAT IS DELIBERATELY NOT ASSERTED
-Nothing here touches playthrough/frames/, playthrough/manifest.jsonl
-or playthrough/timeline.json.  Those are the captured evidence of a
-session, and a test suite that wrote to the record it exists to
-protect would be worse than no suite at all.  The pure functions are
-exercised in memory; every test that needs files on disk works in a
-temporary directory it creates, passes in as the approved root and
-removes again, with ALL FOUR of PLAYTHROUGH_MANIFEST,
-PLAYTHROUGH_TIMELINE, PLAYTHROUGH_OBSERVATIONS and
-PLAYTHROUGH_DATE_AUDIT redirected there for its duration and restored
-afterwards -- and one test asserts that the real artifacts were
-untouched by the run, as the belt to that braces.
-
-THE SUITE IS HERMETIC, WHICH IS A PROPERTY WITH A TEST OF ITS OWN.
-Four variables, not three: a class that redirected only the first three
-would still resolve the date-evidence sidecar from whatever env.sh
-exported, land outside the temporary root it nominated, and be refused
-by the containment guard -- a failure with nothing to do with the code
-under test, and one that arrives only for whoever sourced the
-pipeline's own environment first.  So the count is asserted rather than
-promised: TestTheSuiteIsHermetic reads this file and requires every
-class that drives the command line to redirect all four.  Run this
-suite with env.sh sourced and without it; both must be green.
+Finally, two properties of the suite itself.
+TestTheSuiteCatchesABrokenAlgorithm substitutes a wrong transition
+predicate (`>=` for `>`) and a cue walk that forgets to charge the
+transition, and proves the canonical expectations stop holding; the
+substitution is a module rebinding undone by addCleanup, so the check is
+permanent rather than something an author must remember to undo.  The
+same class compares against a deepcopy to prove build_timeline() and
+validate_timeline() leave their inputs byte-for-byte alone: manifest
+rows are the committed record of a session, and a builder that quietly
+repaired one would be rewriting evidence.
 
 NO REAL ARTIFACT IS EVER WRITTEN.  Nothing here touches
 playthrough/frames/, playthrough/manifest.jsonl or
-playthrough/timeline.json: those are the captured evidence of a session,
-and a suite that wrote to the record it exists to protect would be worse
-than no suite at all.  The pure functions are exercised in memory, and
-the tests that need a file on disk use a temporary directory and remove
-it.
+playthrough/timeline.json.  Pure functions are exercised in memory;
+every test needing files works in a temporary directory it creates,
+nominates as the approved root and removes, with ALL FOUR of
+PLAYTHROUGH_MANIFEST, PLAYTHROUGH_TIMELINE, PLAYTHROUGH_OBSERVATIONS and
+PLAYTHROUGH_DATE_AUDIT redirected into it.  Four and not three:
+redirecting only the first three leaves the date-evidence sidecar
+resolving from whatever env.sh exported, outside the nominated root and
+refused by the containment guard -- a failure that arrives only for
+whoever sourced the pipeline's environment first.  So the count is
+asserted rather than promised (TestTheSuiteIsHermetic), and the suite
+must be green both with env.sh sourced and without it.
 
-Standard library only, plus the sibling timeline module -- nothing from
-playthrough/tooling/requirements.txt -- so the suite runs on a bare
-interpreter in any checkout, which is the point: the arithmetic must be
-auditable without provisioning a render toolchain first.  Nothing is
-added to tests/ either, because tests/CMakeLists.txt globs tests/*.cpp
-into the Catch2 C++ binary.
+Standard library only, plus the sibling timeline module, so the
+arithmetic is auditable without provisioning a render toolchain.
+Nothing is added to tests/, which globs tests/*.cpp into the Catch2
+binary.
 """
 
 import ast
 import contextlib
 import copy
+import hashlib
 import io
 import json
 import math
@@ -244,17 +183,17 @@ REFERENCE_DATES = (
     "Spring, day 4",
 )
 
-# Measured against timeline.py, not predicted.  raw[i] is the clock
-# advance from frame i to frame i + 1; the last frame has no successor
-# and is therefore 0.0, which the floor turns into 0.25 s of video.
+# raw[i] is the clock advance from frame i to frame i + 1; the last frame
+# has no successor and is therefore 0.0, which the floor turns into the
+# minimum on-screen duration.
 REFERENCE_RAW_DELTAS = (0.0, 1.0, 5.0, 300.0, 56359.0, 6.0, 0.0)
 REFERENCE_DURATIONS = (0.25, 1.0, 5.0, 10.0, 10.0, 6.0, 0.25)
 REFERENCE_TRANSITIONS = (False, False, False, True, True,
                          False, False)
 
-# The cue windows the walk produces.  Note the jump from an end of
-# 16.25 to a start of 17.25 and from 27.25 to 28.25: that is the
-# transition second, charged to video time between the two windows.
+# The cue windows the walk produces.  Each flagged frame leaves a gap
+# between its own cue end and the next cue start: that is its transition,
+# charged to video time between the two windows.
 REFERENCE_CUES = (
     (0.0, 0.25),
     (0.25, 1.25),
@@ -265,27 +204,22 @@ REFERENCE_CUES = (
     (34.25, 34.5),
 )
 
-# THE INVARIANT, in numbers:
+# THE INVARIANT this fixture exists to hold:
 #     sum(durations) + sum(transitions) == total == final cue end
-#             32.500  +           2.000 ==  34.500
-# 32.500 is the sum of the seven durations in the published table
-# (0.25 + 1 + 5 + 10 + 10 + 6 + 0.25), and 2.000 is its two flagged
-# frames at TRANSITION seconds each.
+# The transition term is one TRANSITION second per flagged frame.
 REFERENCE_TOTAL_DURATION = 32.5
 REFERENCE_TOTAL_TRANSITION = 2.0
 REFERENCE_TOTAL = 34.5
 REFERENCE_TRANSITION_COUNT = 2
 
 # The index of the frame whose cue opens immediately after the first
-# transition.  Zero-based, so this is the fifth reading -- the one
-# that must start at 17.25 s rather than 16.25 s.
+# transition: the one that must start a full TRANSITION later than its
+# predecessor's cue ended.  Zero-based.
 FIRST_POST_TRANSITION = 4
 
 # The clamp table exactly as the requirements state it.  Each row is
-# (raw delta, expected duration, expected transition flag).  The rows
-# are the distinct behaviours of the model, which is why the second
-# one-second step of the reference sequence does not appear again
-# here: it would restate the pass-through case.
+# (raw delta, expected duration, expected transition flag), one row per
+# distinct behaviour of the model.
 CLAMP_TABLE = (
     (0.0, 0.25, False),
     (1.0, 1.0, False),
@@ -513,6 +447,28 @@ def broken_document(**updates):
     document = reference_document()
     document.update(updates)
     return document
+
+
+def reference_attestation():
+    """A well-formed manifest attestation for the reference document.
+
+    The digest is a placeholder of the right SHAPE rather than a real
+    one, because the pure validator's subject is exactly that -- shape.
+    Whether the bytes on disk match is manifest_attestation_problems()'
+    question, and it needs a file, so it cannot be asked here.
+    """
+    return {
+        "path": "playthrough/manifest.jsonl",
+        "sha256": "0" * 64,
+        "rows": len(REFERENCE_CLOCKS),
+    }
+
+
+def broken_attestation(**updates):
+    """Return the reference timeline with a mutated attestation."""
+    attestation = reference_attestation()
+    attestation.update(updates)
+    return broken_document(manifest=attestation)
 
 
 def broken_entry(index, **updates):
@@ -2480,20 +2436,11 @@ class TestAnOrdinaryStepAfterWaking(unittest.TestCase):
     A survivor who wakes takes an ordinary step before doing anything
     else, so the step deserves coverage -- but it does not belong in the
     canonical fixture, because adding a row there changes every total in
-    this file into a number the requirements never state.  So it lives
-    here, on a sequence of its own, and the constants it asserts are
-    derived from the reference ones rather than restated: the extra
-    frame adds its own second and turns the previously final 0.25 s
-    frame into a full second, and it adds no transition of its own.
-
-    The arithmetic that follows is worth stating plainly, because the
-    two numbers differ by exactly one row:
-
-        canonical 7 rows: 32.500 + 2.000 == 34.500
-        with the step   : 33.500 + 2.000 == 35.500
-
-    Both are true of their own sequence.  Neither is true of the other,
-    which is the reason they are kept apart.
+    it.  So it lives here on a sequence of its own, and its constants are
+    DERIVED from the reference ones rather than restated: the extra frame
+    contributes its own second, turns the previously final floored frame
+    into a full second, and adds no transition.  Each sequence's totals
+    are true only of itself, which is why the two are kept apart.
     """
 
     # The reference readings plus one more second on the clock, so the
@@ -2686,11 +2633,10 @@ class TestTheSuiteCatchesABrokenAlgorithm(unittest.TestCase):
         # WHICH of the three quantities diverges is the whole value of
         # computing them by three different routes.  `total` and
         # `final_cue_end` both come out of the walk, so the mutant keeps
-        # them agreeing with each other -- at 32.500 instead of 34.500.
-        # It is the independently computed left-hand side,
-        # sum(durations) + sum(transitions), that no longer matches, and
-        # that is exactly why the invariant is checked against a figure
-        # the walk did not produce.
+        # them agreeing with each other.  It is the independently
+        # computed side, sum(durations) + sum(transitions), that no
+        # longer matches -- which is why the invariant is checked against
+        # a figure the walk did not produce.
         self.assertAlmostEqual(
             document["final_cue_end"], document["total"],
             places=PLACES,
@@ -2710,9 +2656,9 @@ class TestTheSuiteCatchesABrokenAlgorithm(unittest.TestCase):
                  "checker that passed it would be worse than none"))
 
     def test_the_post_transition_cue_moves_under_the_mutant(self):
-        # The single highest-value assertion in this file, checked from
-        # the other side: 00:00:17,250 must become 00:00:16,250 when the
-        # inserted second is not charged.
+        # The same assertion from the other side: the post-transition
+        # cue must move a whole TRANSITION earlier once the inserted
+        # second is not charged.
         def walk_without_charging(durations, flags):
             cursor = 0.0
             windows = []
@@ -3305,6 +3251,43 @@ class TestValidatorBranchIsolation(unittest.TestCase):
              total_duration=REFERENCE_TOTAL_DURATION + 1.0,
              total=REFERENCE_TOTAL + 1.0),
          timeline.PROBLEM_TOTAL_VS_CUE),
+        # THE PROVENANCE BRANCHES.  A null attestation is accepted -- an
+        # unattested document is one that may not pace a film, which is
+        # assert_timeline_document()'s business rather than this
+        # validator's -- but an attestation that IS present has to be
+        # well formed, or it could never be checked against the manifest
+        # it claims to describe.
+        ("an attestation that is not an object",
+         lambda: broken_document(manifest="playthrough/manifest.jsonl"),
+         timeline.PROBLEM_MANIFEST_NOT_OBJECT),
+        ("an attestation missing a field",
+         lambda: broken_document(
+             manifest={"path": "playthrough/manifest.jsonl"}),
+         timeline.PROBLEM_MANIFEST_MISSING_FIELD),
+        ("an attestation carrying an unexpected field",
+         lambda: broken_attestation(mtime=1),
+         timeline.PROBLEM_MANIFEST_EXTRA_FIELD),
+        ("an attested path that is not a path",
+         lambda: broken_attestation(path=None),
+         timeline.PROBLEM_MANIFEST_PATH_NOT_TEXT),
+        ("an attested path that is absolute",
+         lambda: broken_attestation(path="/etc/passwd"),
+         timeline.PROBLEM_MANIFEST_PATH_ABSOLUTE),
+        ("an attested path that walks upwards",
+         lambda: broken_attestation(path="../manifest.jsonl"),
+         timeline.PROBLEM_MANIFEST_PATH_UPWARDS),
+        ("an attested digest that is not sha256",
+         lambda: broken_attestation(sha256="deadbeef"),
+         timeline.PROBLEM_MANIFEST_DIGEST),
+        ("an attested row count that is not an integer",
+         lambda: broken_attestation(rows="7"),
+         timeline.PROBLEM_MANIFEST_ROWS_NOT_INT),
+        ("an attested row count below zero",
+         lambda: broken_attestation(rows=-1),
+         timeline.PROBLEM_MANIFEST_ROWS_NEGATIVE),
+        ("an attested row count that disagrees with the entries",
+         lambda: broken_attestation(rows=99),
+         timeline.PROBLEM_MANIFEST_ROWS_MISMATCH),
     )
 
     def test_every_case_is_caught_by_the_check_it_names(self):
@@ -3427,6 +3410,7 @@ class TestTimelineCliAndIo(unittest.TestCase):
         # Redirect the module's defaults into the temporary directory so
         # that even a bug in this suite cannot reach the committed
         # manifest or timeline.
+        # (see self.expected_document() for what the CLI now writes)
         self.env = _environment(
             PLAYTHROUGH_MANIFEST=self.manifest,
             PLAYTHROUGH_TIMELINE=self.output,
@@ -3440,6 +3424,22 @@ class TestTimelineCliAndIo(unittest.TestCase):
         return _write_lines(
             path or self.manifest,
             [json.dumps(row) for row in make_rows(clocks)])
+
+    def expected_document(self, clocks=None, manifest=None):
+        """The document the CLI writes for a manifest on disk.
+
+        The pure computation PLUS the provenance the CLI records with it:
+        the manifest's repository-relative path, the sha256 of its exact
+        bytes and its row count.  A test that compared against the bare
+        computation would be asserting that the artifact carries NO
+        provenance -- which is the state the three producers now refuse,
+        so it would be asserting the wrong thing.
+        """
+        return timeline.build_timeline(
+            make_rows(REFERENCE_CLOCKS if clocks is None else clocks),
+            None, None,
+            timeline.attest_manifest(manifest or self.manifest,
+                                     self.directory))
 
     def write_observations(self, dates, status=None, path=None):
         """Write one telemetry row per frame and return the path."""
@@ -3486,10 +3486,13 @@ class TestTimelineCliAndIo(unittest.TestCase):
             msg="the summary names the file it wrote")
         written = timeline.read_timeline(self.output, root=self.directory)
         self.assertEqual(
-            written,
-            timeline.build_timeline(make_rows(REFERENCE_CLOCKS)),
+            written, self.expected_document(),
             msg=("the file on disk must be exactly what the pure "
-                 "computation produces from the same rows"))
+                 "computation produces from the same rows, plus the "
+                 "attestation naming the manifest it came from"))
+        self.assertEqual(
+            written["manifest"]["rows"], written["frame_count"],
+            msg="the attestation and the entries must agree")
 
     def test_the_output_path_may_be_given_explicitly(self):
         elsewhere = os.path.join(self.directory, "other.json")
@@ -3508,12 +3511,10 @@ class TestTimelineCliAndIo(unittest.TestCase):
             msg=("--stdout exists so a timeline can be inspected "
                  "without touching the committed artifact"))
         self.assertEqual(
-            json.loads(out),
-            timeline.build_timeline(make_rows(REFERENCE_CLOCKS)),
+            json.loads(out), self.expected_document(),
             msg="what is printed is the timeline itself, not a summary")
         self.assertEqual(
-            out, timeline.encode_timeline(
-                timeline.build_timeline(make_rows(REFERENCE_CLOCKS))),
+            out, timeline.encode_timeline(self.expected_document()),
             msg=("byte for byte the same text the file would hold, so "
                  "a caller can diff one against the other"))
 
@@ -3805,11 +3806,20 @@ class TestTimelineCliAndIo(unittest.TestCase):
         self.write_manifest(REFERENCE_CLOCKS + ("00:00:06",))
         status, _, err = self.run_main("--verify")
         self.assertEqual(status, 1)
-        self.assertIn("does not match a fresh computation", err)
+        # THE ATTESTATION CATCHES IT FIRST, and says something sharper
+        # than the byte comparison could: not merely "these differ" but
+        # "this timeline was computed from different evidence than is on
+        # disk", with both digests and both row counts named.  The byte
+        # diff is still there behind it; provenance simply fails earlier
+        # and more usefully, which is the point of carrying it.
+        self.assertIn("DIFFERENT evidence", err)
         self.assertIn(
-            "7 entr(ies) against 8 row(s)", err,
+            "7 row(s)", err,
             msg=("the counts are named, because that is the first "
                  "thing an operator needs to know"))
+        self.assertIn(
+            "now holds 8", err,
+            msg="and what the manifest holds now")
         self.assertIn(
             "2 problem(s) found", err,
             msg="the count of problems is reported, not just the list")
@@ -5105,6 +5115,20 @@ class TestTheCommandLineGatesTheManifest(unittest.TestCase):
         return timeline.write_timeline(
             os.path.join(self.root, name), document, root=self.root)
 
+    def attested(self, rows, manifest_path):
+        """Build the document the CLI would write for `manifest_path`.
+
+        --verify claims the artifact on disk describes THIS session, and
+        that claim now rests on the attestation the document carries:
+        the manifest's relative path, the sha256 of its bytes and its row
+        count.  A fixture storing an unattested document would be
+        asserting that a timeline of unknown provenance verifies, which
+        is exactly the state the gate exists to refuse.
+        """
+        return timeline.build_timeline(
+            rows, None, None,
+            timeline.attest_manifest(manifest_path, self.root))
+
     def run_cli(self, argv):
         """Return (exit status, stdout, stderr) of the real main()."""
         out = io.StringIO()
@@ -5181,7 +5205,7 @@ class TestTheCommandLineGatesTheManifest(unittest.TestCase):
         rows = make_rows(REFERENCE_CLOCKS)
         manifest_path = self.write_manifest(rows)
         timeline_path = self.store_timeline(
-            timeline.build_timeline(rows))
+            self.attested(rows, manifest_path))
         with open(timeline_path, "rb") as handle:
             before = handle.read()
         stamp = os.stat(timeline_path)
@@ -5207,10 +5231,24 @@ class TestTheCommandLineGatesTheManifest(unittest.TestCase):
     def test_verify_still_reports_a_timeline_that_drifted(self):
         rows = make_rows(REFERENCE_CLOCKS)
         manifest_path = self.write_manifest(rows)
-        # A valid timeline of a DIFFERENT session, so the manifest gate
-        # passes and only the byte comparison can catch it.
-        timeline_path = self.store_timeline(
-            build(("08:15:32", "08:15:40")))
+        # A valid timeline of a DIFFERENT session, attested to THIS
+        # manifest, and with the SAME NUMBER OF FRAMES -- so the manifest
+        # gate passes, the attestation passes (its row count agrees with
+        # the entry count and its digest is of the real file), and only
+        # the byte comparison can catch it.  That is this test's subject:
+        # gating provenance must not cost the drift check.
+        #
+        # Note what the equal frame count is for.  The attestation
+        # cross-checks its row count against frame_count, so a document
+        # whose entries describe a different-LENGTH session cannot attest
+        # truthfully to this manifest at all -- provenance makes that
+        # case unreachable rather than merely detectable.  Same length,
+        # different clocks, is what is left for the byte diff to catch.
+        other = build(("08:15:32", "08:15:35", "08:15:36", "08:15:41",
+                       "08:20:41", "23:59:59", "00:00:05"))
+        other["manifest"] = timeline.attest_manifest(
+            manifest_path, self.root)
+        timeline_path = self.store_timeline(other)
         status, _, err = self.run_cli(
             ["--verify", "--manifest", manifest_path,
              "-o", timeline_path])
@@ -5245,7 +5283,7 @@ class TestTheCommandLineGatesTheManifest(unittest.TestCase):
         rows = self.malformed_rows()
         manifest_path = self.write_manifest(rows)
         timeline_path = self.store_timeline(
-            timeline.build_timeline(rows))
+            self.attested(rows, manifest_path))
         status, _, err = self.run_cli(
             ["--verify", "--manifest", manifest_path,
              "-o", timeline_path, "--ignore-manifest-problems"])
@@ -5266,7 +5304,10 @@ class TestTheCommandLineGatesTheManifest(unittest.TestCase):
     def test_verify_refuses_an_empty_manifest_unless_it_is_allowed(
             self):
         manifest_path = self.write_manifest([])
-        timeline_path = self.store_timeline(build(()))
+        empty = build(())
+        empty["manifest"] = timeline.attest_manifest(
+            manifest_path, self.root)
+        timeline_path = self.store_timeline(empty)
         status, _, err = self.run_cli(
             ["--verify", "--manifest", manifest_path,
              "-o", timeline_path])
@@ -5440,6 +5481,188 @@ class TestTheSuiteIsHermetic(unittest.TestCase):
                         "the environment must only be consulted inside "
                         "a test, where it can be redirected"
                         % child.lineno)
+
+
+class TestTheAttestationIsCheckedOnDisk(unittest.TestCase):
+    """The gate every producer of a rendered artifact passes.
+
+    A stale timeline left beside a re-recorded manifest is the one
+    failure no internal invariant can catch: the document is perfectly
+    self-consistent, its totals agree with its entries, its cue windows
+    are contiguous, and it describes a session that no longer exists.
+    Three producers read it and none of them reads the manifest, so
+    without provenance recorded IN the document a film could be paced
+    from one session's numbers over another session's frames.
+    """
+
+    def setUp(self):
+        self.directory = os.path.realpath(
+            tempfile.mkdtemp(prefix="blitzy_attest_"))
+        self.addCleanup(_remove_tree, self.directory)
+        self.manifest = os.path.join(self.directory, "manifest.jsonl")
+        _write_lines(self.manifest,
+                     [json.dumps(row)
+                      for row in make_rows(REFERENCE_CLOCKS)])
+
+    def attested(self):
+        return timeline.build_timeline(
+            make_rows(REFERENCE_CLOCKS), None, None,
+            timeline.attest_manifest(self.manifest, self.directory))
+
+    def test_an_attested_document_passes_the_gate(self):
+        document = self.attested()
+        self.assertEqual(
+            timeline.manifest_attestation_problems(
+                document, self.directory), [])
+        self.assertIs(
+            timeline.assert_timeline_document(document, self.directory),
+            document,
+            msg="the gate returns the document so a caller can bind it")
+
+    def test_the_attestation_records_path_digest_and_rows(self):
+        attestation = self.attested()["manifest"]
+        self.assertEqual(
+            sorted(attestation),
+            sorted(timeline.MANIFEST_ATTESTATION_FIELDS))
+        self.assertEqual(attestation["rows"], len(REFERENCE_CLOCKS))
+        self.assertRegex(attestation["sha256"], r"\A[0-9a-f]{64}\Z")
+        self.assertFalse(os.path.isabs(attestation["path"]),
+                         msg="stored relative, so the artifact travels")
+        self.assertTrue(attestation["path"].endswith("manifest.jsonl"))
+
+    def test_the_digest_is_of_the_manifest_bytes(self):
+        with open(self.manifest, "rb") as handle:
+            expected = hashlib.sha256(handle.read()).hexdigest()
+        self.assertEqual(self.attested()["manifest"]["sha256"], expected)
+
+    def test_a_manifest_that_changed_after_the_write_is_caught(self):
+        document = self.attested()
+        # The session grew by one keystroke after the timeline was
+        # computed.  Nothing INSIDE the document can notice.
+        _write_lines(self.manifest,
+                     [json.dumps(row) for row in
+                      make_rows(REFERENCE_CLOCKS + ("00:00:06",))])
+        self.assertEqual(timeline.validate_timeline(document), [],
+                         msg="the document is still self-consistent")
+        problems = timeline.manifest_attestation_problems(
+            document, self.directory)
+        self.assertTrue(problems, msg="but its provenance is stale")
+        self.assertIn("DIFFERENT evidence", problems[0])
+        with self.assertRaises(timeline.TimelineError):
+            timeline.assert_timeline_document(document, self.directory)
+
+    def test_a_manifest_edited_in_place_is_caught(self):
+        # Same row count, different bytes: only the digest can see it.
+        document = self.attested()
+        rows = make_rows(REFERENCE_CLOCKS)
+        rows[0]["commentary"] = "something else entirely"
+        _write_lines(self.manifest, [json.dumps(row) for row in rows])
+        problems = timeline.manifest_attestation_problems(
+            document, self.directory)
+        self.assertTrue(problems)
+        self.assertIn("sha256", problems[0])
+
+    def test_an_unattested_document_is_refused_by_the_gate(self):
+        document = timeline.build_timeline(make_rows(REFERENCE_CLOCKS))
+        self.assertEqual(
+            timeline.validate_timeline(document), [],
+            msg=("the arithmetic validator accepts it: provenance is a "
+                 "different question and is asked where it bites"))
+        with self.assertRaises(timeline.TimelineError) as caught:
+            timeline.assert_timeline_document(document, self.directory)
+        self.assertIn("no manifest attestation", str(caught.exception))
+
+    def test_a_bare_array_is_refused_by_the_gate(self):
+        with self.assertRaises(timeline.TimelineError) as caught:
+            timeline.assert_timeline_document(
+                self.attested()["frames"], self.directory)
+        self.assertIn("bare array", str(caught.exception))
+
+    def test_the_gate_names_the_label_it_was_given(self):
+        with self.assertRaises(timeline.TimelineError) as caught:
+            timeline.assert_timeline_document(
+                7, self.directory, label="the pacing document")
+        self.assertIn("the pacing document", str(caught.exception))
+
+
+class TestTheArtifactLock(unittest.TestCase):
+    """Publication is serialised, and the lock lives outside the tree.
+
+    Three producers publish from one timeline, and each publishes
+    something the next stage reads.  Two runs of one producer used to
+    interleave -- a half-composed transitions directory, a movie
+    truncated before its replacement was verified, an SRT published
+    while its Markdown twin was still the previous generation.
+    """
+
+    def setUp(self):
+        self.directory = os.path.realpath(
+            tempfile.mkdtemp(prefix="blitzy_lock_"))
+        self.addCleanup(_remove_tree, self.directory)
+        self.runtime = os.path.join(self.directory, "runtime")
+        self.env = _environment(PLAYTHROUGH_RUNTIME_DIR=self.runtime)
+        self.env.__enter__()
+        self.addCleanup(self.env.__exit__, None, None, None)
+
+    def test_the_lock_is_not_inside_the_artifact_tree(self):
+        # .gitignore ends with `!/playthrough/**`, which re-includes
+        # everything under it -- so a lock file beside the artifacts
+        # would be committed as though it were a session's evidence.
+        path = timeline.artifact_lock_path("movie", self.directory)
+        self.assertTrue(path.startswith(self.runtime + os.sep))
+        self.assertFalse(path.startswith(self.directory + os.sep + "p"))
+        self.assertTrue(path.endswith("movie.lock"))
+
+    def test_the_scratch_directory_is_private(self):
+        holder = timeline.scratch_dir(self.directory)
+        mode = os.lstat(holder).st_mode
+        self.assertEqual(mode & 0o777, 0o700,
+                         msg="another account must not plant a lock")
+
+    def test_two_clones_do_not_block_each_other(self):
+        other = os.path.realpath(
+            tempfile.mkdtemp(prefix="blitzy_lock_other_"))
+        self.addCleanup(_remove_tree, other)
+        self.assertNotEqual(
+            timeline.artifact_lock_path("movie", self.directory),
+            timeline.artifact_lock_path("movie", other),
+            msg=("the scratch directory is keyed by a digest of the "
+                 "approved root, so two checkouts are independent"))
+
+    def test_the_lock_is_exclusive(self):
+        with timeline.ArtifactLock("movie", self.directory):
+            with self.assertRaises(timeline.TimelineError) as caught:
+                with timeline.ArtifactLock("movie", self.directory,
+                                           timeout=0.2):
+                    pass
+        self.assertIn("refuses rather than interleaving",
+                      str(caught.exception))
+
+    def test_the_lock_is_released_afterwards(self):
+        with timeline.ArtifactLock("movie", self.directory):
+            pass
+        with timeline.ArtifactLock("movie", self.directory, timeout=0.2):
+            pass
+
+    def test_different_artifacts_do_not_block_each_other(self):
+        with timeline.ArtifactLock("movie", self.directory):
+            with timeline.ArtifactLock("transcripts", self.directory,
+                                       timeout=0.2):
+                pass
+
+    def test_a_lock_name_that_is_a_path_is_refused(self):
+        for name in ("../escape", "a/b", ".", "..", "", "  "):
+            with self.subTest(name=repr(name)):
+                with self.assertRaises(timeline.TimelineError):
+                    timeline.artifact_lock_path(name, self.directory)
+
+    def test_the_lock_file_survives_release(self):
+        # Unlinking a lock another process is waiting on is how a lock
+        # stops working, so it is created once and left.
+        path = timeline.artifact_lock_path("movie", self.directory)
+        with timeline.ArtifactLock("movie", self.directory):
+            pass
+        self.assertTrue(os.path.isfile(path))
 
 
 if __name__ == "__main__":

@@ -45,10 +45,14 @@ compositing clip class does not render: the composition succeeds, the
 frames come out, and the fade is simply absent.  Nothing fails, so
 nothing reports it -- the only symptom is a hard cut where a fade was
 asked for.  concatenate_videoclips renders the same effects correctly.
-That is why this module composes by concatenation, why the compositing
-class is not imported at all, and why verification MEASURES the
-luminance across a written group instead of trusting that the call did
-what it was told.
+That is why this module composes by concatenation and why the
+compositing class is not imported at all.  Note what this module does
+NOT do about it: it counts its frames and checks their geometry, and a
+hard cut would pass both, so nothing here establishes that a fade
+rendered.  The pixel-level checks live elsewhere -- capture.sh measures
+the grayscale mean and standard deviation of every frame it writes, and
+the acceptance gate reads them again from frames pulled back out of the
+finished film -- and the claim is left there rather than made here.
 
 EVERY MOVIEPY EXAMPLE OLDER THAN v2 IS WRONG HERE
 the v1 ``editor`` submodule no longer exists and the imports come from
@@ -80,18 +84,30 @@ else, which is what makes the acceptance gate possible at all: the frame
 count must equal the manifest's line count.  Mixing derived imagery in
 would destroy that identity, so derived frames go to
 playthrough/build/transitions/ and this module opens nothing under
-playthrough/frames/ for writing.  It reads captures from there and
-writes nowhere but the transitions directory -- no command line flag can
-change that, because the output prefix is validated to resolve inside a
+playthrough/frames/ for writing.  Every FINAL PNG it produces is
+confined to the transitions directory -- no command line flag can change
+that, because the output prefix is validated to resolve inside a
 directory named build/transitions and refused anywhere else.
 
+Its RUNTIME STATE is a separate question, and the answer is not "the
+same directory".  The generation lock lives in the pipeline's scratch
+directory OUTSIDE the tree entirely, for the .gitignore reason
+LOCK_NAME records.  The staging and retired directories a switch needs
+are necessarily inside, because a rename has to stay within one
+filesystem and one parent -- so they are dot-prefixed siblings under
+playthrough/build/ (STAGING_PREFIX, RETIRED_PREFIX), removed on the way
+out, and swept by a later run if a kill prevented that.
+
 IDEMPOTENT AND DETERMINISTIC, BECAUSE THE ARTIFACTS ARE COMMITTED
-A re-run overwrites the same paths and reconciles the directory first,
-so a timeline with fewer flags than the last run leaves no stale group
-behind and the group count on disk always equals the current flag count.
-Nothing random and no timestamp enters an output: the same timeline over
-the same captures produces the same bytes, which is what lets the movie
-be reproduced from the committed inputs.
+A re-run composes a COMPLETE generation in a staging directory beside the
+destination and switches it in by rename, under a lock, so a timeline
+with fewer flags than the last run leaves no stale group behind, an
+interrupted run publishes nothing at all, and two concurrent runs
+serialise instead of deleting each other's frames.  The group count on
+disk therefore always equals the current flag count.  Nothing random and
+no timestamp enters an output: the same timeline over the same captures
+produces the same bytes, which is what lets the movie be reproduced from
+the committed inputs.
 
 WHY EVERY FRAME IS NORMALISED BEFORE IT IS SAVED
 ``iter_frames`` returns MIXED dtypes -- ``uint8`` for the frames that
@@ -109,12 +125,17 @@ There is no subprocess, no shell and no network surface of any kind.
 """
 
 import argparse
+import hashlib
 import os
 import re
+import shutil
+import stat
 import sys
+import tempfile
+import time
 
 from typing import (Any, Dict, Iterable, List, NamedTuple, Optional,
-                    Sequence, Tuple)
+                    Sequence, Set, Tuple)
 
 # Set BEFORE the third-party and sibling imports below.  env.sh exports
 # PYTHONDONTWRITEBYTECODE=1, but this module is documented as runnable
@@ -263,9 +284,10 @@ TRANSITION_SUFFIX_FORMAT = "_%02d.png"
 TRANSITION_NAME_FORMAT = TRANSITION_STEM_FORMAT + TRANSITION_SUFFIX_FORMAT
 
 # Anything matching this in the transitions directory is a product of
-# this module and is therefore ours to reconcile.  Anchored, so a file
-# somebody else put there is left alone and reported rather than
-# deleted.
+# this module.  Anchored, so a file somebody else put there is reported
+# rather than counted as a composed frame -- and, because a generation
+# is published by renaming a whole directory into place, is never
+# deleted through this pattern either.
 TRANSITION_NAME_RE = re.compile(r"^trans_[0-9]{5}_[0-9]{2}\.png$")
 
 # A looser shape used only to notice a stray file that WOULD be picked
@@ -273,6 +295,37 @@ TRANSITION_NAME_RE = re.compile(r"^trans_[0-9]{5}_[0-9]{2}\.png$")
 # this module wrote.
 TRANSITION_GLOB_PREFIX = "trans_"
 PNG_SUFFIX = ".png"
+
+# The eight-byte PNG signature [RFC 2083 section 3.1].  Every image this
+# module reads must begin with it, checked before any decoder is
+# reached: Pillow identifies a format by CONTENT, so without this a
+# crafted PSD, DDS or TIFF named .png would be parsed as that format.
+PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+
+# A hard ceiling on the pixels a capture may DECLARE, so a malformed or
+# crafted header cannot ask for an unbounded allocation.  The root
+# window these captures photograph is 1920x1080 = 2 073 600 pixels, so
+# 64 megapixels is generous by a factor of thirty.
+MAX_PIXELS = 64 * 1024 * 1024
+
+# The sha256 of data/font/Terminus.ttf as this repository ships it.
+#
+# A FONT IS PARSED INPUT.  FreeType is a native parser reached through
+# Pillow, and the face is named by a path joined onto a checkout root --
+# so "the font we expect" is an ASSUMPTION until the bytes are hashed.
+# An attacker who can place a file at data/font/Terminus.ttf gets the
+# native parser, and the card is composed on every run.
+#
+# This is deliberately the same value as ocr_clock.GLYPH_FONT_SHA256 and
+# is declared here rather than imported, because importing that module
+# would make pytesseract a hard dependency of composing a transition
+# (the same reason timeline.py restates its own field names).  The test
+# suite asserts the two constants are equal, so they cannot drift.
+FONT_SHA256 = (
+    "e0d645677fa32557a16b3be8533c552c2939fd507d7b8515ead5d9cf494cb2a6")
+
+# Read the font in blocks rather than whole.
+DIGEST_BLOCK = 65536
 
 # The group index is ZERO-BASED: the first frame of the group after
 # capture 1 is trans_00001_00.png.  Chosen once and applied everywhere,
@@ -338,16 +391,16 @@ class Group(NamedTuple):
     `frame` is the capture the transition FOLLOWS and names the output
     files.  `current` is the frame being faded out of and `successor`
     the frame being faded in to, both absolute and already proved to be
-    captures inside playthrough/frames/.  `self_successor` records that
-    the flagged entry had no successor in the timeline and is fading
-    back into itself -- see :func:`plan_groups` for why that is
-    possible at all and why it is honoured rather than skipped.
+    captures inside playthrough/frames/.
+
+    There is no self-successor state: a flagged FINAL entry has no frame
+    to fade into, and plan_groups() REFUSES such a timeline rather than
+    fabricating a fade from the last capture back into itself.
     """
 
     frame: int
     current: str
     successor: str
-    self_successor: bool
 
 
 # ---------------------------------------------------------------------
@@ -511,13 +564,48 @@ def font_path(repo_root_dir: Optional[str] = None) -> str:
             "no longer match the frames around it, and the only symptom "
             "would be a film that looks slightly wrong."
             % (FONT_REL_PATH, resolved))
-    if not os.path.isfile(resolved):
+    # lstat, not stat: a symlink at this path is refused rather than
+    # followed, because what FreeType would then parse is whatever the
+    # link points at and no check here would have seen it.
+    try:
+        info = os.lstat(resolved)
+    except OSError as err:
         raise TransitionError(
-            "%s is not a regular file: %s" % (FONT_REL_PATH, resolved))
+            "%s cannot be inspected: %s" % (FONT_REL_PATH, err)) from err
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        raise TransitionError(
+            "%s is not a regular file: %s.  A font is native parser "
+            "input, so the file behind that name is refused unless it "
+            "is the one this repository ships"
+            % (FONT_REL_PATH, resolved))
     if not os.access(resolved, os.R_OK):
         raise TransitionError(
             "%s is not readable: %s" % (FONT_REL_PATH, resolved))
+    observed = font_digest(resolved)
+    if observed != FONT_SHA256:
+        raise TransitionError(
+            "%s has sha256 %s, but this pipeline is written against "
+            "%s -- the data/font/Terminus.ttf this repository ships.  "
+            "The face is parsed by FreeType through Pillow on every "
+            "run, so one that is not the attested face is refused "
+            "rather than parsed.  If the font was legitimately updated "
+            "upstream, update FONT_SHA256 in this module deliberately "
+            "and re-verify the card's appearance"
+            % (FONT_REL_PATH, observed, FONT_SHA256))
     return resolved
+
+
+def font_digest(path: str) -> str:
+    """Return the sha256 of a font file's exact bytes, in hex."""
+    digest = hashlib.sha256()
+    try:
+        with open(path, "rb") as handle:
+            for block in iter(lambda: handle.read(DIGEST_BLOCK), b""):
+                digest.update(block)
+    except OSError as err:
+        raise TransitionError(
+            "cannot read %s to attest it: %s" % (path, err)) from err
+    return digest.hexdigest()
 
 
 def _approved_root(root: Optional[str] = None) -> str:
@@ -660,7 +748,19 @@ def _assert_output_directory(directory: str, root: str) -> None:
             "the output directory must stay inside %s, but it resolves "
             "to %s" % (root, directory))
     tail = os.path.join(*TRANSITIONS_REL_PARTS)
-    if not directory.endswith(os.sep + tail):
+    # Two acceptable shapes, and only two: the published destination, and
+    # a staging sibling BESIDE it that is only ever renamed onto it.  The
+    # staging form has to be admitted by name here, because a generation
+    # is composed complete before it is switched in (see
+    # _publish_generation) -- and admitting it by name rather than by
+    # relaxing the rule keeps "this module only ever writes into
+    # build/transitions, or into something that becomes it" a property a
+    # reader can verify by inspection.
+    parent, leaf = os.path.split(directory)
+    staged = bool(
+        os.path.basename(parent) == TRANSITIONS_REL_PARTS[0] and
+        leaf.startswith(STAGING_PREFIX))
+    if not directory.endswith(os.sep + tail) and not staged:
         raise TransitionError(
             "the output directory must end with %s, but it resolves to "
             "%s.  Derived transition frames live in %s and nowhere "
@@ -794,20 +894,34 @@ def validated_capture_path(
 def timeline_entries(document: Any) -> List[Dict[str, Any]]:
     """Return the frames array of a timeline document.
 
-    The artifact is an object carrying the constants and totals
-    alongside its `frames` array; a bare array is accepted too, because
-    a caller holding just the entries in hand is a legitimate way to
-    drive this module from a test, and refusing it would buy nothing.
+    A BARE ARRAY IS REFUSED, and the reason is worth stating because
+    accepting one used to look harmless.  timeline.validate_timeline()
+    -- the canonical check on the clamp bounds, the transition rule, the
+    contiguity of the cue windows and the manifest attestation -- begins
+    by requiring an OBJECT and returns immediately for anything else.
+    So a caller that handed this module a list of entries skipped every
+    document-level invariant there is: there were no totals to check the
+    entries against, no constants to prove the clamp under, and no
+    provenance naming the evidence the durations came from.  A
+    hand-written list of durations could then compose the film's
+    transitions with nothing anywhere objecting.
+
+    The object is required instead, so that the one validator applies.
     """
-    if isinstance(document, dict):
-        entries = document.get(KEY_FRAMES)
-        if entries is None:
-            raise TransitionError(
-                "the timeline document has no '%s' array; "
-                "timeline.DOCUMENT_FIELDS declares it and timeline.py "
-                "always writes it" % KEY_FRAMES)
-    else:
-        entries = document
+    if not isinstance(document, dict):
+        raise TransitionError(
+            "the timeline is a %s, not an object with a '%s' array.  A "
+            "bare array skips timeline.validate_timeline() entirely -- "
+            "the clamp bounds, the totals, the constants and the "
+            "manifest attestation all go unchecked -- so it is refused "
+            "rather than composed from"
+            % (type(document).__name__, KEY_FRAMES))
+    entries = document.get(KEY_FRAMES)
+    if entries is None:
+        raise TransitionError(
+            "the timeline document has no '%s' array; "
+            "timeline.DOCUMENT_FIELDS declares it and timeline.py "
+            "always writes it" % KEY_FRAMES)
     if not isinstance(entries, list):
         raise TransitionError(
             "the timeline's '%s' must be an array, got %s"
@@ -951,18 +1065,23 @@ def plan_groups(
                 "the '%s' of timeline entry %d"
                 % (KEY_FILE, position + 1),
                 root, captures)
-            groups.append(Group(index, current, successor, False))
+            groups.append(Group(index, current, successor))
             continue
-        _warn(
-            "timeline entry %d is the last one and carries '%s'; "
-            "timeline.py reports that as 'final-frame-flagged' because "
-            "the final frame has no successor to transition into.  The "
-            "group is still composed IN FULL, fading frame %d back into "
-            "itself, so that the %d frames on disk still match the flag "
-            "and nothing downstream is short of imagery.  The timeline "
-            "is malformed and should be recomputed."
-            % (position, KEY_TRANSITION_AFTER, index, FRAMES_PER_GROUP))
-        groups.append(Group(index, current, current, True))
+        # REFUSED BEFORE ANYTHING IS PLANNED, let alone written.  A
+        # fade from the last capture back into itself is imagery of an
+        # event that did not happen, and the whole film's honesty rests
+        # on every frame being a photograph of something the survivor
+        # saw.  timeline.py's own problem code is named so the operator
+        # is sent to the document that has to be recomputed, not to
+        # this module.
+        raise TransitionError(
+            "timeline entry %d is the LAST one and carries '%s', which "
+            "timeline.py reports as 'final-frame-flagged': the final "
+            "frame has no successor to transition into, so there is no "
+            "honest transition to compose.  Nothing has been written.  "
+            "Recompute the timeline with timeline.py rather than "
+            "fabricating a fade from frame %d back into itself."
+            % (position, KEY_TRANSITION_AFTER, index))
     return groups
 
 
@@ -1022,14 +1141,46 @@ def expected_size() -> Tuple[int, int]:
 
 
 def _image_size(path: str) -> Tuple[int, int]:
-    """Return a PNG's (width, height) without decoding its pixels."""
-    _require_pillow()
+    """Return a PNG's (width, height) without decoding its pixels.
+
+    Read from the IHDR chunk in pure Python.  Pillow identifies a file
+    by its CONTENT and ships a plugin per format, so ``Image.open`` on a
+    path called frame_00001.png would hand a crafted PSD, DDS, TIFF or
+    FLI to that format's native parser -- which is where Pillow's
+    memory-corruption advisories live, and this pipeline is pinned to
+    11.3.0 because moviepy 2.2.1 declares ``pillow<12.0``.  The
+    commonest question asked of a capture is "is it 1920x1080?", and
+    answering it from 24 bytes of header means no decoder runs at all.
+    """
+    signature = PNG_MAGIC
     try:
-        with Image.open(path) as handle:
-            return int(handle.width), int(handle.height)
+        with open(path, "rb") as handle:
+            header = handle.read(len(signature) + 16)
     except OSError as err:
         raise TransitionError(
-            "%s could not be read as an image: %s" % (path, err)) from err
+            "%s could not be read: %s" % (path, err)) from err
+    if header[:len(signature)] != signature:
+        raise TransitionError(
+            "%s does not begin with the PNG signature (it begins %r).  "
+            "Every frame this module composes from is a PNG written by "
+            "capture.sh; a file carrying another format's content is "
+            "refused rather than handed to whichever native decoder it "
+            "would reach" % (path, header[:len(signature)]))
+    body = header[len(signature):]
+    if len(body) < 16 or body[4:8] != b"IHDR":
+        raise TransitionError(
+            "%s does not open with an IHDR chunk, so it is not a PNG "
+            "this pipeline wrote" % path)
+    width = int.from_bytes(body[8:12], "big")
+    height = int.from_bytes(body[12:16], "big")
+    if width <= 0 or height <= 0:
+        raise TransitionError(
+            "%s declares a %dx%d image" % (path, width, height))
+    if width * height > MAX_PIXELS:
+        raise TransitionError(
+            "%s declares %dx%d = %d pixels, past the %d-pixel ceiling"
+            % (path, width, height, width * height, MAX_PIXELS))
+    return width, height
 
 
 def _assert_capture_size(path: str, size: Tuple[int, int]) -> None:
@@ -1224,6 +1375,14 @@ def compose_transition_group(
     :param font: the typeface for the card; defaults to the game's own
         data/font/Terminus.ttf.
     :param size: the frame size; defaults to :func:`expected_size`.
+    :param root: the artifact tree the output prefix and the source
+        captures must resolve inside; defaults to the pipeline's
+        playthrough/ directory.  A test passes its own; nothing in the
+        environment can move it.
+    :param repo_root_dir: the checkout the card's typeface is resolved
+        against, since data/font/Terminus.ttf is the game's own font and
+        lives outside playthrough/; defaults to the checkout this module
+        sits in.
     :returns: the paths written, in order.
     :raises TransitionError: for a missing font, a missing or mis-sized
         capture, an output prefix pointing anywhere it may not, a group
@@ -1254,6 +1413,7 @@ def compose_transition_group(
     paths = group_frame_paths(prefix)
     clips: List[Any] = []
     segment = None
+    staged_frames: List[Tuple[str, str]] = []
     try:
         # The composition, exactly as the plan fixes it.  Effects are
         # v2 classes handed to with_effects([...]); CONCATENATED rather
@@ -1275,10 +1435,32 @@ def compose_transition_group(
                 "%dx%d"
                 % (segment.size[0], segment.size[1], geometry[0],
                    geometry[1]))
-        frames = list(segment.iter_frames(fps=FPS))
+        # STREAMED, NEVER MATERIALISED.  list(iter_frames(...)) holds
+        # all twelve 1920x1080 arrays at once, and the faded ones come
+        # back as float64, so the raw arrays alone reach roughly 570
+        # MiB before the clips, the card buffers and the Pillow objects
+        # on top -- measured at 553.9 MiB peak RSS for one group
+        # against 223.0 MiB streaming.  Each frame is converted and
+        # written as it is produced and only the COUNT is kept, so the
+        # exact-twelve assertion below still refuses a short segment AND
+        # a long one while one frame is resident at a time.
+        written = 0
+        for ordinal, frame in enumerate(segment.iter_frames(fps=FPS)):
+            if ordinal >= FRAMES_PER_GROUP:
+                # Keep consuming so the reported count is the true one,
+                # but write nothing past the plan.
+                written += 1
+                continue
+            staged_frame = paths[ordinal] + STAGED_FRAME_SUFFIX
+            _write_png(_frame_to_rgb8(frame, ordinal), staged_frame)
+            _assert_written(staged_frame, geometry)
+            staged_frames.append((staged_frame, paths[ordinal]))
+            written += 1
     except TransitionError:
+        _discard_staged_frames(staged_frames)
         raise
     except (OSError, ValueError, TypeError) as err:
+        _discard_staged_frames(staged_frames)
         raise TransitionError(
             "the transition between %s and %s could not be composed: %s"
             % (source, target, err)) from err
@@ -1293,20 +1475,42 @@ def compose_transition_group(
                     # failure that brought us here.
                     pass
 
-    if len(frames) != FRAMES_PER_GROUP:
+    # ASSERTED AFTER THE ITERATION, so a generator that stopped short
+    # and one that ran long are both refused, each naming the true count.
+    if written != FRAMES_PER_GROUP:
+        _discard_staged_frames(staged_frames)
         raise TransitionError(
             "the composed segment yielded %d frame(s) at %d fps, not "
             "the %d a %ss transition must be.  verify_artifacts.sh "
             "counts groups against the timeline's flags and "
             "render_movie.py charges exactly %ss of video per group, so "
             "a different count would desynchronise the captions."
-            % (len(frames), FPS, FRAMES_PER_GROUP, EXPECTED_TRANSITION,
+            % (written, FPS, FRAMES_PER_GROUP, EXPECTED_TRANSITION,
                EXPECTED_TRANSITION))
-
-    for ordinal, (frame, path) in enumerate(zip(frames, paths)):
-        _write_png(_frame_to_rgb8(frame, ordinal), path)
-        _assert_written(path, geometry)
+    # COMPLETE AND COUNTED, so the group may be published.
+    for staged_frame, final in staged_frames:
+        try:
+            os.replace(staged_frame, final)
+        except OSError as err:
+            _discard_staged_frames(staged_frames)
+            raise TransitionError(
+                "could not publish %s as %s: %s"
+                % (staged_frame, final, err)) from err
     return paths
+
+
+def _discard_staged_frames(staged: Sequence[Tuple[str, str]]) -> None:
+    """Remove a part-built group's staged frames.  Never raises.
+
+    A refusal must leave the directory as it found it, so the frames
+    this attempt wrote are withdrawn and any previous group of the same
+    name is left untouched.
+    """
+    for staged_frame, _ in staged:
+        try:
+            os.unlink(staged_frame)
+        except OSError:
+            pass
 
 
 # ---------------------------------------------------------------------
@@ -1337,60 +1541,129 @@ def _ensure_directory(directory: str) -> None:
             "could not create %s: %s" % (directory, err)) from err
 
 
-def reconcile_transitions_dir(
-    directory: str,
-    expected: Iterable[str],
-) -> List[str]:
-    """Remove transition frames the current timeline does not account for.
+# ---------------------------------------------------------------------
+# The staged generation
+#
+# WHY THE DIRECTORY IS REPLACED RATHER THAN EDITED.  Composing in place
+# did two destructive things before it had produced anything: it
+# unlinked every frame the new timeline did not account for, and then
+# O_TRUNCated each surviving name as it wrote.  So an interruption
+# anywhere in the middle -- a full disk, a signal, a MoviePy failure on
+# group nine of eleven -- left the directory holding some frames from
+# this timeline, some from the last one, and some truncated to zero
+# bytes.  Every one of them matches `trans_*.png`, so verify_artifacts.sh
+# counts them, and a film assembled from that directory splices a
+# transition that was never composed for it.
+#
+# Worse, two runs at once interleaved: both reconciled against their own
+# expectations, so each deleted the other's frames while writing its
+# own, and the directory ended up describing neither timeline.
+#
+# So a generation is now built COMPLETE AND VERIFIED in a staging
+# directory beside the destination, under an exclusive lock that makes
+# concurrent runs wait rather than interleave, and only then switched in.
+# The switch is two renames within one directory, so the window in which
+# the destination does not exist is a pair of adjacent metadata
+# operations rather than the whole composition; and because a rename
+# either happens or does not, no partial generation is ever visible.
+# ---------------------------------------------------------------------
 
-    Only names this module writes are touched -- `trans_*.png` -- and
-    only regular files: a symlink or a subdirectory is reported and left
-    alone rather than followed or removed, because deleting through a
-    link is how a reconciliation turns into a loss.  Anything else
-    somebody put in the directory is left alone too, and a file matching
-    the glob that this module did not write is named on stderr, since
-    verify_artifacts.sh's own `trans_*.png` glob would otherwise count it
-    as a frame.
+STAGING_PREFIX = ".transitions-staging-"
 
-    :returns: the paths removed, sorted, so the caller can report them.
+# The suffix a frame carries while it is being composed.  Each streamed
+# frame is written here and renamed into place only once the whole group
+# has been produced and counted, so a segment that yields the wrong
+# number of frames -- or a device that fails half way -- publishes
+# NOTHING and leaves any previous group of the same name intact.  That
+# is what lets the frames be streamed one at a time (which is why the
+# composition needs ~223 MiB rather than ~554 MiB) without giving up
+# all-or-nothing publication.
+STAGED_FRAME_SUFFIX = ".composing"
+RETIRED_PREFIX = ".transitions-retired-"
+
+# The artifact this module publishes, for timeline.ArtifactLock.  The
+# lock lives in the pipeline's scratch directory OUTSIDE the tree,
+# because .gitignore's terminal `!/playthrough/**` would otherwise
+# re-include a lock file as though it were a session's evidence.
+LOCK_NAME = "transitions"
+
+
+def _publish_generation(staging: str, directory: str) -> None:
+    """Switch a verified staging directory in for the destination.
+
+    Two renames inside one parent: the live directory is retired to a
+    unique name, the staging directory takes its place, and the retired
+    one is then removed.  A rename either happens or does not, so no
+    reader ever sees a half-composed generation -- and if the second
+    rename fails, the first is undone so the previous generation is
+    restored rather than lost.
     """
-    keep = {os.path.basename(path) for path in expected}
-    removed: List[str] = []
-    try:
-        names = sorted(os.listdir(directory))
-    except OSError as err:
-        raise TransitionError(
-            "could not read %s: %s" % (directory, err)) from err
-    for name in names:
-        if name in keep:
-            continue
-        if not (name.startswith(TRANSITION_GLOB_PREFIX) and
-                name.endswith(PNG_SUFFIX)):
-            continue
-        path = os.path.join(directory, name)
-        if os.path.islink(path) or not os.path.isfile(path):
-            _warn(
-                "%s matches the transition glob but is not a regular "
-                "file; it is left in place, and verify_artifacts.sh "
-                "will count it" % path)
-            continue
-        if not TRANSITION_NAME_RE.match(name):
-            _warn(
-                "%s matches the transition glob but not the %s this "
-                "module writes; it is left in place, and "
-                "verify_artifacts.sh will count it"
-                % (path, TRANSITION_NAME_FORMAT))
-            continue
+    parent = os.path.dirname(directory)
+    retired = None
+    if os.path.exists(directory):
+        retired = os.path.join(
+            parent, "%s%d-%d" % (RETIRED_PREFIX, os.getpid(),
+                                 time.time_ns()))
         try:
-            os.unlink(path)
+            os.rename(directory, retired)
         except OSError as err:
             raise TransitionError(
-                "could not remove the stale transition frame %s: %s.  "
-                "It belongs to a previous run and would be counted "
-                "against this timeline's flags."
-                % (path, err)) from err
-        removed.append(path)
-    return removed
+                "could not retire the previous transitions directory "
+                "%s: %s" % (directory, err)) from err
+    try:
+        os.rename(staging, directory)
+    except OSError as err:
+        if retired is not None:
+            # Put the previous generation back: a failed switch must
+            # leave the directory as it was, not absent.
+            try:
+                os.rename(retired, directory)
+            except OSError:  # pragma: no cover - defensive
+                raise TransitionError(
+                    "the transitions directory %s could not be "
+                    "published (%s) AND the previous generation could "
+                    "not be restored from %s; it is still there and can "
+                    "be renamed back by hand"
+                    % (directory, err, retired)) from err
+        raise TransitionError(
+            "could not publish the composed transitions into %s: %s"
+            % (directory, err)) from err
+    timeline.fsync_directory(parent)
+    if retired is not None:
+        _remove_tree(retired)
+
+
+def _remove_tree(directory: str) -> None:
+    """Delete a directory this module created, and only its own files.
+
+    Never recurses and never follows a link: the only entries a retired
+    generation can hold are the regular files this module wrote, so
+    anything else is left behind along with the directory rather than
+    removed blindly.
+    """
+    try:
+        names = os.listdir(directory)
+    except OSError as err:
+        _warn("could not read %s to remove it: %s" % (directory, err))
+        return
+    for name in names:
+        target = os.path.join(directory, name)
+        if os.path.islink(target) or not os.path.isfile(target):
+            _warn(
+                "%s is not a regular file, so the retired generation "
+                "%s is left in place rather than removed blindly"
+                % (target, directory))
+            return
+        try:
+            os.unlink(target)
+        except OSError as err:
+            _warn("could not remove %s: %s" % (target, err))
+            return
+    try:
+        os.rmdir(directory)
+    except OSError as err:
+        _warn("could not remove the retired directory %s: %s"
+              % (directory, err))
 
 
 class Result(NamedTuple):
@@ -1449,6 +1722,16 @@ def make_transitions(
         raise TransitionError(
             "the timeline could not be read: %s" % err) from err
 
+    # THE CANONICAL GATE, before a single pixel is composed.  An object,
+    # zero validate_timeline() problems, and a manifest attestation that
+    # matches the manifest on disk -- so this module cannot pace a film's
+    # transitions from a document that fails its own invariants or that
+    # describes a different session's evidence.
+    try:
+        timeline.assert_timeline_document(document, root)
+    except timeline.TimelineError as err:
+        raise TransitionError(str(err)) from err
+
     entries = timeline_entries(document)
     transition_seconds(document)
     geometry = expected_size()
@@ -1459,42 +1742,317 @@ def make_transitions(
                  else default_transitions_dir(root))
     directory = _validated_directory(directory, "the output directory")
     _assert_output_directory(directory, _approved_root(root))
-    _ensure_directory(directory)
+    parent = os.path.dirname(directory)
+    _ensure_directory(parent)
+    _assert_replaceable(directory)
 
-    prefixes = [os.path.join(directory,
-                             TRANSITION_STEM_FORMAT % group.frame)
-                for group in groups]
-    expected: List[str] = []
-    for prefix in prefixes:
-        expected.extend(group_frame_paths(prefix))
-    if len(set(expected)) != len(expected):
+    names: List[str] = []
+    for group in groups:
+        names.extend(
+            os.path.basename(candidate) for candidate in
+            group_frame_paths(TRANSITION_STEM_FORMAT % group.frame))
+    if len(set(names)) != len(names):
         raise TransitionError(
             "two flagged entries share a frame index, so their groups "
             "would overwrite each other.  Frame indices run 1..n and "
             "`manifest.py verify` reports a duplicate; the timeline "
             "should be recomputed.")
 
-    removed = reconcile_transitions_dir(directory, expected)
-    written: List[str] = []
-    for group, prefix in zip(groups, prefixes):
-        written.extend(compose_transition_group(
-            group.current, group.successor, prefix, face, geometry,
-            root, repo_root_dir))
+    # Everything from here to the switch happens with the lock held, so
+    # a concurrent run waits for a whole generation rather than
+    # interleaving with half of one.
+    with timeline.ArtifactLock(LOCK_NAME, root):
+        # WHAT IS THERE NOW IS INSPECTED BEFORE IT IS REPLACED.  The
+        # switch below is atomic, which is what makes publication safe,
+        # but atomicity alone would quietly absorb two things it must
+        # not: a file matching the acceptance gate's `trans_*.png` glob
+        # that this module could never have written, and a file nobody
+        # wrote here at all.
+        _assert_no_foreign_transition_frames(directory)
+        keep = _foreign_entries(directory)
+        before = _glob_names(directory)
+        removed = _previous_generation(directory) + _own_litter(directory)
+        staging = tempfile.mkdtemp(dir=parent, prefix=STAGING_PREFIX)
+        try:
+            os.chmod(staging, 0o755)
+            staged: List[str] = []
+            for group in groups:
+                staged.extend(compose_transition_group(
+                    group.current, group.successor,
+                    os.path.join(staging,
+                                 TRANSITION_STEM_FORMAT % group.frame),
+                    face, geometry, root, repo_root_dir))
+            _assert_generation_complete(staging, staged, names)
+            # THE LAST LOOK BEFORE THE SWITCH.  The published directory
+            # is re-listed and compared with what it held when the run
+            # started, because the switch REPLACES it: a frame that
+            # appeared while the generation was being composed would
+            # otherwise be destroyed without anyone being told, and
+            # destroying a file this module did not write is not
+            # reconciliation.  Refusing here leaves it on disk.
+            _assert_nothing_appeared(directory, before)
+            # Carried across the switch, because replacing the directory
+            # must not destroy a file this module never owned.
+            _carry_foreign_entries(keep, staging)
+            timeline.fsync_directory(staging)
+            _publish_generation(staging, directory)
+        except BaseException:
+            # A failed generation takes its staging directory with it and
+            # leaves the published one exactly as it was.
+            shutil.rmtree(staging, ignore_errors=True)
+            raise
+        # THE CLOSING INVENTORY, re-listing the PUBLISHED directory after
+        # the switch: a frame that appeared while the generation was
+        # being composed is not in the staging area and would otherwise
+        # reach the acceptance gate, which globs this directory.
+        _assert_published_generation(directory, names)
 
-    if written != expected:
+    written = [os.path.join(directory, name) for name in
+               (os.path.basename(candidate) for candidate in staged)]
+    return Result(len(groups), len(groups), written, removed, directory)
+
+
+def _glob_matches(name: str) -> bool:
+    """True when the acceptance gate's `trans_*.png` glob matches."""
+    return (name.startswith(TRANSITION_GLOB_PREFIX) and
+            name.endswith(PNG_SUFFIX))
+
+
+def _glob_names(directory: str) -> Set[str]:
+    """The `trans_*.png` names this directory holds right now."""
+    try:
+        return {name for name in os.listdir(directory)
+                if _glob_matches(name)}
+    except OSError:
+        return set()
+
+
+def _assert_nothing_appeared(directory: str, before: Set[str]) -> None:
+    """Refuse a transition frame that arrived during the run.
+
+    Raised BEFORE the switch, so the published directory -- and the file
+    that appeared in it -- are left exactly as they are.  The
+    acceptance gate globs this directory, and a frame the timeline does
+    not account for is one it will count, so it is reported rather than
+    silently replaced.
+    """
+    appeared = sorted(_glob_names(directory) - before)
+    if not appeared:
+        return
+    raise TransitionError(
+        "%s appeared in %s while this run was composing, so it is "
+        "unaccounted for by the timeline.  Publishing would have "
+        "replaced the directory and destroyed it without saying so, and "
+        "the acceptance gate globs `%s*%s` here, so the run is refused "
+        "instead.  Nothing was published and the file is still on disk: "
+        "move it aside and run again."
+        % (", ".join(appeared), directory, TRANSITION_GLOB_PREFIX,
+           PNG_SUFFIX))
+
+
+def _assert_no_foreign_transition_frames(directory: str) -> None:
+    """Refuse a `trans_*.png` this module could not have written.
+
+    REFUSED, NOT DELETED, and not absorbed by the switch either.
+    verify_artifacts.sh globs `trans_*.png` in this directory, so such a
+    file WOULD be counted as a transition frame; a run that published
+    over it and reported success would hand the gate a directory it
+    rejects.  Deleting it is not this module's business -- removing a
+    file it did not write is not reconciliation -- so the run stops and
+    names it.
+    """
+    try:
+        names = sorted(os.listdir(directory))
+    except FileNotFoundError:
+        return
+    except OSError as err:
         raise TransitionError(
-            "the frames written do not match the frames planned: %d "
-            "written, %d planned" % (len(written), len(expected)))
-    on_disk = sorted(
-        name for name in os.listdir(directory)
-        if TRANSITION_NAME_RE.match(name))
-    if on_disk != sorted(os.path.basename(path) for path in expected):
+            "could not read the transitions directory %s: %s"
+            % (directory, err)) from err
+    for name in names:
+        if not _glob_matches(name):
+            continue
+        target = os.path.join(directory, name)
+        if os.path.islink(target) or not os.path.isfile(target):
+            raise TransitionError(
+                "%s matches the acceptance gate's transition glob but "
+                "is not a regular file; it is refused rather than "
+                "published over" % target)
+        if not TRANSITION_NAME_RE.match(name):
+            raise TransitionError(
+                "%s matches the acceptance gate's `%s*%s` glob but not "
+                "the `%s` name this module writes, so the gate would "
+                "count it as a transition frame this timeline does not "
+                "account for.  It is refused rather than published "
+                "over, and it is not deleted: removing a file this "
+                "module did not write is not reconciliation.  Move it "
+                "aside and run again."
+                % (target, TRANSITION_GLOB_PREFIX, PNG_SUFFIX,
+                   TRANSITION_STEM_FORMAT + TRANSITION_SUFFIX_FORMAT))
+
+
+def _foreign_entries(directory: str) -> List[str]:
+    """Name the regular files here that this module does not own.
+
+    Anything outside the `trans_*.png` glob -- a note left by hand, for
+    instance.  Collected so the atomic switch can carry it across
+    instead of destroying it.
+    """
+    try:
+        names = sorted(os.listdir(directory))
+    except OSError:
+        return []
+    keep = []
+    for name in names:
+        if _glob_matches(name) or _is_own_litter(name):
+            continue
+        target = os.path.join(directory, name)
+        if os.path.islink(target) or not os.path.isfile(target):
+            continue
+        keep.append(target)
+    return keep
+
+
+def _is_own_litter(name: str) -> bool:
+    """True for a half-built file THIS module left behind.
+
+    A run killed mid-composition can leave a staging frame beside the
+    published ones.  It is this module's own litter, so it is swept
+    rather than carried across the switch -- which is the opposite of
+    how a file this module never wrote is treated.
+    """
+    return (name.startswith(STAGING_PREFIX) or
+            name.endswith(STAGED_FRAME_SUFFIX))
+
+
+def _own_litter(directory: str) -> List[str]:
+    """Name this module's abandoned staging files in `directory`."""
+    try:
+        names = sorted(os.listdir(directory))
+    except OSError:
+        return []
+    return [os.path.join(directory, name) for name in names
+            if _is_own_litter(name) and
+            os.path.isfile(os.path.join(directory, name)) and
+            not os.path.islink(os.path.join(directory, name))]
+
+
+def _carry_foreign_entries(paths: Iterable[str], staging: str) -> None:
+    """Copy files this module does not own into the new generation."""
+    for source in paths:
+        destination = os.path.join(staging, os.path.basename(source))
+        try:
+            shutil.copy2(source, destination)
+        except OSError as err:
+            raise TransitionError(
+                "could not carry %s into the new generation: %s.  "
+                "Publishing would have destroyed a file this module "
+                "did not write." % (source, err)) from err
+
+
+def _assert_published_generation(
+    directory: str,
+    expected_names: Iterable[str],
+) -> None:
+    """Prove the PUBLISHED directory is exactly the planned generation.
+
+    Re-listed after the switch, because the staged check cannot see a
+    file that appeared in the published directory while the generation
+    was being composed -- and the acceptance gate globs the published
+    directory, not the staging one.
+    """
+    wanted = sorted(expected_names)
+    try:
+        on_disk = sorted(name for name in os.listdir(directory)
+                         if _glob_matches(name))
+    except OSError as err:
         raise TransitionError(
-            "%s holds %d transition frame(s) after the run but the "
+            "could not re-read the published transitions directory %s: "
+            "%s" % (directory, err)) from err
+    if on_disk != wanted:
+        extra = sorted(set(on_disk) - set(wanted))
+        missing = sorted(set(wanted) - set(on_disk))
+        raise TransitionError(
+            "the published transitions directory %s does not match the "
+            "timeline: %d file(s) match the acceptance gate's glob and "
+            "the timeline accounts for %d%s%s.  The gate counts the "
+            "groups on disk against the flags, so the difference is "
+            "reported rather than left for it to find."
+            % (directory, len(on_disk), len(wanted),
+               "; unexpected: " + ", ".join(extra) if extra else "",
+               "; missing: " + ", ".join(missing) if missing else ""))
+
+
+def _assert_replaceable(directory: str) -> None:
+    """Refuse a destination that cannot be swapped out safely."""
+    if os.path.islink(directory):
+        raise TransitionError(
+            "the output directory is a symbolic link: %s.  This module "
+            "publishes a directory by renaming one into place, so a "
+            "link here would be replaced rather than followed -- and a "
+            "link is not something this pipeline ever writes."
+            % directory)
+    if os.path.exists(directory) and not os.path.isdir(directory):
+        raise TransitionError(
+            "%s exists and is not a directory" % directory)
+
+
+def _previous_generation(directory: str) -> List[str]:
+    """Name the transition frames the published directory holds now.
+
+    Reported as `removed` so the run still says what it replaced.
+    Nothing is unlinked here: the whole directory is retired by the
+    switch, which is what makes the replacement atomic instead of a
+    sequence of deletions that can be interrupted half way.
+    """
+    if not os.path.isdir(directory):
+        return []
+    try:
+        names = sorted(os.listdir(directory))
+    except OSError as err:
+        raise TransitionError(
+            "could not read %s: %s" % (directory, err)) from err
+    return [os.path.join(directory, name) for name in names
+            if TRANSITION_NAME_RE.match(name)]
+
+
+def _assert_generation_complete(
+    staging: str,
+    staged: Iterable[str],
+    expected_names: Iterable[str],
+) -> None:
+    """Prove the staging directory is exactly the planned generation.
+
+    Checked BEFORE the switch, so an incomplete or over-full generation
+    is never published.  Three things must line up: what was written,
+    what was planned, and what is actually on disk.
+    """
+    wanted = sorted(expected_names)
+    written = sorted(os.path.basename(path) for path in staged)
+    if written != wanted:
+        raise TransitionError(
+            "the frames composed do not match the frames planned: %d "
+            "composed, %d planned" % (len(written), len(wanted)))
+    try:
+        on_disk = sorted(name for name in os.listdir(staging)
+                         if TRANSITION_NAME_RE.match(name))
+        every = sorted(os.listdir(staging))
+    except OSError as err:
+        raise TransitionError(
+            "could not read the staged generation %s: %s"
+            % (staging, err)) from err
+    if on_disk != wanted:
+        raise TransitionError(
+            "the staged generation holds %d transition frame(s) but the "
             "timeline accounts for %d.  verify_artifacts.sh asserts "
             "that the groups on disk match the flags, so the mismatch "
-            "is refused here." % (directory, len(on_disk), len(expected)))
-    return Result(len(groups), len(groups), written, removed, directory)
+            "is refused before it is published."
+            % (len(on_disk), len(wanted)))
+    if every != on_disk:
+        raise TransitionError(
+            "the staged generation holds %s, which this module did not "
+            "compose; it is refused rather than published"
+            % ", ".join(sorted(set(every) - set(on_disk))))
 
 
 # ---------------------------------------------------------------------
@@ -1542,6 +2100,33 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def relative_to_repo(path: str) -> str:
+    """Express a path relative to the checkout, for reporting.
+
+    The summary is a machine-readable line that ends up in run logs and
+    in the report, and an absolute path there discloses the filesystem
+    layout of the host -- the home directory, the operator's name, the
+    build root -- to every reader of an artifact that says nothing about
+    them otherwise.  Repository-relative is the same information the
+    reader actually needs and none of the information they do not.
+
+    A path outside the checkout is reduced to its basename behind a
+    marker, so the line stays honest about the file being elsewhere
+    without naming where.
+    """
+    try:
+        checkout = repo_root()
+    except TransitionError:  # pragma: no cover - defensive
+        return os.path.basename(path)
+    resolved = os.path.abspath(path)
+    if resolved == checkout:
+        return "."
+    prefix = checkout + os.sep
+    if resolved.startswith(prefix):
+        return resolved[len(prefix):].replace(os.sep, "/")
+    return "<outside the checkout>/%s" % os.path.basename(resolved)
+
+
 def _summarise(result: Result) -> str:
     """Return the one-line summary printed on success.
 
@@ -1554,9 +2139,9 @@ def _summarise(result: Result) -> str:
             "frame(s) each, %d file(s) written%s -> %s"
             % (result.flagged, result.groups, FRAMES_PER_GROUP,
                len(result.written),
-               (", %d stale file(s) removed" % len(result.removed))
+               (", %d file(s) replaced" % len(result.removed))
                if result.removed else "",
-               result.directory))
+               relative_to_repo(result.directory)))
 
 
 def main(

@@ -26,10 +26,10 @@ the movie.
 TRANSITIONS ARE CHARGED TO VIDEO TIME, NOT GAME TIME
 A raw delta above the ceiling sets transition_after, and the cue cursor
 advances by TRANSITION seconds after that frame's window and before the
-next frame's window opens.  That single detail is why the cue following
-a transition starts at 00:00:17,250 and not at 00:00:16,250 on the
-reference sequence.  A raw delta of exactly 10.0 s is NOT a transition:
-the comparison is strictly greater.
+next frame's window opens -- so the cue following a transition starts
+that much later than the preceding window closed, and every cue after it
+carries the same offset.  A raw delta of exactly 10.0 s is NOT a
+transition: the comparison is strictly greater.
 
 THE INVARIANT, asserted by validate_timeline() and carried in the
 artifact so a reader can check it without running anything:
@@ -177,12 +177,16 @@ recomputed and audited in any checkout.
 
 import argparse
 import errno
+import fcntl
+import hashlib
 import json
 import math
 import os
 import re
+import stat
 import sys
 import tempfile
+import time
 
 from dataclasses import dataclass
 from typing import (Any, Dict, Iterable, List, NamedTuple, Optional,
@@ -488,6 +492,10 @@ ENTRY_FIELDS = (
 # without recomputing anything.
 DOCUMENT_FIELDS = (
     "version",
+    # WHAT THIS TIMELINE WAS COMPUTED FROM, so the claim can be checked
+    # against the evidence rather than believed.  See
+    # MANIFEST_ATTESTATION_FIELDS and manifest_attestation_problems().
+    "manifest",
     "floor",
     "ceil",
     "transition",
@@ -508,6 +516,42 @@ DOCUMENT_FIELDS = (
     "final_cue_end",
     "frames",
 )
+
+
+# ---------------------------------------------------------------------
+# The manifest attestation
+#
+# WHY A TIMELINE MUST NAME ITS SOURCE.  This document is the single
+# source of truth for the movie's pacing AND for the caption timings,
+# and three separate producers read it -- make_transitions.py,
+# render_movie.py and make_srt.py.  None of them reads the manifest.
+# So without provenance recorded IN the document, a timeline computed
+# from one session's evidence can pace another session's frames, and
+# every internal invariant still holds: the totals agree with the
+# entries, the cue windows are contiguous, and nothing anywhere is
+# able to notice.
+#
+# The attestation closes that off.  It records the manifest's
+# repository-relative path, the sha256 of its exact bytes, and its row
+# count, so a producer can prove -- not assume -- that the timeline in
+# its hand describes the evidence on this disk.  A stale timeline left
+# beside a re-recorded manifest is then a hard refusal instead of a
+# silently mispaced film.
+#
+# The path is stored RELATIVE so the artifact stays reproducible across
+# checkouts and leaks no filesystem layout into a committed file.
+# ---------------------------------------------------------------------
+
+MANIFEST_ATTESTATION_FIELDS = ("path", "sha256", "rows")
+
+# 64 lowercase hex digits.  Pinned as a shape so a truncated, uppercase
+# or algorithm-swapped digest is a reported problem rather than a
+# comparison that silently never matches.
+SHA256_RE = re.compile(r"\A[0-9a-f]{64}\Z")
+
+# Read in blocks: the manifest of a long session is large, and hashing
+# it must not depend on holding all of it in memory.
+DIGEST_BLOCK = 65536
 
 
 class TimelineError(Exception):
@@ -1302,21 +1346,12 @@ ENV_DATE_AUDIT = "PLAYTHROUGH_DATE_AUDIT"
 def default_date_audit_path(root: Optional[str] = None) -> str:
     """Absolute path of the date-evidence sidecar.
 
-    `root` is the same call-site-only nomination the rest of the module
-    carries, and for the same reason: a default that ignored it would
-    send a confined reader at the committed tree.
-
-    A NOMINATION OUTRANKS THE ENVIRONMENT, in that order and not the
-    other way round.  The nomination is a containment boundary -- the
-    same one _validated_evidence_path() then holds this path to -- so an
-    ambient $PLAYTHROUGH_DATE_AUDIT pointing anywhere outside it could
-    only ever be refused: honouring it would turn a caller that confined
-    itself into a caller that can read nothing at all.  With no
-    nomination the export wins, because env.sh is the single definition
-    of the artifact layout; with neither, the path comes from this
-    file's own location so the module needs no configuration in any
-    checkout.  A call site that wants a particular file inside its own
-    root passes it to read_date_audit() explicitly, which outranks
+    A nominated `root` outranks $PLAYTHROUGH_DATE_AUDIT because the
+    nomination is the containment boundary this path is then held to, so
+    an ambient export pointing outside it could only be refused.  With no
+    nomination the export wins (env.sh is the single definition of the
+    artifact layout); with neither, the path comes from this file's own
+    location.  read_date_audit() takes an explicit path, which outranks
     every default here.
     """
     if root is not None:
@@ -1698,6 +1733,7 @@ def build_timeline(
     rows: Iterable[Dict[str, Any]],
     observations: Optional[Dict[int, Dict[str, Any]]] = None,
     dates: Optional[Sequence[Any]] = None,
+    manifest_attestation: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Compute the whole timeline from manifest rows.  Pure.
 
@@ -1792,6 +1828,16 @@ def build_timeline(
     total_transition = round_seconds(TRANSITION * transition_count)
     document = {
         "version": TIMELINE_VERSION,
+        # The provenance of this computation.  Supplied by the caller
+        # rather than read here, because this function is PURE: the
+        # caller is the one that resolved and read the manifest, so it
+        # is the only party that can honestly say which file that was.
+        # An unattested document is refused by
+        # assert_timeline_document(), which is the gate every producer
+        # of a rendered artifact passes.
+        "manifest": (dict(manifest_attestation)
+                     if isinstance(manifest_attestation, dict)
+                     else manifest_attestation),
         # The clamp travels with the data, so a reader can verify every
         # duration against the constants it was produced under without
         # opening this file.
@@ -1889,6 +1935,19 @@ EPSILON = 1e-9
 # Document-level shape.
 PROBLEM_TIMELINE_NOT_OBJECT = "timeline-not-object"
 PROBLEM_TIMELINE_MISSING_FIELD = "timeline-missing-field"
+# The provenance checks.  Separate ids because a test that proves a
+# stale timeline is caught must be able to name the check that caught
+# it, rather than matching prose that may be reworded.
+PROBLEM_MANIFEST_NOT_OBJECT = "manifest-attestation-not-object"
+PROBLEM_MANIFEST_MISSING_FIELD = "manifest-attestation-missing-field"
+PROBLEM_MANIFEST_EXTRA_FIELD = "manifest-attestation-extra-field"
+PROBLEM_MANIFEST_PATH_NOT_TEXT = "manifest-attestation-path-not-text"
+PROBLEM_MANIFEST_PATH_ABSOLUTE = "manifest-attestation-path-absolute"
+PROBLEM_MANIFEST_PATH_UPWARDS = "manifest-attestation-path-upwards"
+PROBLEM_MANIFEST_DIGEST = "manifest-attestation-digest"
+PROBLEM_MANIFEST_ROWS_NOT_INT = "manifest-attestation-rows-not-integer"
+PROBLEM_MANIFEST_ROWS_NEGATIVE = "manifest-attestation-rows-negative"
+PROBLEM_MANIFEST_ROWS_MISMATCH = "manifest-attestation-rows-mismatch"
 PROBLEM_FRAMES_NOT_ARRAY = "frames-not-array"
 PROBLEM_DOCUMENT_COUNT_NOT_INT = "document-count-not-integer"
 PROBLEM_DOCUMENT_NOT_NUMBER = "document-field-not-number"
@@ -1939,6 +1998,16 @@ PROBLEM_TOTAL_VS_CUE = "total-final-cue-disagreement"
 PROBLEM_CODES = (
     PROBLEM_TIMELINE_NOT_OBJECT,
     PROBLEM_TIMELINE_MISSING_FIELD,
+    PROBLEM_MANIFEST_NOT_OBJECT,
+    PROBLEM_MANIFEST_MISSING_FIELD,
+    PROBLEM_MANIFEST_EXTRA_FIELD,
+    PROBLEM_MANIFEST_PATH_NOT_TEXT,
+    PROBLEM_MANIFEST_PATH_ABSOLUTE,
+    PROBLEM_MANIFEST_PATH_UPWARDS,
+    PROBLEM_MANIFEST_DIGEST,
+    PROBLEM_MANIFEST_ROWS_NOT_INT,
+    PROBLEM_MANIFEST_ROWS_NEGATIVE,
+    PROBLEM_MANIFEST_ROWS_MISMATCH,
     PROBLEM_FRAMES_NOT_ARRAY,
     PROBLEM_DOCUMENT_COUNT_NOT_INT,
     PROBLEM_DOCUMENT_NOT_NUMBER,
@@ -2174,6 +2243,12 @@ def timeline_problems(
     shape = _document_numeric_problems(document)
     if shape:
         return shape
+    # Provenance is checked before the arithmetic it describes: a
+    # document that cannot say what it was computed from is not made
+    # trustworthy by its totals adding up.
+    attested = _document_manifest_problems(document)
+    if attested:
+        return attested
     problems = []
     for name, expected in (("floor", FLOOR), ("ceil", CEIL),
                            ("transition", TRANSITION)):
@@ -2602,6 +2677,476 @@ def default_timeline_path() -> str:
     return os.path.join(_playthrough_dir(), "timeline.json")
 
 
+# ---------------------------------------------------------------------
+# The artifact lock
+#
+# THREE PRODUCERS PUBLISH FROM THIS ONE DOCUMENT -- make_transitions.py,
+# render_movie.py and make_srt.py -- and each publishes a file or a
+# directory that the next stage reads.  Two runs of the same producer, or
+# a producer racing a reader, used to interleave: a half-composed
+# transitions directory, a movie truncated by `ffmpeg -y` before its
+# replacement was verified, an SRT published while its Markdown twin was
+# still the previous generation.
+#
+# So each publication takes an exclusive lock first.  The lock lives
+# OUTSIDE the artifact tree, and that is not incidental: .gitignore ends
+# with `!/playthrough/**`, which re-includes everything under
+# playthrough/ -- so a lock file placed beside the artifacts would be
+# committed as though it were evidence.
+#
+# The scratch location matches session.py's, deliberately, so a sourced
+# pipeline and a bare invocation agree on where the pipeline's runtime
+# state lives, and the directory is keyed by a digest of the approved
+# root so two clones never block each other while two processes over one
+# clone always do.
+# ---------------------------------------------------------------------
+
+ENV_RUNTIME_DIR = "PLAYTHROUGH_RUNTIME_DIR"
+ENV_XDG_RUNTIME_DIR = "XDG_RUNTIME_DIR"
+SCRATCH_DIR_NAME = "playthrough"
+SESSION_DIR_PREFIX = "session-"
+
+# How long a second publisher waits before refusing.  Rendering a long
+# film legitimately takes minutes, so this is generous; an unbounded
+# wait is a hang nobody can diagnose.
+DEFAULT_LOCK_TIMEOUT = 600.0
+LOCK_POLL = 0.1
+
+
+def _digest_of(text: str) -> str:
+    """A short, stable digest of a path, for a directory name."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def _secure_dir(path: str, label: str) -> str:
+    """Create `path` mode 0700, refusing a link or a foreign owner.
+
+    The same rule env.sh's playthrough_secure_dir applies and the same
+    one session.py restates, because a directory another account can
+    write to is a directory another account can plant a lock in.
+    """
+    try:
+        os.makedirs(path, mode=0o700, exist_ok=True)
+    except OSError as err:
+        raise TimelineError(
+            "cannot create %s at %s: %s" % (label, path, err)) from err
+    try:
+        info = os.lstat(path)
+    except OSError as err:
+        raise TimelineError(
+            "cannot inspect %s at %s: %s" % (label, path, err)) from err
+    if stat.S_ISLNK(info.st_mode):
+        raise TimelineError(
+            "%s at %s is a symbolic link; refused, because a link there "
+            "redirects whatever is written through it" % (label, path))
+    if not stat.S_ISDIR(info.st_mode):
+        raise TimelineError(
+            "%s at %s is not a directory" % (label, path))
+    if info.st_uid != os.getuid():
+        raise TimelineError(
+            "%s at %s is owned by uid %d, not by uid %d"
+            % (label, path, info.st_uid, os.getuid()))
+    if info.st_mode & 0o077:
+        raise TimelineError(
+            "%s at %s is group- or world-accessible (mode %04o)"
+            % (label, path, info.st_mode & 0o7777))
+    return path
+
+
+def scratch_dir(root: Optional[str] = None) -> str:
+    """Return this checkout's private scratch directory, mode 0700.
+
+    $PLAYTHROUGH_RUNTIME_DIR wins where env.sh has set it, then
+    $XDG_RUNTIME_DIR, then /tmp keyed by uid -- the same order
+    session.py uses, so the whole pipeline agrees on one location.
+    """
+    nominated = os.environ.get(ENV_RUNTIME_DIR, "").strip()
+    if nominated:
+        base = nominated
+    else:
+        runtime = os.environ.get(ENV_XDG_RUNTIME_DIR, "").strip()
+        if runtime:
+            base = os.path.join(runtime, SCRATCH_DIR_NAME)
+        else:
+            base = os.path.join(
+                "/tmp", "%s-%d" % (SCRATCH_DIR_NAME, os.getuid()))
+    _secure_dir(base, "the pipeline runtime directory")
+    private = os.path.join(
+        base, SESSION_DIR_PREFIX + _digest_of(approved_root(root)))
+    return _secure_dir(private, "the session scratch directory")
+
+
+def artifact_lock_path(name: str, root: Optional[str] = None) -> str:
+    """Return the lock file that serialises one artifact's publication.
+
+    :param name: a bare stem naming the artifact -- "transitions",
+        "movie", "transcripts".  Refused if it could reach outside the
+        scratch directory.
+    """
+    if not isinstance(name, str) or not name.strip():
+        raise TimelineError("the lock name must be a non-empty string")
+    if os.sep in name or (os.altsep and os.altsep in name) \
+            or name in (".", "..") or "\x00" in name:
+        raise TimelineError(
+            "the lock name %r must be a bare name, not a path" % name)
+    return os.path.join(scratch_dir(root), "%s.lock" % name)
+
+
+class ArtifactLock:
+    """The exclusive right to publish one artifact.
+
+    Held across build-then-verify-then-switch, so a concurrent run waits
+    for a whole generation rather than interleaving with half of one.
+    The lock file is never unlinked: removing a lock another process is
+    waiting on is how a lock stops working.
+    """
+
+    def __init__(self, name: str, root: Optional[str] = None,
+                 timeout: float = DEFAULT_LOCK_TIMEOUT) -> None:
+        self.name = name
+        self.path = artifact_lock_path(name, root)
+        self.timeout = float(timeout)
+        self._descriptor: Optional[int] = None
+
+    def __enter__(self) -> "ArtifactLock":
+        try:
+            self._descriptor = os.open(
+                self.path, os.O_CREAT | os.O_WRONLY | os.O_CLOEXEC,
+                0o600)
+        except OSError as err:
+            raise TimelineError(
+                "could not open the %s lock %s: %s"
+                % (self.name, self.path, err)) from err
+        deadline = time.monotonic() + self.timeout
+        while True:
+            try:
+                fcntl.flock(self._descriptor,
+                            fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return self
+            except OSError as err:
+                if err.errno not in (errno.EACCES, errno.EAGAIN):
+                    self._close()
+                    raise TimelineError(
+                        "could not lock %s: %s"
+                        % (self.path, err)) from err
+            if time.monotonic() >= deadline:
+                self._close()
+                raise TimelineError(
+                    "another run has held the %s lock %s for more than "
+                    "%.0fs.  Two runs publishing the same artifact would "
+                    "overwrite each other, so this one refuses rather "
+                    "than interleaving"
+                    % (self.name, self.path, self.timeout))
+            time.sleep(LOCK_POLL)
+
+    def __exit__(self, *exc_info: Any) -> None:
+        if self._descriptor is not None:
+            try:
+                fcntl.flock(self._descriptor, fcntl.LOCK_UN)
+            finally:
+                self._close()
+
+    def _close(self) -> None:
+        if self._descriptor is not None:
+            os.close(self._descriptor)
+            self._descriptor = None
+
+
+def fsync_directory(directory: str) -> None:
+    """Force a directory's entries to the device.
+
+    Without this a rename is durable but the FILES it now names may not
+    be, so a crash could leave a switch visible and the artifact it
+    published empty.
+    """
+    try:
+        descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+    except OSError as err:
+        raise TimelineError(
+            "could not open %s to flush it: %s"
+            % (directory, err)) from err
+    try:
+        os.fsync(descriptor)
+    except OSError as err:
+        raise TimelineError(
+            "could not flush %s: %s" % (directory, err)) from err
+    finally:
+        os.close(descriptor)
+
+
+def file_digest(path: str) -> str:
+    """Return the sha256 of a file's exact bytes, in hex.
+
+    Block-wise, so the size of a long session's manifest is irrelevant.
+    """
+    digest = hashlib.sha256()
+    try:
+        with open(path, "rb") as handle:
+            for block in iter(lambda: handle.read(DIGEST_BLOCK), b""):
+                digest.update(block)
+    except OSError as err:
+        raise TimelineError(
+            "cannot read %s to attest it: %s" % (path, err)) from err
+    return digest.hexdigest()
+
+
+def count_manifest_lines(path: str) -> int:
+    """Return the number of rows in a JSONL file.
+
+    Counted from the BYTES, not from parsed rows, because this number
+    is part of an attestation of the file as it sits on disk.  A blank
+    line is not a row; manifest.py's own schema check is what refuses
+    one.
+    """
+    total = 0
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            for line in handle:
+                if line.strip():
+                    total += 1
+    except OSError as err:
+        raise TimelineError(
+            "cannot read %s to attest it: %s" % (path, err)) from err
+    return total
+
+
+def attest_manifest(
+    manifest_path: Optional[str] = None,
+    root: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Describe the manifest this timeline is being computed from.
+
+    Returns the attestation that travels in the document: the
+    repository-relative path, the sha256 of the file's exact bytes, and
+    the row count.  Read-only.
+
+    The path is resolved through manifest.py's own containment gate
+    first, so an attestation can only ever name a manifest this
+    pipeline was allowed to read in the first place -- the record and
+    the read cannot disagree about which file was used.  ``None`` means
+    the canonical manifest, exactly as :func:`load_manifest_rows` reads
+    it, so the attestation and the read cannot default differently.
+    """
+    if manifest_path is None:
+        manifest_path = manifest.default_manifest_path()
+    try:
+        resolved = manifest._validated_manifest_path(manifest_path, root)
+    except manifest.ManifestError as err:
+        raise TimelineError(str(err)) from err
+    return {
+        "path": _attested_relpath(resolved, root),
+        "sha256": file_digest(resolved),
+        "rows": count_manifest_lines(resolved),
+    }
+
+
+def _attested_relpath(resolved: str, root: Optional[str] = None) -> str:
+    """Express a path relative to the parent of the approved root.
+
+    In production the approved root is ``<repo>/playthrough``, so this
+    yields ``playthrough/manifest.jsonl`` -- the same repository-relative
+    form every other record in this pipeline uses.  Deriving it from the
+    NOMINATED root rather than from the real checkout is what lets a
+    test hold the identical rule against a directory it owns: the
+    attestation a confined caller writes is resolvable by the confined
+    verifier, and neither reaches outside the tree it was given.
+    """
+    base = os.path.dirname(approved_root(root))
+    return os.path.relpath(resolved, base).replace(os.sep, "/")
+
+
+def _document_manifest_problems(
+    document: Dict[str, Any],
+) -> List[Problem]:
+    """Check the attestation's SHAPE.  Pure -- no file is read.
+
+    Shape only: that the field is an object carrying exactly the three
+    attestation fields, that the path is relative and free of parent
+    references, that the digest is 64 lowercase hex digits, and that the
+    row count is a non-negative integer agreeing with frame_count.  The
+    bytes on disk are checked separately by
+    manifest_attestation_problems(), which is I/O and therefore cannot
+    live inside a pure validator.
+
+    ``null`` IS ACCEPTED HERE, and the division of labour is deliberate.
+    This validator's subject is the timing: the clamp bounds, the
+    contiguity of the cue windows, the invariant sum(durations) +
+    sum(transitions) == total == final cue end.  Those are properties of
+    the numbers and are checkable with no file anywhere -- which is what
+    lets the arithmetic be tested, and audited, without a manifest on
+    disk.  Provenance is a different question, and it is asked where it
+    bites: assert_timeline_document() REQUIRES an attestation and
+    requires it to match, and that gate is what every producer of a
+    rendered artifact passes.  So an unattested document is not a
+    malformed document -- it is simply one that may not pace a film.
+    """
+    attestation = document.get("manifest")
+    if attestation is None:
+        return []
+    if not isinstance(attestation, dict):
+        return [Problem(
+            PROBLEM_MANIFEST_NOT_OBJECT,
+            "the timeline's manifest attestation is a %s, not an "
+            "object naming the evidence it was computed from"
+            % type(attestation).__name__)]
+    missing = [name for name in MANIFEST_ATTESTATION_FIELDS
+               if name not in attestation]
+    if missing:
+        return [Problem(
+            PROBLEM_MANIFEST_MISSING_FIELD,
+            "the timeline's manifest attestation is missing %s"
+            % ", ".join(missing))]
+    extra = sorted(set(attestation) - set(MANIFEST_ATTESTATION_FIELDS))
+    if extra:
+        return [Problem(
+            PROBLEM_MANIFEST_EXTRA_FIELD,
+            "the timeline's manifest attestation carries unexpected "
+            "field(s) %s; it is exactly %s"
+            % (", ".join(extra),
+               ", ".join(MANIFEST_ATTESTATION_FIELDS)))]
+    problems = []
+    stated = attestation["path"]
+    if not isinstance(stated, str) or not stated.strip():
+        problems.append(Problem(
+            PROBLEM_MANIFEST_PATH_NOT_TEXT,
+            "the attested manifest path is %r, not a path" % (stated,)))
+    elif os.path.isabs(stated) or stated.startswith("~"):
+        problems.append(Problem(
+            PROBLEM_MANIFEST_PATH_ABSOLUTE,
+            "the attested manifest path %r is absolute; it is stored "
+            "relative to the repository so the artifact stays "
+            "reproducible and leaks no filesystem layout" % stated))
+    elif ".." in stated.replace("\\", "/").split("/"):
+        problems.append(Problem(
+            PROBLEM_MANIFEST_PATH_UPWARDS,
+            "the attested manifest path %r walks upwards" % stated))
+    digest = attestation["sha256"]
+    if not isinstance(digest, str) or not SHA256_RE.match(digest):
+        problems.append(Problem(
+            PROBLEM_MANIFEST_DIGEST,
+            "the attested manifest digest %r is not 64 lowercase hex "
+            "digits" % (digest,)))
+    rows = attestation["rows"]
+    if isinstance(rows, bool) or not isinstance(rows, int):
+        problems.append(Problem(
+            PROBLEM_MANIFEST_ROWS_NOT_INT,
+            "the attested manifest row count is %r, not an integer"
+            % (rows,)))
+    elif rows < 0:
+        problems.append(Problem(
+            PROBLEM_MANIFEST_ROWS_NEGATIVE,
+            "the attested manifest row count is %d" % rows))
+    elif rows != document.get("frame_count"):
+        problems.append(Problem(
+            PROBLEM_MANIFEST_ROWS_MISMATCH,
+            "the attestation names %d manifest row(s) but the timeline "
+            "holds %r frame(s); one keystroke makes exactly one row and "
+            "one frame, so these cannot differ"
+            % (rows, document.get("frame_count"))))
+    return problems
+
+
+def manifest_attestation_problems(
+    document: Any,
+    root: Optional[str] = None,
+) -> List[str]:
+    """Check the attestation against the manifest ON DISK.
+
+    This is the check that makes the attestation worth carrying: it
+    re-reads the named manifest, recomputes its digest, and reports any
+    difference.  A stale timeline beside a re-recorded manifest fails
+    here, which is exactly the case no internal invariant can catch.
+
+    Read-only.  Returns messages, like :func:`validate_timeline`, so a
+    caller has one reporting shape for both gates.
+    """
+    if not isinstance(document, dict):
+        return ["the timeline is a %s, not an object"
+                % type(document).__name__]
+    if document.get("manifest") is None:
+        return [
+            "the timeline carries no manifest attestation, so there is "
+            "nothing to prove it was computed from the evidence on this "
+            "disk.  timeline.py records the manifest's path, sha256 and "
+            "row count when it writes the document; recompute it rather "
+            "than pacing a film from a timeline of unknown provenance"]
+    shape = _document_manifest_problems(document)
+    if shape:
+        return [problem.message for problem in shape]
+    attestation = document["manifest"]
+    stated = attestation["path"]
+    base = os.path.dirname(approved_root(root))
+    candidate = os.path.join(base, stated)
+    try:
+        resolved = manifest._validated_manifest_path(candidate, root)
+    except manifest.ManifestError as err:
+        return ["the attested manifest %s cannot be read: %s"
+                % (stated, err)]
+    problems = []
+    try:
+        observed_digest = file_digest(resolved)
+        observed_rows = count_manifest_lines(resolved)
+    except TimelineError as err:
+        return [str(err)]
+    if observed_digest != attestation["sha256"]:
+        problems.append(
+            "the timeline attests manifest %s with sha256 %s, but that "
+            "file now hashes to %s.  This timeline was computed from "
+            "DIFFERENT evidence than is on disk: recompute it from the "
+            "current manifest rather than pacing a film and its "
+            "captions from a stale one"
+            % (stated, attestation["sha256"], observed_digest))
+    if observed_rows != attestation["rows"]:
+        problems.append(
+            "the timeline attests %d row(s) in manifest %s, but that "
+            "file now holds %d"
+            % (attestation["rows"], stated, observed_rows))
+    return problems
+
+
+def assert_timeline_document(
+    document: Any,
+    root: Optional[str] = None,
+    allow_index_gaps: bool = False,
+    label: str = "timeline",
+) -> Dict[str, Any]:
+    """The gate every producer of a rendered artifact must pass.
+
+    THE ONE ENTRY POINT FOR TRUSTING A TIMELINE.  make_transitions.py,
+    render_movie.py and make_srt.py each read this document and each
+    used to accept a bare ARRAY of entries -- which skipped
+    validate_timeline() entirely, because that validator's first act is
+    to require an object.  An array carried no totals to check the
+    entries against, no constants to prove the clamp under, and no
+    provenance at all, so a hand-edited list of durations paced the film
+    and its captions with nothing objecting.
+
+    Three things are required here, and all three are refusals rather
+    than warnings:
+
+      * the document is an OBJECT, so the canonical validator applies;
+      * validate_timeline() reports ZERO problems;
+      * the manifest attestation matches the manifest on disk.
+
+    :returns: the document, so a caller can gate and bind in one step.
+    :raises TimelineError: naming every problem found.
+    """
+    if not isinstance(document, dict):
+        raise TimelineError(
+            "the %s is a %s, not an object with a frames array.  A "
+            "bare array skips every document-level check -- the totals, "
+            "the constants the clamp was applied under, and the "
+            "manifest attestation -- so it is refused rather than "
+            "paced" % (label, type(document).__name__))
+    problems = validate_timeline(document, allow_index_gaps)
+    problems.extend(manifest_attestation_problems(document, root))
+    if problems:
+        raise TimelineError(
+            "refusing to use a %s that fails its own checks: %s"
+            % (label, "; ".join(problems)))
+    return document
+
+
 def load_manifest_rows(
     manifest_path: Optional[str] = None,
     root: Optional[str] = None,
@@ -2624,17 +3169,10 @@ def load_manifest_rows(
 def default_observations_path(root: Optional[str] = None) -> str:
     """Where the capture telemetry sidecar lives.
 
-    A CALL SITE's nominated root outranks $PLAYTHROUGH_OBSERVATIONS,
-    for the reason default_date_audit_path() states at length: the
-    nomination is the containment boundary this path is then held to, so
-    an ambient export pointing outside it is unusable by construction
-    and honouring it would leave a confined caller unable to read
-    anything.  With no nomination the export wins, because env.sh is the
-    single definition of the artifact layout; with neither, the path is
-    built from this file's own location, so the module works in any
-    checkout without configuration.  A caller that wants a particular
-    sidecar inside its own root names it in the load_observations()
-    argument, which outranks this default entirely.
+    Same precedence as default_date_audit_path(): a nominated root
+    outranks $PLAYTHROUGH_OBSERVATIONS because it is the containment
+    boundary, then the export, then this file's own location.
+    load_observations() takes an explicit path and outranks both.
     """
     if root is not None:
         return os.path.join(approved_root(root),
@@ -3244,11 +3782,18 @@ def _verify(
     observations = load_observations(
         args.observations, required=args.require_date, root=root)
     fresh = build_timeline(
-        rows, observations, _audit_evidence(args, rows, root))
+        rows, observations, _audit_evidence(args, rows, root),
+        attest_manifest(args.manifest, root))
     destination = args.output or default_timeline_path()
     path = _validated_timeline_target(destination, root)
     stored = read_timeline(path, root)
     problems = validate_timeline(stored, args.allow_index_gaps)
+    # The stored document's own attestation is checked against the
+    # manifest on disk BEFORE the drift comparison, so "this file
+    # describes this session" is established rather than inferred from
+    # the two computations matching.
+    if not problems:
+        problems.extend(manifest_attestation_problems(stored, root))
     if not problems:
         problems.extend(
             _drift_problems(stored, fresh, path, args.manifest))
@@ -3270,20 +3815,13 @@ def _drift_problems(
 ) -> List[str]:
     """Report a timeline that no longer matches its manifest.
 
-    BOTH SIDES ARE RE-ENCODED AND THE ENCODINGS ARE COMPARED, rather
-    than the stored bytes being compared to a fresh encoding or the two
-    documents walked field by field.  The encoder is deterministic and
-    total -- stable key order, fixed float formatting, every key it was
-    given -- so equal encodings are exactly the claim worth making:
-    this file was computed from this manifest by this code.  Passing the
-    stored document through the same encoder is what makes the
-    comparison a statement about CONTENT: a value that changed, a key
-    that appeared, a frame added or dropped, a total that no longer
-    follows all show up, while a difference of layout alone -- a
-    reindent, a re-ordering of keys, a line ending -- does not, because
-    a reformatter has changed nothing about what the artifact says.
-    That is deliberate: raising drift for whitespace would train an
-    operator to ignore the one check that guards the timing evidence.
+    BOTH SIDES ARE RE-ENCODED AND THE ENCODINGS COMPARED, because the
+    encoder is deterministic and total (stable key order, fixed float
+    formatting, every key it was given).  So a semantic change -- an
+    altered value, a new key, a frame added or dropped, a total that no
+    longer follows -- fails, while a formatting-only difference passes:
+    raising drift for whitespace would train an operator to ignore the
+    one check that guards the timing evidence.
     """
     if encode_timeline(stored) == encode_timeline(fresh):
         return []
@@ -3339,8 +3877,10 @@ def main(
         observations = load_observations(
             args.observations, required=args.require_date, root=root)
         document = build_timeline(
-            rows, observations, _audit_evidence(args, rows, root))
+            rows, observations, _audit_evidence(args, rows, root),
+            attest_manifest(args.manifest, root))
         problems = validate_timeline(document, args.allow_index_gaps)
+        problems.extend(manifest_attestation_problems(document, root))
         if args.require_date:
             problems.extend(_date_evidence_problems(document))
         if problems:

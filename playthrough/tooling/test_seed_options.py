@@ -59,8 +59,10 @@ import json
 import logging
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 # Keep bytecode out of playthrough/tooling/: the terminal
@@ -121,6 +123,10 @@ ENVIRONMENT_KEYS = (
     "PLAYTHROUGH_SESSION_MODE",
     "PLAYTHROUGH_PANEL_OPTIONS_JSON",
     "PLAYTHROUGH_CONFIG_DIR",
+    "PLAYTHROUGH_GAME_BIN",
+    "PLAYTHROUGH_LOCK_DIR",
+    "PLAYTHROUGH_RUNTIME_DIR",
+    "PLAYTHROUGH_SEED_LOCK_TIMEOUT",
 )
 
 # Snapshot of the real options file, so the suite can prove it never
@@ -1141,6 +1147,78 @@ class TestTheWorldOptions(SeedFixture):
                  if entry["name"] == "CHARACTER_POINT_POOLS"]
         self.assertEqual(pools, ["any"])
 
+    def _survivor(self, world, name="#RGVscGhpbmU=", suffix=".sav"):
+        """Write a character save into an existing world directory."""
+        target = os.path.join(self.saves, world, name + suffix)
+        with open(target, "w", encoding="utf-8") as handle:
+            handle.write("{}")
+        return target
+
+    def test_a_world_with_a_survivor_may_not_be_patched(self):
+        # The hard rule: an existing save is CONTINUED, never reshaped.
+        # Rewriting the point pool would change the rules the character
+        # was created under, behind the back of a resumed session.
+        path = self.write_world("Grimly", "story_teller")
+        self._survivor("Grimly")
+        before = self.bytes_at(path)
+        with self.assertRaises(seed_options.SeedError) as bad:
+            self.patch(worlds="patch")
+        self.assertIn("character save", str(bad.exception))
+        self.assertEqual(self.bytes_at(path), before)
+
+    def test_a_compressed_survivor_counts_too(self):
+        # WORLD_COMPRESSION2 defaults to true, so counting only "*.sav"
+        # would report an empty world and patch a real survivor's rules.
+        path = self.write_world("Grimly", "story_teller")
+        self._survivor("Grimly", suffix=".sav.zzip")
+        before = self.bytes_at(path)
+        with self.assertRaises(seed_options.SeedError):
+            self.patch(worlds="patch")
+        self.assertEqual(self.bytes_at(path), before)
+
+    def test_both_forms_of_one_survivor_count_once(self):
+        self.write_world("Grimly", "story_teller")
+        self._survivor("Grimly")
+        self._survivor("Grimly", suffix=".sav.zzip")
+        self.assertEqual(
+            seed_options.character_saves_in(
+                os.path.join(self.saves, "Grimly")),
+            ["#RGVscGhpbmU=.sav"])
+
+    def test_a_symlinked_survivor_is_refused_not_counted(self):
+        self.write_world("Grimly", "story_teller")
+        outside = os.path.join(self.root, "somebody-elses.sav")
+        with open(outside, "w", encoding="utf-8") as handle:
+            handle.write("{}")
+        os.symlink(
+            outside, os.path.join(self.saves, "Grimly", "#QQ==.sav"))
+        with self.assertRaises(seed_options.SeedError) as bad:
+            seed_options.character_saves_in(
+                os.path.join(self.saves, "Grimly"))
+        self.assertIn("symbolic link", str(bad.exception))
+
+    def test_a_resumed_session_may_not_patch_a_world_at_all(self):
+        # Even an empty world: the declaration alone is enough, because
+        # a resumed session does not reshape what it resumed.
+        path = self.write_world("Grimly", "story_teller")
+        before = self.bytes_at(path)
+        with _environment(PLAYTHROUGH_SESSION_MODE="resume"):
+            with self.assertRaises(seed_options.SeedError) as bad:
+                self.patch(worlds="patch")
+        self.assertIn("resume", str(bad.exception))
+        self.assertEqual(self.bytes_at(path), before)
+
+    def test_an_interrupted_creation_may_still_be_patched(self):
+        # A world with NO character save is the case the mode exists
+        # for, and it must keep working.
+        path = self.write_world("Halfway", "story_teller")
+        report = self.patch(worlds="patch")
+        self.assertEqual(len(report.world_changes), 1)
+        entries, _ = seed_options.load_entries(path)
+        pools = [str(entry["value"]) for entry in entries
+                 if entry["name"] == "CHARACTER_POINT_POOLS"]
+        self.assertEqual(pools, ["any"])
+
     def test_patching_a_world_that_has_no_such_option_is_refused(self):
         holder = os.path.join(self.saves, "Bare")
         os.makedirs(holder)
@@ -1596,6 +1674,112 @@ class TestTheSuiteTouchesNoEvidence(SeedFixture):
             msg=("the default is asserted and then deliberately not "
                  "used, which is the only way to know the fixture "
                  "paths were doing the work"))
+
+
+class TestTheWriteIsExclusive(SeedFixture):
+    """A seed that a live engine would undo is not a seed.
+
+    The engine holds its options IN MEMORY and writes them back when it
+    exits, so a value written underneath a running instance is silently
+    overwritten afterwards -- and the run that wrote it has already
+    reported success.  That failure is invisible at the time and costs a
+    whole captured session, so the write refuses while an authenticated
+    engine is using this userdir, and it holds the SAME lock name
+    launch_game.sh takes so a launch cannot interleave with it.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.write_options()
+        self.write_both_tilesets()
+        self.runtime = os.path.join(self.root, "runtime")
+        os.makedirs(self.runtime, mode=0o700)
+
+    def _engine(self):
+        """Start a stand-in engine with this checkout's own argv.
+
+        A copy of /bin/sh at <root>/cataclysm-tiles, started from the
+        root with --userdir, so /proc reports exactly what the real
+        engine would: the same executable path, the same working
+        directory and the same userdir argument.  Nothing about the check
+        is stubbed.  `sh -c CMD ARG...` keeps the extra arguments as
+        positional parameters instead of rejecting them, which is what
+        lets the real command line be reproduced verbatim.
+        """
+        binary = os.path.join(self.root, "cataclysm-tiles")
+        shutil.copy2("/bin/sh", binary)
+        child = subprocess.Popen(
+            [binary, "-c", "sleep 30",
+             "--userdir", "./playthrough/userdir/"],
+            cwd=self.root, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL)
+        self.addCleanup(child.wait)
+        self.addCleanup(child.kill)
+        # Wait for /proc to show the exec, not the fork.
+        for _ in range(200):
+            if seed_options.live_engine_pids(self.root):
+                return child
+            time.sleep(0.01)
+        self.fail("the stand-in engine never became visible in /proc")
+
+    def test_a_live_engine_refuses_the_write(self):
+        before = self.bytes_at(self.options_json)
+        self._engine()
+        with _environment(PLAYTHROUGH_RUNTIME_DIR=self.runtime):
+            with self.assertRaises(seed_options.SeedError) as bad:
+                self.patch()
+        self.assertIn("running against", str(bad.exception))
+        self.assertEqual(self.bytes_at(self.options_json), before)
+
+    def test_another_userdir_s_engine_does_not_block_the_write(self):
+        # The check is the userdir, not the binary's name: an engine
+        # playing something else is not this session's.
+        binary = os.path.join(self.root, "cataclysm-tiles")
+        shutil.copy2("/bin/sh", binary)
+        child = subprocess.Popen(
+            [binary, "-c", "sleep 30", "--userdir", "/tmp"],
+            cwd=self.root, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL)
+        self.addCleanup(child.wait)
+        self.addCleanup(child.kill)
+        time.sleep(0.2)
+        self.assertEqual(seed_options.live_engine_pids(self.root), [])
+        with _environment(PLAYTHROUGH_RUNTIME_DIR=self.runtime):
+            self.patch()
+        self.assertEqual(
+            self.values()["24_HOUR"], seed_options.CLOCK_FORMAT_WANTED)
+
+    def test_a_held_session_lock_blocks_the_write(self):
+        with _environment(PLAYTHROUGH_RUNTIME_DIR=self.runtime,
+                          PLAYTHROUGH_SEED_LOCK_TIMEOUT="1"):
+            path = seed_options.session_lock_path(self.root)
+            holder = seed_options.SessionLock(path, 5)
+            holder.acquire()
+            self.addCleanup(holder.release)
+            before = self.bytes_at(self.options_json)
+            with self.assertRaises(seed_options.SeedError) as bad:
+                self.patch()
+            self.assertIn("session lock", str(bad.exception))
+            self.assertEqual(
+                self.bytes_at(self.options_json), before)
+            holder.release()
+            self.patch()
+        self.assertEqual(
+            self.values()["24_HOUR"], seed_options.CLOCK_FORMAT_WANTED)
+
+    def test_the_lock_is_shared_with_the_launcher_by_name(self):
+        with _environment(PLAYTHROUGH_LOCK_DIR=self.runtime):
+            self.assertEqual(
+                seed_options.session_lock_path(self.root),
+                os.path.join(self.runtime, "session.lock"))
+
+    def test_a_clean_write_records_that_no_engine_was_running(self):
+        with _environment(PLAYTHROUGH_RUNTIME_DIR=self.runtime):
+            report = self.patch()
+        self.assertTrue(
+            any("no engine is running" in note
+                for note in report.notes),
+            msg=repr(report.notes))
 
 
 if __name__ == "__main__":

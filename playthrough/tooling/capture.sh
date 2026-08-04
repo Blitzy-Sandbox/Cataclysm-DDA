@@ -393,19 +393,15 @@ readonly DEFAULT_OCR_TIMEOUT=300
 # therefore fatal (EX_GEOMETRY), and an operator who wants a fixed
 # rectangle asks for one by name with PLAYTHROUGH_CAPTURE_RECT.
 #
-# WHAT THE NEXT CONSTANT IS, AND WHAT IT IS NOT.  It is an EXAMPLE of
-# the geometry form PLAYTHROUGH_CAPTURE_RECT takes, quoted in the two
-# diagnostics below so that an operator setting one has the shape in
-# front of them.  It is NOT a fallback, nothing ever substitutes it, and
-# the name it used to carry -- FALLBACK_RECT -- invited exactly that
-# misreading.  The value is deliberately layout-specific and is stated
-# with its layout wherever it appears, because the right rectangle
-# depends on which sidebar preset is in force: the engine's own default
-# is legacy_labels_sidebar at 44 cells [src/panels.cpp:412-418], which
-# computes to 352x1072+1568+4, while the 36-cell custom_sidebar
-# computes to the 288x1072+1632+4 below.  Neither number is a default
-# for this file to reach for -- sidebar_geometry.py resolves whichever
-# one this run actually needs, and if it cannot, that is a stop.
+# The next constants are EXAMPLES of the geometry form
+# PLAYTHROUGH_CAPTURE_RECT takes, quoted in the diagnostics below so an
+# operator setting one has the shape in front of them.  Neither is a
+# fallback: nothing substitutes them, and each is stated with its layout
+# because the right rectangle depends on the sidebar preset in force
+# (the engine default legacy_labels_sidebar at 44 cells
+# [src/panels.cpp:412-418] computes to 352x1072+1568+4; the 36-cell
+# custom_sidebar to 288x1072+1632+4).  sidebar_geometry.py resolves
+# whichever this run needs, and a failure there is a stop.
 readonly EXAMPLE_RECT='288x1072+1632+4'
 readonly EXAMPLE_RECT_LAYOUT='a 36-cell custom_sidebar'
 readonly DEFAULT_LAYOUT_RECT='352x1072+1568+4'
@@ -1118,31 +1114,13 @@ if [ "${CLOCK_MODE}" = "on" ]; then
     playthrough_require_tools tesseract || exit "${EX_PREREQ}"
 fi
 
-# ---------------------------------------------------------------------
-# PREFLIGHT THE OCR DELEGATE'S OWN DEPENDENCIES, ONCE, BEFORE THE GRAB.
-#
-# ocr_clock.py's exit codes are a contract: 0 carries a reading, 1
-# means the frame was read and held none, 2 means a fault.  A missing
-# Python dependency used to collapse that distinction -- an unguarded
-# import exits Python with status 1, which reads as "no clock on this
-# frame".  The module now guards its imports and reports a fault
-# instead, and `--preflight` asks it to check them without reading
-# anything.
-#
-# `--preflight` answers BOTH Python-side questions: whether every
-# dependency imported, and whether the Pillow that decodes every frame
-# is the version requirements.txt pins.  The second one matters here
-# because it is otherwise asserted at the point of use -- which is
-# frame 1, after the capture has already started, where it costs a
-# withdrawn frame and a stopped session to learn something knowable
-# now.
-#
-# Doing it here, before a frame exists, is the difference between one
-# actionable failure and a whole session of frames that each look like
-# an honest unreadable clock while the movie's pacing quietly collapses
-# to the floor.  A fault is fatal under the default strict setting for
-# the same reason.
-# ---------------------------------------------------------------------
+# Preflight the OCR delegate's own dependencies once, before the grab.
+# ocr_clock.py's exit codes distinguish a frame that held no clock (1)
+# from a fault (2), and a missing Python dependency must not be reported
+# as the former: an unreadable clock is an honest reading, a broken
+# dependency is a prerequisite failure that would silently collapse
+# every duration to the 0.25 s floor for a whole session.  `--preflight`
+# checks the imports and the pinned Pillow without reading anything.
 if [ "${CLOCK_MODE}" = "on" ] && [ -f "${OCR_SCRIPT}" ] &&
    command -v "${PLAYTHROUGH_PYTHON}" >/dev/null 2>&1; then
     if ! "${PLAYTHROUGH_PYTHON}" "${OCR_SCRIPT}" --preflight; then
@@ -1164,8 +1142,13 @@ inline reader instead."
 fi
 # The platform this is photographing on: ImageMagick and the Xorg stack
 # both parse untrusted-shaped input, so an out-of-support host is
-# reported by name here rather than discovered later.  A warning by
-# default; PLAYTHROUGH_REQUIRE_SUPPORTED_PLATFORM=1 makes it fatal.
+# refused by name here rather than discovered later.  IT IS A REFUSAL BY
+# DEFAULT, for both "past its end-of-life date" and "not in the support
+# table at all" -- it used to be a warning with the hard failure opt-in,
+# which is a safeguard that is off.  A host that is the only one
+# available is accepted through PLAYTHROUGH_ALLOW_EOL_PLATFORM=<reason>,
+# whose reason is warned once and printed in the environment summary, so
+# a session captured under it says so in its own contract.
 playthrough_check_platform || exit "${EX_PREREQ}"
 
 # The cheap, loud guard against the one completely silent failure mode
@@ -1247,17 +1230,13 @@ fi
 # overwriting would leave the frames count one short of the keystroke
 # count with nothing to show that it happened.
 if ! ( set -o noclobber; : >"${FRAME_PATH}" ) 2>/dev/null; then
-    # noclobber refuses for TWO different reasons, and they have
-    # opposite remedies, so they are told apart before anything is
-    # reported.  A path that exists means the index is taken and the
-    # answer is the next index.  A path that does NOT exist means the
-    # creation itself was refused -- an immutable or unwritable frames
-    # directory, a read-only or full filesystem -- and then "take the
-    # next index" is actively wrong advice: every index would fail the
-    # same way, and a caller that trusted it would walk the counter
-    # forward through a whole session of failures, breaking the
-    # one-frame-per-keystroke identity in the process.  That case is a
-    # capture failure (EX_CAPTURE), not an index collision.
+    # noclobber refuses for two reasons with opposite remedies, so they
+    # are told apart before anything is reported.  A path that exists is
+    # a taken index and the answer is the next one.  A path that does
+    # not exist means the creation itself was refused -- an unwritable
+    # frames directory, a full or read-only filesystem -- where the next
+    # index would fail identically, so that is a capture failure
+    # (EX_CAPTURE) rather than a collision.
     if [ ! -e "${FRAME_PATH}" ]; then
         die "${EX_CAPTURE}" "cannot create ${FRAME_PATH}, and nothing \
 is there to be in the way -- so this is not a repeated index and the \
@@ -1770,6 +1749,24 @@ DATE_STATUS="skipped"
 # The values are parsed with `IFS='=' read`, never eval: they are OCR
 # text off a game screen, and text is not code.  A trailing empty value
 # is the honest form of "not read".
+# ocr_readings -- read the sidebar of the frame just captured.
+#
+# --cross-check IS NOT OPTIONAL HERE.  Without it the readers stop at
+# the first one that produces a possible time, so a misread by the pass
+# that happens to run first is never contradicted and becomes the
+# permanent record of that frame.  With it every reader runs, and a
+# disagreement that no exact glyph match can settle makes ocr_clock.py
+# report the clock as UNREADABLE -- the safe direction, because an
+# absent reading is reconciled against the previous frame by timeline.py
+# and shows in the manifest as null, whereas a wrong one is undetectable
+# and silently becomes a wrong duration, a wrong caption and a wrong
+# line in the transcript.
+#
+# It costs OCR calls on frames that would otherwise have stopped early:
+# measured on this host, about 22 s per frame against 0.4 s when the
+# glyph pass answered alone.  That is the intended trade.  This runs
+# once per keystroke, the evidence it writes is committed and cannot be
+# re-derived later, and the read has 300 s before it times out.
 ocr_readings() {
     local line key value
     OCR_OUT=""
@@ -1782,6 +1779,7 @@ ocr_readings() {
                 "${PLAYTHROUGH_PYTHON}" -B "${OCR_SCRIPT}" \
                 --kv \
                 --strict-path \
+                --cross-check \
                 --frames-dir "${PLAYTHROUGH_FRAMES_DIR}" \
                 --rect "${CLOCK_RECT}" \
                 "${AUDIT_ARGS[@]}" \

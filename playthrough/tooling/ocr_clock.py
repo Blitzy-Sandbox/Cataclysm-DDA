@@ -48,9 +48,16 @@ Terminus face draws a SLASHED ZERO that tesseract reads as an ``8``; the
 half-pixel blur softens the slash.  The unblurred prescribed chain is
 still run as its own pass on every frame the blurred form cannot read.
 The passes are ordered, documented and deterministic (:data:`PASSES`),
-and ``cross_check=True`` runs all of them and reports whether they
-agree, so a style-induced misread becomes visible rather than
-authoritative.
+and ``cross_check=True`` runs all of them and requires that they AGREE.
+A frame whose readers return different times is reported as UNREADABLE
+rather than resolved by pass order -- with one exception, and it is an
+exception about proof rather than about preference: an EXACT glyph match
+stands.  Exact means every character's ink is bit-identical to what the
+attested ``data/font/Terminus.ttf`` draws for it, so the engine
+demonstrably drew that time in those pixels; tesseract contradicting
+that is tesseract being wrong, as three frames of the committed evidence
+show.  Anything short of a proof is withheld.  capture.sh always
+cross-checks, so a style-induced misread cannot become the record.
 
 FINDING THE ROW
 :mod:`sidebar_geometry` returns the WHOLE sidebar column, because the
@@ -205,6 +212,7 @@ from __future__ import annotations
 import argparse
 import errno
 import functools
+import hashlib
 import io
 import json
 import logging
@@ -494,12 +502,19 @@ DEFAULT_ROW_HEIGHT = 16
 # engine's slashed-zero bitmap pixel for pixel (verified against the
 # captured frame before this was written).
 #
-# That makes this pass strictly more truthful than the OCR ones -- it
-# either matches the pixels the game drew or it declines -- so it runs
-# FIRST, and the tesseract passes remain in place behind it for any
-# frame it cannot decode.  It is also free: it spends no OCR calls at
-# all, which removes ~139 tesseract invocations from every captured
-# frame.
+# That makes this pass strictly more truthful than the OCR ones, so it
+# runs FIRST, with the tesseract passes behind it for any frame it
+# cannot decode.  It is also free: it spends no OCR calls at all, which
+# removes ~139 tesseract invocations from every captured frame.
+#
+# BUT NOT EVERY CHARACTER IT RETURNS IS A PROOF.  A cell either matches
+# a template bit for bit -- which is proof -- or it matches one template
+# UNIQUELY AND SEPARATELY inside a radius under half the distance
+# between templates, which is a very tightly bounded near match and
+# still not proof -- or it becomes a space.  read_column_by_glyphs()
+# reports which characters were exact, and read_sidebar() uses that to
+# decide whether this pass may stand against a disagreeing OCR pass: an
+# exact reading may, a near one must be confirmed.
 #
 # It reads only what the game can draw in that column, and it never
 # guesses: a cell that matches no template within GLYPH_MAX_DISTANCE
@@ -517,6 +532,22 @@ GLYPH_PASS_NAME = "glyph-grid"
 # this module's grandparent: playthrough/tooling -> playthrough -> root.
 GLYPH_FONT_PARTS = ("data", "font", "Terminus.ttf")
 
+# The sha256 of that file as this repository ships it.  A FONT IS NATIVE
+# PARSER INPUT -- FreeType, reached through Pillow -- and the path above
+# is derived rather than configured, which is safe until somebody puts a
+# different file there.  Attesting the bytes turns "the font we expect"
+# into a checkable fact; see _attested_font().  Measured on this
+# checkout, not copied from anywhere.
+GLYPH_FONT_SHA256 = (
+    "e0d645677fa32557a16b3be8533c552c2939fd507d7b8515ead5d9cf494cb2a6")
+
+# A hard ceiling on the pixels any capture may declare, so a malformed
+# or crafted header cannot ask for an unbounded allocation.  The root
+# window these captures photograph is 1920x1080 = 2 073 600 pixels, so
+# 64 megapixels is generous by a factor of thirty and still far below
+# Pillow's own 89-megapixel bomb threshold.
+MAX_PIXELS = 64 * 1024 * 1024
+
 # Everything the sidebar's clock, date and coarse-time rows can contain.
 # Ordered so that a tie prefers a digit over a letter, which matters for
 # nothing except reproducibility.
@@ -533,12 +564,25 @@ GLYPH_ALPHABET = (
 GLYPH_INK_THRESHOLD = 100
 
 # The most differing pixels a match may carry over a cell of
-# FONT_WIDTH x FONT_HEIGHT.  Zero would be ideal and is what a clean
-# capture actually produces; a small allowance absorbs a colour whose
-# dimmest stroke pixel falls near the threshold, without ever letting a
-# 0 be answered by an 8 (those differ by 6 pixels in this face, so the
-# ceiling is deliberately below that).
+# FONT_WIDTH x FONT_HEIGHT.  Zero is what a clean capture actually
+# produces; a small allowance absorbs a colour whose dimmest stroke
+# pixel falls near the threshold.
+#
+# THIS IS A CEILING, NOT THE TOLERANCE.  The tolerance that actually
+# applies is derived per glyph from its own nearest neighbour (see
+# _glyph_templates), because a fixed ceiling is unsafe by measurement
+# rather than in principle: on this checkout's Terminus.ttf at 8x16,
+# '3' and '8' differ by exactly 4 pixels and ',' and '.' by 1, so a
+# ceiling of 4 was wide enough for a smudged '3' to be answered by an
+# '8'.  A false clock reading is a false duration, a false caption and a
+# false line in the transcript, and nothing downstream can detect it.
 GLYPH_MAX_DISTANCE = 4
+
+# How much further away the runner-up must be before the nearest match
+# is believed.  Two, so that an exact TIE -- which used to be resolved
+# by GLYPH_ALPHABET order, i.e. arbitrarily -- and a one-pixel
+# preference are both refused.
+GLYPH_MATCH_MARGIN = 2
 
 # Cell width is derived from the row height rather than read from the
 # options file: every font the engine ships for this grid is drawn at
@@ -596,6 +640,12 @@ ENV_DATE_AUDIT = "PLAYTHROUGH_DATE_AUDIT"
 FRAMES_REL_PARTS = ("playthrough", "frames")
 FRAMES_DIR_NAME = "frames"
 PNG_SUFFIX = ".png"
+
+# The eight-byte PNG signature [RFC 2083 section 3.1].  Every image this
+# module decodes must begin with it, checked before Pillow is handed the
+# bytes: Pillow identifies a format by CONTENT, so without this a
+# crafted PSD, DDS or TIFF named .png would reach that format's native
+# decoder.  See open_png(), open_png_bytes() and png_size().
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 
 # The repository-relative frame path, the one format capture.sh writes
@@ -813,8 +863,10 @@ def reset_diagnostics() -> None:
 # of the same real pixels, differing only in preprocessing and in how
 # tesseract is asked to segment them.  They are attempted in the order
 # below and the first one that yields a POSSIBLE clock wins; with
-# cross_check=True every pass runs and disagreement is reported instead
-# of hidden.  Nothing here repairs, substitutes or interpolates.
+# cross_check=True every pass runs and any disagreement WITHHOLDS the
+# reading rather than resolving it by pass order, unless an exact glyph
+# match proves the answer.  Nothing here repairs, substitutes or
+# interpolates.
 # ---------------------------------------------------------------------
 
 def _glyph_font_path() -> str:
@@ -824,20 +876,233 @@ def _glyph_font_path() -> str:
     return os.path.join(root, *GLYPH_FONT_PARTS)
 
 
+def font_digest(path: Optional[str] = None) -> str:
+    """Return the sha256 of the interface font, as installed."""
+    target = _glyph_font_path() if path is None else path
+    digest = hashlib.sha256()
+    try:
+        with open(target, "rb") as handle:
+            for block in iter(lambda: handle.read(65536), b""):
+                digest.update(block)
+    except OSError as exc:
+        raise ToolchainError(
+            "cannot read the interface font %s: %s" % (target, exc)
+        ) from exc
+    return digest.hexdigest()
+
+
+def _attested_font(row_height: int) -> "ImageFont.FreeTypeFont":
+    """Load the interface font, having proved it is the shipped one.
+
+    A FONT IS PARSED INPUT.  FreeType is a native parser reached through
+    Pillow, and the file it parses is named by a path derived from this
+    module's own location -- which is exactly the kind of derivation that
+    is safe until somebody plants a file there.  So the font is attested
+    on three counts before it is opened:
+
+      * it is a REGULAR FILE reached without a symbolic link, so the name
+        cannot be redirected;
+      * its sha256 equals GLYPH_FONT_SHA256, the digest of the
+        data/font/Terminus.ttf this repository ships -- so a substituted
+        or corrupted face is refused rather than parsed;
+      * it is inside this checkout.
+
+    The digest is a committed fact about a committed file, which is what
+    makes this checkable by somebody who was not here.  A legitimate
+    upstream font change is a one-line update with the new digest, made
+    deliberately -- which is the point.
+    """
+    path = _glyph_font_path()
+    try:
+        info = os.lstat(path)
+    except OSError as exc:
+        raise ToolchainError(
+            "the interface font %s cannot be inspected: %s"
+            % (path, exc)) from exc
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        raise ToolchainError(
+            "the interface font %s is not a regular file.  A font is "
+            "parsed by FreeType through Pillow, so the file behind that "
+            "name is refused unless it is the one this repository "
+            "ships" % path)
+    observed = font_digest(path)
+    if observed != GLYPH_FONT_SHA256:
+        raise ToolchainError(
+            "the interface font %s has sha256 %s, but this pipeline is "
+            "written against %s -- the data/font/Terminus.ttf this "
+            "repository ships.  A font is native parser input, so a "
+            "face that is not the attested one is refused rather than "
+            "parsed.  If the font was legitimately updated upstream, "
+            "update GLYPH_FONT_SHA256 in this module deliberately and "
+            "re-verify the glyph templates: the reader's whole "
+            "correctness rests on the bitmaps this face produces"
+            % (path, observed, GLYPH_FONT_SHA256))
+    try:
+        return ImageFont.truetype(path, row_height)
+    except OSError as exc:
+        raise ToolchainError(
+            "the attested interface font %s could not be loaded at "
+            "%dpx: %s" % (path, row_height, exc)) from exc
+
+
+def open_png(path: str) -> "Image.Image":
+    """Open `path` as a PNG, and refuse anything that is not one.
+
+    THE ONE DOOR EVERY IMAGE THIS MODULE DECODES COMES THROUGH.
+
+    Pillow identifies a file by its CONTENT, not by its name, and it
+    ships a plugin for every format it supports -- so `Image.open` on a
+    file called frame_00001.png will happily hand a PSD, a DDS, a TIFF
+    or a FLI to the native parser that format needs.  Those parsers are
+    where Pillow's memory-corruption advisories live.  Two controls close
+    that off completely:
+
+      * the first eight bytes must be the PNG signature, checked here
+        rather than trusted;
+      * `formats=["PNG"]` restricts Pillow to the PNG plugin alone, so
+        even a file that got past the signature check cannot reach
+        another decoder.
+
+    A decompression bomb is bounded as well: MAX_PIXELS is a hard cap on
+    the pixel count, which is generous beside the 1920x1080 root window
+    these captures actually are.
+
+    Verified on this host under Pillow 11.3.0: a BMP renamed .png is
+    refused with UnidentifiedImageError.
+    """
+    try:
+        with open(path, "rb") as handle:
+            signature = handle.read(len(PNG_MAGIC))
+    except OSError as exc:
+        raise FrameUnreadableError(
+            "%s could not be read: %s" % (path, exc)) from exc
+    if signature != PNG_MAGIC:
+        raise FrameUnreadableError(
+            "%s does not begin with the PNG signature (it begins %r).  "
+            "Every capture this pipeline reads is a PNG written by "
+            "capture.sh; a file with another format's content is "
+            "refused rather than handed to whichever native decoder it "
+            "would reach" % (path, signature))
+    _require_pillow()
+    previous = Image.MAX_IMAGE_PIXELS
+    Image.MAX_IMAGE_PIXELS = MAX_PIXELS
+    try:
+        image = Image.open(path, formats=["PNG"])
+        image.load()
+    except Image.DecompressionBombError as exc:
+        raise FrameUnreadableError(
+            "%s declares more than %d pixels: %s"
+            % (path, MAX_PIXELS, exc)) from exc
+    except (OSError, ValueError) as exc:
+        raise FrameUnreadableError(
+            "%s is not a decodable PNG: %s" % (path, exc)) from exc
+    finally:
+        Image.MAX_IMAGE_PIXELS = previous
+    return image
+
+
+def open_png_bytes(data: bytes, source: str) -> "Image.Image":
+    """Open in-memory PNG bytes, and refuse anything that is not one.
+
+    The bytes-shaped half of `open_png`.  `convert` is asked for `png:-`
+    and is a pinned, verified tool, but "the tool we asked for a PNG
+    returned one" is an assumption rather than a check -- and it is
+    exactly one `-define` or one hostile frame away from being false.
+    Restricting Pillow to the PNG plugin makes it a check.
+
+    :param source: what produced the bytes, for the error message.
+    """
+    if data[:len(PNG_MAGIC)] != PNG_MAGIC:
+        raise ToolchainError(
+            "%s did not produce a PNG (its output begins %r)"
+            % (source, data[:len(PNG_MAGIC)]))
+    _require_pillow()
+    previous = Image.MAX_IMAGE_PIXELS
+    Image.MAX_IMAGE_PIXELS = MAX_PIXELS
+    try:
+        image = Image.open(io.BytesIO(data), formats=["PNG"])
+        image.load()
+    except Image.DecompressionBombError as exc:
+        raise ToolchainError(
+            "%s produced an image past the %d-pixel ceiling: %s"
+            % (source, MAX_PIXELS, exc)) from exc
+    except (OSError, ValueError) as exc:
+        raise ToolchainError(
+            "%s produced an image that could not be decoded as a PNG: "
+            "%s" % (source, exc)) from exc
+    finally:
+        Image.MAX_IMAGE_PIXELS = previous
+    return image
+
+
+def png_size(path: str) -> Tuple[int, int]:
+    """Return a PNG's pixel dimensions WITHOUT decoding it.
+
+    The IHDR chunk is the first chunk of every PNG and its first eight
+    bytes are the width and the height, big-endian.  Reading them here
+    means the commonest question asked of a capture -- "is it
+    1920x1080?" -- is answered by 24 bytes of pure Python instead of by
+    a native decoder, so a malformed capture is a ValueError rather than
+    a parse of hostile input.
+
+    :raises FrameUnreadableError: for anything that is not a PNG whose
+        first chunk is a well-formed IHDR.
+    """
+    try:
+        with open(path, "rb") as handle:
+            header = handle.read(len(PNG_MAGIC) + 8 + 8)
+    except OSError as exc:
+        raise FrameUnreadableError(
+            "%s could not be read: %s" % (path, exc)) from exc
+    if header[:len(PNG_MAGIC)] != PNG_MAGIC:
+        raise FrameUnreadableError(
+            "%s does not begin with the PNG signature" % path)
+    body = header[len(PNG_MAGIC):]
+    if len(body) < 16 or body[4:8] != b"IHDR":
+        raise FrameUnreadableError(
+            "%s does not open with an IHDR chunk, so it is not a PNG "
+            "this pipeline wrote" % path)
+    width = int.from_bytes(body[8:12], "big")
+    height = int.from_bytes(body[12:16], "big")
+    if width <= 0 or height <= 0:
+        raise FrameUnreadableError(
+            "%s declares a %dx%d image" % (path, width, height))
+    if width * height > MAX_PIXELS:
+        raise FrameUnreadableError(
+            "%s declares %dx%d = %d pixels, past the %d-pixel ceiling"
+            % (path, width, height, width * height, MAX_PIXELS))
+    return width, height
+
+
 @functools.lru_cache(maxsize=4)
 def _glyph_templates(
     cell_width: int, row_height: int
-) -> Tuple[Dict[bytes, str], Tuple[Tuple[str, "numpy.ndarray"], ...]]:
+) -> Tuple[Dict[bytes, str],
+           Tuple[Tuple[str, "numpy.ndarray"], ...],
+           Dict[str, int]]:
     """Render one template per glyph from the game's own font.
 
-    Returns an exact index, keyed by the template's raw bytes so that a
-    cell the engine drew from this font is recognised by lookup rather
-    than by comparison, and the same templates as an ordered list for
-    the near-match fallback.  Cached, because a session reads the same
-    grid on every frame of the film.
+    Returns three things: an exact index keyed by the template's raw
+    bytes, so that a cell the engine drew from this font is recognised by
+    LOOKUP rather than by comparison; the same templates as an ordered
+    list, for the bounded near-match below; and, for each glyph, the
+    Hamming distance to its CLOSEST OTHER template.
+
+    That third value is what makes a near match safe rather than
+    plausible.  Measured on this checkout's Terminus.ttf at 8x16: '3'
+    and '8' differ by only FOUR pixels, and ',' and '.' by ONE, so a
+    fixed tolerance that looked generous was in fact wide enough to
+    answer a smudged '3' with an '8' -- and a false clock reading is a
+    false duration, a false caption and a false line in the transcript.
+    The tolerance is therefore derived per glyph from its own nearest
+    neighbour: a template can absorb at most floor((d-1)/2) differing
+    pixels before another template is closer, so twice the distance must
+    stay strictly under that neighbour distance.
+
+    Cached, because a session reads the same grid on every frame.
     """
     _require_pillow()
-    font = ImageFont.truetype(_glyph_font_path(), row_height)
+    font = _attested_font(row_height)
     exact: Dict[bytes, str] = {}
     ordered = []
     for character in GLYPH_ALPHABET:
@@ -847,7 +1112,18 @@ def _glyph_templates(
             numpy.asarray(cell) > GLYPH_INK_THRESHOLD)
         exact.setdefault(mask.tobytes(), character)
         ordered.append((character, mask))
-    return exact, tuple(ordered)
+    neighbour: Dict[str, int] = {}
+    for index, (character, mask) in enumerate(ordered):
+        closest = None
+        for other_index, (other, other_mask) in enumerate(ordered):
+            if other_index == index or other == character:
+                continue
+            distance = int(numpy.count_nonzero(mask != other_mask))
+            if closest is None or distance < closest:
+                closest = distance
+        neighbour[character] = (
+            GLYPH_MAX_DISTANCE * 2 + 2 if closest is None else closest)
+    return exact, tuple(ordered), neighbour
 
 
 def _glyph_cells(
@@ -908,31 +1184,87 @@ def _decode_glyph_row(
     band: "numpy.ndarray",
     exact: Dict[bytes, str],
     ordered: Tuple[Tuple[str, "numpy.ndarray"], ...],
+    neighbour: Dict[str, int],
     cell_width: int,
+    ambiguous: Optional[List[str]] = None,
+    marks: Optional[List[bool]] = None,
 ) -> str:
     """Decode one grid row of cells into text.
 
-    An exact match answers immediately.  Anything else is resolved to
-    the nearest template within GLYPH_MAX_DISTANCE, and a cell no
-    template comes that close to becomes a space -- never a guess at
-    what it might have been.
+    :param marks: filled, if given, with one flag per returned
+        character saying whether that character came from an EXACT
+        match.  An exact match means the cell's ink is bit-identical to
+        what the attested font draws for that glyph, which is a proof
+        rather than a preference -- read_sidebar() uses it to decide
+        whether this pass may stand against a disagreeing OCR pass.
+
+    An exact match answers immediately.  Anything else must be a
+    match that is UNIQUE AND SEPARATED, on three conditions that all
+    have to hold:
+
+      * the nearest template is within GLYPH_MAX_DISTANCE;
+      * twice that distance is strictly less than the distance from that
+        template to its own nearest neighbour -- the classic
+        unique-decoding radius, so no other template can be as close;
+      * the runner-up is at least GLYPH_MATCH_MARGIN further away, which
+        also settles an exact TIE, where two templates sit at the same
+        distance and the answer used to be whichever came first in
+        GLYPH_ALPHABET.
+
+    A cell that fails any of them becomes a space -- NEVER a guess at
+    what it might have been -- and the ambiguity is recorded so it is
+    visible rather than silently absorbed.  The row then usually fails
+    find_clocks() and the OCR passes answer for that frame, which is the
+    designed fallback and is the honest outcome: a plausible false time
+    is worse than no time, because the timeline reconciles a missing
+    reading and cannot detect a wrong one.
     """
-    out = []
+    out: List[str] = []
+    exactly: List[bool] = []
     for cell in _glyph_cells(band, cell_width):
         if not cell.any():
             out.append(" ")
+            exactly.append(False)
             continue
         hit = exact.get(cell.tobytes())
         if hit is not None:
             out.append(hit)
+            exactly.append(True)
             continue
-        best, distance = " ", GLYPH_MAX_DISTANCE + 1
+        best = " "
+        first, second = GLYPH_MAX_DISTANCE + 1, GLYPH_MAX_DISTANCE + 1
+        runner = ""
         for character, template in ordered:
             differing = int(numpy.count_nonzero(cell != template))
-            if differing < distance:
-                best, distance = character, differing
+            if differing < first:
+                best, runner = character, best
+                first, second = differing, first
+            elif differing < second:
+                runner, second = character, differing
+        if first > GLYPH_MAX_DISTANCE:
+            out.append(" ")
+            exactly.append(False)
+            continue
+        safe = neighbour.get(best, 0)
+        if first * 2 >= safe or second - first < GLYPH_MATCH_MARGIN:
+            if ambiguous is not None:
+                ambiguous.append(
+                    "a cell is %d pixel(s) from %r and %d from %r "
+                    "(%r's nearest neighbour is %d away), which is not "
+                    "a unique match; it was read as a space rather "
+                    "than guessed"
+                    % (first, best, second, runner or "nothing", best,
+                       safe))
+            out.append(" ")
+            exactly.append(False)
+            continue
         out.append(best)
-    return "".join(out).rstrip()
+        # A near match, however tightly bounded, is not a proof.
+        exactly.append(False)
+    text = "".join(out).rstrip()
+    if marks is not None:
+        marks.extend(exactly[:len(text)])
+    return text
 
 
 def read_column_by_glyphs(
@@ -940,12 +1272,18 @@ def read_column_by_glyphs(
     rect: sidebar_geometry.Rect,
     row_height: int,
     notes: Optional[List[str]] = None,
+    marks: Optional[List[bool]] = None,
 ) -> str:
     """Decode the sidebar column cell by cell against the game's font.
 
     Returns the column's text, one grid row per line, with rows that
     decoded to nothing dropped.  Returns "" when the grid cannot be
     established or the font is unavailable -- never a partial guess.
+
+    :param marks: filled, if given, with one flag per character of the
+        returned text saying whether that character was an EXACT match
+        against the attested font.  Newlines are marked False, so the
+        list indexes the returned string directly.
     """
     _require_pillow()
     if numpy is None or ImageFont is None or ImageDraw is None:
@@ -969,14 +1307,20 @@ def read_column_by_glyphs(
             _warn("the interface font %s is not in this checkout, so "
                   "the exact glyph reader is skipped" % font_path, notes)
             return ""
-        with Image.open(png_path) as opened:
+        with open_png(png_path) as opened:
             grey = opened.convert("L")
             column = grey.crop(
                 (rect.x, rect.y,
                  rect.x + rect.width, rect.y + rect.height))
         ink = numpy.ascontiguousarray(
             numpy.asarray(column) > GLYPH_INK_THRESHOLD)
-        exact, ordered = _glyph_templates(cell_width, row_height)
+        exact, ordered, neighbour = _glyph_templates(
+            cell_width, row_height)
+    except (FrameUnreadableError, ToolchainError) as exc:
+        _warn("the exact glyph reader refused to read %s (%s), so the "
+              "OCR passes answer for this frame" % (png_path, exc),
+              notes)
+        return ""
     except (OSError, ValueError) as exc:
         _warn("the exact glyph reader could not prepare %s (%s), so "
               "the OCR passes answer for this frame"
@@ -986,12 +1330,63 @@ def read_column_by_glyphs(
     if not ink.any():
         return ""
     phase = _glyph_phase(ink, exact, cell_width, row_height)
+    ambiguous: List[str] = []
     lines = []
+    row_marks: List[List[bool]] = []
     for _, band in _glyph_bands(ink, phase, row_height):
-        text = _decode_glyph_row(band, exact, ordered, cell_width)
+        band_marks: List[bool] = []
+        text = _decode_glyph_row(
+            band, exact, ordered, neighbour, cell_width, ambiguous,
+            band_marks)
         if text.strip():
             lines.append(text)
-    return "\n".join(lines)
+            row_marks.append(band_marks)
+    text = "\n".join(lines)
+    if marks is not None:
+        for index, band_marks in enumerate(row_marks):
+            if index:
+                # The "\n" join() inserted, which is nobody's glyph.
+                marks.append(False)
+            marks.extend(band_marks)
+    if ambiguous and find_clocks(text)[0] is None:
+        # PROPORTIONATE REPORTING.  A refused cell is only worth a
+        # reader's attention when the refusal cost the reading: the
+        # sidebar draws box-rules and symbols this alphabet does not
+        # contain, so a column normally carries dozens of cells that
+        # match nothing -- and those used to be answered with whichever
+        # template happened to be nearest.  Refusing them is the fix and
+        # is silent; a column that yielded NO clock is the case where
+        # someone needs to see why, so it gets one note carrying the
+        # count and the closest call.
+        _warn(
+            "the exact glyph reader refused %d ambiguous cell(s) in %s "
+            "and found no clock, so the OCR passes answer for this "
+            "frame; the closest call was: %s"
+            % (len(ambiguous), png_path, ambiguous[0]), notes)
+    return text
+
+
+def _all_exact(text: str, value: str,
+               marks: Sequence[bool]) -> bool:
+    """True when every character of ``value`` was an EXACT match.
+
+    THE DIFFERENCE BETWEEN A PROOF AND A PREFERENCE.  An exact match
+    means the cell's ink is bit-identical to what the attested font
+    draws for that glyph, so the engine demonstrably drew that
+    character there.  A near match -- however tightly its
+    unique-decoding radius is bounded -- is strong evidence but not
+    proof, and only a proof is allowed to stand against a disagreeing
+    OCR pass in read_sidebar().
+
+    Conservative on every doubt: an unlocatable value, a short mark
+    list, or a value spanning a line break all answer False.
+    """
+    if not value or len(marks) != len(text):
+        return False
+    start = text.find(value)
+    if start < 0:
+        return False
+    return all(marks[start:start + len(value)])
 
 
 @dataclass(frozen=True)
@@ -1936,13 +2331,7 @@ def _convert_strip(
         raise ToolchainError(
             "%s produced no image for %s at %s"
             % (CONVERT_BIN, png_path, rect.geometry))
-    try:
-        image = Image.open(io.BytesIO(data))
-        image.load()
-    except OSError as exc:
-        raise ToolchainError(
-            "%s produced an image that could not be decoded: %s"
-            % (CONVERT_BIN, exc)) from exc
+    image = open_png_bytes(data, CONVERT_BIN)
     return image if image.mode == "L" else image.convert("L")
 
 
@@ -1969,12 +2358,7 @@ def _pillow_strip(
 ) -> Image.Image:
     """Build the preprocessed strip with Pillow alone."""
     _require_pillow()
-    try:
-        source = Image.open(png_path)
-        source.load()
-    except OSError as exc:
-        raise FrameUnreadableError(
-            "%s could not be decoded: %s" % (png_path, exc)) from exc
+    source = open_png(png_path)
 
     column = source.crop(
         (rect.x, rect.y, rect.right, rect.bottom)).convert("L")
@@ -2299,13 +2683,11 @@ def _assert_rect_fits(png_path: str,
                       rect: sidebar_geometry.Rect) -> Tuple[int, int]:
     """Confirm the crop lies inside the frame, or fail loudly."""
     _require_pillow()
-    try:
-        with Image.open(png_path) as image:
-            size = image.size
-    except OSError as exc:
-        raise FrameUnreadableError(
-            "%s could not be opened as an image: %s"
-            % (png_path, exc)) from exc
+    # The dimensions come from the IHDR chunk, not from a decode: the
+    # commonest question asked of a capture is answered by 24 bytes of
+    # pure Python, so a malformed or hostile frame is refused here
+    # rather than being handed to a native decoder first.
+    size = png_size(png_path)
     if rect.right > size[0] or rect.bottom > size[1]:
         raise RectError(
             "the crop %s does not fit inside the %dx%d frame %s.  "
@@ -2349,8 +2731,13 @@ def read_sidebar(
     :param engine: ``convert`` (default) or ``pillow`` preprocessing.
     :param ocr_engine: ``pytesseract`` (default) or ``tesseract``.
     :param passes: an explicit pass list; :data:`PASSES` by default.
-    :param cross_check: run every pass even after one succeeds, so that
-        disagreement between them is reported rather than hidden.
+    :param cross_check: run every pass even after one succeeds.  A
+        disagreement then makes the clock ``None`` -- withheld, not
+        resolved by pass order -- UNLESS an exact glyph match settles
+        it, which is a proof and stands.  Either way every candidate
+        stays in :attr:`SidebarReading.candidates` and
+        :attr:`SidebarReading.agreement` stays false, so a contested
+        frame is visible as contested.  This is what capture.sh uses.
     :param full_scan: read every text row.  ``False`` stops at the
         first row holding a clock, which is faster and is what
         :func:`read_clock` does; the date line may then be missed.
@@ -2428,12 +2815,16 @@ def read_sidebar(
     attempted: List[str] = []
     calls = 0
 
-    # THE EXACT PASS RUNS FIRST.  It spends no OCR calls, it either
-    # matches the pixels the game drew or declines, and its output goes
-    # through the same find_clocks() as every OCR pass -- so an
+    # THE GLYPH PASS RUNS FIRST.  It spends no OCR calls, and its output
+    # goes through the same find_clocks() as every OCR pass -- so an
     # impossible reading is declined here exactly as it would be there.
+    # glyph_marks comes back saying which characters were bit-exact,
+    # because only those let this pass stand against a disagreeing OCR
+    # pass; a near match, however tightly bounded, is confirmed first.
+    glyph_marks: List[bool] = []
+    glyph_exact = False
     glyph_text = read_column_by_glyphs(
-        resolved_png, rectangle, rows, notes)
+        resolved_png, rectangle, rows, notes, glyph_marks)
     if glyph_text.strip():
         attempted.append(GLYPH_PASS_NAME)
         found, impossible = find_clocks(glyph_text)
@@ -2450,8 +2841,9 @@ def read_sidebar(
             candidates.append(found)
             clock, winner, winning_text = (
                 found, GLYPH_PASS_NAME, glyph_text)
-            LOG.debug("pass '%s' read the clock as %s",
-                      GLYPH_PASS_NAME, found)
+            glyph_exact = _all_exact(glyph_text, found, glyph_marks)
+            LOG.debug("pass '%s' read the clock as %s (exact=%s)",
+                      GLYPH_PASS_NAME, found, glyph_exact)
         elif not fallback_text.strip():
             fallback_text = glyph_text
 
@@ -2493,25 +2885,71 @@ def read_sidebar(
 
     text = winning_text or fallback_text
 
-    if len(candidates) > 1:
+    disagreed = len(candidates) > 1
+    settled = disagreed and winner == GLYPH_PASS_NAME and glyph_exact
+    if disagreed and not settled:
+        # DISAGREEMENT WITHOUT A PROOF MEANS UNREADABLE.  Probabilistic
+        # readers of the same pixels that return different times have
+        # established that the time is NOT established, and choosing
+        # between them by pass order is choosing arbitrarily.  So the
+        # clock is withheld rather than picked, which is the only safe
+        # direction: a missing reading is reconciled downstream against
+        # the previous frame and is visible in the record as null,
+        # whereas a wrong one is undetectable and becomes a wrong
+        # duration, a wrong caption and a wrong line in the transcript.
+        #
+        # Nothing is hidden by withholding: every candidate stays in
+        # `candidates`, the text stays in `text`, and the frame itself
+        # remains the authority a human can inspect.
         _warn(
-            "the OCR passes disagree about the clock: %s.  The first in "
-            "pass order (%r from '%s') is reported and every candidate "
-            "is recorded; nothing is averaged or repaired.  The reading "
-            "of the frame itself is authoritative -- inspect %s"
-            % (", ".join(repr(value) for value in candidates),
-               clock, winner, resolved_png),
+            "the readers disagree about the clock in %s: %s, and no "
+            "exact match settles it.  The reading is therefore "
+            "reported as UNREADABLE rather than resolved by pass "
+            "order; every candidate is recorded and nothing is "
+            "averaged or repaired.  The frame itself is authoritative "
+            "-- inspect it"
+            % (resolved_png,
+               ", ".join(repr(value) for value in candidates)),
+            notes)
+        clock, winner = None, None
+    elif settled:
+        # AN EXACT MATCH IS A PROOF, NOT A PREFERENCE.  Every character
+        # of this reading is bit-identical to what the attested
+        # data/font/Terminus.ttf draws for it, so the engine
+        # demonstrably drew that time in those pixels.  tesseract
+        # disagreeing with a proof is tesseract being wrong -- measured
+        # on this evidence: of 26 cross-checked frames, three drew OCR
+        # contradictions ('19:40:10' against an exact '15:28:18', and
+        # the like), and every contradiction was impossible in sequence
+        # against the neighbouring frames while every exact reading fit.
+        #
+        # Discarding a proof because a probabilistic reader was noisy
+        # would lose true observations, which is its own kind of
+        # dishonesty.  So the proof stands, the contradiction is
+        # recorded, and `agreement` stays false so the evidence shows
+        # that this frame was contested and how it was settled.
+        _warn(
+            "the OCR passes read %s in %s, contradicting the exact "
+            "glyph match %r.  The exact match STANDS: every one of its "
+            "characters is bit-identical to what the attested "
+            "interface font draws, which is a proof rather than a "
+            "preference.  The contradicting readings are recorded and "
+            "nothing is averaged or repaired"
+            % (", ".join(repr(value) for value in candidates
+                         if value != clock),
+               resolved_png, clock),
             notes)
 
-    if clock is None and text.strip():
-        diagnose_clock_text(text, notes)
-    elif clock is None:
-        _warn(
-            "the sidebar column of %s produced no text at all; the "
-            "frame may be blank, which is what SDL_VIDEODRIVER=dummy "
-            "produces, or the crop %s may cover empty pixels"
-            % (resolved_png, rectangle.geometry),
-            notes)
+    if clock is None and not disagreed:
+        if text.strip():
+            diagnose_clock_text(text, notes)
+        else:
+            _warn(
+                "the sidebar column of %s produced no text at all; the "
+                "frame may be blank, which is what SDL_VIDEODRIVER="
+                "dummy produces, or the crop %s may cover empty pixels"
+                % (resolved_png, rectangle.geometry),
+                notes)
 
     reading = SidebarReading(
         png=resolved_png,
@@ -3030,8 +3468,10 @@ def build_parser() -> argparse.ArgumentParser:
               "from the file name"))
     parser.add_argument(
         "--cross-check", action="store_true",
-        help=("run every pass even after one succeeds, so that "
-              "disagreement between them is reported"))
+        help=("run every pass even after one succeeds and report the "
+              "clock as unreadable if they disagree, unless an exact "
+              "glyph match settles it, rather than resolving the "
+              "disagreement by pass order; capture.sh always does this"))
     parser.add_argument(
         "--stop-early", action="store_true",
         help=("stop at the first text row holding a clock; faster, but "

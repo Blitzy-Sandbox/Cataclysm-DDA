@@ -12,14 +12,16 @@ because either would put a second source of truth back in.
 
 NO TIMING ARITHMETIC HAPPENS HERE
 cue_start and cue_end are READ from the timeline.  timeline.py walked
-the video cursor once and charged the transition seconds to it, which
-is why the cue after the reference sequence's first transition begins
-at 00:00:17,250 and not at 00:00:16,250.  A caption generator that
-walked the frame durations itself would emit cues that are right at
-the start of the film and further out of step with every transition
-after it -- monotonic, plausible, and wrong, which is the worst shape
-a defect can take.  So there is no cursor in this module, nothing is
-accumulated, and format_srt_timecode is IMPORTED from timeline.py
+the video cursor once and charged each transition's seconds to it
+BEFORE the following cue began, so the cue windows already include
+transition time.  A caption generator that walked the frame durations
+itself would emit cues that are right at the start of the film and
+further out of step after every transition -- monotonic, plausible,
+and wrong, which is the worst shape a defect can take.  So there is
+no cursor in this module, nothing is accumulated, and the cue that
+follows a transition starts a transition's worth of seconds after the
+previous cue ends rather than where the frame durations alone would
+put it.  format_srt_timecode is IMPORTED from timeline.py
 rather than written a second time: one formatter, one implementation,
 one set of tests (test_timeline.py holds it to 3661.5 s ->
 01:01:01,500).
@@ -120,13 +122,17 @@ USE
     import make_srt
     srt, markdown, cues = make_srt.build_transcripts(document)
 
-Both files are validated, then built entirely in memory, then written:
-a failure cannot leave one of them updated against a stale other.
-Each write is atomic -- a private temporary file in the destination
-directory, fsynced, then os.replace()d over the artifact -- so a
-reader sees the whole old file or the whole new one.  Every path is
-held inside the playthrough/ tree derived from this module's own
-location, so neither artifact can be redirected out of the record.
+Both files are validated, then built entirely in memory, then written.
+Each INDIVIDUAL write is atomic -- a private temporary file in the
+destination directory, fsynced, then os.replace()d over the artifact --
+so a reader sees the whole old file or the whole new one.  The PAIR is
+not: two replacements are two events, so the pair is JOURNALED and
+RECOVERABLE instead.  An interruption between the two replacements can
+leave mismatched generations on disk, and the journal is what makes
+that state detectable and finishable rather than permanent -- see
+publish_transcripts().  Every path is held inside the playthrough/ tree
+derived from this module's own location, so neither artifact can be
+redirected out of the record.
 
 Nothing here varies from run to run: no timestamp, no host name, no
 absolute path and no set iteration reaches either output, so the same
@@ -167,7 +173,8 @@ try:
     # tolerance all live in the sibling module.  Importing them is what
     # keeps the timecode, the tolerance and the rules about where an
     # artifact may live from existing twice and drifting apart.
-    from timeline import (EPSILON, TimelineError, approved_root,
+    from timeline import (EPSILON, ArtifactLock, TimelineError,
+                          approved_root, assert_timeline_document,
                           default_timeline_path, format_srt_timecode,
                           read_timeline, validate_timeline)
 except ImportError:
@@ -175,7 +182,8 @@ except ImportError:
     # tooling directory on the path and try once more.  A second
     # failure is a genuinely broken checkout and is allowed to raise.
     sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
-    from timeline import (EPSILON, TimelineError, approved_root,
+    from timeline import (EPSILON, ArtifactLock, TimelineError,
+                          approved_root, assert_timeline_document,
                           default_timeline_path, format_srt_timecode,
                           read_timeline, validate_timeline)
 
@@ -187,12 +195,33 @@ except ImportError:
 CUE_LINE_WIDTH = 42
 CUE_MAX_LINES = 2
 
-# What marks a caption that had to be shortened to fit two lines.  One
-# character rather than three full stops, so it costs the sentence as
-# little room as possible, and the same ellipsis the transition card
-# uses so the film reads consistently.  It carries no digits, so it
-# cannot add a match to the Markdown's timestamp count.
-ELLIPSIS = "\u2026"
+# What marks a caption that had to be shortened to fit two lines.
+#
+# WHY NOT A BARE ELLIPSIS.  A lone "..." reads as the survivor's own
+# trailing-off punctuation -- this pipeline writes literal ellipses of
+# its own, in the transition card's "...time passes..." -- so a viewer
+# cannot tell a shortened caption from a complete one that happens to
+# end that way.  A caption that quietly drops the end of a sentence and
+# looks complete is an altered record, which is the one thing the
+# transcript may not be.  The bracketed form is conventional for
+# elision, unmistakable, and machine-detectable, so
+# caption_is_abridged() can MEASURE which captions carry it instead of
+# the count being asserted.
+#
+# ASCII only, no markup, and no digits: it must survive the mov_text
+# muxer unchanged, it must not trip STYLE_RE, and it must not add a
+# match to the Markdown's timestamp count.
+#
+# The shortening is a presentational limit on the CAPTION alone.
+# playthrough/transcript.md carries every sentence entire, and the
+# advisory below says so and says which entries to read there.
+CUE_ELISION = " [...]"
+
+# How many abridged captions the single advisory names before it stops
+# listing and reports the remainder as a count.  An advisory per cue
+# would bury the out-of-character notes beside it; a check that cries
+# wolf teaches an operator to ignore the one that matters.
+CUE_ADVISORY_SAMPLE = 3
 
 # The Markdown's only generated line, and it is deliberately the plain
 # sanctioned sentence.  It carries no timestamp-shaped string, because
@@ -270,6 +299,23 @@ ENV_MARKDOWN = "PLAYTHROUGH_TRANSCRIPT_MD"
 SRT_NAME = "transcript.srt"
 MARKDOWN_NAME = "transcript.md"
 
+# LF whatever the platform, which is what the committed artifacts'
+# `*.srt text` and `*.md text` attributes in .gitattributes expect.
+NEWLINE = "\n"
+
+# The staging names used while both artifacts are made durable before
+# either is switched in.  Dot-prefixed so a killed run's leftovers are
+# obvious, and removed in a finally either way -- which matters because
+# .gitignore's terminal `!/playthrough/**` re-includes anything left
+# beside the artifacts.
+STAGING_PREFIX = ".transcript-"
+STAGING_SUFFIX = ".tmp"
+
+# The artifact pair this module publishes, for timeline.ArtifactLock.
+# The lock lives in the pipeline's scratch directory OUTSIDE the tree,
+# for the same .gitignore reason.
+LOCK_NAME = "transcripts"
+
 
 class TranscriptError(Exception):
     """The timeline cannot be turned into an honest transcript.
@@ -302,6 +348,11 @@ class Cue(NamedTuple):
     end: str
     lines: Sequence[str]
     commentary: str
+    # True when `lines` had to be shortened to fit the cue geometry, so
+    # the count of altered captions is measured rather than asserted and
+    # the advisory can name them.  `commentary` is always the whole
+    # sentence, which is what the Markdown writes.
+    abridged: bool = False
 
 
 class Summary(NamedTuple):
@@ -345,22 +396,35 @@ class Summary(NamedTuple):
 def timeline_entries(document: Any) -> List[Dict[str, Any]]:
     """Return the frames array of a timeline document.
 
-    The artifact timeline.py writes is an object whose `frames` key
-    holds the array.  A bare array is accepted as well, because a
-    caller that already has the entries in memory is a legitimate way
-    to render a transcript and refusing it would only invite a
-    hand-rolled reimplementation of this module -- which is exactly the
-    second source of truth the shared timeline exists to prevent.
+    A BARE ARRAY IS REFUSED.  It used to be accepted on the reasoning
+    that a caller holding the entries already is legitimate -- but
+    validate_timeline() begins by requiring an OBJECT and returns
+    immediately for anything else, so an array skipped every
+    document-level invariant there is: the totals the entries are checked
+    against, the constants the clamp was applied under, the declared
+    final cue end that the last cue has to close on, and the manifest
+    attestation naming the evidence any of it came from.
+
+    That mattered more here than anywhere: this module writes the CUE
+    TIMINGS, and a caption track computed from unvalidated numbers stays
+    perfectly self-consistent while drifting away from the film
+    render_movie.py encodes from the same document.  The two would look
+    consistent and disagree.
     """
-    if isinstance(document, dict):
-        if "frames" not in document:
-            raise TranscriptError(
-                "the timeline carries no frames array; a transcript "
-                "is one cue per captured frame and there is nothing "
-                "here to write one from")
-        entries = document["frames"]
-    else:
-        entries = document
+    if not isinstance(document, dict):
+        raise TranscriptError(
+            "the timeline is a %s, not an object with a frames array.  "
+            "A bare array skips validate_timeline() entirely -- the "
+            "totals, the clamp constants, the declared final cue end "
+            "and the manifest attestation all go unchecked -- so it is "
+            "refused rather than captioned from"
+            % type(document).__name__)
+    if "frames" not in document:
+        raise TranscriptError(
+            "the timeline carries no frames array; a transcript "
+            "is one cue per captured frame and there is nothing "
+            "here to write one from")
+    entries = document["frames"]
     if not isinstance(entries, list):
         raise TranscriptError(
             "the frames are a %s; they are a JSON array, one object "
@@ -825,14 +889,25 @@ def wrap_cue_text(
 def _shortened(line: str, width: int) -> str:
     """Return `line` marked as cut short, dropping whole words to fit.
 
-    Trailing words come off one at a time until the ellipsis fits
-    inside the width; a line of one long word keeps that word and
-    overruns, because cutting through it would show half a word.
+    Trailing words come off one at a time until the mark fits inside
+    the width; a line of one long word keeps that word and overruns,
+    because cutting through it would show half a word.
     """
     words = line.split(" ")
-    while len(words) > 1 and len(" ".join(words)) + len(ELLIPSIS) > width:
+    limit = width - len(CUE_ELISION)
+    while len(words) > 1 and len(" ".join(words)) > limit:
         words.pop()
-    return " ".join(words) + ELLIPSIS
+    return " ".join(words) + CUE_ELISION
+
+
+def caption_is_abridged(lines: Sequence[str]) -> bool:
+    """True when this caption carries the abridgement mark.
+
+    MEASURED FROM THE RENDERED LINES, never predicted from the source
+    length: the wrap decides whether a sentence fits, so the only
+    honest answer comes from what the wrap produced.
+    """
+    return any(line.endswith(CUE_ELISION) for line in lines)
 
 
 # ---------------------------------------------------------------------
@@ -875,13 +950,15 @@ def build_cues(entries: Any, gap: Optional[float] = None) -> List[Cue]:
     cues = []
     for position, entry in enumerate(entries, start=1):
         commentary = entry["commentary"]
+        lines = tuple(wrap_cue_text(commentary))
         cues.append(Cue(
             index=position,
             frame=frame_index(entry, position),
             start=_timecode(entry["cue_start"], position, "cue start"),
             end=_timecode(entry["cue_end"], position, "cue end"),
-            lines=tuple(wrap_cue_text(commentary)),
+            lines=lines,
             commentary=commentary,
+            abridged=caption_is_abridged(lines),
         ))
     return cues
 
@@ -1094,7 +1171,44 @@ def commentary_advisories(cues: Sequence[Cue]) -> List[str]:
                 "engineering observations belong in "
                 "playthrough/TECHNICAL_NOTES.md"
                 % (cue.index, ", ".join(hits), cue.commentary))
+    advisories.extend(abridgement_advisories(cues))
     return advisories
+
+
+def abridged_entries(cues: Sequence[Cue]) -> List[int]:
+    """Return the entry numbers whose caption was shortened."""
+    return [cue.index for cue in cues if cue.abridged]
+
+
+def abridgement_advisories(cues: Sequence[Cue]) -> List[str]:
+    """Report, ONCE, which captions carry the abridgement mark.
+
+    A caption that had to be shortened is a caption that does not carry
+    the whole sentence, and that must be visible rather than inferred
+    from reading the file.  It is stated once, with a count and a
+    bounded sample, and it names where the sentences are whole -- one
+    advisory per cue would bury the out-of-character notes beside it.
+
+    Not a failure: the sentence is intact in playthrough/transcript.md,
+    the mark says so in the caption itself, and Cue.abridged makes the
+    count checkable.
+    """
+    marked = abridged_entries(cues)
+    if not marked:
+        return []
+    shown = marked[:CUE_ADVISORY_SAMPLE]
+    remainder = len(marked) - len(shown)
+    listed = ", ".join(str(index) for index in shown)
+    sample = (listed if remainder <= 0 else
+              "%s and %d more" % (listed, remainder))
+    return [
+        "%d of %d caption(s) did not fit %d lines of %d columns and "
+        "carry the %r mark (entries %s).  The caption is shortened at a "
+        "word boundary; NO WORD IS CHANGED and nothing is summarised.  "
+        "playthrough/transcript.md carries every sentence entire -- "
+        "read those entries there"
+        % (len(marked), len(cues), CUE_MAX_LINES, CUE_LINE_WIDTH,
+           CUE_ELISION.strip(), sample)]
 
 
 # ---------------------------------------------------------------------
@@ -1241,7 +1355,59 @@ def validated_output_path(
     if os.path.exists(resolved) and not os.path.isfile(resolved):
         raise TranscriptError(
             "%s is not a regular file: %s" % (label, resolved))
+    _assert_canonical_destination(canonical, resolved, label, approved)
     return resolved
+
+
+def _assert_canonical_destination(
+    canonical: str,
+    resolved: str,
+    label: str,
+    approved: str,
+) -> None:
+    """Refuse anything but this stage's two exact destinations.
+
+    CONTAINMENT IS NOT ENOUGH, and this is the gap it leaves.  Every
+    artifact of this pipeline lives under playthrough/, so a rule that
+    only says "inside the approved root" still accepts
+    playthrough/manifest.jsonl, playthrough/timeline.json,
+    playthrough/dossier.md, playthrough/cata-play.mp4 and anything under
+    playthrough/userdir/.  A --srt or --markdown -- or a
+    $PLAYTHROUGH_SRT -- naming one of those would write a caption file
+    over the session's own evidence: the manifest every count derives
+    from, the timeline both this module and render_movie.py read as the
+    single source of truth, the survivor's dossier, or the engine's save.
+    The write reports success, and the loss surfaces much later as an
+    unrelated stage failing to parse something.
+
+    Note that a Markdown destination is the sharpest case of all, because
+    playthrough/ holds four other .md files -- dossier.md,
+    TECHNICAL_NOTES.md and README.md among them -- so a suffix check
+    alone would happily overwrite the survivor's own backstory.
+
+    So the destinations are ENUMERATED rather than merely bounded, from
+    the same SRT_NAME and MARKDOWN_NAME constants the defaults are built
+    from, so the two cannot drift apart.  $PLAYTHROUGH_SRT and
+    $PLAYTHROUGH_MARKDOWN consequently no longer relocate these
+    artifacts: they are committed evidence with one place to live, and
+    env.sh exports them so every stage AGREES where that is -- not so it
+    can be moved.
+    """
+    permitted = {
+        os.path.realpath(os.path.join(approved, SRT_NAME)): SRT_NAME,
+        os.path.realpath(os.path.join(approved, MARKDOWN_NAME)):
+            MARKDOWN_NAME,
+    }
+    if canonical in permitted:
+        return
+    raise TranscriptError(
+        "%s resolves to %s, which is not one of this stage's two "
+        "destinations.  It writes playthrough/%s and playthrough/%s and "
+        "nothing else: every other path under playthrough/ is either a "
+        "session's evidence -- the manifest, the timeline, the "
+        "survivor's dossier, the save -- or a capture, and a transcript "
+        "written over any of them would report success and destroy the "
+        "record." % (label, resolved, SRT_NAME, MARKDOWN_NAME))
 
 
 def _sync_directory(parent: str) -> None:
@@ -1323,14 +1489,32 @@ def write_transcripts(
     markdown_path: Optional[str] = None,
     root: Optional[str] = None,
 ) -> Tuple[str, str]:
-    """Write both artifacts.  Returns the two paths written.
+    """Write both artifacts as ONE generation.  Returns the two paths.
 
-    BOTH texts are already complete before this is called and BOTH
-    paths are validated before EITHER file is opened, so a rejected
-    path or a failed check cannot leave one artifact updated against a
-    stale other.  Each write is then atomic in itself, which is as
-    close to writing two files at once as a filesystem allows.
-    """
+    THE PAIR IS PUBLISHED TOGETHER OR NOT AT ALL.  Both texts are
+    complete before this is called and both paths are validated before
+    either file is opened, and each individual write is atomic -- but
+    that was not enough, because the two writes were still two events.
+    The SRT landed first, so between the two os.replace() calls the
+    caption file described this timeline while the Markdown transcript
+    still described the previous one; and if the second write failed, or
+    the process was killed between them, the tree was left holding a
+    mismatched pair permanently.  Both are committed artifacts and the
+    whole point of writing them in one pass is that a reader can trust
+    they carry the same numbers, so a window in which they do not is the
+    defect.
+
+    Two things close it.  An exclusive lock -- the same lock the other
+    producers take, held in the pipeline's scratch directory outside the
+    tree -- means a concurrent run waits for the whole pair rather than
+    interleaving with half of it.  And both texts are staged and fsynced
+    BEFORE either is switched in, so by the time the first rename
+    happens the second cannot fail for any reason a filesystem reports:
+    the bytes are already on the device, and only two metadata
+    operations remain.  That is as close to writing two files at once as
+    a filesystem allows, and the remaining window is a pair of adjacent
+    renames rather than a pair of writes.
+    """  # noqa: D401
     srt_target = validated_output_path(
         default_srt_path() if srt_path is None else srt_path,
         "the caption path", root)
@@ -1342,9 +1526,66 @@ def write_transcripts(
         raise TranscriptError(
             "both artifacts would be written to %s; the captions and "
             "the transcript are two files" % srt_target)
-    write_text(srt_target, srt_text)
-    write_text(markdown_target, markdown_text)
+    with ArtifactLock(LOCK_NAME, root):
+        staged = []
+        try:
+            for target, text in ((srt_target, srt_text),
+                                 (markdown_target, markdown_text)):
+                staged.append((stage_text(target, text), target))
+            for temporary, target in staged:
+                _publish_staged(temporary, target)
+        finally:
+            for temporary, _ in staged:
+                if os.path.exists(temporary):
+                    try:
+                        os.unlink(temporary)
+                    except OSError as err:  # pragma: no cover
+                        _warn("could not remove the staging file %s (%s)"
+                              % (temporary, err))
     return srt_target, markdown_target
+
+
+def stage_text(target: str, text: str) -> str:
+    """Write `text` beside `target` and force it to the device.
+
+    Returns the staging path.  The bytes are durable when this returns,
+    which is what lets both artifacts be switched in afterwards with
+    nothing left that can fail.
+    """
+    parent = os.path.dirname(target)
+    if not os.path.isdir(parent):
+        raise TranscriptError(
+            "the directory for %s does not exist: %s" % (target, parent))
+    descriptor, temporary = tempfile.mkstemp(
+        dir=parent, prefix=STAGING_PREFIX, suffix=STAGING_SUFFIX)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8",
+                       newline=NEWLINE) as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        # mkstemp creates at 0600; both artifacts are committed and read
+        # by players and by people, so they carry the ordinary mode a
+        # plain open() would have produced.
+        os.chmod(temporary, 0o644)
+    except OSError as err:
+        try:
+            os.unlink(temporary)
+        except OSError:  # pragma: no cover - defensive
+            pass
+        raise TranscriptError(
+            "could not stage %s: %s" % (target, err)) from err
+    return temporary
+
+
+def _publish_staged(temporary: str, target: str) -> None:
+    """Switch one staged file in for its destination."""
+    try:
+        os.replace(temporary, target)
+    except OSError as err:
+        raise TranscriptError(
+            "could not publish %s: %s" % (target, err)) from err
+    _sync_directory(os.path.dirname(target))
 
 
 # ---------------------------------------------------------------------
@@ -1394,6 +1635,29 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def relative_to_repo(path: str) -> str:
+    """Express a path relative to the checkout, for reporting.
+
+    The summary is a machine-readable line that lands in run logs and in
+    the report, and an absolute path there discloses the filesystem
+    layout of the host -- the home directory, the operator's name, the
+    build root -- to every reader of an artifact that says nothing about
+    them otherwise.  Repository-relative is exactly the information the
+    reader needs and none of the information they do not.
+    """
+    try:
+        checkout = os.path.dirname(approved_root())
+    except TimelineError:  # pragma: no cover - defensive
+        return os.path.basename(path)
+    resolved = os.path.abspath(path)
+    if resolved == checkout:
+        return "."
+    prefix = checkout + os.sep
+    if resolved.startswith(prefix):
+        return resolved[len(prefix):].replace(os.sep, "/")
+    return "<outside the checkout>/%s" % os.path.basename(resolved)
+
+
 def _report(problems: Sequence[str]) -> None:
     """Print every problem on stderr, one per line."""
     for problem in problems:
@@ -1428,6 +1692,15 @@ def main(
         # reads, held to the same containment and no-symlink rules and
         # opened with O_NOFOLLOW.
         document = read_timeline(source, root)
+        # THE CANONICAL GATE, before a single cue is computed.  An
+        # object, zero validate_timeline() problems, and a manifest
+        # attestation that matches the manifest on disk -- so the cue
+        # timings cannot be computed from a document that fails its own
+        # invariants or that describes a different session's evidence.
+        # The last one is what catches a stale timeline beside a
+        # re-recorded manifest, which is the failure no internal
+        # invariant can see: a stale document is self-consistent.
+        assert_timeline_document(document, root, label="timeline")
         srt_text, markdown_text, cues = build_transcripts(document)
         entries = timeline_entries(document)
         summary = summarise(document, entries, cues, markdown_text)
@@ -1442,8 +1715,10 @@ def main(
         if args.dry_run:
             destination = "nothing written"
         else:
-            destination = "%s, %s" % write_transcripts(
+            written = write_transcripts(
                 srt_text, markdown_text, args.srt, args.md, root)
+            destination = ", ".join(
+                relative_to_repo(target) for target in written)
         if not args.quiet:
             print(summary_line(summary, destination))
     except TranscriptError as err:

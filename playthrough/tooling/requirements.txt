@@ -110,8 +110,16 @@ numpy==2.5.1  # frame luminance statistics and MoviePy arrays
 # (grayscale mean 90.5 at the fade's start, 0.24 across the card, 56.6
 # at the fade-in's end) and the card's text present (max channel 255).
 #
+# Re-verified 2026-08-04 over frames 100 and 101 of the committed
+# capture: the same twelve 1920x1080 frames over a 1.0 s segment, means
+# 4.3 / 0.24 / 3.4 and the card's text still at max channel 255.  The
+# outer numbers differ from the run above because those two frames are a
+# darker scene; the card's 0.24 and the frame count are the parts that
+# are properties of the effect rather than of the input, and both hold.
+#
 # The alternative was measured rather than dismissed.  Queried against
-# the OSV database on 2026-08-03, by exact version rather than by range:
+# the OSV database by exact version rather than by range, on 2026-08-03
+# and re-queried on 2026-08-04 with identical results:
 #
 #     pillow 11.3.0   36 advisory records   <- pinned
 #     pillow 12.0.0   38
@@ -138,14 +146,60 @@ numpy==2.5.1  # frame luminance statistics and MoviePy arrays
 # advisory count that matters for a general-purpose image service is
 # not the number that matters for a closed loop like this one.
 #
+# THE COMPENSATING CONTROLS ARE BUILT, NOT PROMISED, and they are what
+# makes the narrow exposure above an enforced property rather than an
+# argument.  Each is a line of code with a test behind it:
+#
+#   * ocr_clock.py DECODES ONLY THROUGH FORMAT-RESTRICTED DOORS.  Its
+#     two entry points, open_png() and open_png_bytes(), check the
+#     eight-byte PNG signature and then pass formats=["PNG"] to
+#     Image.open, so content sniffing is off: a BMP, a PSD or a TIFF
+#     renamed .png raises UnidentifiedImageError instead of reaching the
+#     parser for its real format.  There is no other Image.open in the
+#     module, and its own test suite asserts that structurally.
+#   * make_transitions.py DECODES NOTHING ITSELF.  It verifies the PNG
+#     signature and the IHDR chunk before a frame is composed, and the
+#     decode is MoviePy's ImageClip -- so the file that reaches the
+#     decoder has been proved to be a real PNG rather than another
+#     format wearing the extension.
+#   * geometry is read WITHOUT A DECODER AT ALL, in both modules.  Frame
+#     width and height come from a pure-Python read of the IHDR chunk,
+#     so the dimension probe -- which every stage does on every frame --
+#     never enters native code.
+#   * a PIXEL CEILING (MAX_PIXELS) is enforced in both modules before
+#     any decode, so a small file declaring an enormous canvas is
+#     refused rather than allocated.
+#   * the FONT IS ATTESTED, in both modules and against the same digest.
+#     The glyph templates and the transition card are rendered from
+#     data/font/Terminus.ttf identified by path AND by sha256, so an
+#     untrusted font beneath --repo-root cannot be substituted for it.
+#
 # Two honest caveats rather than a clean bill of health.  The residual
-# risk is not zero: a corrupt capture is still input, and 11.3.0 is the
-# last of its series, so there is no in-series patch release to move to
-# if something new is published against it.  And the surrounding
-# toolchain -- ImageMagick, ffmpeg, Xorg/Xvfb -- parses the very same
-# frames from apt packages this file cannot pin, which is why the
-# platform requirement further down is part of the dependency set and
-# not a footnote.
+# risk is not zero: a TRUNCATED OR CORRUPT PNG this pipeline captured
+# itself is still input to the decoder -- the format restriction rules
+# out a different parser, not a malformed instance of this one -- and
+# 11.3.0 is the last of its series, so there is no in-series patch
+# release to move to if something new is published against it.  And the
+# surrounding toolchain -- ImageMagick, ffmpeg, Xorg/Xvfb -- parses the
+# very same frames from apt packages this file cannot pin, which is why
+# the platform requirement further down is part of the dependency set
+# and not a footnote.
+#
+# TWO OTHER ROUTES WERE CONSIDERED AND REFUSED, recorded here so the
+# decision is not re-litigated as an oversight.  An audited third-party
+# MoviePy FORK compatible with Pillow 12.x would trade a reviewed,
+# widely-used release for an unreviewed one, which moves the supply-chain
+# risk rather than removing it, and no such fork is published.  A PRIVATE
+# Pillow build carrying backported fixes would produce a native imaging
+# binary that nobody downstream can verify and that no advisory database
+# describes -- the opposite of what requirements.lock exists to
+# establish -- and there is no upstream 11.x patch release to base it on.
+# What IS done instead is that the reviewed public wheel is HASH-PINNED:
+# requirements.lock binds Pillow 11.3.0 to the sha256 of one specific
+# cp312 manylinux wheel under --require-hashes and --only-binary :all:,
+# so a compromised index or a mutated artifact is refused at install
+# time.  That is the achievable half of "hash-pinned build", and it is
+# in force.
 #
 # THE TRIGGER FOR REVISITING THIS, stated so it is not left to taste:
 # when a moviepy release lifts the `pillow<12.0` cap, move both pins
@@ -209,10 +263,21 @@ imageio-ffmpeg==0.6.0  # encoder bridge for MoviePy and imageio
 # ImageMagick, ffmpeg and the Xorg/Xvfb stack all parse
 # untrusted-shaped input -- images, containers, the X protocol -- and on
 # an end-of-life release their known issues stay unfixed by definition,
-# whatever `dpkg-query` reports.  env.sh checks this at run time
-# (playthrough_check_platform) and warns by name; set
-# PLAYTHROUGH_REQUIRE_SUPPORTED_PLATFORM=1 to make an out-of-support
-# release a hard failure instead.
+# whatever `dpkg-query` reports.
+#
+# env.sh enforces this at run time (playthrough_check_platform) and it
+# is a REFUSAL, not a warning: a release past its end-of-life date is
+# refused, and so is one that is not in its dated support table at all,
+# because "cannot tell" is not "supported".  Ubuntu 26.04 LTS is the
+# migration target this pipeline is documented against.  Where the
+# out-of-support host is genuinely the only one available, set
+# PLAYTHROUGH_ALLOW_EOL_PLATFORM to a short REASON -- not to 1, because
+# the reason is the part a later reader of the evidence needs -- and it
+# is warned once, exported as PLAYTHROUGH_PLATFORM_WAIVER and printed in
+# the environment summary, so a session recorded under it carries the
+# fact in its own contract.  PLAYTHROUGH_REQUIRE_SUPPORTED_PLATFORM is
+# retired: =1 is now the default, and =0 no longer weakens anything and
+# says so rather than being ignored.
 #
 # TWO PROVISIONING RULES, both security conditions rather than taste.
 # Install into an isolated interpreter using the distribution's own

@@ -169,6 +169,12 @@ SUMMARY_FIELDS = (
     "PLAYTHROUGH_XAUTHORITY_ORIGIN",
     "PLAYTHROUGH_PLATFORM",
     "PLAYTHROUGH_PLATFORM_SUPPORTED",
+    # The end-of-life date and the waiver reason travel with the record
+    # because the platform gate is a REFUSAL by default: a session that
+    # ran on an out-of-support host did so under a named waiver, and the
+    # contract is where that fact has to be readable afterwards.
+    "PLAYTHROUGH_PLATFORM_EOL",
+    "PLAYTHROUGH_PLATFORM_WAIVER",
     "PLAYTHROUGH_SCREEN",
     "PLAYTHROUGH_WINDOW_CLASS",
     "PLAYTHROUGH_TILESET",
@@ -1391,6 +1397,224 @@ class TestTheToolPackageTable(EnvFixture):
                  "and reporting that as 'no X server' sends an "
                  "operator to debug a display that is running "
                  "perfectly"))
+
+
+class TestThePlatformGate(EnvFixture):
+    """An out-of-support platform is REFUSED, not warned about.
+
+    playthrough_check_platform used to warn and continue, with the hard
+    failure opt-in via PLAYTHROUGH_REQUIRE_SUPPORTED_PLATFORM=1 -- which
+    is a safeguard that is off.  It is inverted now, and these tests hold
+    the inversion in both directions.
+
+    THE OS IS FAKED BY REDEFINING playthrough_os_release AFTER SOURCING,
+    which is the only honest way to test this: /etc/os-release is an
+    absolute path that no sandbox can stand in for, and the alternative
+    -- asserting against whatever this host happens to be -- would make
+    the suite pass or fail for a reason that has nothing to do with the
+    code.  The memo flags are cleared in the same breath so the
+    classification is recomputed against the fake.
+
+    The two releases named are chosen so the assertions cannot expire in
+    one direction: ubuntu:24.10 reached end of life on 2025-07-10 and
+    will stay past it, and ubuntu:26.04 runs to 2031-04.
+    """
+
+    def gate(self, release="ubuntu", version="24.10",
+             pretty="Ubuntu 24.10", preset=None):
+        """Run the gate against a fabricated /etc/os-release."""
+        after = (
+            'playthrough_os_release() {\n'
+            '    case "$1" in\n'
+            '        ID) printf "%s" "%s" ;;\n'
+            '        VERSION_ID) printf "%s" "%s" ;;\n'
+            '        PRETTY_NAME) printf "%s" "%s" ;;\n'
+            '    esac\n'
+            '}\n'
+            'unset PLAYTHROUGH_PLATFORM_CHECKED\n'
+            'unset PLAYTHROUGH_PLATFORM_WARNED\n'
+            'unset PLAYTHROUGH_PLATFORM_KNOB_WARNED\n'
+            'playthrough_check_platform\n'
+            'printf "GATE=%%s\\n" "$?"\n'
+            'printf "VERDICT=%%s\\n" "${PLAYTHROUGH_PLATFORM_SUPPORTED}"\n'
+            'printf "WAIVER=%%s\\n" "${PLAYTHROUGH_PLATFORM_WAIVER}"\n'
+            % ("%s", release, "%s", version, "%s", pretty))
+        result = self.sourced(preset=preset, after=after)
+        reported = {}
+        for line in result.source_output.splitlines():
+            name, _, value = line.partition("=")
+            reported[name] = value
+        return reported, result.stderr
+
+    # -- the refusal -------------------------------------------------
+
+    def test_an_end_of_life_release_is_refused(self):
+        reported, stderr = self.gate()
+        self.assertEqual(reported.get("VERDICT"), "no")
+        self.assertEqual(reported.get("GATE"), "1")
+        self.assertIn("FATAL", stderr)
+
+    def test_the_refusal_names_the_release_and_its_date(self):
+        _, stderr = self.gate()
+        self.assertIn("Ubuntu 24.10", stderr)
+        self.assertIn("2025-07-10", stderr)
+
+    def test_the_refusal_names_the_migration_target(self):
+        _, stderr = self.gate()
+        self.assertIn("Ubuntu 26.04 LTS", stderr)
+
+    def test_the_refusal_names_the_waiver(self):
+        """A refusal that does not say what to do is half a diagnosis."""
+        _, stderr = self.gate()
+        self.assertIn("PLAYTHROUGH_ALLOW_EOL_PLATFORM", stderr)
+
+    def test_an_untabulated_release_is_also_refused(self):
+        """"Cannot tell" is not "supported"."""
+        reported, stderr = self.gate("fedora", "43", "Fedora Linux 43")
+        self.assertEqual(reported.get("VERDICT"), "unverified")
+        self.assertEqual(reported.get("GATE"), "1")
+        self.assertIn("Fedora Linux 43", stderr)
+
+    # -- the waiver --------------------------------------------------
+
+    def test_a_waiver_with_a_reason_is_honoured(self):
+        reported, stderr = self.gate(preset={
+            "PLAYTHROUGH_ALLOW_EOL_PLATFORM": "the only host there is"})
+        self.assertEqual(reported.get("GATE"), "0")
+        self.assertEqual(reported.get("VERDICT"), "no")
+        self.assertIn("PLATFORM WAIVER", stderr)
+
+    def test_the_waiver_reason_travels_with_the_record(self):
+        """The reason is the only part a later reader needs."""
+        reason = "container image cannot be replaced from inside it"
+        reported, stderr = self.gate(preset={
+            "PLAYTHROUGH_ALLOW_EOL_PLATFORM": reason})
+        self.assertEqual(reported.get("WAIVER"), reason)
+        self.assertIn(reason, stderr)
+
+    def test_the_waiver_also_covers_an_untabulated_release(self):
+        reported, _ = self.gate(
+            "fedora", "43", "Fedora Linux 43",
+            preset={"PLAYTHROUGH_ALLOW_EOL_PLATFORM": "confirmed in "
+                                                      "support by hand"})
+        self.assertEqual(reported.get("GATE"), "0")
+
+    def test_a_waiver_of_zero_is_no_waiver(self):
+        """Fail closed on a value that says nothing."""
+        reported, _ = self.gate(preset={
+            "PLAYTHROUGH_ALLOW_EOL_PLATFORM": "0"})
+        self.assertEqual(reported.get("GATE"), "1")
+        self.assertEqual(reported.get("WAIVER"), "")
+
+    def test_an_empty_waiver_is_no_waiver(self):
+        reported, _ = self.gate(preset={
+            "PLAYTHROUGH_ALLOW_EOL_PLATFORM": ""})
+        self.assertEqual(reported.get("GATE"), "1")
+
+    def test_the_waiver_is_not_a_trust_bypass(self):
+        """A DELIBERATE non-membership, so it is asserted.
+
+        A bypass in that registry means a check that establishes the
+        evidence was relaxed, and capture.sh refuses production capture
+        while any is active.  An end-of-life platform makes no reading
+        wrong -- it raises the risk that a parser has an unfixed defect
+        -- so listing it there would refuse every recorded session on the
+        only available host while adding nothing the summary does not
+        already carry.
+        """
+        result = self.sourced(preset={
+            "PLAYTHROUGH_ALLOW_EOL_PLATFORM": "a reason"})
+        self.assertNotIn("PLAYTHROUGH_ALLOW_EOL_PLATFORM",
+                         result["PLAYTHROUGH_TRUST_BYPASS_VARS"])
+        self.assertEqual(result["PLAYTHROUGH_TRUST_STATE"], "trusted")
+        self.assertEqual(result.get("PLAYTHROUGH_TRUST_BYPASSES"), "")
+
+    # -- a supported platform ----------------------------------------
+
+    def test_a_supported_release_passes_silently(self):
+        reported, stderr = self.gate("ubuntu", "26.04",
+                                     "Ubuntu 26.04 LTS")
+        self.assertEqual(reported.get("VERDICT"), "yes")
+        self.assertEqual(reported.get("GATE"), "0")
+        self.assertNotIn("PLATFORM WAIVER", stderr)
+        self.assertNotIn("end of life", stderr)
+
+    # -- the retired knob --------------------------------------------
+
+    def test_the_retired_knob_no_longer_weakens_anything(self):
+        reported, stderr = self.gate(preset={
+            "PLAYTHROUGH_REQUIRE_SUPPORTED_PLATFORM": "0"})
+        self.assertEqual(reported.get("GATE"), "1")
+        self.assertIn("no longer weakens", stderr)
+
+    def test_the_retired_knob_is_answered_not_ignored(self):
+        """An operator who set it believing it configured something has
+        to be told it did not."""
+        _, stderr = self.gate(preset={
+            "PLAYTHROUGH_REQUIRE_SUPPORTED_PLATFORM": "0"})
+        self.assertIn("PLAYTHROUGH_REQUIRE_SUPPORTED_PLATFORM=0", stderr)
+        self.assertIn("PLAYTHROUGH_ALLOW_EOL_PLATFORM", stderr)
+
+    def test_the_knob_set_to_one_is_the_default_and_is_quiet(self):
+        quiet = {"PLAYTHROUGH_REQUIRE_SUPPORTED_PLATFORM": "1"}
+        _, stderr = self.gate("ubuntu", "26.04", "Ubuntu 26.04 LTS",
+                              preset=quiet)
+        self.assertNotIn("no longer weakens", stderr)
+
+
+class TestTheSummaryDisclosesNoHostPath(EnvFixture):
+    """The contract report is repository-relative.
+
+    It is retained -- captured into logs, quoted into reports, read by
+    people who have no business knowing where somebody else's clone
+    lives -- and half its fields are absolute paths inside the checkout.
+    """
+
+    def summary(self):
+        result = self.sourced(after="playthrough_env_summary")
+        values = {}
+        for line in result.source_output.splitlines()[1:]:
+            parts = line.split(None, 1)
+            if len(parts) == 2:
+                values[parts[0]] = parts[1].strip()
+        return values, result
+
+    def test_no_field_carries_the_checkout_path(self):
+        values, result = self.summary()
+        root = result["PLAYTHROUGH_REPO_ROOT"]
+        self.assertTrue(root.startswith("/"), msg="a sanity check")
+        for name, value in values.items():
+            with self.subTest(field=name):
+                self.assertNotIn(
+                    root, value,
+                    msg=("%s discloses the checkout's host path; every "
+                         "value goes through playthrough_redact"
+                         % name))
+
+    def test_the_artifact_paths_read_as_a_reader_would_type_them(self):
+        values, _ = self.summary()
+        self.assertEqual(values.get("PLAYTHROUGH_DIR"), "playthrough")
+        self.assertEqual(values.get("PLAYTHROUGH_MANIFEST"),
+                         "playthrough/manifest.jsonl")
+        self.assertEqual(values.get("PLAYTHROUGH_MOVIE_CC"),
+                         "playthrough/cata-play-cc.mp4")
+        self.assertEqual(values.get("PLAYTHROUGH_REPO_ROOT"), ".")
+
+    def test_the_runtime_root_is_reduced_to_a_marker(self):
+        """The file name that matters, not the location that does not."""
+        values, _ = self.summary()
+        self.assertEqual(values.get("PLAYTHROUGH_RUNTIME_DIR"),
+                         "<runtime>")
+        self.assertTrue(
+            values.get("XAUTHORITY", "").startswith("<runtime>/"),
+            msg=values.get("XAUTHORITY"))
+
+    def test_the_platform_verdict_is_in_the_record(self):
+        values, _ = self.summary()
+        self.assertIn(values.get("PLAYTHROUGH_PLATFORM_SUPPORTED"),
+                      ("yes", "no", "unverified"))
+        self.assertTrue(values.get("PLAYTHROUGH_PLATFORM_EOL"))
+        self.assertTrue(values.get("PLAYTHROUGH_PLATFORM_WAIVER"))
 
 
 if __name__ == "__main__":

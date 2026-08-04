@@ -219,12 +219,16 @@ EXIT CODES
     2  command line usage error (argparse)
 """
 import argparse
+import fcntl
+import hashlib
 import json
 import logging
 import os
 import re
+import stat
 import sys
 import tempfile
+import time
 
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -386,6 +390,20 @@ SAVE_PARTS = USERDIR_PARTS + (SAVE_DIR_NAME,)
 # PATH_INFO::worldoptions() [src/path_info.cpp:416-419].
 WORLD_OPTIONS_NAME = "worldoptions.json"
 OPTIONS_NAME = "options.json"
+
+# Per-character save files, written by save_player_data() as
+# ``playerfile + SAVE_EXTENSION`` and, with WORLD_COMPRESSION2 -- which
+# DEFAULTS TO TRUE -- as that plus ``zzip_suffix``
+# [src/game_io.cpp; src/path_info.h:14; src/worldfactory.h:25].  The
+# engine names them ``#<base64-of-character-name>``, so the "#" prefix
+# separates a character file from any other .sav-suffixed file.  BOTH
+# FORMS COUNT: counting only "*.sav" reports zero survivors for a
+# perfectly real compressed save, and the world-patch prohibition below
+# turns on that count.
+CHARACTER_PREFIX = "#"
+SAVE_EXTENSION = ".sav"
+ZZIP_SUFFIX = ".zzip"
+COMPRESSED_SAVE_EXTENSION = SAVE_EXTENSION + ZZIP_SUFFIX
 
 # The only two filenames this module will ever write.  Combined with
 # the requirement that the target already exists, is not a symlink,
@@ -860,6 +878,356 @@ def world_options_paths(root: Optional[str] = None) -> List[str]:
             _confined(candidate, approved,
                       "the world options file"))
     return found
+
+
+def character_saves_in(world_dir: str) -> List[str]:
+    """Every character save in one world directory, deduplicated.
+
+    ``#<base64-name>.sav`` and ``#<base64-name>.sav.zzip`` are the SAME
+    survivor -- WORLD_COMPRESSION2 decides which form is written and it
+    defaults to true -- so the ``.zzip`` suffix is stripped and each base
+    name counted once.  Every candidate is ``lstat``-ed: a symlink is
+    refused rather than counted, because the engine writes the save
+    through that name and a link puts it outside the committed tree.
+
+    This is what makes "does a survivor exist in this world?" a question
+    with an answer, which is the question ``--worlds patch`` must not be
+    allowed to ignore.
+    """
+    names = set()
+    try:
+        entries = sorted(os.listdir(world_dir))
+    except OSError as err:
+        raise SeedError(
+            f"cannot read the world directory {world_dir}: {err}"
+        ) from err
+    for entry in entries:
+        if not entry.startswith(CHARACTER_PREFIX):
+            continue
+        if entry.endswith(COMPRESSED_SAVE_EXTENSION):
+            base = entry[:-len(ZZIP_SUFFIX)]
+        elif entry.endswith(SAVE_EXTENSION):
+            base = entry
+        else:
+            continue
+        candidate = os.path.join(world_dir, entry)
+        try:
+            info = os.lstat(candidate)
+        except OSError as err:
+            raise SeedError(
+                f"cannot inspect the character save {candidate}: {err}"
+            ) from err
+        if stat.S_ISLNK(info.st_mode):
+            raise SeedError(
+                f"{candidate} is a symbolic link.  A character save is "
+                f"a real file inside playthrough/userdir/: the engine "
+                f"writes through that name, so a link would put the "
+                f"save outside the committed tree")
+        if not stat.S_ISREG(info.st_mode):
+            continue
+        names.add(base)
+    return sorted(names)
+
+
+# ---------------------------------------------------------------------
+# THE LIVE ENGINE.
+#
+# The engine holds its options IN MEMORY and writes them back to
+# options.json when it exits, so a seed applied underneath a running
+# instance is silently overwritten on that exit -- and the run that
+# applied it has already reported success.  That is not hypothetical:
+# it is why launch_game.sh stops its calibration instance before
+# seeding, and the failure is invisible at the time, costing a whole
+# captured session whose clock came out in the compiled 12h default.
+#
+# So a write refuses while an AUTHENTICATED engine is using this
+# userdir.  Authenticated means /proc says so -- the executable is this
+# checkout's binary and the command line names this userdir -- rather
+# than a name match on a process list, which any process could satisfy.
+# ---------------------------------------------------------------------
+
+GAME_BIN_NAME = "cataclysm-tiles"
+ENV_GAME_BIN = "PLAYTHROUGH_GAME_BIN"
+USERDIR_FLAG = "--userdir"
+
+
+def engine_binary_path(root: Optional[str] = None) -> str:
+    """Return this checkout's tiles binary, absolute and canonical.
+
+    env.sh's ``$PLAYTHROUGH_GAME_BIN`` where it is set -- it is exactly
+    this path -- and the repository root's own ``./cataclysm-tiles``
+    otherwise, so the check works with nothing sourced.
+    """
+    nominated = os.environ.get(ENV_GAME_BIN, "").strip()
+    if nominated:
+        return os.path.realpath(nominated)
+    return os.path.realpath(
+        os.path.join(repo_root(root), GAME_BIN_NAME))
+
+
+def proc_link(pid: int, name: str) -> Optional[str]:
+    """Return a canonical ``/proc/<pid>/<name>`` target, or None.
+
+    None for a process that has gone or that this user may not inspect;
+    both are ordinary answers when scanning for a live engine.
+    """
+    try:
+        return os.path.realpath(
+            os.readlink(os.path.join("/proc", str(pid), name)))
+    except OSError:
+        return None
+
+
+def proc_fields(pid: int, name: str) -> Tuple[str, ...]:
+    """Return a NUL-separated ``/proc/<pid>/<name>`` file as fields."""
+    try:
+        with open(os.path.join("/proc", str(pid), name), "rb") as handle:
+            raw = handle.read()
+    except OSError:
+        return ()
+    return tuple(
+        part.decode("utf-8", "replace")
+        for part in raw.split(b"\x00") if part)
+
+
+def userdir_of(pid: int) -> Optional[str]:
+    """Return the ``--userdir`` a process was started with, canonical.
+
+    ``--userdir <path>`` and ``--userdir=<path>`` both reach
+    PATH_INFO::init_user_dir, and the value is resolved against the
+    process's OWN working directory because src/path_info.cpp:105
+    normalises it without absolutising it.
+    """
+    argv = proc_fields(pid, "cmdline")
+    cwd = proc_link(pid, "cwd")
+    if not argv or cwd is None:
+        return None
+    for position, argument in enumerate(argv):
+        if argument == USERDIR_FLAG and position + 1 < len(argv):
+            value = argv[position + 1]
+        elif argument.startswith(USERDIR_FLAG + "="):
+            value = argument[len(USERDIR_FLAG) + 1:]
+        else:
+            continue
+        if value:
+            return os.path.realpath(os.path.join(cwd, value))
+    return None
+
+
+def live_engine_pids(root: Optional[str] = None) -> List[int]:
+    """Return every running engine using THIS userdir, authenticated.
+
+    Read from /proc rather than from a process-name match: the check is
+    that the executable is this checkout's binary AND that the command
+    line names this userdir, so another checkout's engine, another
+    userdir's engine and an unrelated process that merely looks like one
+    are all excluded.
+    """
+    binary = engine_binary_path(root)
+    wanted = os.path.realpath(userdir_path(root))
+    found = []
+    try:
+        entries = os.listdir("/proc")
+    except OSError as err:
+        raise SeedError(
+            f"cannot read /proc, so whether an engine is running "
+            f"cannot be established: {err}") from err
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        pid = int(entry, 10)
+        if proc_link(pid, "exe") != binary:
+            continue
+        if userdir_of(pid) != wanted:
+            continue
+        found.append(pid)
+    return sorted(found)
+
+
+def assert_no_live_engine(root: Optional[str] = None) -> str:
+    """Refuse to write while an engine is using this userdir.
+
+    :returns: a sentence describing what was found, for the record.
+    :raises SeedError: naming the pids, because the operator's next
+        action is to stop them -- ``launch_game.sh stop``.
+    """
+    pids = live_engine_pids(root)
+    if not pids:
+        return ("no engine is running against "
+                f"{relative_to_repo(userdir_path(root))}, so an option "
+                f"written now is the one the next launch reads")
+    raise SeedError(
+        f"{len(pids)} engine process(es) "
+        f"({', '.join(str(one) for one in pids)}) are running against "
+        f"{relative_to_repo(userdir_path(root))}.  The engine holds its "
+        f"options in memory and writes them back when it exits, so a "
+        f"seed applied now would be silently overwritten -- and this "
+        f"run would already have reported success.  Stop the instance "
+        f"first: playthrough/tooling/launch_game.sh stop")
+
+
+def relative_to_repo(path: object, root: Optional[str] = None) -> str:
+    """Return ``path`` spelled relative to the repository root.
+
+    The only form a diagnostic reports: an absolute path discloses where
+    this checkout lives on the host, and these lines end up in logs.
+    Mirrors manifest.relative_to_repo() and env.sh's playthrough_rel.
+    """
+    if path is None:
+        return ""
+    text = os.fspath(path) if isinstance(path, os.PathLike) else str(path)
+    if not text:
+        return ""
+    base = repo_root(root)
+    resolved = os.path.realpath(os.path.abspath(text))
+    if resolved == base:
+        return "."
+    if resolved.startswith(base + os.sep):
+        return os.path.relpath(resolved, base)
+    return "<outside the checkout>/" + os.path.basename(resolved)
+
+
+# ---------------------------------------------------------------------
+# THE SHARED SESSION LOCK.
+#
+# launch_game.sh takes `playthrough_acquire_lock session` around the
+# launch, and this module writes the very file that launch reads.  Two
+# runs that interleave -- a seed and a launch, or two seeds -- leave the
+# options file in a state neither of them reported.  The SAME lock name
+# is used here so the exclusion is real rather than parallel:
+# $PLAYTHROUGH_LOCK_DIR/session.lock when env.sh has been sourced, and a
+# per-checkout equivalent otherwise, so the guarantee does not depend on
+# a variable being set.
+# ---------------------------------------------------------------------
+
+ENV_LOCK_DIR = "PLAYTHROUGH_LOCK_DIR"
+ENV_RUNTIME_DIR = "PLAYTHROUGH_RUNTIME_DIR"
+ENV_XDG_RUNTIME_DIR = "XDG_RUNTIME_DIR"
+SESSION_LOCK_NAME = "session.lock"
+DEFAULT_LOCK_TIMEOUT = 60
+ENV_LOCK_TIMEOUT = "PLAYTHROUGH_SEED_LOCK_TIMEOUT"
+
+
+def _secure_scratch(path: str, label: str) -> str:
+    """Create ``path`` mode 0700, refusing a link or a foreign owner."""
+    try:
+        os.makedirs(path, mode=0o700, exist_ok=True)
+        info = os.lstat(path)
+    except OSError as err:
+        raise SeedError(
+            f"cannot prepare {label} at {path}: {err}") from err
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        raise SeedError(
+            f"{label} at {path} is not a real directory")
+    if info.st_uid != os.getuid():
+        raise SeedError(
+            f"{label} at {path} is owned by uid {info.st_uid}, not by "
+            f"uid {os.getuid()}")
+    if info.st_mode & 0o077:
+        try:
+            os.chmod(path, 0o700)
+        except OSError as err:
+            raise SeedError(
+                f"{label} at {path} is mode "
+                f"{info.st_mode & 0o777:o} and could not be tightened: "
+                f"{err}") from err
+    return path
+
+
+def session_lock_path(root: Optional[str] = None) -> str:
+    """Return the lock file this module shares with the launcher."""
+    nominated = os.environ.get(ENV_LOCK_DIR, "").strip()
+    if nominated:
+        return os.path.join(
+            _secure_scratch(nominated, "the lock directory"),
+            SESSION_LOCK_NAME)
+    runtime = os.environ.get(ENV_RUNTIME_DIR, "").strip()
+    if not runtime:
+        xdg = os.environ.get(ENV_XDG_RUNTIME_DIR, "").strip()
+        runtime = (os.path.join(xdg, "playthrough") if xdg
+                   else f"/tmp/playthrough-{os.getuid()}")
+    base = _secure_scratch(runtime, "the runtime directory")
+    digest = hashlib.sha256(
+        repo_root(root).encode("utf-8")).hexdigest()[:16]
+    return os.path.join(
+        _secure_scratch(os.path.join(base, "lock-" + digest),
+                        "the lock directory"),
+        SESSION_LOCK_NAME)
+
+
+class SessionLock:
+    """Exclusive access to the userdir's configuration, while held.
+
+    Shared with launch_game.sh by NAME, so a launch and a seed cannot
+    overlap.  Released by the kernel if the holder dies, so a crashed
+    run does not wedge the next one.
+    """
+
+    def __init__(self, path: str, timeout: int) -> None:
+        self._path = path
+        self._timeout = int(timeout)
+        self._descriptor: Optional[int] = None
+
+    @property
+    def held(self) -> bool:
+        """True while this process holds the lock."""
+        return self._descriptor is not None
+
+    def acquire(self) -> None:
+        """Take the lock, waiting at most the configured timeout."""
+        if self._descriptor is not None:
+            return
+        try:
+            descriptor = os.open(
+                self._path,
+                os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC,
+                0o600)
+        except OSError as err:
+            raise SeedError(
+                f"cannot open the session lock {self._path}: {err}"
+            ) from err
+        deadline = time.monotonic() + self._timeout
+        while True:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                self._descriptor = descriptor
+                return
+            except OSError:
+                if time.monotonic() >= deadline:
+                    os.close(descriptor)
+                    raise SeedError(
+                        f"another run has held the session lock "
+                        f"{self._path} for more than {self._timeout}s.  "
+                        f"A launch and a seed over one userdir would "
+                        f"leave the options file in a state neither "
+                        f"reported, so this one stops rather than "
+                        f"racing it")
+                time.sleep(0.05)
+
+    def release(self) -> None:
+        """Release the lock and close its descriptor."""
+        descriptor, self._descriptor = self._descriptor, None
+        if descriptor is None:
+            return
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+
+    def __enter__(self) -> "SessionLock":
+        """Support `with SessionLock(...):`."""
+        self.acquire()
+        return self
+
+    def __exit__(self, kind: object, value: object,
+                 trace: object) -> bool:
+        """Release the lock however the block ended."""
+        self.release()
+        return False
 
 
 def _validated_target(path: str, root: Optional[str] = None) -> str:
@@ -1847,8 +2215,42 @@ def patch(
             notes)
         return report
 
-    _commit_writes(planned, report, root)
+    # THE WRITE HAPPENS UNDER THE SHARED SESSION LOCK, AND ONLY WITH NO
+    # ENGINE RUNNING.  Both conditions exist because a successful report
+    # from this function is otherwise not a statement about the file:
+    # the engine holds its options in memory and writes them back when it
+    # exits, so a seed applied underneath a live instance is silently
+    # overwritten afterwards, and a launch racing this write reads
+    # whichever half landed first.  The live-engine check is re-taken
+    # INSIDE the lock, so a launch cannot start between the check and the
+    # write -- it would have to take the same lock to do so.
+    with SessionLock(
+            session_lock_path(root),
+            _lock_timeout()) as lock:
+        assert lock.held, "the session lock was not taken"
+        _note(assert_no_live_engine(root), notes)
+        _commit_writes(planned, report, root)
+        # And re-asserted afterwards, because "no engine was running
+        # when this began" is not the claim being made -- the claim is
+        # that the bytes now on disk are the ones the next launch reads.
+        _note(assert_no_live_engine(root), notes)
     return report
+
+
+def _lock_timeout() -> int:
+    """Return how long to wait for the shared session lock."""
+    raw = os.environ.get(ENV_LOCK_TIMEOUT, "").strip()
+    if not raw:
+        return DEFAULT_LOCK_TIMEOUT
+    if not raw.isdigit():
+        raise SeedError(
+            f"${ENV_LOCK_TIMEOUT} is {raw!r}, which is not a whole "
+            f"number of seconds")
+    seconds = int(raw, 10)
+    if not 1 <= seconds <= 3600:
+        raise SeedError(
+            f"${ENV_LOCK_TIMEOUT} is {seconds}, outside 1-3600 seconds")
+    return seconds
 
 
 @dataclass(frozen=True)
@@ -2054,8 +2456,45 @@ def _plan_worlds(
         return planned
 
     session_mode = os.environ.get(ENV_SESSION_MODE, "")
+    # A RESUMED SESSION MAY NOT RESHAPE THE WORLD IT RESUMES.  The hard
+    # rule is that an existing save is CONTINUED rather than replaced,
+    # and rewriting that world's CHARACTER_POINT_POOLS is a change to the
+    # rules the survivor already lives under -- applied behind the back
+    # of a session whose whole claim is that it continued what it found.
+    # `--worlds patch` was an unconditional opt-in, so the refusal is
+    # placed here, once, ahead of every world.
+    if mode == WORLDS_PATCH and session_mode == SESSION_MODE_RESUME:
+        raise SeedError(
+            f"--worlds patch is refused because ${ENV_SESSION_MODE} is "
+            f"'{SESSION_MODE_RESUME}': a resumed session continues the "
+            f"save it found and does not rewrite that world's options. "
+            f"Seed world defaults BEFORE the first world is created, "
+            f"where they are inherited [src/worldfactory.cpp:2039], or "
+            f"re-run without --worlds patch to report the world's "
+            f"current value and change nothing")
     for world_path in paths:
         world_name = os.path.basename(os.path.dirname(world_path))
+        # THE SAME REFUSAL FROM THE EVIDENCE SIDE.  The declaration above
+        # can be absent -- nothing forces $PLAYTHROUGH_SESSION_MODE to be
+        # exported -- so the save tree is asked directly: a world holding
+        # a character save is a world somebody is playing, whatever any
+        # variable says.  A world with NO character save is the
+        # interrupted-creation case, and patching that is exactly what
+        # the mode is for.
+        if mode == WORLDS_PATCH:
+            survivors = character_saves_in(os.path.dirname(world_path))
+            if survivors:
+                raise SeedError(
+                    f"--worlds patch is refused for world "
+                    f"'{world_name}': it holds "
+                    f"{len(survivors)} character save(s) "
+                    f"({', '.join(survivors)}), so a survivor already "
+                    f"exists there and an existing save is continued, "
+                    f"never reshaped.  Rewriting "
+                    f"{OPT_POINT_POOLS} would change the rules that "
+                    f"character was created under.  Only a world with "
+                    f"no character save -- a run interrupted during "
+                    f"creation -- may be patched")
         entries, pretty = load_entries(world_path)
         grouped = _index_entries(entries)
         occurrences = grouped.get(OPT_POINT_POOLS)
@@ -2506,8 +2945,17 @@ def _emit(key: str, value: object) -> None:
 
 def _report_stdout(report: SeedReport,
                    observed: Dict[str, str]) -> None:
-    """Emit the machine-readable summary of one run."""
-    _emit("PLAYTHROUGH_OPTIONS_JSON", report.path)
+    """Emit the machine-readable summary of one run.
+
+    THE PATH IS REPORTED RELATIVE, like every other path this module
+    prints.  An absolute one discloses where this checkout lives on the
+    host, and these lines are captured into logs and quoted into
+    reports; the relative form is what a reader would type and is the
+    same rule playthrough_rel applies in the shell and
+    manifest.relative_to_repo applies in the other Python stages.  This
+    was the last summary emitter still printing the full path.
+    """
+    _emit("PLAYTHROUGH_OPTIONS_JSON", relative_to_repo(report.path))
     _emit("PLAYTHROUGH_OPTIONS_WRITTEN", 1 if report.written else 0)
     _emit("PLAYTHROUGH_OPTIONS_CHANGED", len(report.changes))
     _emit("PLAYTHROUGH_WORLD_OPTIONS_CHANGED",

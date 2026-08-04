@@ -73,8 +73,13 @@ PLAYTHROUGH_MANIFEST, PLAYTHROUGH_FRAMES_DIR and a --manifest argument
 are honoured within that tree and refused outside it: a record that an
 environment variable could redirect to /etc/passwd, to a device node
 or to somebody else's checkout would not be evidence of anything.  The
-append itself is serialised with an exclusive fcntl advisory lock, so
-two writers cannot interleave a row.
+append itself is serialised with an exclusive fcntl advisory lock that
+is MANDATORY -- a lock that cannot be taken refuses the write rather
+than proceeding unserialised -- so two writers that both come through
+this module cannot interleave a row, and a failed append's rollback
+cannot remove bytes the other put there.  Being advisory, it says
+nothing about a reader that does not take it, which is why the readers
+refuse an unparseable line instead of trusting the lock.
 
 Standard library only -- nothing here needs
 playthrough/tooling/requirements.txt.  fcntl makes this POSIX-only,
@@ -217,6 +222,28 @@ META_VOCABULARY = (
     "tileset", "sidebar", "commit", "option",
 )
 
+# Markers saying a field was never filled in.  Unlike META_VOCABULARY
+# beside it these are REFUSALS, not advisories: a row is the
+# authoritative record of what one keystroke did and why, and every
+# structural check -- the six-field schema, the 1..n identity, the
+# frame-set equality -- passes straight over a field reading
+# "placeholder".
+PLACEHOLDER_WORDS = (
+    "placeholder", "todo", "fixme", "tbd", "xxx", "wip",
+)
+
+# Phrases whose presence in an `action` says the field does not describe
+# the keystroke: an action that defers to a note elsewhere is not a
+# record of what was pressed, it is a promise that the record is
+# somewhere else.
+UNRECORDED_ACTION_PHRASES = (
+    "see note", "see technical_notes", "unknown key", "unknown action",
+    "not recorded", "see below", "see above",
+)
+
+_SENTINEL_WORD_RE = re.compile(
+    r"\b(?:%s)\b" % "|".join(PLACEHOLDER_WORDS), re.IGNORECASE)
+
 
 class ManifestError(Exception):
     """A row was refused, or a manifest on disk is malformed.
@@ -266,6 +293,49 @@ def _playthrough_dir():
     from somewhere other than the repository root.
     """
     return os.path.dirname(_module_dir())
+
+
+def repo_root():
+    """Return the repository root, from this module's own location.
+
+    playthrough/tooling -> playthrough -> the checkout.  Derived rather
+    than read from the environment for the same reason approved_root()
+    is: a path a variable could move is not a path anything may be
+    reported relative to.
+    """
+    return os.path.realpath(os.path.dirname(_playthrough_dir()))
+
+
+def relative_to_repo(path):
+    """Return `path` spelled relative to the repository root.
+
+    THE ONLY FORM A MACHINE SUMMARY REPORTS.  An absolute path discloses
+    the checkout's location on the host -- and these summaries are
+    written into logs that are kept, quoted into reports and read by
+    people who have no business knowing where somebody else's clone
+    lives.  Every artifact this pipeline touches is inside the checkout,
+    so the relative form is complete as well as smaller: it is what a
+    reader would type.
+
+    A path that genuinely lies outside the checkout is returned as its
+    basename with a marker rather than as a traversal, because "../.."
+    still discloses depth and an outside path is a fault to notice, not
+    a location to publish.
+    """
+    if path is None:
+        return ""
+    if isinstance(path, os.PathLike):
+        path = os.fspath(path)
+    text = str(path)
+    if not text:
+        return ""
+    base = repo_root()
+    resolved = os.path.realpath(os.path.abspath(text))
+    if resolved == base:
+        return "."
+    if resolved.startswith(base + os.sep):
+        return os.path.relpath(resolved, base)
+    return "<outside the checkout>/" + os.path.basename(resolved)
 
 
 def approved_root(root=None):
@@ -823,6 +893,78 @@ def find_meta_vocabulary(text):
                    if word in lowered})
 
 
+def find_placeholder_words(text):
+    """Return the placeholder markers in `text`, sorted.
+
+    Whole-word and case-insensitive, so ordinary prose is not caught.
+    Unlike :func:`find_meta_vocabulary` this is NOT advisory: a hit
+    means the field was never filled in, and the callers below treat it
+    as a defect in the record rather than a note about its tone.
+    """
+    if not isinstance(text, str):
+        return []
+    return sorted({match.group(0).lower()
+                   for match in _SENTINEL_WORD_RE.finditer(text)})
+
+
+def find_unrecorded_action_phrases(text):
+    """Return the phrases saying an `action` records no keystroke.
+
+    Case-insensitive substring matching, because these are phrases
+    rather than words.  An action that defers to a note elsewhere, or
+    names an unknown key, is not a record of what was pressed.
+    """
+    if not isinstance(text, str):
+        return []
+    lowered = text.lower()
+    return sorted({phrase for phrase in UNRECORDED_ACTION_PHRASES
+                   if phrase in lowered})
+
+
+def sentinel_problems(action, commentary, label):
+    """Report every way these two fields fail to be a record.
+
+    `label` prefixes each message -- "row 116" from the reader,
+    "action" from the writer -- so the same rule reads correctly
+    wherever it is applied.  Pure: nothing is read, repaired or
+    rewritten.
+
+    An empty list means both fields say something.  It does NOT mean
+    either is TRUE: no code can check an action against the pixels of
+    the frame it describes, which is why a field admitting it does not
+    describe the keystroke has to be refused here.
+    """
+    problems = []
+    for name, value in (("action", action),
+                        ("commentary", commentary)):
+        hits = find_placeholder_words(value)
+        if hits:
+            problems.append(
+                "%s %s carries the placeholder marker(s) %s: %r.  A "
+                "manifest row is the authoritative record of what one "
+                "keystroke did and why; a field marked as not yet "
+                "filled in is not a record of anything, and every "
+                "structural check would still pass over it.  Write "
+                "what was actually pressed and the survivor's actual "
+                "reason, from contemporaneous evidence -- never "
+                "invented"
+                % (label, name, ", ".join(repr(one) for one in hits),
+                   value))
+    deferrals = find_unrecorded_action_phrases(action)
+    if deferrals:
+        problems.append(
+            "%s action defers the record elsewhere (%s): %r.  This is "
+            "the one field nothing downstream can check against the "
+            "pixels, so an action that says it does not describe the "
+            "keystroke is refused here.  "
+            "playthrough/TECHNICAL_NOTES.md is where the ENGINEERING "
+            "account of a mistake goes; the row itself still has to "
+            "say what was pressed"
+            % (label, ", ".join(repr(one) for one in deferrals),
+               action))
+    return problems
+
+
 def _validated_commentary(value):
     """Return the survivor's own words, with an advisory if needed."""
     text = _validated_text(value, "commentary")
@@ -986,6 +1128,14 @@ def build_row(frame, file, real_ts, ingame_clock, action, commentary):
         "action": _validated_text(action, "action"),
         "commentary": _validated_commentary(commentary),
     }
+    # REFUSED AT THE WRITER TOO, not only by the reader.  A row that
+    # cannot be written is a row that never has to be corrected, and
+    # the caller is a live session that still knows what it pressed and
+    # why.
+    problems = sentinel_problems(
+        row["action"], row["commentary"], "frame %d" % index)
+    if problems:
+        raise ManifestError("  ".join(problems))
     return _ordered_row(row)
 
 
@@ -1055,13 +1205,19 @@ def _roll_back(descriptor, committed, path, frame, cause):
     The caller writes `raise _roll_back(...)`, so that the rollback and
     the failure are one statement and neither can be forgotten.
 
-    THIS IS WHAT MAKES AN APPEND ALL-OR-NOTHING, and it is the opposite
-    of rewriting history rather than an exception to it.  The only bytes
-    it can remove are the ones the append that just failed had started
-    to write: `committed` was read from the file BEFORE that write, so
-    truncating to it restores the file to exactly the state every
-    already-recorded row left it in.  No recorded row is altered, no
-    row is dropped, and the failure is still raised.
+    THIS IS WHAT KEEPS A HANDLED FAILURE FROM COSTING MORE THAN ITS OWN
+    ROW, and it is the opposite of rewriting history rather than an
+    exception to it.  The only bytes it can remove are the ones the
+    append that just failed had started to write: `committed` was read
+    from the file BEFORE that write, under the same lock, so truncating
+    to it restores the file to exactly the state every already-recorded
+    row left it in.  No recorded row is altered, no row is dropped, and
+    the failure is still raised.
+
+    It covers the failures this process lives to handle -- a short
+    write, ENOSPC, an EIO -- and nothing else.  A process killed
+    outright never reaches it; see _assert_row_boundary(), which is what
+    refuses the torn row it leaves behind.
 
     Without it a write that stops half way -- ENOSPC on a long session
     is the realistic case, because one PNG per keystroke fills a disk
@@ -1076,21 +1232,35 @@ def _roll_back(descriptor, committed, path, frame, cause):
     cause rather than hidden behind it: the operator then knows the file
     needs inspecting, which is strictly better than being told only
     about the disk.
+
+    THE OUTCOME IS REPORTED, NOT ASSUMED.  The restoration claim is made
+    only when the truncate actually succeeded.  A message that says the
+    file was left exactly as it was AND that it may end mid-row
+    contradicts itself, and an operator reading the reassuring half
+    first has been told the record is intact when nothing established
+    that.  So the two cases are separate sentences: restored and
+    readable, or integrity UNKNOWN and inspection mandatory.
     """
-    trouble = ""
     try:
         os.ftruncate(descriptor, committed)
     except OSError as err:
-        trouble = ("  The rollback to %d bytes ALSO failed (%s), so the "
-                   "file may still end mid-row: check its last line "
-                   "before appending again." % (committed, err))
+        outcome = (
+            "  The ROLLBACK TO %d bytes ALSO FAILED (%s), so the state "
+            "of the file is UNKNOWN: it may still end mid-row.  Nothing "
+            "here established that the record is intact, so INSPECT IT "
+            "before appending again -- run 'python "
+            "playthrough/tooling/manifest.py verify' to see whether the "
+            "last line is a complete row." % (committed, err))
+    else:
+        outcome = (
+            "  The file was left exactly as it was before this row (%d "
+            "bytes), so it is still readable and the frame this row "
+            "describes is the one to re-record." % (committed,))
     return ManifestError(
         "could not append frame %s's row to %s (%s); the manifest is "
         "the session's evidence, so a write this module cannot complete "
-        "is reported rather than passed over.  The file was left exactly "
-        "as it was before this row (%d bytes), so it is still readable "
-        "and the frame this row describes is the one to re-record.%s"
-        % (frame, path, cause, committed, trouble))
+        "is reported rather than passed over.%s"
+        % (frame, path, cause, outcome))
 
 
 def _assert_row_boundary(descriptor, committed, path, frame):
@@ -1175,24 +1345,51 @@ def _lock_exclusively(descriptor, path):
     capture loop runs unattended, and a second stage or a re-run can
     overlap it.  O_APPEND keeps each write at the end of the file, but
     the lock is what makes "measure the end, write, fsync, and on
-    failure truncate back" one indivisible step from another process's
-    point of view -- so no row can be interleaved with another, no
-    reader can see half of one, and a rollback can never remove bytes
-    another writer put there after this one measured the end.
+    failure truncate back" one indivisible step AS SEEN BY ANOTHER
+    PROCESS THAT ALSO TAKES IT -- so two rows cannot interleave and a
+    rollback cannot remove bytes another writer put there after this one
+    measured the end.
+
+    THE LOCK IS ADVISORY, so that guarantee reaches exactly as far as
+    the processes that cooperate with it.  Every writer in this pipeline
+    goes through this function, which is what makes it hold here; a
+    READER that does not take the lock is unaffected by it and can read
+    the file mid-append.  That is why the readers do not rely on the
+    lock: verify_manifest() refuses a line it cannot parse, and
+    timeline.py refuses the document rather than working around it.
+
+    THE LOCK IS MANDATORY AND THIS FAILS CLOSED.  It used to warn and
+    carry on, which was wrong for one specific and unrecoverable
+    reason: the append that follows measures the end of the file and,
+    on failure, truncates BACK to that offset.  Without the lock those
+    two operations are not one step, so a concurrent writer's COMPLETE
+    row -- somebody else's evidence -- can be appended between the
+    measurement and the truncation and then destroyed by this process's
+    rollback.  A step that cannot be serialised is therefore refused
+    before anything is measured, which costs a session that stops and
+    can be resumed instead of a record that lost a row nobody will
+    notice is gone.
 
     The lock is released when the descriptor closes, which the caller's
-    `finally` guarantees on every path including an exception.  A
-    filesystem that refuses flock is reported once rather than allowed
-    to end the session: the write itself is still a single append.
+    `finally` guarantees on every path including an exception.
+
+    :raises ManifestError: when the lock cannot be taken.  Nothing has
+        been measured, written or truncated at that point.
     """
     try:
         fcntl.flock(descriptor, fcntl.LOCK_EX)
     except OSError as err:
-        _warn_once(
-            "flock",
-            "could not lock the manifest %s (%s); rows are still "
-            "appended one write at a time, but two writers are no "
-            "longer serialised" % (path, err))
+        raise ManifestError(
+            "could not take an exclusive lock on the manifest %s (%s), "
+            "so nothing was written.  The append measures the end of "
+            "the file and truncates back to it if it fails; without "
+            "the lock those are two operations, and a concurrent "
+            "writer's complete row could be appended in between and "
+            "then removed by this process's rollback.  A row of "
+            "captured evidence is not something to risk on a "
+            "filesystem that will not serialise writers -- run one "
+            "session at a time on a filesystem that supports flock"
+            % (path, err)) from err
 
 
 def append_row(manifest_path, frame, file, real_ts, ingame_clock,
@@ -1205,12 +1402,17 @@ def append_row(manifest_path, frame, file, real_ts, ingame_clock,
     any field is wrong -- there is no partial row.
 
     A row is not reported as appended until it has been written,
-    flushed AND forced to the device.  Every failure along that path --
-    the open, the write, the flush, the fsync, the close -- raises
-    ManifestError; none is downgraded to a warning, because a caller
-    that is told the row was recorded will not go back and check.
-    `require_durable=False` is the one documented exception, and it
-    weakens only the fsync step: see _fsync().
+    flushed AND forced to the device.  Every failure up to and including
+    the fsync -- the open, the lock, the boundary check, the write, the
+    fsync -- raises ManifestError; none is downgraded to a warning,
+    because a caller that is told the row was recorded will not go back
+    and check.  `require_durable=False` is the one documented exception,
+    and it weakens only the fsync step: see _fsync().
+
+    The CLOSE is the one step after that, and it is warned rather than
+    raised, deliberately: by then the row is on the device, so raising
+    would tell the caller the row was not recorded when it was.  It is
+    still reported once.
 
     `manifest_path` is explicit rather than defaulted so that a test,
     a dry run and the real session cannot be confused for one another;
@@ -1246,16 +1448,26 @@ def append_row(manifest_path, frame, file, real_ts, ingame_clock,
     # refused by the kernel instead of followed, and the whole append
     # is serialised against other writers by the lock below.
     #
-    # THE APPEND IS ALL-OR-NOTHING.  The row is written with a single
-    # unbuffered os.write, not through a buffered stream: a stream can
-    # flush a fragment of a line when the disk fills, and a fragment is
-    # not JSON, which makes the whole manifest unreadable and blocks
-    # every stage that counts its rows.  The end of the file is measured
-    # first, under the lock, so a write that cannot complete is
-    # truncated straight back to it -- see _append_whole_row() and
-    # _roll_back().  Nothing else in this module ever seeks or
-    # truncates, and a rollback can only ever remove bytes the failing
-    # append itself had begun to write.
+    # A HANDLED WRITE FAILURE COSTS ITS OWN ROW AND NOTHING ELSE.  The
+    # row is written by os.write directly, not through a buffered
+    # stream: a stream can flush a fragment of a line when the disk
+    # fills, and a fragment is not JSON, which makes the whole manifest
+    # unreadable and blocks every stage that counts its rows.  It is one
+    # call for the whole line whenever the kernel takes the whole line,
+    # and _append_whole_row() loops for the remainder when it does not,
+    # because os.write is allowed to return short.
+    # The end of the file is measured first, under the lock, so a write
+    # that cannot complete is truncated straight back to it -- see
+    # _append_whole_row() and _roll_back().  Nothing else in this module
+    # ever seeks or truncates, and a rollback can only ever remove bytes
+    # the failing append itself had begun to write.
+    #
+    # That is as far as the guarantee goes, and it is deliberately not
+    # called atomic: an UNHANDLED interruption -- SIGKILL, an OOM kill,
+    # the power going -- can stop the write with no chance to undo it,
+    # and the file then ends mid-row.  _assert_row_boundary() below
+    # refuses to append onto that, and verify_manifest() reports it, so
+    # the tear is caught rather than assumed away.
     #
     # Every step is guarded so that an OSError from any of them becomes
     # a ManifestError: the caller already catches that for every
@@ -1517,6 +1729,12 @@ def row_field_problems(row, number):
             "row %d commentary carries out-of-character wording (%s); "
             "advisory only, nothing was altered"
             % (number, ", ".join(hits)))
+    # A HARD PROBLEM, unlike the advisory above.  See the PLACEHOLDER
+    # sentinels beside META_VOCABULARY for why the two are treated
+    # differently: a field marked as not yet filled in is not a record
+    # of anything, and every other check here passes straight over it.
+    problems.extend(sentinel_problems(
+        row["action"], row["commentary"], "row %d" % number))
     return problems
 
 

@@ -110,6 +110,7 @@ tests/CMakeLists.txt globs tests/*.cpp into the Catch2 C++ binary.
 
 import ast
 import contextlib
+import json
 import os
 import re
 import shutil
@@ -307,11 +308,28 @@ def workspace():
 
 
 def seed_timeline(root, document=None):
-    """Write a timeline into a temporary root.  Returns its path."""
+    """Write a timeline AND the manifest it attests to.  Returns its path.
+
+    The manifest is seeded too, and the timeline is attested to it,
+    because the command line now refuses a document that cannot prove
+    what it was computed from -- the gate that catches a stale timeline
+    left beside a re-recorded session.  A fixture that seeded only the
+    timeline would be asserting that a document of unknown provenance
+    can be captioned, which is exactly the state the gate refuses.
+    """
+    document = build() if document is None else document
+    manifest_path = os.path.join(root, "manifest.jsonl")
+    frames = document.get("frames", [])
+    with open(manifest_path, "w", encoding="utf-8",
+              newline="\n") as handle:
+        for row in make_rows(REFERENCE_CLOCKS[:len(frames)],
+                             REFERENCE_WORDS[:len(frames)]):
+            handle.write(json.dumps(row) + "\n")
+    document = dict(document)
+    document["manifest"] = timeline.attest_manifest(manifest_path, root)
     path = os.path.join(root, "timeline.json")
     with open(path, "w", encoding="utf-8", newline="\n") as handle:
-        handle.write(timeline.encode_timeline(
-            build() if document is None else document))
+        handle.write(timeline.encode_timeline(document))
     return path
 
 
@@ -361,11 +379,44 @@ class TestTheInputContract(unittest.TestCase):
         self.assertEqual(len(MARKDOWN_ENTRY_RE.findall(markdown)),
                          len(REFERENCE_CLOCKS))
 
-    def test_the_bare_array_form_is_accepted(self):
-        srt, markdown, cues = make_srt.build_transcripts(minimal())
-        self.assertEqual([cue.frame for cue in cues], [1, 2])
-        self.assertEqual(srt.count(" --> "), 2)
-        self.assertEqual(len(MARKDOWN_ENTRY_RE.findall(markdown)), 2)
+    def test_the_bare_array_form_is_refused(self):
+        # THIS ASSERTED THE OPPOSITE ONCE.  A bare array was accepted on
+        # the reasoning that a caller holding the entries already is
+        # legitimate -- but validate_timeline() begins by requiring an
+        # OBJECT and returns immediately for anything else, so an array
+        # skipped every document-level invariant: the totals the entries
+        # are checked against, the constants the clamp was applied under,
+        # the declared final cue end the last cue must close on, and the
+        # provenance naming the evidence any of it came from.  This
+        # module writes the CUE TIMINGS, so a track computed from
+        # unvalidated numbers stays self-consistent while drifting away
+        # from the film render_movie.py encodes from the same document.
+        with self.assertRaises(make_srt.TranscriptError) as caught:
+            make_srt.build_transcripts(minimal())
+        self.assertIn("bare array", str(caught.exception))
+
+    def test_a_partial_document_is_refused_and_says_what_is_missing(
+            self):
+        # Wrapping the entries in a bare {"frames": ...} is not enough
+        # either, and the refusal has to be USEFUL about why: the
+        # document-level fields are what the entries are checked
+        # against, so their absence is named one by one rather than
+        # reported as a generic rejection.
+        with self.assertRaises(make_srt.TranscriptError) as caught:
+            make_srt.build_transcripts({"frames": minimal()})
+        message = str(caught.exception)
+        for expected in ("manifest", "total", "final_cue_end", "floor"):
+            with self.subTest(field=expected):
+                self.assertIn(expected, message)
+
+    def test_a_real_document_over_the_same_entries_renders(self):
+        # And the entries themselves were never the problem: a complete
+        # document built by timeline.py over real readings renders.
+        srt, markdown, cues = make_srt.build_transcripts(build())
+        self.assertEqual(len(cues), len(REFERENCE_CLOCKS))
+        self.assertEqual(srt.count(" --> "), len(REFERENCE_CLOCKS))
+        self.assertEqual(len(MARKDOWN_ENTRY_RE.findall(markdown)),
+                         len(REFERENCE_CLOCKS))
 
     def test_a_document_carrying_no_frames_is_refused(self):
         with self.assertRaises(make_srt.TranscriptError):
@@ -779,7 +830,7 @@ class TestTheCaptionIsTheOnlyTransformation(unittest.TestCase):
         srt, markdown, cues = make_srt.build_transcripts(
             build(words=words))
         self.assertEqual(len(cues[0].lines), make_srt.CUE_MAX_LINES)
-        self.assertTrue(cues[0].lines[-1].endswith(make_srt.ELLIPSIS))
+        self.assertTrue(cues[0].lines[-1].endswith(make_srt.CUE_ELISION))
         self.assertIn(A_LONG_SENTENCE, markdown,
                       msg="the record keeps the whole sentence")
 
@@ -792,7 +843,7 @@ class TestTheCaptionIsTheOnlyTransformation(unittest.TestCase):
         # it is still the whole word when it does.
         self.assertIn(long_word, "\n".join(lines))
         for line in lines:
-            for word in line.replace(make_srt.ELLIPSIS, "").split():
+            for word in line.replace(make_srt.CUE_ELISION, "").split():
                 self.assertIn(word, sentence)
 
     def test_a_word_longer_than_the_line_keeps_its_own_line(self):
@@ -803,7 +854,7 @@ class TestTheCaptionIsTheOnlyTransformation(unittest.TestCase):
     def test_a_sentence_that_fits_is_left_alone(self):
         self.assertEqual(make_srt.wrap_cue_text("I wait here."),
                          ["I wait here."])
-        self.assertNotIn(make_srt.ELLIPSIS,
+        self.assertNotIn(make_srt.CUE_ELISION,
                          "".join(make_srt.wrap_cue_text("I wait.")))
 
     def test_a_line_is_filled_to_the_geometry(self):
@@ -921,15 +972,46 @@ class TestWritingBothArtifacts(unittest.TestCase):
                 self.assertFalse(
                     os.path.exists(os.path.join(root, name)), name)
 
-    def test_named_paths_are_honoured_inside_the_tree(self):
+    def test_named_paths_are_honoured_when_they_name_the_artifacts(self):
+        # THIS ASSERTED SOMETHING WIDER ONCE.  Any path inside the tree
+        # used to be accepted, which meant --md playthrough/dossier.md
+        # would have written a transcript over the survivor's own
+        # backstory, and --srt playthrough/manifest.jsonl over the record
+        # every count in the report derives from.  Containment was never
+        # the protection it looked like: everything this pipeline
+        # produces lives inside the tree.  The two destinations are
+        # enumerated now, so naming them explicitly still works and
+        # naming anything else does not.
         with workspace() as root:
             seed_timeline(root)
-            srt = os.path.join(root, "named.srt")
-            markdown = os.path.join(root, "named.md")
+            srt = os.path.join(root, "transcript.srt")
+            markdown = os.path.join(root, "transcript.md")
             self.assertEqual(make_srt.main(
                 ["--srt", srt, "--md", markdown, "-q"], root=root), 0)
             self.assertTrue(os.path.isfile(srt))
             self.assertTrue(os.path.isfile(markdown))
+
+    def test_another_path_inside_the_tree_is_refused(self):
+        with workspace() as root:
+            seed_timeline(root)
+            for name in ("named.srt", "dossier.md",
+                         "TECHNICAL_NOTES.md", "manifest.jsonl",
+                         "cata-play.mp4"):
+                with self.subTest(name=name):
+                    with self.assertRaises(make_srt.TranscriptError):
+                        make_srt.validated_output_path(
+                            os.path.join(root, name),
+                            "the transcript path", root)
+
+    def test_the_refusal_names_the_two_destinations(self):
+        with workspace() as root:
+            with self.assertRaises(make_srt.TranscriptError) as caught:
+                make_srt.validated_output_path(
+                    os.path.join(root, "dossier.md"),
+                    "the transcript path", root)
+            message = str(caught.exception)
+            self.assertIn("transcript.srt", message)
+            self.assertIn("transcript.md", message)
 
     def test_a_path_outside_the_tree_is_refused(self):
         with workspace() as root:

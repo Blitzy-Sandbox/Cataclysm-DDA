@@ -83,12 +83,21 @@ except ImportError:  # pragma: no cover - guarded, like the module's own
     ImageDraw = None
     ImageFont = None
 
+try:
+    import numpy
+except ImportError:  # pragma: no cover - guarded, like the module's own
+    numpy = None
+
 
 # The capture geometry the pipeline runs at, and the crop over it.
 FRAME_WIDTH = 1920
 FRAME_HEIGHT = 1080
 CROP = "288x1072+1632+4"
 ROW_HEIGHT = 16
+# Every font the engine ships for this grid draws FONT_WIDTH as half
+# FONT_HEIGHT [src/options.cpp:2408-2438], which is what
+# GLYPH_WIDTH_DIVISOR encodes.
+CELL_WIDTH = ROW_HEIGHT // ocr_clock.GLYPH_WIDTH_DIVISOR
 
 # A clock with no zero in it.  Terminus draws a SLASHED zero, which
 # tesseract reads as an 8 -- measured, repeatedly, on this host -- so a
@@ -123,7 +132,7 @@ ENVIRONMENT_KEYS = (
 
 def _toolchain_ready():
     """True when a real end-to-end read is possible on this host."""
-    if Image is None or not os.path.isfile(TERMINUS):
+    if Image is None or numpy is None or not os.path.isfile(TERMINUS):
         return False
     if ocr_clock.bootstrap_problems():
         return False
@@ -1157,17 +1166,34 @@ class TestReadingOneFrame(OcrFixture):
                 "unreadable")
 
     def test_disagreeing_passes_are_reported_rather_than_hidden(self):
+        # THIS ASSERTED THE OPPOSITE ONCE.  The reading used to be
+        # resolved by pass order -- the first pass that produced a
+        # possible clock won, and the disagreement was recorded as a
+        # note beside it.  That made an arbitrary choice the permanent
+        # record of the frame, and the wrong choice is undetectable
+        # downstream: it becomes a wrong duration, a wrong caption and a
+        # wrong line in the transcript.  Two readers of the same pixels
+        # returning different times have established that the time is
+        # NOT established, so the clock is now WITHHELD while every
+        # candidate is kept as evidence.  A null reading is reconciled
+        # against the previous frame by timeline.py and is visible in
+        # the manifest; a wrong one is not.
         reading, seen = self.read(
             {"deslash-rows": CLEAN_CLOCK,
              "reference-rows": "13:45:28",
              "reference-column": CLEAN_CLOCK},
             cross_check=True)
-        self.assertEqual(
-            reading.clock, CLEAN_CLOCK,
-            msg="the first in pass order is reported")
+        self.assertIsNone(
+            reading.clock,
+            msg="a disagreed frame is unreadable, not resolved by order")
+        self.assertIsNone(reading.pass_name)
         self.assertEqual(reading.candidates, (CLEAN_CLOCK, "13:45:28"))
         self.assertFalse(reading.agreement)
+        self.assertFalse(reading.readable)
         self.assertEqual(len(seen), len(ocr_clock.PASSES))
+        self.assertTrue(
+            any("UNREADABLE" in note for note in reading.notes),
+            msg=repr(reading.notes))
         self.assertTrue(
             any("nothing is averaged or repaired" in note
                 for note in reading.notes),
@@ -1770,6 +1796,15 @@ class TestTheRealPipeline(OcrFixture):
         ocr_clock.LOG.addHandler(logging.NullHandler())
         ocr_clock.LOG.propagate = False
 
+    # The glyph reader's recognise-exactly-or-refuse contract is
+    # asserted against the shipping decoder by
+    # TestAGlyphIsRecognisedOrRefused below, on the real templates:
+    # an exact match is a lookup, a near match is accepted only
+    # inside its own unique-decoding radius, and a tie is refused
+    # rather than settled by alphabet order.  The earlier tests here
+    # exercised a provenance API the module no longer exposes, so
+    # they were duplicate coverage of a replaced implementation.
+
 
 class TestTheOneWriteIsConfined(OcrFixture):
     """The date-evidence sidecar is the only file this module writes.
@@ -1911,6 +1946,525 @@ class TestTheSuiteTouchesNoEvidence(unittest.TestCase):
                     forbidden, source,
                     msg=("the CodeQL python leg scans this tree under "
                          "a no-new-alerts gate"))
+
+
+@unittest.skipUnless(_TOOLCHAIN_READY, "needs Pillow and the font")
+class TestAGlyphIsRecognisedOrRefused(unittest.TestCase):
+    """The near-match rule must be UNIQUE, not merely nearest.
+
+    The reader answers a cell by comparing it with a template rendered
+    from the game's own font.  An exact match is a lookup and is not at
+    issue.  The danger is the near match: measured on this checkout's
+    Terminus.ttf at 8x16, '3' and '8' differ by only FOUR pixels and '.'
+    and ',' by ONE, so a fixed four-pixel tolerance was wide enough for
+    a smudged '3' to be answered with an '8' -- and a wrong clock is a
+    wrong duration, a wrong caption and a wrong line in the transcript,
+    with nothing downstream able to detect it.
+
+    So a near match is accepted only inside its own unique-decoding
+    radius, and a tie is refused outright rather than settled by
+    alphabet order.  These tests assert that on the real templates.
+    """
+
+    def setUp(self):
+        self.cell_width = CELL_WIDTH
+        self.row_height = ROW_HEIGHT
+        self.exact, self.ordered, self.neighbour = (
+            ocr_clock._glyph_templates(self.cell_width, self.row_height))
+        self.by_char = dict(self.ordered)
+
+    def decode(self, cell, ambiguous=None):
+        """Decode one cell by presenting it as a one-cell row."""
+        return ocr_clock._decode_glyph_row(
+            cell, self.exact, self.ordered, self.neighbour,
+            self.cell_width, ambiguous)
+
+    def test_the_measured_distances_the_rule_rests_on(self):
+        # Not a tautology: these are the numbers that make a fixed
+        # tolerance unsafe, so if the font ever changes such that they
+        # grow, this test says so rather than letting the rationale rot.
+        self.assertLessEqual(
+            self.neighbour["3"], ocr_clock.GLYPH_MAX_DISTANCE,
+            msg="'3' sits within the ceiling of another template")
+        self.assertEqual(
+            self.neighbour["."], 1,
+            msg="'.' and ',' differ by a single pixel")
+
+    def test_an_exact_cell_reads_as_itself(self):
+        for character in "0123456789:":
+            with self.subTest(character=character):
+                self.assertEqual(
+                    self.decode(self.by_char[character]), character)
+
+    def test_a_cell_between_two_templates_is_refused(self):
+        # Walk a '3' towards an '8' one differing pixel at a time and
+        # stop where the two are equidistant.  That cell is a genuine
+        # tie: it is EXACTLY as much an '8' as it is a '3'.
+        three, eight = self.by_char["3"], self.by_char["8"]
+        differing = numpy.argwhere(three != eight)
+        self.assertTrue(len(differing) >= 2, "need a gap to walk")
+        blend = three.copy()
+        half = len(differing) // 2
+        for row, column in differing[:half]:
+            blend[row][column] = eight[row][column]
+        to_three = int(numpy.count_nonzero(blend != three))
+        to_eight = int(numpy.count_nonzero(blend != eight))
+        self.assertEqual(to_three, to_eight, "the blend must be a tie")
+        ambiguous = []
+        self.assertEqual(self.decode(blend, ambiguous), "")
+        self.assertTrue(
+            ambiguous,
+            msg="a refusal must be recorded, not silently absorbed")
+        self.assertIn("not a unique match", ambiguous[0])
+
+    def test_the_refusal_names_both_candidates(self):
+        three, eight = self.by_char["3"], self.by_char["8"]
+        differing = numpy.argwhere(three != eight)
+        blend = three.copy()
+        for row, column in differing[:len(differing) // 2]:
+            blend[row][column] = eight[row][column]
+        ambiguous = []
+        self.decode(blend, ambiguous)
+        self.assertRegex(ambiguous[0], r"pixel\(s\) from")
+
+    def test_a_cell_outside_the_ceiling_is_refused(self):
+        # Ink in a shape no template carries: far from everything.
+        cell = numpy.zeros(
+            (self.row_height, self.cell_width), dtype=bool)
+        cell[::2, ::2] = True
+        self.assertEqual(self.decode(cell), "")
+
+    def test_an_empty_cell_is_a_space_not_a_guess(self):
+        cell = numpy.zeros(
+            (self.row_height, self.cell_width), dtype=bool)
+        self.assertEqual(self.decode(cell), "")
+
+    def test_every_template_pair_is_distinguishable_or_refused(self):
+        # The invariant the rule guarantees: no cell can be accepted as
+        # a glyph while lying inside another glyph's decoding radius.
+        for character, mask in self.ordered:
+            radius = (self.neighbour[character] - 1) // 2
+            with self.subTest(character=character):
+                self.assertLess(
+                    radius * 2, max(self.neighbour[character], 1),
+                    msg="the accepted radius must stay unique")
+
+    def test_the_real_frames_still_read_exactly(self):
+        # The tightening must not have cost a single real reading.
+        manifest = os.path.join(
+            REPO_ROOT, "playthrough", "manifest.jsonl")
+        if not os.path.isfile(manifest):
+            self.skipTest("no captured evidence in this checkout")
+        rows = []
+        with open(manifest, encoding="utf-8") as handle:
+            for line in handle:
+                row = json.loads(line)
+                if row.get("ingame_clock"):
+                    rows.append(row)
+        if not rows:
+            self.skipTest("no frame in the evidence carries a clock")
+        rect = sidebar_geometry.Rect(
+            x=1632, y=4, width=288, height=1072)
+        checked = 0
+        for row in rows[::max(1, len(rows) // 12)]:
+            frame = os.path.join(REPO_ROOT, row["file"])
+            if not os.path.isfile(frame):
+                continue
+            text = ocr_clock.read_column_by_glyphs(
+                frame, rect, ROW_HEIGHT, [])
+            with self.subTest(frame=row["frame"]):
+                self.assertEqual(
+                    ocr_clock.find_clocks(text)[0], row["ingame_clock"])
+            checked += 1
+        self.assertGreater(checked, 0, "no frame could be re-read")
+
+
+class TestEveryImageComesThroughOneDoor(unittest.TestCase):
+    """Pillow decodes only what has been proved to be a PNG.
+
+    Pillow identifies a file by CONTENT and ships a plugin per format,
+    so a plain ``Image.open`` on a path called frame_00001.png will hand
+    a PSD, DDS, TIFF or FLI to that format's native decoder -- which is
+    where Pillow's memory-corruption advisories live.  This pipeline
+    runs Pillow 11.3.0, pinned there because moviepy 2.2.1 declares
+    ``pillow<12.0``, so the format restriction IS the control rather
+    than a belt over a fixed version.
+    """
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="blitzy_png_")
+        self.addCleanup(shutil.rmtree, self.root, True)
+
+    def path(self, name):
+        return os.path.join(self.root, name)
+
+    def test_the_module_opens_no_image_outside_the_doors(self):
+        # The structural assertion: every Image.open in the module is
+        # inside a door and every door names formats=["PNG"].
+        source_path = os.path.join(TOOLING, "ocr_clock.py")
+        with open(source_path, encoding="utf-8") as handle:
+            lines = handle.readlines()
+        opens = []
+        for line in lines:
+            stripped = line.strip()
+            if "Image.open(" in line and not stripped.startswith("#"):
+                opens.append(stripped)
+        self.assertTrue(opens, "expected the doors themselves")
+        for line in opens:
+            with self.subTest(line=line):
+                self.assertIn('formats=["PNG"]', line)
+
+    @unittest.skipIf(Image is None, "needs Pillow")
+    def test_a_bmp_named_png_is_refused(self):
+        target = self.path("frame_00001.png")
+        Image.new("RGB", (4, 4), (9, 9, 9)).save(target, format="BMP")
+        with self.assertRaises(ocr_clock.FrameUnreadableError):
+            ocr_clock.open_png(target)
+
+    @unittest.skipIf(Image is None, "needs Pillow")
+    def test_a_real_png_is_accepted_and_loaded(self):
+        target = self.path("frame_00002.png")
+        Image.new("L", (6, 5), 200).save(target, format="PNG")
+        with ocr_clock.open_png(target) as image:
+            self.assertEqual(image.size, (6, 5))
+
+    def test_a_truncated_signature_is_refused(self):
+        target = self.path("frame_00003.png")
+        with open(target, "wb") as handle:
+            handle.write(ocr_clock.PNG_MAGIC[:4])
+        with self.assertRaises(ocr_clock.FrameUnreadableError):
+            ocr_clock.open_png(target)
+
+    def test_bytes_that_are_not_a_png_are_refused(self):
+        with self.assertRaises(ocr_clock.ToolchainError):
+            ocr_clock.open_png_bytes(b"BM\x00\x00 not a png", "probe")
+
+    @unittest.skipIf(Image is None, "needs Pillow")
+    def test_png_bytes_are_accepted(self):
+        buffer = io.BytesIO()
+        Image.new("L", (3, 2), 5).save(buffer, format="PNG")
+        image = ocr_clock.open_png_bytes(buffer.getvalue(), "probe")
+        self.assertEqual(image.size, (3, 2))
+
+    @unittest.skipIf(Image is None, "needs Pillow")
+    def test_the_size_is_read_without_a_decoder(self):
+        target = self.path("frame_00004.png")
+        Image.new("RGB", (1920, 1080)).save(target, format="PNG")
+        self.assertEqual(ocr_clock.png_size(target), (1920, 1080))
+
+    def test_a_header_declaring_too_many_pixels_is_refused(self):
+        # A crafted IHDR asking for an unbounded allocation never
+        # reaches an allocator: the ceiling is checked on the declared
+        # numbers, in pure Python.
+        target = self.path("frame_00005.png")
+        header = b"".join((
+            ocr_clock.PNG_MAGIC,
+            (13).to_bytes(4, "big"), b"IHDR",
+            (100000).to_bytes(4, "big"),
+            (100000).to_bytes(4, "big")))
+        with open(target, "wb") as handle:
+            handle.write(header)
+        with self.assertRaises(ocr_clock.FrameUnreadableError) as caught:
+            ocr_clock.png_size(target)
+        self.assertIn("ceiling", str(caught.exception))
+
+    def test_a_file_without_an_ihdr_chunk_is_refused(self):
+        target = self.path("frame_00006.png")
+        with open(target, "wb") as handle:
+            handle.write(ocr_clock.PNG_MAGIC + b"\x00" * 16)
+        with self.assertRaises(ocr_clock.FrameUnreadableError):
+            ocr_clock.png_size(target)
+
+
+@unittest.skipUnless(os.path.isfile(TERMINUS), "needs the font")
+class TestTheFontIsTheOneThisRepositoryShips(unittest.TestCase):
+    """FreeType is a native parser; the face it parses is attested.
+
+    The font is named by a path derived from this module's location, so
+    "the font we expect" is an assumption until the bytes are hashed.
+    """
+
+    def test_the_shipped_font_matches_the_recorded_digest(self):
+        self.assertEqual(
+            ocr_clock.font_digest(), ocr_clock.GLYPH_FONT_SHA256,
+            msg=("data/font/Terminus.ttf does not match the digest this "
+                 "module was written against; if it was legitimately "
+                 "updated, update GLYPH_FONT_SHA256 deliberately and "
+                 "re-verify the glyph templates"))
+
+    def test_the_digest_is_of_the_font_this_module_resolves(self):
+        resolved = ocr_clock._glyph_font_path()
+        self.assertTrue(os.path.isfile(resolved))
+        self.assertEqual(
+            os.path.realpath(resolved), os.path.realpath(TERMINUS))
+
+    @unittest.skipUnless(_TOOLCHAIN_READY, "needs Pillow")
+    def test_a_font_that_is_not_the_attested_one_is_refused(self):
+        holder = tempfile.mkdtemp(prefix="blitzy_font_")
+        self.addCleanup(shutil.rmtree, holder, True)
+        tampered = os.path.join(holder, "Terminus.ttf")
+        with open(TERMINUS, "rb") as source:
+            body = bytearray(source.read())
+        body[-1] = (body[-1] + 1) % 256
+        with open(tampered, "wb") as handle:
+            handle.write(bytes(body))
+        self.assertNotEqual(
+            ocr_clock.font_digest(tampered),
+            ocr_clock.GLYPH_FONT_SHA256)
+        with _patched(ocr_clock, _glyph_font_path=lambda: tampered):
+            ocr_clock._glyph_templates.cache_clear()
+            self.addCleanup(ocr_clock._glyph_templates.cache_clear)
+            with self.assertRaises(ocr_clock.ToolchainError) as caught:
+                ocr_clock._attested_font(ROW_HEIGHT)
+        self.assertIn("sha256", str(caught.exception))
+
+    @unittest.skipUnless(_TOOLCHAIN_READY, "needs Pillow")
+    def test_a_symlinked_font_is_refused(self):
+        holder = tempfile.mkdtemp(prefix="blitzy_font_")
+        self.addCleanup(shutil.rmtree, holder, True)
+        link = os.path.join(holder, "Terminus.ttf")
+        os.symlink(TERMINUS, link)
+        with _patched(ocr_clock, _glyph_font_path=lambda: link):
+            with self.assertRaises(ocr_clock.ToolchainError) as caught:
+                ocr_clock._attested_font(ROW_HEIGHT)
+        self.assertIn("regular file", str(caught.exception))
+
+
+class TestReadersMustAgree(OcrFixture):
+    """Disagreement withholds the reading; it never picks a winner.
+
+    Two independent readers of the same pixels that return different
+    times have established that the time is NOT established.  Choosing
+    between them by pass order is choosing arbitrarily, and the wrong
+    choice is undetectable downstream -- so the clock is reported as
+    unreadable, which timeline.py reconciles and the manifest records
+    as null.  capture.sh therefore always cross-checks.
+    """
+
+    def test_agreement_is_reported(self):
+        reading, _ = self.read(
+            {"deslash-rows": "08:15:32",
+             "reference-rows": "08:15:32",
+             "reference-column": "08:15:32",
+             "deslash-negate-rows": "08:15:32"},
+            cross_check=True)
+        self.assertEqual(reading.clock, "08:15:32")
+        self.assertEqual(reading.candidates, ("08:15:32",))
+
+    def test_disagreement_withholds_the_clock(self):
+        reading, seen = self.read(
+            {"deslash-rows": "08:15:32",
+             "reference-rows": "08:15:33"},
+            cross_check=True)
+        self.assertIsNone(
+            reading.clock,
+            msg="a disagreed reading must be withheld, not resolved")
+        self.assertIsNone(reading.pass_name)
+        self.assertEqual(len(seen), len(ocr_clock.PASSES),
+                         msg="cross-check runs every pass")
+
+    def test_disagreement_keeps_every_candidate_as_evidence(self):
+        reading, _ = self.read(
+            {"deslash-rows": "08:15:32",
+             "reference-rows": "08:15:33"},
+            cross_check=True)
+        self.assertEqual(set(reading.candidates),
+                         {"08:15:32", "08:15:33"})
+        self.assertTrue(
+            any("UNREADABLE" in note for note in reading.notes),
+            msg="the withholding must be stated in the record")
+
+    def test_disagreement_still_reports_the_text_it_read(self):
+        reading, _ = self.read(
+            {"deslash-rows": "08:15:32",
+             "reference-rows": "08:15:33"},
+            cross_check=True)
+        self.assertTrue(reading.text.strip(),
+                        msg="the pixels read stay in the record")
+
+    def test_without_cross_check_the_first_pass_still_wins(self):
+        # The flag controls whether we LOOK for disagreement.  Without
+        # it the behaviour is unchanged: one pass answers and stops.
+        reading, seen = self.read(
+            {"deslash-rows": "08:15:32",
+             "reference-rows": "08:15:33"})
+        self.assertEqual(reading.clock, "08:15:32")
+        self.assertEqual(seen, ["deslash-rows"])
+
+    def test_an_impossible_reading_does_not_count_as_disagreement(self):
+        # 48:85:89 is declined before it can ever be a candidate, so a
+        # frame one pass misreads impossibly is still readable.
+        reading, _ = self.read(
+            {"deslash-rows": "08:15:32",
+             "reference-rows": "48:85:89",
+             "reference-column": "08:15:32",
+             "deslash-negate-rows": "08:15:32"},
+            cross_check=True)
+        self.assertEqual(reading.clock, "08:15:32")
+        self.assertIn("48:85:89", reading.declined)
+
+    def test_a_withheld_reading_is_distinguishable_in_the_evidence(self):
+        # Both a disagreed frame and a genuinely blank one carry a null
+        # clock, and they are NOT the same event.  The audit sidecar
+        # already separates them by `agreement`, which is what lets a
+        # later reader tell "nobody could read it" from "the readers
+        # contradicted each other", so the distinction is asserted here
+        # rather than left to survive by luck.
+        withheld, _ = self.read(
+            {"deslash-rows": "08:15:32",
+             "reference-rows": "08:15:33"},
+            cross_check=True)
+        blank, _ = self.read({}, cross_check=True)
+        self.assertIsNone(withheld.clock)
+        self.assertIsNone(blank.clock)
+        withheld_record = ocr_clock.date_audit_record(1, withheld)
+        blank_record = ocr_clock.date_audit_record(2, blank)
+        self.assertFalse(withheld_record["agreement"])
+        self.assertTrue(blank_record["agreement"])
+        self.assertIsNone(withheld_record["clock"])
+        self.assertIsNone(blank_record["clock"])
+
+    def test_capture_asks_for_the_cross_check(self):
+        # The production invocation, not just the capability.
+        script = os.path.join(TOOLING, "capture.sh")
+        with open(script, encoding="utf-8") as handle:
+            body = handle.read()
+        self.assertIn("--cross-check", body,
+                      msg=("capture.sh must cross-check, or a misread "
+                           "by the first pass becomes the record"))
+
+
+@unittest.skipUnless(
+    _TOOLCHAIN_READY,
+    "needs Pillow, data/font/Terminus.ttf and a tesseract front end")
+class TestAProofOutranksAPreference(OcrFixture):
+    """An exact glyph match stands against a disagreeing OCR pass.
+
+    Withholding on disagreement is right when the disagreeing readers
+    are all probabilistic.  It is WRONG when one of them is a proof: an
+    exact glyph match means the cell's ink is bit-identical to what the
+    attested data/font/Terminus.ttf draws for that character, so the
+    engine demonstrably drew that time in those pixels.
+
+    This is measured, not assumed.  Cross-checking the committed
+    evidence turned up three frames where tesseract contradicted an
+    exact match -- '19:40:10' against '15:28:18' on frame 501, and the
+    like -- and in every case the contradiction was impossible in
+    sequence against the neighbouring frames while the exact reading fit
+    them precisely.  Discarding a proof because a probabilistic reader
+    was noisy would throw away true observations, which is its own kind
+    of dishonesty.
+
+    So: proof wins, the contradiction is recorded, and `agreement`
+    stays false so the evidence shows the frame was contested.
+    """
+
+    def render(self, name, rows):
+        font = ImageFont.truetype(TERMINUS, ROW_HEIGHT)
+        image = Image.new("RGB", (FRAME_WIDTH, FRAME_HEIGHT), (0, 0, 0))
+        draw = ImageDraw.Draw(image)
+        for row, line in sorted(rows.items()):
+            draw.text((1632, 4 + ROW_HEIGHT * row), line, font=font,
+                      fill=(255, 255, 255))
+        path = os.path.join(self.frames, name)
+        image.save(path)
+        return path
+
+    def read_with_ocr_saying(self, path, spoken):
+        """Read real pixels while every OCR pass "reads" ``spoken``."""
+        def preprocess(png_path, rect, row_height, ocr_pass, engine):
+            return object(), row_height
+
+        def scan(strip, band_height, ocr_pass, ocr_engine, stop_early):
+            return spoken, 1
+
+        with _patched(ocr_clock, preprocess=preprocess,
+                      _scan_strip=scan):
+            return ocr_clock.read_sidebar(
+                path, rect=CROP, row_height=ROW_HEIGHT,
+                check_options=False, frames_dir=self.frames,
+                cross_check=True)
+
+    def test_an_exact_match_stands_against_a_contradiction(self):
+        path = self.render("frame_00020.png", {3: CLEAN_CLOCK})
+        reading = self.read_with_ocr_saying(path, "13:45:28")
+        self.assertEqual(
+            reading.clock, CLEAN_CLOCK,
+            msg="a bit-identical match is not overridden by OCR")
+        self.assertEqual(reading.pass_name, ocr_clock.GLYPH_PASS_NAME)
+        self.assertIn("13:45:28", reading.candidates)
+        self.assertFalse(
+            reading.agreement,
+            msg="the frame was contested and the record must say so")
+        self.assertTrue(
+            any("STANDS" in note for note in reading.notes),
+            msg=repr(reading.notes))
+
+    def test_the_contradiction_is_named_in_the_record(self):
+        path = self.render("frame_00021.png", {3: CLEAN_CLOCK})
+        reading = self.read_with_ocr_saying(path, "13:45:28")
+        self.assertTrue(
+            any("13:45:28" in note for note in reading.notes),
+            msg="the reading that was overruled stays visible")
+
+    def test_agreement_survives_when_the_ocr_agrees(self):
+        path = self.render("frame_00022.png", {3: CLEAN_CLOCK})
+        reading = self.read_with_ocr_saying(path, CLEAN_CLOCK)
+        self.assertEqual(reading.clock, CLEAN_CLOCK)
+        self.assertTrue(reading.agreement)
+        self.assertFalse(
+            any("STANDS" in note for note in reading.notes),
+            msg="an uncontested frame needs no adjudication note")
+
+    def test_a_reading_that_is_not_a_proof_is_withheld(self):
+        # Same contradiction, but the glyph pass contributes nothing --
+        # so there is no proof to settle it and the reading is withheld.
+        path = self.render("frame_00023.png", {})
+
+        def preprocess(png_path, rect, row_height, ocr_pass, engine):
+            return object(), row_height
+
+        def scan(strip, band_height, ocr_pass, ocr_engine, stop_early):
+            return ("13:45:27" if ocr_pass.name == "deslash-rows"
+                    else "13:45:28"), 1
+
+        with _patched(ocr_clock, preprocess=preprocess,
+                      _scan_strip=scan):
+            reading = ocr_clock.read_sidebar(
+                path, rect=CROP, row_height=ROW_HEIGHT,
+                check_options=False, frames_dir=self.frames,
+                cross_check=True)
+        self.assertIsNone(
+            reading.clock,
+            msg="without a proof, disagreement withholds the reading")
+        self.assertTrue(
+            any("UNREADABLE" in note for note in reading.notes),
+            msg=repr(reading.notes))
+
+    def test_exactness_is_tracked_per_character(self):
+        path = self.render("frame_00024.png", {3: CLEAN_CLOCK})
+        marks = []
+        text = ocr_clock.read_column_by_glyphs(
+            path,
+            sidebar_geometry.Rect(width=288, height=1072, x=1632, y=4),
+            ROW_HEIGHT, [], marks)
+        self.assertEqual(
+            len(marks), len(text),
+            msg="the mark list must index the text directly")
+        start = text.find(CLEAN_CLOCK)
+        self.assertGreaterEqual(start, 0)
+        self.assertTrue(all(marks[start:start + len(CLEAN_CLOCK)]))
+
+    def test_a_value_that_cannot_be_located_is_not_a_proof(self):
+        self.assertFalse(ocr_clock._all_exact("abc", "zz", [True] * 3))
+        self.assertFalse(ocr_clock._all_exact("abc", "", [True] * 3))
+        self.assertFalse(
+            ocr_clock._all_exact("abc", "a", [True]),
+            msg="a mark list that does not index the text is refused")
+        self.assertTrue(
+            ocr_clock._all_exact("abc", "b", [True, True, True]))
+        self.assertFalse(
+            ocr_clock._all_exact("abc", "b", [True, False, True]))
 
 
 if __name__ == "__main__":
