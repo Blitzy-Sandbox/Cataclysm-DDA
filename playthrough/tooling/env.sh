@@ -232,6 +232,198 @@ _playthrough_euid() {
 PLAYTHROUGH_UID="$(_playthrough_euid)"
 export PLAYTHROUGH_UID
 
+# ---------------------------------------------------------------------
+# THE TRUSTED UTILITY BOOTSTRAP
+#
+# A security check is worth no more than the program that performs it.
+# Every ownership, mode and containment check below is a call to `stat`,
+# `readlink` or `chmod`, and each of those used to be resolved through
+# the INHERITED PATH -- the one thing in this environment that an
+# attacker who can already write a directory on it also controls.  A
+# planted `stat` that prints this uid for every path would make every
+# check below answer "yours", and the pipeline would then write its
+# Xauthority cookie, its locks, its captures and its rendered film into a
+# directory somebody else owns while reporting the state as trusted.
+#
+# So the utilities are resolved from a FIXED list of system directories,
+# never from PATH, and the resolved `stat` is then used to verify itself
+# and its siblings: each must be a regular executable owned by root or by
+# this user and writable by neither group nor world.  The limit of that
+# chain is stated plainly rather than glossed: if /usr/bin/stat is itself
+# replaced by something with root's cooperation, nothing in user space
+# can tell.  What this closes is the case that does not need root -- a
+# writable directory earlier on PATH.
+#
+# THE BOOTSTRAP RUNS AT SOURCE TIME, before the first playthrough_secure_dir
+# call, because that call is one of the things it protects.
+# ---------------------------------------------------------------------
+
+# Where a security-critical utility may come from.  System directories
+# only, in the order a sane host orders them; PATH is deliberately not
+# consulted, and neither is anything under /usr/local, /opt or a home
+# directory, because those are the paths a non-root account can more
+# often write.
+PLAYTHROUGH_TRUSTED_UTIL_DIRS="/usr/bin /bin /usr/sbin /sbin"
+
+# The utilities the checks below cannot be PERFORMED without.  All three
+# are coreutils, which every platform this pipeline targets ships.
+PLAYTHROUGH_TRUSTED_UTILS="stat readlink chmod"
+
+# playthrough_trust_unverifiable REASON
+#   Record that a security check could not be PERFORMED at all.
+#
+#   THIS IS NOT A WARNING CHANNEL.  It is the third input to the trust
+#   state, beside the named bypasses and the platform waiver, and it
+#   exists because "the check failed" and "the check did not run" used to
+#   be reported the same way -- as a warning next to a return code of
+#   zero.  An inability to verify is not a verification, so it is
+#   recorded here, it holds PLAYTHROUGH_TRUST_STATE at "diagnostic", and
+#   playthrough_assert_trusted then refuses a launch or a production
+#   capture that would otherwise proceed as trusted.
+#
+#   The caller ALSO fails closed.  Recording is not an alternative to
+#   refusing; it is what makes the refusal visible to the stages that
+#   never saw the call.
+playthrough_trust_unverifiable() {
+    local reason="${1-an unnamed security check could not be run}"
+    local existing="${PLAYTHROUGH_TRUST_UNVERIFIED-}"
+    case "${existing}" in
+        *"${reason}"*) ;;
+        '') existing="${reason}" ;;
+        *) existing="${existing}; ${reason}" ;;
+    esac
+    export PLAYTHROUGH_TRUST_UNVERIFIED="${existing}"
+    # This can fire at source time, before the trust helpers further
+    # down the file exist -- the very first playthrough_secure_dir call
+    # is one of the things the bootstrap protects.  So the state is set
+    # here directly in that window, which matters because a source that
+    # ABORTS never reaches the refresh at the end of the file, and the
+    # answer a consumer would then read out of the environment has to be
+    # "diagnostic" rather than empty.
+    if command -v playthrough_trust_refresh >/dev/null 2>&1; then
+        playthrough_trust_refresh >/dev/null 2>&1 || true
+    else
+        export PLAYTHROUGH_TRUST_STATE="diagnostic"
+    fi
+    return 0
+}
+
+# playthrough_trusted_util NAME
+#   Print the absolute path of NAME inside the trusted directories, or
+#   return 1.  The name is checked against a closed vocabulary -- plain
+#   lower-case letters -- so nothing resembling a path or a shell
+#   metacharacter can be appended to a trusted directory here.
+playthrough_trusted_util() {
+    local name="${1-}"
+    case "${name}" in
+        ''|*[!a-z]*) return 1 ;;
+    esac
+    local dir candidate
+    for dir in ${PLAYTHROUGH_TRUSTED_UTIL_DIRS}; do
+        candidate="${dir}/${name}"
+        if [ -f "${candidate}" ] && [ -x "${candidate}" ]; then
+            printf '%s' "${candidate}"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# _playthrough_bootstrap_utilities
+#   Resolve every name in PLAYTHROUGH_TRUSTED_UTILS, verify the set with
+#   the resolved `stat`, and export PLAYTHROUGH_UTIL_<NAME> plus
+#   PLAYTHROUGH_UTILITY_TRUST ("trusted" or "unresolved").
+#
+#   PLAYTHROUGH_UTIL_<NAME> is a computed namespace -- the loop below
+#   builds each name from an entry of PLAYTHROUGH_TRUSTED_UTILS -- so the
+#   verdict over the whole set is deliberately NOT called
+#   PLAYTHROUGH_UTIL_STATE.  A name of that shape would collide with a
+#   trusted utility called `state`, and it also reads as a typo of
+#   PLAYTHROUGH_UTIL_STAT, which is the one variable in the namespace
+#   every ownership check depends on.
+#
+#   Verification is deliberately narrow: owner root or this user, and
+#   neither group- nor world-writable, for the utility itself.  The
+#   directories above it are checked by playthrough_verify_executable for
+#   the pipeline's own tools; doing the same walk for three coreutils
+#   binaries at source time would cost a dozen processes on every stage
+#   for an answer that /usr/bin being group-writable would already have
+#   made hopeless.
+_playthrough_bootstrap_utilities() {
+    local name var path unresolved="" perm owner
+    for name in ${PLAYTHROUGH_TRUSTED_UTILS}; do
+        var="PLAYTHROUGH_UTIL_${name^^}"
+        path="$(playthrough_trusted_util "${name}")" || path=""
+        if [ -z "${path}" ]; then
+            unresolved="${unresolved}${unresolved:+ }${name}"
+        fi
+        export "${var}=${path}"
+    done
+    if [ -n "${unresolved}" ]; then
+        export PLAYTHROUGH_UTILITY_TRUST="unresolved"
+        playthrough_trust_unverifiable "the security-critical \
+utilities ${unresolved} are not present in \
+${PLAYTHROUGH_TRUSTED_UTIL_DIRS// /, }, so no ownership, mode or \
+containment check can be performed (install coreutils)"
+        return 1
+    fi
+    for name in ${PLAYTHROUGH_TRUSTED_UTILS}; do
+        var="PLAYTHROUGH_UTIL_${name^^}"
+        path="${!var}"
+        perm="$("${PLAYTHROUGH_UTIL_STAT}" -Lc '%a' -- "${path}" \
+            2>/dev/null || true)"
+        owner="$("${PLAYTHROUGH_UTIL_STAT}" -Lc '%u' -- "${path}" \
+            2>/dev/null || true)"
+        if [ -z "${perm}" ] || [ -z "${owner}" ]; then
+            export PLAYTHROUGH_UTILITY_TRUST="unresolved"
+            playthrough_trust_unverifiable "'${path}' could not be \
+inspected, so the utilities the ownership and mode checks are made of \
+cannot themselves be vouched for"
+            return 1
+        fi
+        if [ "${owner}" != "0" ] &&
+           [ "${owner}" != "${PLAYTHROUGH_UID}" ]; then
+            export PLAYTHROUGH_UTILITY_TRUST="unresolved"
+            playthrough_trust_unverifiable "'${path}' is owned by uid \
+${owner}, which is neither root nor uid ${PLAYTHROUGH_UID}, so the \
+program that performs every ownership check is itself somebody else's"
+            return 1
+        fi
+        if [ $(( 8#${perm} & 8#022 )) -ne 0 ]; then
+            export PLAYTHROUGH_UTILITY_TRUST="unresolved"
+            playthrough_trust_unverifiable "'${path}' is mode ${perm}, \
+i.e. group- or world-writable, so the program that performs every \
+ownership check can be replaced between one call and the next"
+            return 1
+        fi
+    done
+    export PLAYTHROUGH_UTILITY_TRUST="trusted"
+    return 0
+}
+
+# playthrough_assert_utilities [WHAT]
+#   Refuse to PERFORM a security check whose tools are not trusted.
+#
+#   Every secure_* helper calls this first, and none of them has a
+#   "could not check, carrying on" branch any more: an unperformed check
+#   returning success is worse than no check at all, because it produces
+#   a positive answer nobody can distinguish from a verified one.
+playthrough_assert_utilities() {
+    local what="${1:-a security check}"
+    if [ "${PLAYTHROUGH_UTILITY_TRUST:-unresolved}" = "trusted" ]; then
+        return 0
+    fi
+    playthrough_die "${what} cannot be performed:" \
+        "${PLAYTHROUGH_TRUST_UNVERIFIED:-the trusted utilities were" \
+        "not resolved}.  This is a REFUSAL rather than a warning:" \
+        "ownership and mode checks that did not run cannot report" \
+        "success, because a caller has no way to tell that answer" \
+        "from a verified one."
+    return 1
+}
+
+_playthrough_bootstrap_utilities || true
+
 # playthrough_validate_int VALUE LABEL [MIN] [MAX]
 #   Accept a plain decimal integer and leave it in PLAYTHROUGH_INT, or
 #   refuse it.
@@ -287,13 +479,15 @@ playthrough_validate_int() {
 #   path itself.  This is the ONLY way anything in this tree brings a
 #   scratch directory into existence.
 #
-#   `stat` IS THE CHECK, so its absence is reported as an inability to
-#   verify rather than as a failed verification: this file is SOURCED by
-#   every stage, including on a PATH stripped to bash itself, and dying
-#   there would make the whole contract unavailable on a host where
-#   nothing is actually wrong.  coreutils ships stat on every platform
-#   this pipeline targets, so the warning is a diagnostic for a broken
-#   PATH and not a supported mode of operation.
+#   `stat` IS THE CHECK, and it is called through the trusted bootstrap
+#   above rather than through PATH -- so a PATH stripped down to bash
+#   itself no longer costs this function its verification, which is what
+#   used to make an inability to verify look unavoidable.  If the
+#   bootstrap could not resolve it, this REFUSES: it does not chmod
+#   hopefully and return success, because an unperformed ownership check
+#   reporting success is indistinguishable from a verified one, and the
+#   directory it blesses is where the Xauthority cookie, the step lock
+#   and the capture staging live.
 playthrough_secure_dir() {
     local path="${1-}"
     local mode="${2:-700}"
@@ -303,6 +497,8 @@ playthrough_secure_dir() {
         playthrough_die "playthrough_secure_dir needs a path"
         return 1
     fi
+    playthrough_assert_utilities \
+        "verifying the private directory '${path}'" || return 1
     if [ -L "${path}" ]; then
         playthrough_die "${label} '${path}' is a symbolic link;" \
             "refusing to use it as a private runtime directory," \
@@ -321,24 +517,18 @@ playthrough_secure_dir() {
             "directory"
         return 1
     fi
-    if ! command -v stat >/dev/null 2>&1; then
-        chmod "${mode}" -- "${path}" 2>/dev/null || true
-        playthrough_warn "stat is not on PATH (coreutils), so" \
-            "${label} '${path}' could not be verified as a" \
-            "mode-${mode} directory owned by this user.  Install" \
-            "coreutils before capturing a session."
-        return 0
-    fi
     # Re-tested after the creation: a race that swapped the name between
     # the check above and the mkdir is caught here.
-    kind="$(stat -Lc '%F' -- "${path}" 2>/dev/null || true)"
+    kind="$("${PLAYTHROUGH_UTIL_STAT}" -Lc '%F' -- "${path}" \
+        2>/dev/null || true)"
     if [ -L "${path}" ] || [ "${kind}" != "directory" ]; then
         playthrough_die "${label} '${path}' is a" \
             "${kind:-unreadable path}, not a real directory"
         return 1
     fi
     uid="${PLAYTHROUGH_UID:-$(_playthrough_euid)}"
-    owner="$(stat -Lc '%u' -- "${path}" 2>/dev/null || true)"
+    owner="$("${PLAYTHROUGH_UTIL_STAT}" -Lc '%u' -- "${path}" \
+        2>/dev/null || true)"
     if [ "${owner}" != "${uid}" ]; then
         playthrough_die "${label} '${path}' is owned by uid" \
             "'${owner:-unknown}', not by uid ${uid}; refusing to" \
@@ -355,12 +545,14 @@ playthrough_secure_dir() {
     # Fixing it quietly would leave the operator believing it had always
     # been 0700.
     local previous
-    previous="$(stat -Lc '%a' -- "${path}" 2>/dev/null || true)"
-    if ! chmod "${mode}" -- "${path}"; then
+    previous="$("${PLAYTHROUGH_UTIL_STAT}" -Lc '%a' -- "${path}" \
+        2>/dev/null || true)"
+    if ! "${PLAYTHROUGH_UTIL_CHMOD}" "${mode}" -- "${path}"; then
         playthrough_die "cannot chmod ${mode} ${label} '${path}'"
         return 1
     fi
-    actual="$(stat -Lc '%a' -- "${path}" 2>/dev/null || true)"
+    actual="$("${PLAYTHROUGH_UTIL_STAT}" -Lc '%a' -- "${path}" \
+        2>/dev/null || true)"
     if [ "${actual}" != "${mode}" ]; then
         playthrough_die "${label} '${path}' is mode" \
             "'${actual:-unknown}' after chmod ${mode}, not ${mode}"
@@ -416,7 +608,15 @@ playthrough_secure_file() {
         playthrough_die "playthrough_secure_file needs a path"
         return 1
     fi
-    dir="$(dirname -- "${path}")"
+    # The parent is derived with bash's own parameter expansion rather
+    # than by calling `dirname`: this value is handed straight to
+    # playthrough_secure_dir, so a substituted `dirname` on the inherited
+    # PATH could point the mode-0700 adoption at a directory of its own
+    # choosing.  Nothing outside the shell is involved in computing it.
+    case "${path}" in
+        */*) dir="${path%/*}"; [ -n "${dir}" ] || dir="/" ;;
+        *) dir="." ;;
+    esac
     playthrough_secure_dir "${dir}" 700 \
         "the directory for ${label}" || return 1
     if [ -L "${path}" ]; then
@@ -442,28 +642,25 @@ playthrough_secure_file() {
             "while it was being created; refusing to write to it"
         return 1
     fi
-    if command -v stat >/dev/null 2>&1; then
-        kind="$(stat -Lc '%F' -- "${path}" 2>/dev/null || true)"
-        case "${kind}" in
-            "regular file"|"regular empty file") ;;
-            *)
-                playthrough_die "${label} '${path}' is a" \
-                    "${kind:-unreadable path}, not a regular file"
-                return 1
-                ;;
-        esac
-        uid="${PLAYTHROUGH_UID:-$(_playthrough_euid)}"
-        owner="$(stat -Lc '%u' -- "${path}" 2>/dev/null || true)"
-        if [ "${owner}" != "${uid}" ]; then
-            playthrough_die "${label} '${path}' is owned by uid" \
-                "'${owner:-unknown}', not by uid ${uid}"
+    kind="$("${PLAYTHROUGH_UTIL_STAT}" -Lc '%F' -- "${path}" \
+        2>/dev/null || true)"
+    case "${kind}" in
+        "regular file"|"regular empty file") ;;
+        *)
+            playthrough_die "${label} '${path}' is a" \
+                "${kind:-unreadable path}, not a regular file"
             return 1
-        fi
-    elif [ ! -f "${path}" ]; then
-        playthrough_die "${label} '${path}' is not a regular file"
+            ;;
+    esac
+    uid="${PLAYTHROUGH_UID:-$(_playthrough_euid)}"
+    owner="$("${PLAYTHROUGH_UTIL_STAT}" -Lc '%u' -- "${path}" \
+        2>/dev/null || true)"
+    if [ "${owner}" != "${uid}" ]; then
+        playthrough_die "${label} '${path}' is owned by uid" \
+            "'${owner:-unknown}', not by uid ${uid}"
         return 1
     fi
-    if ! chmod "${mode}" -- "${path}"; then
+    if ! "${PLAYTHROUGH_UTIL_CHMOD}" "${mode}" -- "${path}"; then
         playthrough_die "cannot chmod ${mode} ${label} '${path}'"
         return 1
     fi
@@ -511,33 +708,31 @@ playthrough_verify_executable() {
         playthrough_warn "no path given for ${label}"
         return 1
     fi
+    # THE CHECK'S OWN TOOLS FIRST.  `stat` and `readlink` are what this
+    # function is made of, so a run that cannot call them has not
+    # verified anything -- and this used to answer that case with
+    # `return 0`, which told every caller the executable had been
+    # cleared for third-party ownership when nothing had been read at
+    # all.  The bootstrap resolves both from fixed system directories
+    # rather than from PATH, so a thin PATH no longer reaches this
+    # branch; if they are genuinely absent the answer is a refusal.
+    playthrough_assert_utilities \
+        "verifying ${label} '${path}'" || return 1
     local real
-    real="$(readlink -f -- "${path}" 2>/dev/null || true)"
+    real="$("${PLAYTHROUGH_UTIL_READLINK}" -f -- "${path}" \
+        2>/dev/null || true)"
     if [ -z "${real}" ] || [ ! -f "${real}" ] || [ ! -x "${real}" ]; then
         playthrough_warn "${label} '${path}' is not an executable" \
             "regular file"
         return 1
     fi
-    # `stat` IS THE CHECK, and its absence is an inability to verify
-    # rather than a failed verification.  This file is SOURCED by every
-    # stage, including on a PATH stripped down to bash itself, and
-    # refusing there would make the whole contract unavailable on a host
-    # where nothing is wrong -- the same rule playthrough_secure_dir
-    # applies, for the same reason.  coreutils ships stat everywhere
-    # this pipeline runs, so the warning is a diagnostic for a broken
-    # PATH and never a supported mode of operation.
-    if ! command -v stat >/dev/null 2>&1; then
-        playthrough_warn "stat is not on PATH (coreutils), so" \
-            "${label} '${path}' could not be checked for third-party" \
-            "ownership or group- and world-writability.  Install" \
-            "coreutils before capturing a session."
-        return 0
-    fi
     local entry="${real}"
     local perm owner
     while : ; do
-        perm="$(stat -c '%a' -- "${entry}" 2>/dev/null || true)"
-        owner="$(stat -c '%u' -- "${entry}" 2>/dev/null || true)"
+        perm="$("${PLAYTHROUGH_UTIL_STAT}" -c '%a' -- "${entry}" \
+            2>/dev/null || true)"
+        owner="$("${PLAYTHROUGH_UTIL_STAT}" -c '%u' -- "${entry}" \
+            2>/dev/null || true)"
         if [ -z "${perm}" ] || [ -z "${owner}" ]; then
             playthrough_warn "cannot stat '${entry}' while verifying" \
                 "${label}"
@@ -573,8 +768,12 @@ playthrough_assert_inside() {
     local root="${2-}"
     local label="${3:-path}"
     local real_path real_root
-    real_path="$(readlink -m -- "${path}" 2>/dev/null || true)"
-    real_root="$(readlink -m -- "${root}" 2>/dev/null || true)"
+    playthrough_assert_utilities \
+        "resolving ${label} '${path}'" || return 1
+    real_path="$("${PLAYTHROUGH_UTIL_READLINK}" -m -- "${path}" \
+        2>/dev/null || true)"
+    real_root="$("${PLAYTHROUGH_UTIL_READLINK}" -m -- "${root}" \
+        2>/dev/null || true)"
     if [ -z "${real_path}" ] || [ -z "${real_root}" ]; then
         playthrough_die "cannot resolve ${label} '${path}' against" \
             "'${root}'"
@@ -1427,6 +1626,7 @@ playthrough_assert_video_driver() {
 #
 #   PLAYTHROUGH_TRUST_BYPASS_VARS  every variable that relaxes a check
 #   PLAYTHROUGH_TRUST_BYPASSES     those of them currently active
+#   PLAYTHROUGH_TRUST_UNVERIFIED   security checks that could not run
 #   PLAYTHROUGH_TRUST_STATE        trusted | diagnostic
 #
 # and two consumers act on it without discretion: launch_game.sh
@@ -1513,7 +1713,17 @@ playthrough_trust_refresh() {
         esac
     done
     export PLAYTHROUGH_TRUST_BYPASSES="${active}"
-    if [ -n "${active}" ]; then
+    export PLAYTHROUGH_TRUST_UNVERIFIED="${PLAYTHROUGH_TRUST_UNVERIFIED-}"
+    # THE SECOND INPUT, and it is not a bypass.  A bypass is somebody
+    # deciding to proceed without a check; this is a check that COULD NOT
+    # BE PERFORMED -- no `stat` to read an owner with, a utility owned by
+    # a third account -- and the two used to be treated differently:
+    # the first held the state at diagnostic while the second warned and
+    # left it at "trusted".  An inability to verify is not a
+    # verification, so it lands in the same state a bypass does, and
+    # playthrough_assert_trusted refuses the launch and the capture on
+    # either.
+    if [ -n "${active}" ] || [ -n "${PLAYTHROUGH_TRUST_UNVERIFIED}" ]; then
         export PLAYTHROUGH_TRUST_STATE="diagnostic"
         return 1
     fi
@@ -1533,6 +1743,13 @@ playthrough_trust_explain() {
         playthrough_warn "${name}=${!name-} is set: $(
             playthrough_trust_reason "${name}")"
     done
+    if [ -n "${PLAYTHROUGH_TRUST_UNVERIFIED-}" ]; then
+        playthrough_warn "a security check could not be performed:" \
+            "${PLAYTHROUGH_TRUST_UNVERIFIED}.  This is reported as a" \
+            "trust state rather than only as a warning, because the" \
+            "answer 'not checked' has to reach the stages that did not" \
+            "make the call."
+    fi
     return 1
 }
 
@@ -1547,8 +1764,12 @@ playthrough_assert_trusted() {
         return 0
     fi
     playthrough_trust_explain
+    local why="${PLAYTHROUGH_TRUST_BYPASSES// /, }"
+    if [ -n "${PLAYTHROUGH_TRUST_UNVERIFIED-}" ]; then
+        why="${why}${why:+; }${PLAYTHROUGH_TRUST_UNVERIFIED}"
+    fi
     playthrough_die "refusing ${context} while the trust state is" \
-        "diagnostic (${PLAYTHROUGH_TRUST_BYPASSES// /, }).  Evidence" \
+        "diagnostic (${why}).  Evidence" \
         "produced under a relaxed check is not evidence: unset the" \
         "variable(s) above and fix what each one was hiding, or keep" \
         "diagnosing with PLAYTHROUGH_CAPTURE_MODE=diagnostic, whose" \
@@ -1585,6 +1806,7 @@ sha256sum|stat|timeout|id|realpath|cut|cp|mv|rm|wc|dirname|basename|\
 cat|ls|sort|touch|pwd|date)
             printf '%s\n' "coreutils" ;;
         flock) printf '%s\n' "util-linux" ;;
+        git) printf '%s\n' "git" ;;
         xauth) printf '%s\n' "xauth" ;;
         grep) printf '%s\n' "grep" ;;
         awk) printf '%s\n' "mawk or gawk" ;;
@@ -2862,6 +3084,8 @@ playthrough_env_summary() {
         "PLAYTHROUGH_TRUST_STATE" "${PLAYTHROUGH_TRUST_STATE}"
         "PLAYTHROUGH_TRUST_BYPASSES"
         "${PLAYTHROUGH_TRUST_BYPASSES:-<none>}"
+        "PLAYTHROUGH_TRUST_UNVERIFIED"
+        "${PLAYTHROUGH_TRUST_UNVERIFIED:-<none>}"
     )
     printf '%s\n' "playthrough environment contract" || return 1
     # EVERY VALUE GOES THROUGH playthrough_redact, for the same reason

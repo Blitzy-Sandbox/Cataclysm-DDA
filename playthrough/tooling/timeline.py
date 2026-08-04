@@ -189,8 +189,8 @@ import tempfile
 import time
 
 from dataclasses import dataclass
-from typing import (Any, Dict, Iterable, List, NamedTuple, Optional,
-                    Sequence, Tuple)
+from typing import (Any, Dict, Iterable, List, Mapping, NamedTuple,
+                    Optional, Sequence, Tuple)
 
 # Set BEFORE the sibling import below, which is the only import here
 # that can write into the repository working tree.  env.sh exports
@@ -2888,6 +2888,214 @@ def file_digest(path: str) -> str:
         raise TimelineError(
             "cannot read %s to attest it: %s" % (path, err)) from err
     return digest.hexdigest()
+
+
+# ---------------------------------------------------------------------
+# GENERATION JOURNALS AND GENERATION MANIFESTS
+#
+# Shared by the three producers downstream of this module -- the
+# transitions, the movie and the pair of transcripts -- because the
+# review found the same defect in all three and one implementation is
+# the only way they can be fixed the same way.
+#
+# THE DEFECT.  Each of them published SEVERAL artifacts that only mean
+# anything together: a transitions directory whose group set has to match
+# the flags in one timeline; a concat list and the movie encoded from it;
+# an SRT and the Markdown transcript beside it.  Each publication is
+# atomic on its own, and each producer said so -- but a set of atomic
+# renames is not an atomic set.  An interruption between two of them left
+# a MIXED GENERATION on disk, permanently and undetectably: two files,
+# each internally valid, describing different sessions.  Worse, a stale
+# survivor is structurally indistinguishable from a fresh one, so a later
+# stage would accept it and every count would still tally.
+#
+# THE TWO PIECES.
+#
+#   * A GENERATION JOURNAL, in the private scratch directory OUTSIDE the
+#     working tree (a journal is machinery, not evidence, and
+#     .gitignore's terminal negation would make anything inside
+#     playthrough/ committable).  It names every target and the digest
+#     each one is about to carry, and it is written durably BEFORE the
+#     first rename and cleared AFTER the last verified one.  Its presence
+#     at startup is therefore proof that a publication was interrupted,
+#     and its contents say exactly which files should now hold what.
+#   * A GENERATION MANIFEST, INSIDE the tree beside the artifacts, which
+#     is committed with them.  It binds the outputs to the timeline they
+#     were computed from -- by that document's own digest -- and to their
+#     own sources and bytes.  That is what lets the NEXT stage refuse a
+#     stale generation instead of accepting it: the manifest says which
+#     timeline these bytes belong to, and a digest is not a matter of
+#     opinion.
+#
+# Neither carries a timestamp, a host name or an absolute path.  Every
+# stage in this pipeline is deterministic for a given timeline, so a
+# re-run must produce byte-identical files -- including these -- or a
+# committed tree would churn on every render.
+# ---------------------------------------------------------------------
+
+GENERATION_JOURNAL_SUFFIX = ".generation.json"
+
+# The schema version of both records.  Bump it when a field's MEANING
+# changes: a consumer that cannot interpret a journal must refuse it
+# rather than half-read it, exactly as session.py refuses a journal from
+# an older version of its own schema.
+GENERATION_VERSION = 1
+
+
+def generation_journal_path(name: str,
+                            root: Optional[str] = None) -> str:
+    """Return the interrupted-publication journal for one stage."""
+    if not isinstance(name, str) or not name.strip():
+        raise TimelineError("the generation name must be a bare name")
+    if os.sep in name or (os.altsep and os.altsep in name) \
+            or name in (".", "..") or "\x00" in name:
+        raise TimelineError(
+            "the generation name %r must be a bare name, not a path"
+            % name)
+    return os.path.join(scratch_dir(root),
+                        name + GENERATION_JOURNAL_SUFFIX)
+
+
+def write_generation_journal(name: str, record: Mapping[str, Any],
+                             root: Optional[str] = None) -> str:
+    """Record a publication about to happen, durably.  Returns the path.
+
+    Written and fsynced before the first rename, so an interruption
+    anywhere in the switch leaves a description of what the tree should
+    hold rather than a set of files nobody can classify.
+    """
+    path = generation_journal_path(name, root)
+    payload = json.dumps(
+        dict(record), ensure_ascii=False, sort_keys=True,
+        indent=None) + "\n"
+    descriptor = os.open(
+        path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC | os.O_CLOEXEC,
+        0o600)
+    try:
+        data = payload.encode("utf-8")
+        written = os.write(descriptor, data)
+        if written != len(data):
+            raise TimelineError(
+                "only %d of %d bytes of the %s generation journal "
+                "reached %s" % (written, len(data), name, path))
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    return path
+
+
+def read_generation_journal(name: str, root: Optional[str] = None,
+                            ) -> Optional[Dict[str, Any]]:
+    """Return the outstanding publication record for one stage, or None.
+
+    A journal that will not parse is a FAULT rather than an absence: it
+    says a publication was interrupted and says nothing usable about
+    which, and guessing is what this whole facility exists to avoid.
+    """
+    path = generation_journal_path(name, root)
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            text = handle.read()
+    except FileNotFoundError:
+        return None
+    except OSError as err:
+        raise TimelineError(
+            "cannot read the %s generation journal %s: %s.  It records "
+            "a publication that may be half-finished, so it is not "
+            "ignored" % (name, path, err)) from err
+    if not text.strip():
+        return None
+    try:
+        record = json.loads(text)
+    except ValueError as err:
+        raise TimelineError(
+            "the %s generation journal %s is not valid JSON (%s).  "
+            "Establish what is on disk and remove it deliberately"
+            % (name, path, err)) from err
+    if not isinstance(record, dict):
+        raise TimelineError(
+            "the %s generation journal %s holds a %s, not a record"
+            % (name, path, type(record).__name__))
+    return record
+
+
+def clear_generation_journal(name: str,
+                             root: Optional[str] = None) -> None:
+    """Remove a journal once every target it names is verified."""
+    path = generation_journal_path(name, root)
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        return
+    except OSError as err:
+        raise TimelineError(
+            "could not clear the %s generation journal %s: %s.  The "
+            "next run would report a publication that has completed"
+            % (name, path, err)) from err
+    try:
+        fsync_directory(os.path.dirname(path))
+    except TimelineError:
+        # The unlink itself is what matters; a filesystem that will not
+        # flush the directory has not resurrected the file.
+        pass
+
+
+def generation_journal_problems(name: str,
+                                root: Optional[str] = None) -> List[str]:
+    """Report a publication that was interrupted.  Read-only.
+
+    Empty means either no journal or a journal whose every target already
+    carries the digest it names -- which is the state after a switch that
+    completed but was killed before the journal was cleared, and is not a
+    fault.  Anything else is a MIXED GENERATION, named file by file, with
+    the digest that was expected and the one that is there.
+    """
+    record = read_generation_journal(name, root)
+    if record is None:
+        return []
+    if record.get("version") != GENERATION_VERSION:
+        return ["the %s generation journal is version %r, which this "
+                "module cannot interpret; establish what is on disk and "
+                "remove it deliberately"
+                % (name, record.get("version"))]
+    targets = record.get("targets")
+    if not isinstance(targets, list) or not targets:
+        return ["the %s generation journal names no targets" % name]
+    problems = []
+    for target in targets:
+        if not isinstance(target, dict):
+            problems.append(
+                "the %s generation journal holds a malformed target "
+                "entry" % name)
+            continue
+        path = target.get("path")
+        expected = target.get("sha256")
+        if not isinstance(path, str) or not isinstance(expected, str):
+            problems.append(
+                "the %s generation journal holds a target with no path "
+                "or no digest" % name)
+            continue
+        absolute = os.path.join(approved_root(root), os.pardir, path) \
+            if not os.path.isabs(path) else path
+        absolute = os.path.normpath(absolute)
+        if not os.path.exists(absolute):
+            problems.append(
+                "%s was to be published by an interrupted %s run and is "
+                "not there" % (path, name))
+            continue
+        if os.path.isdir(absolute):
+            # A directory generation is verified by its own manifest,
+            # which the producer publishes inside it; the journal only
+            # records that the switch was attempted.
+            continue
+        found = file_digest(absolute)
+        if found != expected:
+            problems.append(
+                "%s carries %s but the interrupted %s run was "
+                "publishing %s, so the generation on disk is MIXED: "
+                "some of these files are from one run and some from "
+                "another" % (path, found[:16], name, expected[:16]))
+    return problems
 
 
 def count_manifest_lines(path: str) -> int:

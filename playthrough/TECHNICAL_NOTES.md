@@ -1374,3 +1374,142 @@ dead weight.
   are never at a published path and a later run removes them; what no
   interruption can do is publish, because a published path is only ever
   reached by renaming something that passed.
+
+## The commit identity, and why nothing here configures it
+
+Code review found repository-local `user.name` and `user.email` empty and
+asked for "the required local identity through the platform-approved
+mechanism". Those are two different things on this host, and the difference is
+worth writing down because the obvious reading of that sentence is the one
+thing that must not be done.
+
+**The platform-approved mechanism is the ambient identity, not a repository
+setting.** Every commit on this branch is required to be authored and committed
+as `Blitzy Agent <agent@blitzy.com>`, and the platform supplies exactly that
+through git's own configuration outside this checkout. Measured, read-only:
+
+    $ git var GIT_AUTHOR_IDENT
+    Blitzy Agent <agent@blitzy.com> 1785867294 +0000
+    $ git var GIT_COMMITTER_IDENT
+    Blitzy Agent <agent@blitzy.com> 1785867294 +0000
+
+So the identity was never missing. What was missing was a *repository-local
+copy* of it — and writing that copy is forbidden here, because a script that
+sets `user.name` and `user.email` can set them to anything, and a host whose
+whole rule is "one fixed identity" cannot distinguish a helpful copy from an
+override. Every commit in this history already carries the right name, which is
+the property the review was actually after.
+
+`playthrough/tooling/commit_artifacts.sh` therefore **asserts** the identity
+and never writes one. `git var GIT_AUTHOR_IDENT` is the right question to ask
+because it is git answering with the same resolution order it will use when it
+writes the commit — the `GIT_AUTHOR_*` environment, then `user.*` from any
+configuration scope, then a derivation from the passwd entry — and it exits 128
+rather than derive one when it cannot get an address. Asking git cannot
+disagree with the commit that follows it, which reading a configuration file
+could. Three things follow:
+
+- An identity that does not resolve is a **refusal** (exit 3), and the message
+  names the platform's own mechanism as the remedy rather than `git config`.
+- `Name <>` is refused too. git resolves it successfully; it identifies nobody.
+- The author and the committer must be the **same person**. A split attribution
+  is invisible in `git log` without a format string, and the history is part of
+  this evidence.
+
+`test_commit_artifacts.py` holds the constraint against the source as well as
+against a run: no non-comment line may invoke `git config` at all, not even to
+read, and a whole lifecycle in a sandbox repository must leave that
+repository's `.git/config` byte-identical. The assertion is made by reading the
+file rather than by running the command whose absence is the point.
+
+## The two checkpoints, and what each one refuses to commit over
+
+The requirement is not merely that the artifacts end up committed; it is *when*.
+One commit immediately after the survivor is created, a separate one after she
+has saved and quit. A single commit taken at the end satisfies "everything is
+committed" and still fails, because the history then cannot show that the save
+existed before the session was played — which is the shape a fabricated session
+would have. The review found exactly that: one commit bundling the first frame,
+the last frame, both films and the final save.
+
+    playthrough/tooling/commit_artifacts.sh creation   # after creation
+    playthrough/tooling/commit_artifacts.sh final      # after Save & Quit
+    playthrough/tooling/commit_artifacts.sh status     # read-only
+
+Each commit carries a `Playthrough-Checkpoint: <name>` trailer, and that
+trailer is the lifecycle's entire persistent state — `final` finds the
+`creation` commit by searching for it with `git log --grep`, which anchors `^`
+and `$` at line boundaries within the message, so prose mentioning the trailer
+is not mistaken for it. There is no side file to fall out of step with the
+history it describes.
+
+Both checkpoints run the **same** gates, because a checkpoint with a weaker
+gate is the one somebody takes when the other refuses:
+
+| Gate | What it refuses |
+| --- | --- |
+| identity | no resolvable identity; `Name <>`; author ≠ committer |
+| repository | a different checkout; detached HEAD; no history; a rebase, merge, cherry-pick, revert or bisect in progress |
+| scope | staged changes outside `.gitignore`, `.gitattributes`, `playthrough/` — a commit publishes the whole index, so those would ride along |
+| hygiene | `__pycache__`, `*.pyc`, `blitzy_adhoc_test_*`, a retained or quarantined film |
+| save | not exactly one world; no `master.gsav`; not exactly one survivor; `lastworld.json` missing, unreadable, or naming a world or character the save on disk does not |
+| evidence | `manifest.py verify --require-frames` reporting anything; frames ≠ rows; a missing or short observation sidecar |
+| no-cheating | a `keybindings.json` naming `debug`, `debug_mode` or `debug_hour_timer` |
+| lifecycle (`final` only) | no `creation` checkpoint; a record that has not grown since it |
+
+Four of those are worth explaining, because each exists for a failure that is
+otherwise silent.
+
+**The hygiene gate exists because of the negation.** `.gitignore` ends with
+`!/playthrough/**`, without which the engine's own `#<name>.sav` and `*.log`
+files are matched by `\#*`, `*.log` and `debug.log` and skipped by `git add`
+with exit status 0. The negation is load-bearing — and its consequence is that
+inside that one tree the repository's ignores do not apply. `__pycache__` is
+committable there. So is a `*.pyc`, an ad-hoc validation file, and the
+`.cata-play-cc.previous.mp4` / `.cata-play-cc.rejected.mp4` pair the caption mux
+uses around its atomic publication. None of them is evidence, and a checkpoint
+that archived them has to be undone by hand.
+
+**The same negation is why the commit is verified by name afterwards.** Counting
+staged paths cannot detect the negation being lost, because `git add` reports
+success either way and every count still tallies. So after committing, the
+checkpoint asks git for the manifest, the world save and the character save
+*individually* with `git ls-files --error-unmatch`, and compares the tracked
+frame count against the count on disk. `test_commit_artifacts.py` removes the
+negation line from a sandbox `.gitignore` and asserts the checkpoint fails with
+exit 7 naming the missing rule.
+
+**The save gate can name the survivor because the engine writes it down.**
+`<userdir>/config/lastworld.json` carries the world name and the *decoded*
+character name (`src/main_menu.cpp:1080-1083`, `src/game_io.cpp:763-766`), while
+the save file carries the same name base64-encoded with `+` and `-` as the last
+two alphabet characters (`src/catacharset.cpp:215`). Two spellings of one fact,
+so they can be held against each other: `#RGVscGhpbmUgT3VlbGxldHRl.sav` is
+`Delphine Ouellette` and nothing else.
+
+**The evidence gate delegates rather than duplicates.** `manifest.py verify
+--require-frames` already owns the six-field schema, the 1..n sequence, the
+voice gate, the clock-honesty gate and the row-to-capture check, so the
+checkpoint runs it and passes its stderr through unchanged. What the checkpoint
+adds is the *other* direction — an extra capture that no row accounts for passes
+manifest.py's check and still breaks the invariant — plus the observation
+sidecar count, which is the record of what was actually read off each frame.
+
+Two operational properties, both deliberate:
+
+- **A re-run is safe and never manufactures an empty commit.** Nothing pending
+  means exit 0 with `COMMITTED=no`. An empty commit per invocation would fill
+  the history with checkpoints that record no change and would make the trailer
+  search ambiguous.
+- **A second `creation` over further changes is refused**, for the same reason:
+  the trailer would match two commits and the lifecycle would stop naming a
+  single moment. Those changes belong to `final` or to an ordinary commit.
+
+Staging is three pathspecs — `git add -A -- .gitignore .gitattributes
+playthrough` — which is also the batching. Handing git three arguments and
+letting it walk the tree means several hundred frames never become several
+hundred argv entries, so the argument-list limit is not approached at any
+session length. Expanding the glob in the shell first would be the version of
+"batching" that has a limit to respect. Nothing here rewrites history, amends,
+forces, pushes, tags, resets or cleans.
+

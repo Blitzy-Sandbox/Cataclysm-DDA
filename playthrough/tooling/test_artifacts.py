@@ -72,7 +72,9 @@ import unittest
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
 import make_srt                                        # noqa: E402
+import make_transitions                                # noqa: E402
 import manifest                                        # noqa: E402
+import render_movie                                    # noqa: E402
 import seed_options                                    # noqa: E402
 import session                                         # noqa: E402
 import timeline                                        # noqa: E402
@@ -92,6 +94,12 @@ TRANSCRIPT_MD = os.path.join(PLAYTHROUGH, "transcript.md")
 USERDIR = os.path.join(PLAYTHROUGH, "userdir")
 CONFIG_DIR = os.path.join(USERDIR, "config")
 OPTIONS_JSON = os.path.join(CONFIG_DIR, "options.json")
+BUILD_DIR = os.path.join(PLAYTHROUGH, "build")
+CONCAT_LIST = os.path.join(BUILD_DIR, "concat.txt")
+TRANSITIONS_DIR = os.path.join(BUILD_DIR, "transitions")
+MOVIE_MANIFEST = os.path.join(BUILD_DIR, "movie.json")
+TRANSCRIPT_MANIFEST = os.path.join(BUILD_DIR, "transcript.json")
+MOVIE = os.path.join(PLAYTHROUGH, "cata-play.mp4")
 
 # The frame file name, from the producer rather than restated here.
 FRAME_NAME_RE = re.compile(r"^frame_(\d{5})\.png$")
@@ -147,8 +155,12 @@ def _fingerprint():
     """
     prints = {}
     paths = [MANIFEST, TIMELINE, TRANSCRIPT_SRT, TRANSCRIPT_MD,
-             os.path.join(PLAYTHROUGH, "build", "observations.jsonl"),
-             os.path.join(PLAYTHROUGH, "build", "frame_dates.jsonl")]
+             CONCAT_LIST, MOVIE_MANIFEST, TRANSCRIPT_MANIFEST, MOVIE,
+             os.path.join(BUILD_DIR, "observations.jsonl"),
+             os.path.join(BUILD_DIR, "frame_dates.jsonl")]
+    if os.path.isdir(TRANSITIONS_DIR):
+        paths.extend(os.path.join(TRANSITIONS_DIR, name)
+                     for name in os.listdir(TRANSITIONS_DIR))
     if os.path.isdir(FRAMES_DIR):
         paths.extend(os.path.join(FRAMES_DIR, name)
                      for name in os.listdir(FRAMES_DIR))
@@ -709,36 +721,39 @@ class TestTheTranscriptContract(ArtifactFixture):
             with self.subTest(line=number):
                 self.assertEqual(line, line.rstrip())
 
-    def test_every_cue_is_within_the_caption_geometry(self):
-        # THE CUE CONTRACT: at most two lines of about forty-two
-        # columns.  A caption track is read at the speed the film plays,
-        # so a cue of five or seventeen lines is not read at all -- it
-        # covers the picture it is captioning.
+    def test_every_cue_line_is_wrapped_to_the_caption_width(self):
+        # THE CUE CONTRACT: wrapped to about forty-two columns, and NOT
+        # capped in line count.  The width keeps a line inside the
+        # picture; the absence of a cap is what makes the next test
+        # possible.
         for cue in self.cues:
             with self.subTest(frame=cue.frame):
                 self.assertGreaterEqual(len(cue.lines), 1)
-                self.assertLessEqual(len(cue.lines),
-                                     make_srt.CUE_MAX_LINES)
                 for line in cue.lines:
                     self.assertLessEqual(len(line),
                                          make_srt.CUE_LINE_WIDTH)
 
-    def test_every_cue_says_the_sentence_or_marks_the_short_form(self):
-        # NOTHING IS EVER CUT MID-WORD OR CUT SILENTLY.  A caption is
-        # either the whole sentence or a word-boundary prefix of it that
-        # ends in the elision mark -- and the sentence itself is in the
-        # Markdown either way, which the next test proves.
-        mark = make_srt.CUE_ELISION.strip()
+    def test_every_cue_carries_the_whole_sentence(self):
+        # THE DEFECT THIS TEST EXISTS FOR IS A REAL ONE.  A caption used
+        # to be truncated to two lines of forty-two columns with an
+        # elision mark, which cut the REASON off the end of every long
+        # sentence -- and the reason is the requirement: a viewer with the
+        # caption track selected is the audience for the in-character
+        # record, and "...so I go at first light" was exactly the clause
+        # that got dropped.  A soft track costs nothing per byte, so the
+        # whole sentence goes in every cue and the film says what the
+        # transcript says.
         for cue in self.cues:
             with self.subTest(frame=cue.frame):
-                shown = " ".join(cue.lines).split()
-                spoken = cue.commentary.split()
-                if not cue.abridged:
-                    self.assertEqual(shown, spoken)
-                    continue
-                self.assertEqual(shown[-1], mark)
-                self.assertEqual(shown[:-1], spoken[:len(shown) - 1])
-                self.assertLess(len(shown) - 1, len(spoken))
+                self.assertEqual(
+                    " ".join(cue.lines).split(), cue.commentary.split(),
+                    msg="the cue is the sentence, word for word")
+        self.assertFalse(
+            hasattr(make_srt, "CUE_MAX_LINES"),
+            msg=("and there is no line cap left to reintroduce it: a "
+                 "constant nobody reads is a truncation waiting to "
+                 "happen"))
+        self.assertFalse(hasattr(make_srt, "CUE_ELISION"))
 
     def test_the_markdown_carries_every_sentence_entire(self):
         # Where the reason for an action always is, whatever its caption
@@ -780,6 +795,134 @@ class TestTheTranscriptContract(ArtifactFixture):
             make_srt.entry_problems(
                 self.entries, make_srt.transition_gap(self.document)),
             [])
+
+
+class TestTheRenderContract(ArtifactFixture):
+    """The concat list, the movie and the provenance binding them.
+
+    THE THREE DEFECTS THIS CLASS EXISTS FOR ARE REAL ONES, and each was
+    invisible to every other artifact check:
+
+      * The concat list was published BEFORE the encode, so a failed or
+        interrupted render left a NEW list beside an OLD movie -- two
+        internally valid files describing different sessions, with nothing
+        on disk recording that they disagreed.
+      * The transition group set had NO PROVENANCE at all: the renderer
+        accepted a group because twelve files with the right names and the
+        right pixel dimensions existed, and the same twelve names exist at
+        the same geometry in every session that flags a given frame.
+      * Durations were written stripped of trailing zeros, so the list
+        spelled the clamp bounds "0.25" and "10.0" while timeline.json,
+        this suite and the report all spell them 0.250 and 10.000.
+
+    So the committed artifacts are now audited for the provenance that
+    makes them attributable, not merely for being well formed.
+    """
+
+    def setUp(self):
+        if not os.path.isfile(CONCAT_LIST):
+            self.skipTest("no rendered generation in this checkout")
+
+    def flagged_frames(self):
+        """Return every frame index the timeline flags, in order."""
+        return [entry["frame"] for entry in self.entries
+                if entry.get("transition_after")]
+
+    def test_the_list_has_one_more_file_line_than_durations(self):
+        files, durations = render_movie.concat_counts(
+            _read_text(CONCAT_LIST))
+        self.assertEqual(
+            files, durations + 1,
+            msg=("the final file line is repeated with no duration; "
+                 "without it the last image's duration does not take "
+                 "effect and the container truncates"))
+
+    def test_the_list_regenerates_from_the_committed_timeline(self):
+        plan = render_movie.plan_render(self.document, None, TIMELINE)
+        self.assertEqual(render_movie.format_concat_list(plan),
+                         _read_text(CONCAT_LIST))
+
+    def test_a_captured_duration_is_written_at_millisecond_width(self):
+        widths = set()
+        for line in _read_text(CONCAT_LIST).splitlines():
+            if not line.startswith("duration "):
+                continue
+            widths.add(len(line.split(".", 1)[1]))
+        self.assertEqual(
+            widths - {render_movie.DURATION_DECIMALS},
+            {render_movie.CAPTURE_DECIMALS} if widths else set(),
+            msg=("every duration is written at the resolution it was "
+                 "computed at -- three decimals for a clamped frame, six "
+                 "for a transition share -- and none is stripped"))
+
+    def test_the_clamp_bounds_are_spelled_as_the_timeline_spells_them(self):
+        text = _read_text(CONCAT_LIST)
+        durations = [entry["duration"] for entry in self.entries]
+        if any(abs(one - timeline.FLOOR) < 1e-9 for one in durations):
+            self.assertIn("duration 0.250", text)
+        if any(abs(one - timeline.CEIL) < 1e-9 for one in durations):
+            self.assertIn("duration 10.000", text)
+
+    def test_the_movie_manifest_binds_the_film_to_this_timeline(self):
+        if not os.path.isfile(MOVIE_MANIFEST):
+            self.skipTest("no movie generation manifest in this checkout")
+        record = json.loads(_read_text(MOVIE_MANIFEST))
+        self.assertEqual(record["version"], timeline.GENERATION_VERSION)
+        self.assertEqual(record["stage"], render_movie.LOCK_NAME)
+        self.assertEqual(record["timeline"]["sha256"],
+                         timeline.file_digest(TIMELINE))
+        self.assertEqual(record["concat_list"]["sha256"],
+                         timeline.file_digest(CONCAT_LIST))
+        self.assertEqual(record["movie"]["sha256"],
+                         timeline.file_digest(MOVIE))
+        self.assertEqual(record["capture_count"], len(self.entries))
+        self.assertEqual(record["group_count"],
+                         len(self.flagged_frames()))
+
+    def test_the_transition_groups_are_attributed_to_this_timeline(self):
+        flagged = self.flagged_frames()
+        if not flagged:
+            self.skipTest("the ceiling never engaged in this session")
+        self.assertEqual(
+            make_transitions.generation_manifest_problems(
+                TRANSITIONS_DIR, TIMELINE, flagged),
+            [], msg=("the group set must be attributable to the timeline "
+                     "being rendered, group index for group index"))
+
+    def test_the_two_generation_manifests_name_the_same_timeline(self):
+        for path in (MOVIE_MANIFEST, TRANSCRIPT_MANIFEST):
+            if not os.path.isfile(path):
+                self.skipTest("no %s in this checkout"
+                              % os.path.basename(path))
+        movie = json.loads(_read_text(MOVIE_MANIFEST))
+        transcript = json.loads(_read_text(TRANSCRIPT_MANIFEST))
+        self.assertEqual(
+            movie["timeline"]["sha256"],
+            transcript["timeline"]["sha256"],
+            msg=("the film and the caption track must be paced by ONE "
+                 "document, or a player sees cues from another session"))
+
+    def test_no_generation_manifest_carries_a_host_path(self):
+        for path in (MOVIE_MANIFEST, TRANSCRIPT_MANIFEST,
+                     make_transitions.generation_manifest_path(
+                         TRANSITIONS_DIR)):
+            if not os.path.isfile(path):
+                continue
+            with self.subTest(manifest=os.path.basename(path)):
+                text = _read_text(path)
+                self.assertNotIn(REPO_ROOT, text)
+                self.assertNotIn("timestamp", text)
+
+    def test_no_staging_file_survived_into_the_committed_tree(self):
+        # .gitignore re-includes everything under playthrough/, so a
+        # staging file that outlived its process would be committed as
+        # though it were the artifact.
+        for directory in (BUILD_DIR, PLAYTHROUGH):
+            for name in sorted(os.listdir(directory)):
+                with self.subTest(name=name):
+                    self.assertFalse(
+                        render_movie.is_staging_name(name),
+                        msg="%s is a staging leftover" % name)
 
 
 class TestTheUserdirContract(ArtifactFixture):

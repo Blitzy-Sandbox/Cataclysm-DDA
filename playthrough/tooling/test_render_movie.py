@@ -86,6 +86,12 @@ EXPECTED_SHARES = ["0.083333"] * 11 + ["0.083337"]
 
 SOURCE_NAME = "render_movie.py"
 
+# The card's typeface, named in the group set's generation manifest so the
+# provenance covers every input the imagery was composed from.  Resolved
+# from this checkout, which is where make_transitions.py reads it.
+_FONT_PATH = os.path.join(os.path.dirname(TOOLING), os.pardir,
+                          "data", "font", "Terminus.ttf")
+
 
 def _read(path, mode="r"):
     """Return a whole file, with its descriptor closed again."""
@@ -370,6 +376,38 @@ class RenderFixture(unittest.TestCase):
             paths.append(path)
         return paths
 
+    def attribute(self, frames):
+        """Publish a generation manifest for the groups on disk.
+
+        make_transitions.py writes this INSIDE the group set, binding the
+        groups to the timeline they were composed from, and the renderer
+        REQUIRES it: twelve files with the right names and the right pixel
+        dimensions are not evidence that they came from this session.  The
+        fixture therefore produces a well-formed generation rather than a
+        bare directory of PNGs, so what the tests exercise is the
+        production contract.
+        """
+        groups = [
+            mt.Group(index,
+                     os.path.join(self.frames, "frame_%05d.png" % index),
+                     os.path.join(self.frames,
+                                  "frame_%05d.png" % (index + 1)))
+            for index in sorted(frames)]
+        staged = {
+            group.frame: [
+                os.path.join(self.transitions,
+                             mt.TRANSITION_NAME_FORMAT % (group.frame,
+                                                          ordinal))
+                for ordinal in range(mt.FRAMES_PER_GROUP)]
+            for group in groups}
+        record = mt.build_generation_manifest(
+            groups, self.timeline_path, mt.expected_size(),
+            _FONT_PATH, staged)
+        with open(mt.generation_manifest_path(self.transitions), "w",
+                  encoding="utf-8") as handle:
+            handle.write(mt.generation_manifest_text(record))
+        return record
+
     def attest(self, count):
         """Write a manifest of `count` rows and describe it.
 
@@ -478,12 +516,23 @@ class RenderFixture(unittest.TestCase):
         return body
 
     def scene(self, durations=(0.25, 1.0, 5.0, 0.25), flags=()):
-        """Create the captures and groups a document needs."""
+        """Create the captures, the timeline and the groups.
+
+        The timeline FILE is written here because a group set is
+        attributed to a document by that document's digest, so the
+        provenance the renderer checks cannot be produced before the
+        timeline exists on disk.  A test that re-writes the same document
+        afterwards produces the same bytes and therefore the same digest.
+        """
         for index in range(1, len(durations) + 1):
             self.capture(index)
-        for index in flags:
-            self.group(index)
-        return self.document(durations, flags)
+        document = self.document(durations, flags)
+        if flags:
+            self.write_timeline(document)
+            for index in flags:
+                self.group(index)
+            self.attribute(flags)
+        return document
 
     def write_timeline(self, document):
         """Write a document to the fixture's timeline path."""
@@ -495,7 +544,7 @@ class RenderFixture(unittest.TestCase):
 
     def plan(self, document):
         """Plan a render inside the fixture's tree."""
-        return rm.plan_render(document, self.root)
+        return rm.plan_render(document, self.root, self.timeline_path)
 
     def main(self, argv):
         """Run the real command line, returning (status, out, err)."""
@@ -542,9 +591,9 @@ class TestTheTransitionSplit(RenderFixture):
         self.assertIn("Decimal(str(number))", SOURCE)
 
     def test_a_split_that_divides_exactly_has_no_remainder(self):
-        for count, expected in ((5, ["0.2"] * 5),
-                                (4, ["0.25"] * 4),
-                                (1, ["1.0"])):
+        for count, expected in ((5, ["0.200000"] * 5),
+                                (4, ["0.250000"] * 4),
+                                (1, ["1.000000"])):
             shares = rm.transition_durations(1.0, count)
             self.assertEqual(
                 [rm.format_duration(one) for one in shares], expected)
@@ -568,16 +617,56 @@ class TestTheTransitionSplit(RenderFixture):
         self.assertEqual(len(rm.transition_durations(1.0)),
                          mt.FRAMES_PER_GROUP)
 
-    def test_a_duration_is_formatted_without_trailing_zeros(self):
-        self.assertEqual(rm.format_duration(0.25), "0.25")
-        self.assertEqual(rm.format_duration(10.0), "10.0")
-        self.assertEqual(rm.format_duration(100.0), "100.0")
+    def test_a_share_is_written_at_the_width_it_is_computed_at(self):
+        """Microsecond width, fixed, never stripped.
+
+        THE DEFECT THIS REPLACES.  Durations used to be stripped of
+        trailing fractional zeros, so a captured frame's 0.25 s came out
+        as "0.25" and the ceiling as "10.0".  ffmpeg parses those
+        identically, but the committed concat list is EVIDENCE, and as
+        evidence it disagreed with every other artifact describing the
+        same numbers: timeline.json writes durations at three decimals and
+        the acceptance gate reads the clamp bounds as 0.250 and 10.000.
+        """
+        self.assertEqual(rm.format_duration(0.25), "0.250000")
+        self.assertEqual(rm.format_duration(10.0), "10.000000")
+        self.assertEqual(rm.format_duration(100.0), "100.000000")
         self.assertEqual(rm.format_duration(0.083333), "0.083333")
+        self.assertEqual(rm.format_duration(0.083337), "0.083337")
+
+    def test_a_capture_is_written_at_millisecond_width(self):
+        """The resolution timeline.py rounds a clamped duration to.
+
+        The two widths are not decoration: the width SAYS which kind of
+        duration a line carries, and each is the resolution its number
+        was actually computed at.
+        """
+        self.assertEqual(rm.format_capture_duration(0.25), "0.250")
+        self.assertEqual(rm.format_capture_duration(10.0), "10.000")
+        self.assertEqual(rm.format_capture_duration(1.0), "1.000")
+        self.assertEqual(rm.format_capture_duration(1.5), "1.500")
+        self.assertEqual(rm.CAPTURE_DECIMALS, 3)
+        self.assertEqual(rm.DURATION_DECIMALS, 6)
+
+    def test_the_width_is_chosen_from_the_entry_kind(self):
+        capture = rm.ConcatEntry(
+            "/a/frame_00001.png", "../frames/frame_00001.png", 0.25,
+            rm.KIND_CAPTURE, 1, rm.NO_ORDINAL)
+        share = rm.ConcatEntry(
+            "/a/trans_00001_00.png", "transitions/trans_00001_00.png",
+            0.25, rm.KIND_TRANSITION, 1, 0)
+        self.assertEqual(rm.format_entry_duration(capture), "0.250")
+        self.assertEqual(rm.format_entry_duration(share), "0.250000")
+        unknown = capture._replace(kind="something else")
+        with self.assertRaises(rm.RenderError):
+            rm.format_entry_duration(unknown)
 
     def test_a_duration_that_is_not_a_finite_number_is_refused(self):
         for value in ("x", None, float("nan"), float("inf"), -0.5):
             with self.assertRaises(rm.RenderError):
                 rm.format_duration(value)
+            with self.assertRaises(rm.RenderError):
+                rm.format_capture_duration(value)
 
 
 class TestPlanningTheRender(RenderFixture):
@@ -674,6 +763,82 @@ class TestPlanningTheRender(RenderFixture):
         with self.assertRaises(rm.RenderError):
             self.plan(document)
 
+    def test_a_group_set_with_no_provenance_is_refused(self):
+        """A NAME AND A SIZE ARE NOT EVIDENCE.
+
+        THE DEFECT THIS TEST EXISTS FOR IS A REAL ONE.  A group used to be
+        accepted because twelve files with the right names and the right
+        pixel dimensions existed -- and the same twelve names exist in
+        EVERY session that flags frame 2, at the same geometry.  So a group
+        composed from a different timeline was indistinguishable from the
+        right one, and the film would fade between captures the survivor
+        never saw in this session.
+        """
+        document = self.scene(flags=(2,))
+        os.unlink(mt.generation_manifest_path(self.transitions))
+        with self.assertRaises(rm.RenderError) as caught:
+            self.plan(document)
+        message = str(caught.exception)
+        self.assertIn("cannot be attributed", message)
+        self.assertIn("generation.json", message)
+
+    def test_a_group_set_from_another_timeline_is_refused(self):
+        document = self.scene(flags=(2,))
+        path = mt.generation_manifest_path(self.transitions)
+        record = json.loads(_read(path))
+        record["timeline"]["sha256"] = "0" * 64
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(mt.generation_manifest_text(record))
+        with self.assertRaises(rm.RenderError) as caught:
+            self.plan(document)
+        self.assertIn("composed from a timeline whose digest",
+                      str(caught.exception))
+
+    def test_a_stale_group_for_an_unflagged_index_is_refused(self):
+        """THE GLOBAL CHECK, and the reason it has to be global.
+
+        The per-entry check could only ever inspect the indices the
+        CURRENT timeline flags, so a group left behind for an index a
+        recomputed timeline no longer flags was never even looked at --
+        while verify_artifacts.sh, which globs the whole directory, counts
+        it.
+        """
+        self.scene(flags=(2,))
+        unflagged = self.document((0.25, 1.0, 5.0, 0.25))
+        self.write_timeline(unflagged)
+        # The groups on disk are still attributed to the FLAGGED document,
+        # so re-attribute them to this one: the only difference left is
+        # that the timeline no longer asks for them.
+        self.attribute((2,))
+        problems = mt.generation_manifest_problems(
+            self.transitions, self.timeline_path, [])
+        self.assertTrue(
+            any("does not flag" in one for one in problems),
+            msg=repr(problems))
+        self.assertTrue(
+            any("verify_artifacts.sh" in one for one in problems),
+            msg="and the message says who else would count it")
+
+    def test_a_group_frame_whose_pixels_changed_is_refused(self):
+        document = self.scene(flags=(2,))
+        victim = os.path.join(self.transitions, "trans_00002_00.png")
+        with open(victim, "ab") as handle:
+            handle.write(b"\x00")
+        with self.assertRaises(rm.RenderError) as caught:
+            self.plan(document)
+        self.assertIn("different pixels", str(caught.exception))
+
+    def test_an_unflagged_timeline_needs_no_group_provenance(self):
+        """There is no group set to attribute, so none is demanded.
+
+        The directory may legitimately not exist at all in a session where
+        the ceiling never engaged.
+        """
+        document = self.scene()
+        shutil.rmtree(self.transitions, ignore_errors=True)
+        plan = self.plan(document)
+        self.assertEqual(plan.group_count, 0)
+
     def test_a_short_group_is_refused(self):
         for index in (1, 2, 3):
             self.capture(index)
@@ -740,11 +905,11 @@ class TestTheConcatList(RenderFixture):
         self.assertEqual(
             rm.format_concat_list(plan).splitlines(),
             ["file '%s'" % self.relative("frames", "frame_00001.png"),
-             "duration 0.25",
+             "duration 0.250",
              "file '%s'" % self.relative("frames", "frame_00002.png"),
-             "duration 1.0",
+             "duration 1.000",
              "file '%s'" % self.relative("frames", "frame_00003.png"),
-             "duration 0.25",
+             "duration 0.250",
              # *** THE REPEATED FINAL ENTRY, with no duration after it.
              "file '%s'" % self.relative("frames", "frame_00003.png")])
 
@@ -1162,6 +1327,52 @@ class TestStagingAndPublication(RenderFixture):
         self.assertFalse(os.path.exists(staged))
         rm.clear_stale_staging(self.movie)
 
+    def test_the_list_is_staged_in_its_own_target_directory(self):
+        """LOAD-BEARING, not tidiness.
+
+        Every `file` entry is spelled relative to the LIST's directory,
+        because that is what ffmpeg's concat demuxer resolves it against.
+        Staged anywhere else, those entries would resolve somewhere else
+        or not at all -- so the encoder would have to be handed a
+        different list from the one committed, which is the defect this
+        module already fixed once.
+        """
+        plan = self.plan(self.scene())
+        target, staging, text = rm.stage_concat_list(
+            plan, self.concat, self.root)
+        self.addCleanup(lambda: os.path.exists(staging) and
+                        os.unlink(staging))
+        self.assertEqual(target, self.concat)
+        self.assertEqual(os.path.dirname(staging),
+                         os.path.dirname(self.concat))
+        self.assertTrue(rm.is_staging_name(os.path.basename(staging)))
+        self.assertEqual(_read(staging), text)
+        self.assertFalse(
+            os.path.exists(self.concat),
+            msg="staging publishes nothing on its own")
+
+    def test_a_staged_list_a_killed_run_left_behind_is_swept(self):
+        plan = self.plan(self.scene())
+        _, staging, _ = rm.stage_concat_list(plan, self.concat, self.root)
+        self.assertEqual(rm.clear_stale_staging(self.concat), [staging])
+        self.assertFalse(os.path.exists(staging))
+
+    def test_publishing_the_list_is_a_rename(self):
+        plan = self.plan(self.scene())
+        target, staging, text = rm.stage_concat_list(
+            plan, self.concat, self.root)
+        self.assertEqual(rm.publish_concat_list(staging, target), target)
+        self.assertEqual(_read(target), text)
+        self.assertFalse(os.path.exists(staging))
+
+    def test_the_manifest_lives_beside_the_list_it_describes(self):
+        self.assertEqual(
+            rm.generation_manifest_path(self.root),
+            os.path.join(self.root, "build", "movie.json"),
+            msg=("under the APPROVED root, not the render root -- the two "
+                 "are one directory apart and confusing them puts the "
+                 "manifest outside the committed tree"))
+
 
 class TestTheCommandLine(RenderFixture):
     """The status run_pipeline.sh reads, and what it leaves behind."""
@@ -1215,6 +1426,115 @@ class TestTheCommandLine(RenderFixture):
         self.assertEqual(_read(self.movie, "rb"), b"the previous film")
         self.assertIn("problem(s) found", err)
         self.assertEqual(rm.clear_stale_staging(self.movie), [])
+
+    def test_a_failed_render_publishes_NEITHER_file(self):
+        """THE DEFECT THIS TEST EXISTS FOR IS A REAL ONE.
+
+        The concat list used to be written and published BEFORE the lock
+        was taken and before a byte was encoded, so a failed or
+        interrupted encode left a NEW list beside an OLD movie -- each
+        file internally valid, the list describing a film that was never
+        made, and nothing on disk recording that they disagreed.
+        `ffprobe` on the movie and a read of the list then gave two
+        different answers about the same session, both looking
+        authoritative.
+        """
+        self.prepare(duration="4.000000")
+        with open(self.concat, "w", encoding="utf-8") as handle:
+            handle.write("file 'the previous list'\n")
+        with open(self.movie, "wb") as handle:
+            handle.write(b"the previous film")
+        status, _, err = self.main(self.arguments)
+        self.assertEqual(status, rm.EXIT_FAILED)
+        self.assertEqual(_read(self.concat), "file 'the previous list'\n")
+        self.assertEqual(_read(self.movie, "rb"), b"the previous film")
+        self.assertIn("NEITHER", err)
+        self.assertEqual(rm.clear_stale_staging(self.movie), [])
+        self.assertEqual(rm.clear_stale_staging(self.concat), [])
+        self.assertFalse(
+            os.path.exists(rm.generation_manifest_path(self.root)),
+            msg="and no manifest attests to a film that was not made")
+        self.assertFalse(
+            os.path.exists(timeline.generation_journal_path(
+                rm.LOCK_NAME, self.root)),
+            msg="nor a journal, because no switch was attempted")
+
+    def test_the_encoder_is_handed_the_staged_list(self):
+        """So the encoder's bytes and the committed bytes are one file.
+
+        The staged list sits in the published list's own directory, so
+        every entry resolves identically, and the publish step MOVES those
+        bytes rather than rewriting them.  That is what lets the encode
+        happen before the list is published without the two ever
+        disagreeing.
+        """
+        self.prepare()
+        status, _, err = self.main(self.arguments)
+        self.assertEqual(status, rm.EXIT_OK, msg=err)
+        argv = self.processes.argv_of(rm.FFMPEG)[0]
+        handed = argv[argv.index("-i") + 1]
+        self.assertTrue(
+            rm.is_staging_name(os.path.basename(handed)),
+            msg="the encoder read the staged list: %r" % handed)
+        self.assertEqual(os.path.dirname(handed),
+                         os.path.dirname(self.concat))
+        self.assertFalse(os.path.exists(handed),
+                         msg="which was then renamed into place")
+
+    def test_a_successful_render_publishes_one_attested_generation(self):
+        self.prepare(duration="16.500000", flags=(2,))
+        status, _, err = self.main(self.arguments)
+        self.assertEqual(status, rm.EXIT_OK, msg=err)
+        record = json.loads(
+            _read(rm.generation_manifest_path(self.root)))
+        self.assertEqual(record["version"], timeline.GENERATION_VERSION)
+        self.assertEqual(record["stage"], rm.LOCK_NAME)
+        self.assertEqual(record["concat_list"]["sha256"],
+                         timeline.file_digest(self.concat))
+        self.assertEqual(record["movie"]["sha256"],
+                         timeline.file_digest(self.movie))
+        self.assertEqual(record["timeline"]["sha256"],
+                         timeline.file_digest(self.timeline_path))
+        self.assertEqual(record["group_count"], 1)
+        self.assertEqual(record["capture_count"], 4)
+        self.assertFalse(
+            os.path.exists(timeline.generation_journal_path(
+                rm.LOCK_NAME, self.root)),
+            msg="the journal is cleared once both files are verified")
+
+    def test_the_manifest_carries_no_host_detail_and_no_timestamp(self):
+        self.prepare()
+        self.main(self.arguments)
+        text = _read(rm.generation_manifest_path(self.root))
+        self.assertNotIn(self.checkout, text)
+        self.assertNotIn("/tmp", text)
+        record = json.loads(text)
+        for section in ("timeline", "concat_list", "movie"):
+            self.assertFalse(
+                os.path.isabs(record[section]["path"]),
+                msg="%s is repository-relative" % section)
+        self.assertNotIn("timestamp", record)
+        # Deterministic: a second run over the same timeline produces the
+        # same bytes, so a committed tree does not churn on every render.
+        self.main(self.arguments)
+        self.assertEqual(
+            _read(rm.generation_manifest_path(self.root)), text)
+
+    def test_an_interrupted_previous_publication_is_reported(self):
+        self.prepare()
+        timeline.write_generation_journal(rm.LOCK_NAME, {
+            "version": timeline.GENERATION_VERSION,
+            "stage": rm.LOCK_NAME,
+            "targets": [{"path": os.path.abspath(self.movie),
+                         "sha256": "0" * 64}],
+        }, self.root)
+        status, _, err = self.main(self.arguments)
+        self.assertEqual(status, rm.EXIT_OK, msg=err)
+        self.assertIn("interrupted", err)
+        self.assertFalse(
+            os.path.exists(timeline.generation_journal_path(
+                rm.LOCK_NAME, self.root)),
+            msg="and this run repaired it by republishing both")
 
     def test_a_failed_encode_leaves_the_previous_film(self):
         self.prepare()

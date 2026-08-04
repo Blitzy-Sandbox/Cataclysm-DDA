@@ -656,36 +656,99 @@ class TestTheNarrativeColumns(ManifestFixture):
                  "edited: the survivor's words are the survivor's"))
         self.assertIn("more than a reader can take in", err)
 
-    def test_out_of_character_wording_is_reported_never_rewritten(self):
-        text = "I check the frame counter before the next screenshot."
-        row, err = self.capture_stderr(self.row, commentary=text)
-        self.assertEqual(
-            row["commentary"], text,
-            msg=("the advisory is advisory: the survivor's words are "
-                 "reported, not edited"))
-        self.assertIn("out-of-character wording", err)
-        self.assertIn("TECHNICAL_NOTES.md", err)
+    def test_out_of_character_wording_is_refused_not_advised(self):
+        """The voice gate REFUSES, and it refuses before the row exists.
 
-    def test_the_meta_vocabulary_is_a_blunt_substring_test(self):
-        self.assertEqual(
-            manifest.find_meta_vocabulary("The FRAME of the door"),
-            ["frame"],
-            msg=("the match is deliberately blunt and case-folded, so "
-                 "that a warning here predicts the transcript gate's "
-                 "own grep"))
-        self.assertEqual(
-            manifest.find_meta_vocabulary("I sharpen the spear."), [],
-            msg="in-character text produces no advisory")
+        THE DEFECT THIS TEST EXISTS FOR IS A REAL ONE.  This check used
+        to print a warning and append the row anyway, which meant one
+        stderr line during a four-hundred-row session decided whether an
+        engineering observation reached the committed transcript and the
+        film's caption track.  Seven rows of the first re-recorded
+        session got through that way -- "the game", "the sidebar", "the
+        move counter", "the engine's own pathfinding", "cheat" -- and by
+        the time anybody read the warning the rows were evidence, and
+        evidence is not rewritten afterwards.  So the refusal happens
+        here, where nothing has been written yet.
+        """
+        text = "I check the frame counter before the next screenshot."
+        with self.assertRaises(manifest.ManifestError) as caught:
+            self.row(commentary=text)
+        message = str(caught.exception)
+        self.assertIn("TECHNICAL_NOTES.md", message)
+        self.assertIn(
+            text, message,
+            msg="the refusal quotes the sentence the writer has to redo")
+        self.assertFalse(
+            os.path.exists(self.manifest),
+            msg="a refused row writes nothing at all")
+
+    def test_the_meta_vocabulary_matches_only_the_meta_sense(self):
+        """Precise patterns, because a blunt one refuses honest prose.
+
+        A blunt substring test would have to choose between refusing
+        "mechanical engineer" and "the frame of the door" -- both of
+        which the survivor says in this very record -- or letting "the
+        engine's own pathfinding" through.  Since the gate now BLOCKS,
+        that choice is not available: the patterns match the meta sense
+        and nothing else.
+        """
+        for honest in ("She was a mechanical engineer before this.",
+                       "The frame of the door is split at the hinge.",
+                       "I sharpen the spear.",
+                       "The window frames are all broken."):
+            with self.subTest(text=honest):
+                self.assertEqual(
+                    manifest.find_meta_vocabulary(honest), [],
+                    msg="in-character prose is not refused")
+        for meta, concept in (
+                ("the engine's own pathfinding", "engine"),
+                ("the game decided otherwise", "game"),
+                ("the sidebar says otherwise", "sidebar"),
+                ("frame 308 shows the door", "frame index"),
+                ("the move counter ticked over", "move counter"),
+                ("I could cheat here", "cheat"),
+                ("source file monmove.cpp explains it", "source file"),
+                ("I open the debug menu", "debug"),
+                ("the screenshot after this one", "screenshot")):
+            with self.subTest(text=meta):
+                self.assertIn(
+                    concept, manifest.find_meta_vocabulary(meta),
+                    msg="the meta sense is caught by concept name")
         self.assertEqual(
             manifest.find_meta_vocabulary(None), [],
             msg="a non-string is not a text to search")
 
-    def test_the_advisory_lists_every_hit_sorted(self):
+    def test_every_concept_is_named_in_the_declared_order(self):
+        """A refusal reads the same way every time it is produced."""
         self.assertEqual(
             manifest.find_meta_vocabulary(
                 "the ocr pipeline read the sidebar"),
-            ["ocr", "pipeline", "sidebar"],
-            msg="sorted and de-duplicated, so the report is stable")
+            ["sidebar", "ocr", "pipeline"],
+            msg=("the concepts come back in META_PATTERNS order, so the "
+                 "message is stable across runs"))
+        self.assertEqual(
+            manifest.find_meta_vocabulary("sidebar, sidebar, sidebar"),
+            ["sidebar"],
+            msg="a concept is named once however often it is said")
+        self.assertEqual(
+            list(manifest.META_VOCABULARY),
+            [name for name, _ in manifest.META_PATTERNS],
+            msg=("the published vocabulary IS the concept names of the "
+                 "pattern table, not a second list beside it"))
+
+    def test_the_refusal_names_the_concepts_and_where_they_belong(self):
+        """One message, shared by every consumer of the gate."""
+        problem = manifest.meta_vocabulary_problem(
+            "the engine's own pathfinding", "row 12 commentary")
+        self.assertIsNotNone(problem)
+        self.assertIn("row 12 commentary", problem)
+        self.assertIn("engine", problem)
+        self.assertIn("pathfinding", problem)
+        self.assertIn("TECHNICAL_NOTES.md", problem)
+        self.assertIn("REFUSED", problem)
+        self.assertIsNone(
+            manifest.meta_vocabulary_problem("I sharpen the spear."),
+            msg="clean prose produces no problem at all")
 
 
 class TestSentinelsAreRefusedNotAdvised(ManifestFixture):
@@ -886,32 +949,39 @@ class TestSentinelsAreRefusedNotAdvised(ManifestFixture):
             [],
             msg="a real row produces no problems")
 
-    def test_a_clean_row_is_silent_here_even_when_it_is_advised_about(self):
-        """The sentinel rule and the advisory are different in kind.
+    def test_the_sentinel_rule_and_the_voice_rule_stay_distinct(self):
+        """Both refuse now, and they refuse for different reasons.
 
-        Out-of-character wording warns and the row is written; a
-        sentinel raises and nothing is written.  Conflating the two
-        would either fail the gate on ordinary prose or let a
-        placeholder through, and both have to stay impossible.
+        They used to differ in kind -- one raised, the other warned --
+        and that difference is gone: an out-of-character sentence is
+        refused too.  What has to stay distinct is WHICH rule fired,
+        because the operator's remedy differs: a sentinel means the row
+        does not record anything and has to be written; a voice hit means
+        the observation is real but belongs in TECHNICAL_NOTES.md.
         """
         text = "I check the frame counter before the next screenshot."
-        row, err = self.capture_stderr(self.row, commentary=text)
-        self.assertEqual(row["commentary"], text)
-        self.assertIn("out-of-character wording", err)
+        with self.assertRaises(manifest.ManifestError) as caught:
+            self.row(commentary=text)
+        self.assertIn("TECHNICAL_NOTES.md", str(caught.exception))
         self.assertEqual(
             manifest.sentinel_problems("press '5'", text, "row 1"), [],
-            msg="an advisory is not a sentinel")
+            msg=("a voice hit is not a sentinel: the sentence says "
+                 "something, it just says the wrong sort of thing"))
+        self.assertNotEqual(
+            manifest.sentinel_problems(
+                self.BAD_ACTION, self.BAD_COMMENTARY, "row 1"), [],
+            msg="and a sentinel is still a sentinel")
 
-    def test_the_two_lists_do_not_overlap_with_the_advisory_list(self):
-        """A word cannot be both advisory and fatal.
+    def test_the_two_lists_do_not_overlap_with_the_voice_vocabulary(self):
+        """A word cannot belong to two rules with two messages.
 
-        If it were, the same string would warn and raise depending on
-        which check ran first, and the distinction the module documents
-        would be undecidable from the outside.
+        If it did, the same string would produce a different refusal
+        depending on which check ran first, and the distinction the
+        module documents would be undecidable from the outside.
         """
-        advisory = {word.lower() for word in manifest.META_VOCABULARY}
+        voice = {word.lower() for word in manifest.META_VOCABULARY}
         fatal = {word.lower() for word in manifest.PLACEHOLDER_WORDS}
-        self.assertEqual(advisory & fatal, set())
+        self.assertEqual(voice & fatal, set())
 
     def test_the_real_record_carries_no_sentinel(self):
         """The evidence in this checkout is held to the rule as well.
@@ -938,6 +1008,652 @@ class TestSentinelsAreRefusedNotAdvised(ManifestFixture):
             offenders, [],
             msg=("every row of the committed record has to say what was "
                  "pressed and why; these do not: %r" % offenders))
+
+
+class TestReadingATimeOutOfProse(unittest.TestCase):
+    """The parser under the clock-honesty gate.  Pure, read-only.
+
+    Deliberately conservative twice over.  It reads only a time the
+    sentence ASSERTS IS THE CASE NOW -- see TestOnlyAnAssertedTimeIsRead
+    below for why -- and within that, only the three shapes the module
+    declares, so a way of saying a time that it does not recognise is
+    simply NOT CHECKED rather than guessed at.  A gate that guessed would
+    refuse honest sentences, and there would be no honest way to tell
+    from the outside which it had done.
+    """
+
+    def test_digits_are_read_as_written(self):
+        self.assertEqual(
+            manifest.stated_times("The clock reads 20:15."),
+            [((20 * 3600 + 15 * 60,), False)],
+            msg="a 24-hour reading is unambiguous")
+        self.assertEqual(
+            manifest.stated_times("The clock reads 08:05:36."),
+            [((8 * 3600 + 5 * 60,), False)],
+            msg=("a leading zero says which half of the day is meant, "
+                 "so there is one candidate and not two"))
+
+    def test_a_bare_twelve_hour_statement_yields_both_readings(self):
+        """English is ambiguous and the gate does not pretend otherwise.
+
+        "5:30" could be either half of the day, so BOTH are candidates
+        and the comparison accepts whichever is closer.  Refusing a
+        sentence for the ambiguity of English would catch nothing real.
+        """
+        times = manifest.stated_times("The clock says 5:30.")
+        self.assertEqual(len(times), 1)
+        candidates, hedged = times[0]
+        self.assertEqual(
+            sorted(candidates),
+            [5 * 3600 + 30 * 60, 17 * 3600 + 30 * 60])
+        self.assertFalse(hedged)
+
+    def test_a_meridiem_resolves_the_ambiguity(self):
+        for text, expected in (
+                ("five in the afternoon", 17 * 3600),
+                ("five in the morning", 5 * 3600),
+                ("nine at night", 21 * 3600),
+                ("seven o'clock this evening", 19 * 3600)):
+            with self.subTest(text=text):
+                times = manifest.stated_times("It is %s." % text)
+                self.assertTrue(times, msg="the shape is recognised")
+                self.assertIn(
+                    expected, times[0][0],
+                    msg="the half of the day is taken from the phrase")
+
+    def test_relative_statements_are_read(self):
+        for text, expected in (
+                ("ten past eight in the morning", 8 * 3600 + 10 * 60),
+                ("quarter past six in the morning", 6 * 3600 + 15 * 60),
+                ("half past nine in the morning", 9 * 3600 + 30 * 60),
+                ("twenty to nine in the morning", 8 * 3600 + 40 * 60),
+                ("five to five in the afternoon", 16 * 3600 + 55 * 60)):
+            with self.subTest(text=text):
+                candidates = [
+                    one for group, _ in manifest.stated_times(
+                        "It is %s." % text) for one in group]
+                self.assertIn(
+                    expected, candidates,
+                    msg="the offset and direction are both applied")
+
+    def test_a_hedge_is_carried_out_of_the_same_match(self):
+        times = manifest.stated_times("It is about eight in the morning.")
+        self.assertTrue(times)
+        self.assertTrue(
+            any(hedged for _, hedged in times),
+            msg=("the hedge has to come from the match that produced the "
+                 "time, or the tolerance would be chosen for the wrong "
+                 "statement"))
+        unhedged = manifest.stated_times("It is eight in the morning.")
+        self.assertTrue(unhedged)
+        self.assertFalse(
+            all(hedged for _, hedged in unhedged),
+            msg="and an unhedged statement claims precision")
+
+    def test_prose_with_no_time_in_it_yields_nothing(self):
+        for text in ("I push the door open and step through.",
+                     "I have five bandages and two cans left.",
+                     "", "   ", None, 5):
+            with self.subTest(text=repr(text)):
+                self.assertEqual(manifest.stated_times(text), [])
+
+    def test_an_impossible_hour_is_not_a_time(self):
+        self.assertEqual(
+            manifest.stated_times("It is 25:99 by the loading dock."), [],
+            msg="an hour above 23 is not a time of day")
+
+    def test_dates_are_read_in_both_orders(self):
+        for text in ("the twenty-eighth of May", "the 28th of May",
+                     "May 28", "May the twenty-eighth"):
+            with self.subTest(text=text):
+                self.assertIn(
+                    (28, "may"), manifest.stated_dates("It is %s." % text))
+
+    def test_a_day_outside_the_month_is_not_a_date(self):
+        self.assertEqual(
+            [pair for pair in manifest.stated_dates("Today is May 47")
+             if pair[0]],
+            [], msg="47 is not a day of any month")
+
+    def test_the_sidebar_date_line_is_read_as_the_engine_writes_it(self):
+        self.assertEqual(
+            manifest.observed_date_parts("Thursday, May 20"), (20, "may"),
+            msg="the default SHOW_MONTHS form")
+        self.assertEqual(
+            manifest.observed_date_parts("Summer, day 12"),
+            (12, "summer"),
+            msg=("with SHOW_MONTHS off the line names a season, and a "
+                 "statement naming one is checked the same way"))
+        for text in ("", "   ", None, "nothing legible here"):
+            with self.subTest(text=repr(text)):
+                self.assertIsNone(
+                    manifest.observed_date_parts(text),
+                    msg=("a line that says nothing comparable is 'cannot "
+                         "check', never 'agrees'"))
+
+    def test_only_a_fixed_width_reading_becomes_seconds(self):
+        self.assertEqual(
+            manifest.clock_seconds_of_day("08:05:36"),
+            8 * 3600 + 5 * 60 + 36)
+        for value in ("Around dawn", "???", "8:5:6", "25:00:00",
+                      "08:61:00", "08:05", "", None, 5):
+            with self.subTest(value=repr(value)):
+                self.assertIsNone(
+                    manifest.clock_seconds_of_day(value),
+                    msg=("a reading that cannot be compared is None, "
+                         "which the gate treats as 'cannot check'"))
+
+
+class TestOnlyAnAssertedTimeIsRead(unittest.TestCase):
+    """The scope of the gate, and the reason it is this narrow.
+
+    THE CORPUS BELOW IS REAL PROSE FROM THE COMMITTED RECORD.  An earlier
+    version of this gate adjudicated every time and date a sentence
+    contained, and run over the 395 rows of the first re-recorded session
+    it reported 43 problems of which exactly ONE was the defect the review
+    found.  The other 42 were honest English -- reminiscence about a life
+    twenty years before the Cataclysm, generalisations about cold houses,
+    retrospect about a lamp left burning, intentions, and spans of hours.
+
+    A gate that cries wolf 42 times out of 43 is a gate somebody switches
+    off, which is precisely the failure the advisory voice check already
+    demonstrated.  So the gate reads only a time or date the sentence
+    asserts IS THE CASE NOW, and these tests hold it to that -- in both
+    directions, because a narrow gate that stopped catching frame 308
+    would be no gate at all.
+    """
+
+    # Sentences that MENTION a time without asserting one.  Every one of
+    # these is real, and every one was refused by the unrestricted gate.
+    HONEST = (
+        "Not a hobbyist. I was the one they phoned at three in the "
+        "morning.",
+        "Twenty-two years of standing outside a fire door at two in the "
+        "morning.",
+        "Forty-seven years old, mechanical engineer, and still here at "
+        "seven in the morning on the fifth day.",
+        "layers are the whole argument at four in the morning when the "
+        "house is the same temperature as the yard",
+        "That lamp has been burning since eight o'clock for a room I "
+        "have now looked at from every corner.",
+        "the floral blanket still folded back exactly where I left it "
+        "at half past eight",
+        "It has been burning since five o'clock and I want every hour "
+        "of it I can keep.",
+        "Three hours. That puts me at ten past eight with the sun off "
+        "the roofs.",
+        "Six hours this time. Eleven to five in the afternoon.",
+        "Twenty past eight until quarter past two, tossing and "
+        "turning.",
+        "the alarm was set for five past five",
+        "the toilet I did not find until five in the afternoon",
+    )
+
+    def test_no_sentence_that_merely_mentions_a_time_is_read(self):
+        for text in self.HONEST:
+            with self.subTest(text=text[:48]):
+                self.assertEqual(
+                    manifest.stated_times(text), [],
+                    msg=("this sentence states no time; adjudicating it "
+                         "would refuse honest English"))
+
+    def test_none_of_the_honest_corpus_is_a_problem(self):
+        for text in self.HONEST:
+            with self.subTest(text=text[:48]):
+                self.assertEqual(
+                    manifest.clock_honesty_problems(
+                        text, "02:14:49", "Thursday, May 20"),
+                    [], msg="and none of them fails the gate")
+
+    def test_every_assertion_form_is_recognised(self):
+        for prefix in ("It is", "it's", "It is now", "The clock reads",
+                       "The clock says", "The clock shows",
+                       "The time is"):
+            with self.subTest(prefix=prefix):
+                self.assertTrue(
+                    manifest.stated_times("%s 20:15." % prefix),
+                    msg="this is how a person states the case")
+        for prefix in ("Today is", "The date is", "It is"):
+            with self.subTest(prefix=prefix):
+                self.assertTrue(
+                    manifest.stated_dates("%s May 20." % prefix),
+                    msg="and this is how a person states the day")
+
+    def test_the_four_ways_a_reference_gets_in_are_excluded(self):
+        for text in ("at 20:15", "since 20:15", "until 20:15",
+                     "for 20:15", "it has been 20:15 for an hour",
+                     "it was 20:15 when I lay down"):
+            with self.subTest(text=text):
+                self.assertEqual(
+                    manifest.stated_times(text), [],
+                    msg=("a preposition or a past tense is a reference, "
+                         "not an assertion"))
+
+    def test_the_window_keeps_a_distant_mention_out(self):
+        """An assertion introduces the time next to it, not any time.
+
+        Without the window, "It is cold, and I remember being phoned at
+        three in the morning" would be adjudicated as a statement that it
+        is three in the morning.
+        """
+        self.assertEqual(
+            manifest.stated_times(
+                "It is cold, and I remember being phoned at three in "
+                "the morning."),
+            [], msg="the mention is too far from the assertion")
+        self.assertTrue(
+            manifest.stated_times("It is ten past eight in the morning."),
+            msg="and the statement next to it is read")
+
+    def test_only_the_time_the_assertion_introduced_is_read(self):
+        """One assertion, one statement -- not every time after it.
+
+        Real row: "It is six minutes past eight now and nine hours puts
+        me at five past five" -- the first clause is a statement of the
+        present and the second is arithmetic about tomorrow morning.
+        """
+        times = manifest.stated_times(
+            "It is six minutes past eight now and nine hours puts me at "
+            "five past five in the morning.")
+        self.assertEqual(len(times), 1, msg=repr(times))
+        self.assertIn(20 * 3600 + 6 * 60, times[0][0])
+
+    def test_a_date_is_reached_across_the_time_it_follows(self):
+        """The exact shape the false frame-308 statement took."""
+        self.assertEqual(
+            manifest.stated_dates(
+                "It is ten past eight in the morning on the "
+                "twenty-eighth of May."),
+            [(28, "may")],
+            msg=("the date clause follows the time clause inside one "
+                 "assertion, and both are adjudicated"))
+
+    def test_a_bare_am_is_a_verb_and_not_a_meridiem(self):
+        """THE DEFECT THIS TEST EXISTS FOR IS A REAL ONE, TWICE.
+
+        The meridiem markers were once tested as substrings, so "am"
+        matched inside "game" and resolved "Half past eight and the game
+        asked me" to 08:30 -- refusing a true statement made at 20:30.
+        Matched as a whole word it was still wrong, because "am" is the
+        commonest verb in English: " and I am not starting anything"
+        resolved "ten past five" to 05:10.
+        """
+        times = manifest.stated_times(
+            "It is half past eight and the flame is out.")
+        self.assertTrue(times)
+        self.assertIn(
+            20 * 3600 + 30 * 60, times[0][0],
+            msg="'flame' does not make it the morning")
+        times = manifest.stated_times(
+            "It is ten past five and I am not starting anything now.")
+        self.assertTrue(times)
+        self.assertIn(
+            17 * 3600 + 10 * 60, times[0][0],
+            msg="'I am' does not make it the morning")
+        times = manifest.stated_times("It is 8am.")
+        self.assertEqual(
+            times[0][0], (8 * 3600,),
+            msg=("but a meridiem where a meridiem goes -- right after "
+                 "the number -- is still read"))
+        times = manifest.stated_times("It is 8 pm.")
+        self.assertEqual(times[0][0], (20 * 3600,))
+
+
+class TestTheClockHonestyGate(unittest.TestCase):
+    """A statement of time or date is held to what the frame showed.
+
+    THE DEFECT THIS CLASS EXISTS FOR IS A REAL ONE, AND IT IS THE WORST
+    KIND THE RECORD CAN CARRY, because every structural check passed
+    straight over it.  Frame 308 of the first re-recorded session was
+    captured at 08:05:36 on Thursday, May 20 -- the clock and the date
+    line the sidebar actually showed, read by ocr_clock.py, stored in the
+    row and copied into the timeline -- and its commentary says, in the
+    survivor's own voice: "It is ten past eight in the morning on the
+    twenty-eighth of May."  Neither statement is true.  The row was
+    internally consistent, the counts all tallied, the timeline
+    arithmetic was exact, and the film shipped a false statement of fact
+    in a record whose first requirement is that nothing in it is
+    fabricated.
+    """
+
+    FALSE_308 = ("It is ten past eight in the morning on the "
+                 "twenty-eighth of May.")
+    CLOCK_308 = "08:05:36"
+    DATE_308 = "Thursday, May 20"
+
+    def test_the_exact_frame_308_sentence_is_caught(self):
+        problems = manifest.clock_honesty_problems(
+            self.FALSE_308, self.CLOCK_308, self.DATE_308)
+        self.assertEqual(
+            len(problems), 2,
+            msg=("both false statements are reported -- the time and the "
+                 "date -- because fixing one leaves the other: %r"
+                 % problems))
+        joined = " ".join(problems)
+        self.assertIn("08:10:00", joined)
+        self.assertIn(self.CLOCK_308, joined)
+        self.assertIn("28", joined)
+        self.assertIn(self.DATE_308, joined)
+        self.assertIn(
+            "authoritative", joined,
+            msg="the message says which of the two the record believes")
+
+    def test_the_true_version_of_the_same_sentence_passes(self):
+        self.assertEqual(
+            manifest.clock_honesty_problems(
+                "It is six past eight in the morning on the twentieth "
+                "of May.", self.CLOCK_308, self.DATE_308),
+            [], msg=("the gate exists to make the honest sentence "
+                     "writable, not to make every sentence suspect"))
+
+    def test_a_hedge_buys_a_wider_tolerance_and_no_more(self):
+        self.assertGreater(manifest.HEDGED_TIME_TOLERANCE,
+                           manifest.TIME_TOLERANCE)
+        self.assertEqual(
+            manifest.clock_honesty_problems(
+                "It is around ten past eight in the morning.",
+                self.CLOCK_308, self.DATE_308),
+            [], msg="a hedged statement four minutes out is honest")
+        far = manifest.clock_honesty_problems(
+            "It is around eleven in the morning.",
+            self.CLOCK_308, self.DATE_308)
+        self.assertTrue(
+            far, msg=("a hedge is not a licence: three hours out is not "
+                      "'around': %r" % far))
+        self.assertIn("a hedged", " ".join(far))
+
+    def test_a_statement_just_inside_the_tolerance_passes(self):
+        observed = manifest.clock_seconds_of_day(self.CLOCK_308)
+        inside = observed + manifest.TIME_TOLERANCE - 60
+        text = "The clock reads %02d:%02d." % (
+            int(inside) // 3600, (int(inside) % 3600) // 60)
+        self.assertEqual(
+            manifest.clock_honesty_problems(
+                text, self.CLOCK_308, self.DATE_308),
+            [], msg=("the tolerance is for rounding a reading to the "
+                     "nearest minute, not for inventing one"))
+
+    def test_a_precise_time_on_an_unreadable_clock_is_refused(self):
+        """A number nobody could see is not recorded as though she could.
+
+        This is the one case where the gate cannot compare, and it refuses
+        rather than passing: an exact time stated over a sidebar that read
+        nothing is fabricated by definition.
+        """
+        for clock in (None, "", "   "):
+            with self.subTest(clock=repr(clock)):
+                problems = manifest.clock_honesty_problems(
+                    "It is 08:15.", clock, None)
+                self.assertEqual(len(problems), 1, msg=repr(problems))
+                self.assertIn("not read at all", problems[0])
+        coarse = manifest.clock_honesty_problems(
+            "It is 08:15.", "Around dawn", None)
+        self.assertEqual(len(coarse), 1)
+        self.assertIn("coarse reading", coarse[0])
+        self.assertIn("Around dawn", coarse[0])
+
+    def test_a_hedged_time_on_an_unreadable_clock_is_allowed(self):
+        """Without a watch she can still tell roughly where the sun is.
+
+        display::time_string() falls back to a coarse phrase when she
+        carries no timepiece, and a hedged sentence is exactly the honest
+        thing to write over one.
+        """
+        self.assertEqual(
+            manifest.clock_honesty_problems(
+                "It must be somewhere near eight in the morning.",
+                None, None),
+            [])
+        self.assertEqual(
+            manifest.clock_honesty_problems(
+                "It is getting on for dusk, by the light.", None, None),
+            [], msg="and a sentence stating no time at all is fine")
+
+    def test_a_date_with_no_date_line_to_check_it_is_refused(self):
+        problems = manifest.clock_honesty_problems(
+            "It is the twentieth of May.", self.CLOCK_308, None)
+        self.assertEqual(len(problems), 1, msg=repr(problems))
+        self.assertIn("nothing to check it against", problems[0])
+
+    def test_no_date_evidence_channel_is_not_an_unreadable_date(self):
+        """The two are different in kind, and conflating them refuses
+        every honest sentence that names the day.
+
+        A date line that could not be read says the survivor could not see
+        a date, so stating one is fabrication.  A CALLER that holds no
+        date column at all -- the manifest schema has none -- says nothing
+        whatever about what was observed, and adjudicating on that basis
+        would be the gate inventing evidence of its own.
+        """
+        text = "It is the twentieth of May."
+        self.assertTrue(
+            manifest.clock_honesty_problems(text, self.CLOCK_308, None),
+            msg="unreadable line, precise date: refused")
+        self.assertEqual(
+            manifest.clock_honesty_problems(text, self.CLOCK_308, None,
+                                            check_dates=False),
+            [], msg="no channel at all: left unadjudicated")
+        self.assertTrue(
+            manifest.clock_honesty_problems(
+                "The clock reads 14:30.", self.CLOCK_308, None,
+                check_dates=False),
+            msg=("and the flag governs DATES only -- a false time is "
+                 "still a false time"))
+
+    def test_a_wrong_month_is_reported_separately_from_a_wrong_day(self):
+        month = manifest.clock_honesty_problems(
+            "It is the twentieth of June.", self.CLOCK_308, self.DATE_308)
+        self.assertTrue(any("month" in one for one in month),
+                        msg=repr(month))
+        day = manifest.clock_honesty_problems(
+            "It is the twenty-first of May.", self.CLOCK_308,
+            self.DATE_308)
+        self.assertTrue(any("day of the month" in one for one in day),
+                        msg=repr(day))
+        self.assertIn(
+            "not approximate", " ".join(day),
+            msg="a date has no tolerance at all, hedged or otherwise")
+
+    def test_prose_that_states_nothing_is_never_a_problem(self):
+        for text in ("I push the door open and step through.",
+                     "Two cans and a bandage, and the road is empty.",
+                     "", "   ", None):
+            with self.subTest(text=repr(text)):
+                self.assertEqual(
+                    manifest.clock_honesty_problems(
+                        text, self.CLOCK_308, self.DATE_308),
+                    [], msg="the gate checks statements, not sentences")
+
+    def test_agreement_with_either_observed_reading_is_honest(self):
+        """Both readings were observed, and both are committed.
+
+        Real row: after a five-minute wait the commentary reads "the five
+        minutes did pass in the end and it is 08:05".  The reading its
+        author had in front of them was 08:00:41 and the frame the caption
+        is DISPLAYED OVER reads 08:05:28.  A sentence that agrees with what
+        the viewer can see is not a fabrication, so the auditing callers
+        accept either -- while the write-time gate, which has only the
+        first, stays the stricter of the two.
+        """
+        text = "The five minutes did pass and it is 08:05."
+        self.assertTrue(
+            manifest.clock_honesty_problems(text, "08:00:41", None),
+            msg=("at write time the key has not been sent, so only the "
+                 "earlier reading exists and this is refused"))
+        self.assertEqual(
+            manifest.clock_honesty_problems(
+                text, "08:00:41", None, also_clock="08:05:28"),
+            [], msg="at audit time the captioned frame's reading counts")
+        self.assertTrue(
+            manifest.clock_honesty_problems(
+                text, "08:00:41", None, also_clock="11:05:28"),
+            msg=("and a statement matching NEITHER reading is still "
+                 "refused: the union is of observed evidence, not of "
+                 "everything"))
+
+    def test_either_date_line_may_be_the_one_that_agrees(self):
+        text = "It is the twenty-first of May."
+        self.assertTrue(
+            manifest.clock_honesty_problems(
+                text, self.CLOCK_308, "Thursday, May 20"))
+        self.assertEqual(
+            manifest.clock_honesty_problems(
+                text, self.CLOCK_308, "Thursday, May 20",
+                also_date="Friday, May 21"),
+            [], msg="the day rolled over between the two frames")
+
+    def test_an_unreadable_primary_falls_through_to_the_alternate(self):
+        self.assertEqual(
+            manifest.clock_honesty_problems(
+                "It is 08:05.", None, None, also_clock="08:05:28"),
+            [], msg=("'cannot be compared' is about the evidence, not "
+                     "about which argument carried it"))
+        self.assertTrue(
+            manifest.clock_honesty_problems(
+                "It is 08:05.", None, None, also_clock="Around dawn"),
+            msg="and two unreadable readings are still unreadable")
+
+    def test_nothing_is_rewritten_by_the_check(self):
+        text = self.FALSE_308
+        manifest.clock_honesty_problems(text, self.CLOCK_308,
+                                        self.DATE_308)
+        self.assertEqual(
+            text, self.FALSE_308,
+            msg=("read-only: the survivor's words are refused, never "
+                 "corrected on her behalf"))
+
+    def test_the_label_is_what_the_message_calls_the_field(self):
+        problems = manifest.clock_honesty_problems(
+            "It is 20:15.", self.CLOCK_308, self.DATE_308,
+            "row 308 commentary")
+        self.assertTrue(problems)
+        self.assertTrue(
+            all(one.startswith("row 308 commentary")
+                for one in problems),
+            msg="so a report of a whole file says which row: %r"
+                % problems)
+
+
+class TestTheCommittedRecordHalfOfTheHonestyGate(ManifestFixture):
+    """honesty_problems() holds the FILE to the same rule.
+
+    session.py refuses a sentence before the key is sent; this audits a
+    manifest that was assembled some other way -- an older session, a
+    hand edit, a run whose writer gate was bypassed -- because every
+    stage downstream turns this file into a timeline, a transcript and a
+    caption track.
+    """
+
+    def rows_with(self, *pairs):
+        """Return rows 1..n from (clock, commentary) pairs."""
+        return [
+            manifest.build_row(
+                index, manifest.frame_file(index), FIXED_REAL_TS, clock,
+                "press '5'", commentary)
+            for index, (clock, commentary) in enumerate(pairs, start=1)]
+
+    def test_a_row_is_judged_against_the_reading_before_it(self):
+        """The reason for a key belongs to the moment BEFORE the key.
+
+        `commentary` says why the survivor pressed it, so it is judged
+        against the clock she had in front of her -- the PREVIOUS row's --
+        while the row's own reading is what the action then consumed.
+        Judging "five past eight, so I am going to lie down" against the
+        clock a nine-hour sleep produced would refuse an honest sentence.
+        """
+        rows = self.rows_with(
+            ("20:05:00", "I bank the fire and lie down."),
+            ("05:12:00", "It is about eight in the evening; I sleep."))
+        self.assertEqual(
+            manifest.honesty_problems(rows), [],
+            msg=("the second row states the time it was when she lay "
+                 "down, which is the reading on the row before it"))
+
+    def test_the_first_row_is_judged_against_its_own_reading(self):
+        rows = self.rows_with(
+            ("08:05:36", "It is about ten past eight in the morning."))
+        self.assertEqual(
+            manifest.honesty_problems(rows), [],
+            msg="there is nothing before the first row to judge it by")
+        wrong = self.rows_with(
+            ("08:05:36", "The clock reads 14:30."))
+        self.assertTrue(
+            manifest.honesty_problems(wrong),
+            msg="and it is still judged: %r" % wrong)
+
+    def test_a_false_statement_anywhere_in_the_file_is_reported(self):
+        rows = self.rows_with(
+            ("08:05:36", "I stand up and look around."),
+            ("08:05:40", "The clock reads 14:30, and the light is wrong."))
+        problems = manifest.honesty_problems(rows)
+        self.assertEqual(len(problems), 1, msg=repr(problems))
+        self.assertIn("row 2 commentary", problems[0])
+
+    def test_a_date_is_only_checked_when_a_date_line_is_supplied(self):
+        """The manifest carries no date column; the sidecar does.
+
+        So a date statement is adjudicated when the telemetry lines are
+        passed in and left alone when they are not -- which is 'no
+        evidence either way', not 'agrees' and not 'unreadable'.  A file
+        audited on its own must not refuse every honest sentence that
+        names the day, and it must not pass a false one when the evidence
+        to catch it has been handed over.
+        """
+        rows = self.rows_with(
+            ("08:05:36", "It is the twentieth of May."),
+            ("08:05:40", "It is the twenty-eighth of May."))
+        self.assertEqual(
+            manifest.honesty_problems(rows), [],
+            msg="no date channel, so no date claim is adjudicated")
+        for empty in ({}, None, "not a mapping"):
+            with self.subTest(dates=repr(empty)):
+                self.assertEqual(
+                    manifest.honesty_problems(rows, empty), [],
+                    msg="and neither is an empty or unusable one")
+        problems = manifest.honesty_problems(
+            rows, {1: "Thursday, May 20", 2: "Thursday, May 20"})
+        self.assertTrue(problems, msg="with the lines, the false one is "
+                                      "caught: %r" % problems)
+        self.assertIn("row 2 commentary", " ".join(problems))
+        self.assertFalse(
+            any("row 1 commentary" in one for one in problems),
+            msg="and the true one is not: %r" % problems)
+
+    def test_an_unreadable_clock_does_not_make_honest_prose_a_problem(self):
+        rows = self.rows_with(
+            (None, "I cannot see the sky from in here."),
+            (None, "I keep moving while it is quiet."))
+        self.assertEqual(manifest.honesty_problems(rows), [])
+
+    def test_a_non_row_in_the_sequence_is_skipped_not_raised(self):
+        self.assertEqual(
+            manifest.honesty_problems(["not a row", 5, None]), [],
+            msg=("the schema gate reports those; this one has nothing "
+                 "to say about them"))
+
+    def test_verify_manifest_applies_the_gate_to_the_file(self):
+        row = self.row(frame=1, clock="08:05:36")
+        row["commentary"] = ("It is ten past eight in the morning on the "
+                             "twenty-eighth of May.")
+        _write_lines(self.manifest, [json.dumps(row)])
+        problems = manifest.verify_manifest(self.manifest,
+                                            root=self.directory)
+        self.assertTrue(
+            any("08:10:00" in one for one in problems),
+            msg=("the committed record is audited by the same gate that "
+                 "refuses the row: %r" % problems))
+
+    def test_a_truthful_record_reports_nothing(self):
+        rows = self.rows_with(
+            ("08:05:36", "It is about eight in the morning; I set out."),
+            ("08:06:12", "Six minutes past eight, and the road is "
+                         "clear."))
+        _write_lines(self.manifest,
+                     [json.dumps(one) for one in rows])
+        self.assertEqual(
+            manifest.verify_manifest(self.manifest,
+                                     root=self.directory),
+            [], msg="an honest record passes cleanly")
 
 
 class TestAppendingIsAppendOnly(ManifestFixture):
@@ -1466,17 +2182,45 @@ class TestVerifyingTheRecord(ManifestFixture):
         self.assertEqual(len(problems), 1)
         self.assertIn("is not JSON", problems[0])
 
-    def test_out_of_character_commentary_is_advisory_not_a_problem(self):
-        row = self.row(frame=1, commentary="I check the ocr output.")
+    def test_out_of_character_commentary_is_a_problem_on_disk_too(self):
+        """The reader holds the FILE to the rule the writer enforces.
+
+        A manifest assembled some other way -- an older session, a hand
+        edit, a run whose writer gate was bypassed -- is still audited,
+        because every stage downstream reads this file and turns it into
+        a transcript and a caption track.
+        """
+        row = self.row(frame=1)
+        row["commentary"] = "I check the ocr output."
         _write_lines(self.manifest, [json.dumps(row)])
-        problems, err = self.capture_stderr(
-            manifest.verify_manifest, self.manifest,
-            root=self.directory)
-        self.assertEqual(
-            problems, [],
-            msg=("a blunt substring match must not fail the gate on a "
-                 "false positive"))
-        self.assertIn("advisory only", err)
+        problems = manifest.verify_manifest(self.manifest,
+                                            root=self.directory)
+        self.assertTrue(
+            any("survivor's own voice" in problem
+                for problem in problems),
+            msg=("an out-of-character row already on disk is REPORTED, "
+                 "not warned about: %r" % problems))
+        self.assertTrue(
+            any("row 1 commentary" in problem for problem in problems),
+            msg="and the report says which row: %r" % problems)
+
+    def test_honest_commentary_still_passes_the_voice_gate_on_disk(self):
+        """The precise patterns matter most where prose is real.
+
+        The survivor is a mechanical engineer and she walks through split
+        door frames; neither sentence may fail the gate, or the record
+        could not be written in her own words at all.
+        """
+        for text in ("She was a mechanical engineer before this.",
+                     "The frame of the door is split at the hinge."):
+            with self.subTest(text=text):
+                row = self.row(frame=1)
+                row["commentary"] = text
+                _write_lines(self.manifest, [json.dumps(row)])
+                self.assertEqual(
+                    manifest.verify_manifest(self.manifest,
+                                             root=self.directory), [],
+                    msg="honest prose passes the gate unchanged")
 
 
 class TestTheCommandLine(ManifestFixture):

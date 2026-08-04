@@ -211,23 +211,253 @@ CLOCK_COARSE = "coarse"
 CLOCK_UNKNOWN = "unknown"
 CLOCK_UNRECOGNISED = "unrecognised"
 
-# Out-of-character vocabulary.  `commentary` is part of the
-# in-character record, so this list mirrors the substring grep the
-# transcript gate applies downstream -- deliberately including its
-# bluntness, so that a warning here predicts a failure there.  It is
-# advisory only: a hit is reported, never rewritten.
-META_VOCABULARY = (
-    "frame", "screenshot", "capture", "ocr", "ffmpeg", "moviepy",
-    "manifest", "timeline", "keystroke", "xdotool", "pipeline",
-    "tileset", "sidebar", "commit", "option",
+# ---------------------------------------------------------------------
+# OUT-OF-CHARACTER VOCABULARY: A BLOCKING GATE, AND WHY IT HAD TO BECOME
+# ONE.
+#
+# `commentary` is the survivor's own record.  It goes verbatim into
+# playthrough/transcript.md and becomes a caption on the film, and the
+# requirement is explicit that engineering and "gamey" observations stay
+# out of it and live in playthrough/TECHNICAL_NOTES.md instead.
+#
+# This used to be a list of SUBSTRINGS checked ADVISORILY: a hit printed
+# a warning and the row was appended anyway.  Both halves were wrong.
+#
+#   * The coverage was short.  It named neither "game", nor "engine",
+#     nor a source file, nor pathfinding, nor a move counter, nor
+#     cheating -- and every one of those reached the committed record.
+#     One row explains that "the game itself is talking to me now",
+#     names a C++ source file and a line number, and calls it "the
+#     engine's own complaint about its own pathfinding"; another reports
+#     that "my move counter went to zero"; two report what "the sidebar"
+#     said; the last states "I did not cheat".
+#   * Advisory was the wrong strength.  A warning on stderr during a
+#     session that produces four hundred rows is a warning nobody reads,
+#     and by the time anybody does the row is already evidence -- and
+#     evidence is not rewritten afterwards.  So the gate now REFUSES,
+#     before the key is sent and before the transcript is published.
+#
+# WHY PATTERNS RATHER THAN SUBSTRINGS.  The old bluntness is exactly
+# what kept it advisory: "frame" matched the four rows that say "the
+# frame of the door", which are the survivor's own words about a
+# doorway, and refusing those would be wrong.  Each entry below is
+# therefore a regular expression written to match the META sense and
+# not the in-world one, and the two hardest cases are called out where
+# they are handled:
+#
+#   * `engine` matches `\bengines?\b` and `\bengine's\b`, which does NOT
+#     match "engineer" or "engineering" -- Delphine is a mechanical
+#     engineer and says so in three rows.  The bluntness that remains is
+#     deliberate: she has no reason to name a motor in this session, and
+#     "the engine" is how the software gets talked about.
+#   * `frame` matches only a frame with a NUMBER or a frame that is
+#     counted or indexed.  A door frame is hers.
+#
+# A word that is genuinely ambiguous and cannot be told apart by pattern
+# is BLOCKED rather than allowed, and the note beside it says so, because
+# the cost of rephrasing one sentence is nothing and the cost of a meta
+# remark in the record is a requirement.
+# ---------------------------------------------------------------------
+
+META_PATTERNS = (
+    # The software, and the fact that any of this is software.
+    ("game", r"\bgames?\b|\bgame's\b|\bgameplay\b|\bgamey\b"),
+    ("engine", r"\bengines?\b|\bengine's\b"),
+    ("source file", r"\bsource[- ]files?\b|\.cpp\b|\.json\b"),
+    ("pathfinding", r"\bpath[- ]?find(?:ing|er|s)?\b"),
+    ("debug", r"\bdebug\w*\b"),
+    ("cheat", r"\bcheat(?:s|ed|ing|er)?\b|\bgod mode\b"),
+    # The interface, as an interface rather than as what she can see.
+    ("sidebar", r"\bside[- ]?bars?\b|\bstatus panel\b|\bhud\b"),
+    ("move counter", r"\bmoves?[- ]counter\b|\bturns?[- ]counter\b"
+                     r"|\bmove points?\b|\bturn counter\b"),
+    ("option", r"\boptions?\.json\b|\bthe options? (?:menu|screen|"
+               r"file|tab)\b|\bworld options?\b"),
+    ("tileset", r"\btile[- ]?sets?\b"),
+    # This pipeline, by any of its names.
+    ("frame index", r"\bframes?[ _-]?\d+\b|\bframe[ _-](?:number|"
+                    r"index|count)\b|\bframe_\d"),
+    ("screenshot", r"\bscreen[- ]?shots?\b|\bscreen[- ]?grabs?\b"),
+    ("capture", r"\bcaptur\w+\b"),
+    ("ocr", r"\bocr\b|\btesseract\b"),
+    ("render", r"\bffmpeg\b|\bffprobe\b|\bmoviepy\b|\blibx264\b"
+               r"|\bmp4\b|\bcodecs?\b|\bsubtitles?\b|\bcaptions?\b"),
+    ("manifest", r"\bmanifests?\b"),
+    ("timeline", r"\btimelines?\b"),
+    ("keystroke", r"\bkey[- ]?strokes?\b|\bkey[- ]?press(?:es)?\b"),
+    ("xdotool", r"\bxdotool\b|\bxvfb\b|\bx11\b|\bsdl\b|\bimagemagick\b"),
+    ("pipeline", r"\bpipelines?\b|\bsubprocess\b"),
+    ("commit", r"\bcommit(?:s|ted|ting)?\b|\bgit\b|\brepositor(?:y|"
+               r"ies)\b"),
+    ("requirement", r"\bR1[0-3]\b|\bR[1-9]\b"),
 )
 
-# Markers saying a field was never filled in.  Unlike META_VOCABULARY
-# beside it these are REFUSALS, not advisories: a row is the
-# authoritative record of what one keystroke did and why, and every
-# structural check -- the six-field schema, the 1..n identity, the
-# frame-set equality -- passes straight over a field reading
-# "placeholder".
+# The compiled table, kept in the declared order so a report reads the
+# same way every time.  Names are what a refusal quotes: a concept, not
+# a regular expression, because the operator has to rewrite a sentence
+# and not debug a pattern.
+_META_RES = tuple(
+    (name, re.compile(pattern, re.IGNORECASE))
+    for name, pattern in META_PATTERNS)
+
+# Retained because it is the shape a reader of a diagnostic expects and
+# because the concept names ARE the vocabulary; every consumer reads it
+# through find_meta_vocabulary() rather than matching it itself.
+META_VOCABULARY = tuple(name for name, _ in META_PATTERNS)
+
+# ---------------------------------------------------------------------
+# THE CLOCK-HONESTY GATE
+#
+# The defect this exists for is the worst kind the record can carry,
+# because every structural check passed straight over it.  Frame 308 of
+# the first re-recorded session was captured at 08:05:36 on Thursday,
+# May 20 -- the clock and the date line the sidebar actually showed, read
+# by ocr_clock.py, stored in the row and copied into the timeline -- and
+# its commentary says, in the survivor's own voice: "It is ten past eight
+# in the morning on the twenty-eighth of May."  Neither statement is
+# true.  The row is internally consistent, the counts all tally, the
+# timeline arithmetic is exact, and the film ships a false statement of
+# fact in a record whose first requirement is that nothing in it is
+# fabricated.
+#
+# The root cause is a workflow hole rather than a bad datum: the
+# commentary is written by whoever is driving the session, from memory,
+# and NOTHING held it against the reading on the frame.  So this holds
+# it.  Any time of day or calendar date the commentary STATES is parsed
+# out and compared with what was actually observed:
+#
+#   * before the key is sent, against the last reading the driver had in
+#     front of them (which is what they were writing from);
+#   * at publication, against the reading of that frame itself.
+#
+# WHAT IS PARSED, AND THE TOLERANCE.  People do not read clocks to the
+# second, so an exact match would be absurd.  Two tolerances:
+#
+#   * an UNHEDGED statement -- "It is ten past eight", "eight o'clock",
+#     "20:15" -- must be within TIME_TOLERANCE of the reading.  Three
+#     minutes is close enough for how anybody speaks and tight enough
+#     that the five-minute misstatement above is caught;
+#   * a HEDGED statement -- "around eight", "just gone five", "nearly
+#     nine" -- claims less precision and is allowed
+#     HEDGED_TIME_TOLERANCE, a quarter of an hour.
+#
+# A DATE is not approximate at all: the twenty-eighth is not the
+# twentieth, so a stated day or month must match the sidebar's date line
+# exactly.
+#
+# AND A PRECISE STATEMENT NEEDS SOMETHING TO CHECK IT AGAINST.  Stating
+# a time to the minute on a frame whose clock could not be read is
+# refused outright: the survivor is carrying a watch, so an unreadable
+# clock means the sidebar was not visible on that screen, and a number
+# nobody could see is the definition of invented.  A hedged phrase is
+# still allowed there, because "some time after dark" is an honest thing
+# to say when no clock is in view.
+# ---------------------------------------------------------------------
+
+TIME_TOLERANCE = 180.0
+HEDGED_TIME_TOLERANCE = 900.0
+
+# Words that turn a stated time into an approximation.  Matched
+# immediately before the time expression, which is where English puts
+# them.
+TIME_HEDGES = (
+    "about", "around", "roughly", "approximately", "nearly", "almost",
+    "getting on for", "coming up on", "sometime", "some time", "gone",
+    "just gone", "past", "or so", "thereabouts", "somewhere near",
+    "close to", "not far off", "the back of",
+)
+
+# The spelled-out numbers a person uses for a time of day.  One to
+# twelve for the hour, plus the minute words English actually says.
+_NUMBER_WORDS = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+    "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11,
+    "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15,
+    "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19,
+    "twenty": 20, "twentyfive": 25, "twenty-five": 25, "thirty": 30,
+    "forty": 40, "forty-five": 45, "fifty": 50,
+}
+
+# "in the morning" / "in the afternoon" / "in the evening" / "at night",
+# and the bare am/pm forms, which decide which half of the day a
+# twelve-hour statement means.
+#
+# IN TWO CLASSES, AND THE DISTINCTION IS LOAD-BEARING.  Both classes were
+# once tested with a bare substring `in`, and both ways that was wrong:
+#
+#   * "am" matched inside "game", "camp", "same" and "flame", which
+#     resolved "Half past eight and the game asked me" to the morning and
+#     refused a TRUE statement made at 20:30;
+#   * even matched as a whole word, "am" is the commonest verb in the
+#     language -- " and I am not starting anything" resolved "ten past
+#     five" to 05:10 and refused a true statement made at 17:06.
+#
+# So a PHRASE ("in the morning") may appear anywhere in the short tail
+# after the time, while a SUFFIX ("am", "pm") is only a meridiem where a
+# meridiem can go: immediately after the number.
+_MERIDIEM_MORNING = ("in the morning", "this morning")
+_MERIDIEM_AFTERNOON = (
+    "in the afternoon", "this afternoon", "in the evening",
+    "this evening", "at night", "tonight", "at dusk",
+)
+_MERIDIEM_MORNING_SUFFIX = ("am", "a.m.")
+_MERIDIEM_AFTERNOON_SUFFIX = ("pm", "p.m.")
+
+
+def _meridiem_expression(markers, anchored=False):
+    """Compile a word-boundary alternation over meridiem markers.
+
+    `anchored` requires the marker at the very start of the tail, which is
+    the only position in which a bare "am" or "pm" is a meridiem rather
+    than a verb or a stray token.
+    """
+    alternation = "|".join(
+        re.escape(one).replace(r"\ ", r"\s+")
+        for one in sorted(markers, key=len, reverse=True))
+    if anchored:
+        return re.compile(r"\A[\s,.]{0,2}(?:%s)(?![a-z])" % alternation,
+                          re.IGNORECASE)
+    return re.compile(r"(?<![a-z])(?:%s)(?![a-z])" % alternation,
+                      re.IGNORECASE)
+
+
+_MERIDIEM_MORNING_RE = _meridiem_expression(_MERIDIEM_MORNING)
+_MERIDIEM_AFTERNOON_RE = _meridiem_expression(_MERIDIEM_AFTERNOON)
+_MERIDIEM_MORNING_SUFFIX_RE = _meridiem_expression(
+    _MERIDIEM_MORNING_SUFFIX, anchored=True)
+_MERIDIEM_AFTERNOON_SUFFIX_RE = _meridiem_expression(
+    _MERIDIEM_AFTERNOON_SUFFIX, anchored=True)
+
+# The month names the sidebar's date line uses (src/display.cpp:193-205
+# renders the calendar month, which under the default SHOW_MONTHS is a
+# real month name), and the ordinal day words a person writes.
+_MONTH_NAMES = (
+    "january", "february", "march", "april", "may", "june", "july",
+    "august", "september", "october", "november", "december",
+    # The game's seasons appear in the same line when SHOW_MONTHS is
+    # false, so a statement naming one is checked the same way.
+    "spring", "summer", "autumn", "winter",
+)
+
+_ORDINAL_WORDS = {
+    "first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5,
+    "sixth": 6, "seventh": 7, "eighth": 8, "ninth": 9, "tenth": 10,
+    "eleventh": 11, "twelfth": 12, "thirteenth": 13,
+    "fourteenth": 14, "fifteenth": 15, "sixteenth": 16,
+    "seventeenth": 17, "eighteenth": 18, "nineteenth": 19,
+    "twentieth": 20, "twenty-first": 21, "twenty-second": 22,
+    "twenty-third": 23, "twenty-fourth": 24, "twenty-fifth": 25,
+    "twenty-sixth": 26, "twenty-seventh": 27, "twenty-eighth": 28,
+    "twenty-ninth": 29, "thirtieth": 30, "thirty-first": 31,
+}
+
+# Markers saying a field was never filled in.  A refusal, like the
+# META_PATTERNS gate beside it, but for a different reason and with a
+# different remedy: a row is the authoritative record of what one
+# keystroke did and why, and every structural check -- the six-field
+# schema, the 1..n identity, the frame-set equality -- passes straight
+# over a field reading "placeholder".  A meta remark says the wrong sort
+# of thing; a sentinel says nothing at all.
 PLACEHOLDER_WORDS = (
     "placeholder", "todo", "fixme", "tbd", "xxx", "wip",
 )
@@ -880,26 +1110,551 @@ def _validated_ingame_clock(value):
 
 
 def find_meta_vocabulary(text):
-    """Return the out-of-character words in `text`, sorted.
+    """Return the out-of-character CONCEPTS `text` carries, in order.
 
-    Mirrors the substring grep the transcript gate applies downstream,
-    bluntness included, so that a warning here predicts a failure
-    there.  Purely advisory: callers report, they never rewrite.
+    THE ONE IMPLEMENTATION.  session.py refuses a commentary before the
+    key is sent and make_srt.py refuses one before the transcript is
+    published, and both ask this -- so the gate cannot be stricter in one
+    place than another, and a sentence that passes at write time cannot
+    fail at publication time.
+
+    Each concept is matched by a pattern written for the meta sense
+    (see META_PATTERNS): "engineer" is not "engine", and the frame of a
+    door is not frame 308.
     """
     if not isinstance(text, str):
         return []
-    lowered = text.lower()
-    return sorted({word for word in META_VOCABULARY
-                   if word in lowered})
+    return [name for name, expression in _META_RES
+            if expression.search(text)]
+
+
+def meta_vocabulary_problem(text, label="commentary"):
+    """Return the refusal for an out-of-character `text`, or None.
+
+    One message, used by every consumer, naming the concepts found and
+    where the observation belongs instead.  Returning None rather than
+    raising keeps it usable both as a validator (raise) and as a reporter
+    (collect into a problem list).
+    """
+    hits = find_meta_vocabulary(text)
+    if not hits:
+        return None
+    return (
+        "%s reads as an engineering observation rather than the "
+        "survivor's own voice: it carries %s.  This is REFUSED rather "
+        "than warned about, because the sentence goes verbatim into "
+        "playthrough/transcript.md and becomes a caption on the film, "
+        "and a record that has already been written is not rewritten "
+        "afterwards.  Meta and 'gamey' remarks belong in "
+        "playthrough/TECHNICAL_NOTES.md; say what the survivor saw and "
+        "why she acted.  The text was: %r"
+        % (label, ", ".join(hits), text))
+
+
+# The three shapes a stated time of day takes, most specific first.  Each
+# leaves the hedge (if any) in group "hedge" so the tolerance can be
+# chosen from the same match that produced the time.
+_HEDGE_ALTERNATION = "|".join(
+    re.escape(one) for one in sorted(TIME_HEDGES, key=len, reverse=True))
+_NUMBER_ALTERNATION = "|".join(
+    re.escape(one) for one in sorted(_NUMBER_WORDS, key=len,
+                                     reverse=True))
+
+# "20:15", "20:15:30", "8:15" -- digits, which are unambiguous.
+_TIME_DIGITS_RE = re.compile(
+    r"(?P<hedge>(?:%s)\s+)?\b(?P<hour>\d{1,2}):(?P<minute>\d{2})"
+    r"(?::\d{2})?\b" % _HEDGE_ALTERNATION, re.IGNORECASE)
+
+# "ten past eight", "quarter past eight", "half past eight",
+# "six minutes past eight", "twenty to nine", "five to five".
+_TIME_RELATIVE_RE = re.compile(
+    r"(?P<hedge>(?:%s)\s+)?\b(?P<offset>%s|quarter|half)"
+    r"(?:\s+minutes?)?\s+"
+    r"(?P<direction>past|to|before|after)\s+(?P<hour>%s|\d{1,2})\b"
+    % (_HEDGE_ALTERNATION, _NUMBER_ALTERNATION, _NUMBER_ALTERNATION),
+    re.IGNORECASE)
+
+# "eight o'clock", "eight in the morning", "five in the afternoon",
+# "eleven o'clock and five minutes".
+_TIME_HOUR_RE = re.compile(
+    r"(?P<hedge>(?:%s)\s+)?\b(?P<hour>%s|\d{1,2})\s*"
+    r"(?P<tail>o'clock|o clock|in the morning|in the afternoon|"
+    r"in the evening|at night|am|pm|a\.m\.|p\.m\.)"
+    r"(?:\s+and\s+(?P<extra>%s|\d{1,2})\s+minutes?)?"
+    % (_HEDGE_ALTERNATION, _NUMBER_ALTERNATION, _NUMBER_ALTERNATION),
+    re.IGNORECASE)
+
+# "the twenty-eighth of May", "the 28th of May", "May 28", "May the 28th".
+_DATE_OF_RE = re.compile(
+    r"\b(?:the\s+)?(?P<day>%s|\d{1,2})(?:st|nd|rd|th)?\s+of\s+"
+    r"(?P<month>%s)\b"
+    % ("|".join(re.escape(one) for one in sorted(
+        _ORDINAL_WORDS, key=len, reverse=True)),
+       "|".join(_MONTH_NAMES)), re.IGNORECASE)
+_DATE_MONTH_FIRST_RE = re.compile(
+    r"\b(?P<month>%s)\s+(?:the\s+)?(?P<day>%s|\d{1,2})(?:st|nd|rd|th)?"
+    r"\b"
+    % ("|".join(_MONTH_NAMES),
+       "|".join(re.escape(one) for one in sorted(
+           _ORDINAL_WORDS, key=len, reverse=True))), re.IGNORECASE)
+
+# ---------------------------------------------------------------------
+# WHAT THE GATE ADJUDICATES, AND WHY IT IS ONLY THIS
+#
+# It adjudicates a time or a date that the sentence ASSERTS IS THE CASE
+# NOW.  Nothing else -- and that restriction is what makes the gate sound
+# rather than merely strict.
+#
+# The unrestricted version of this check was run against the 395 rows of
+# the first re-recorded session and reported 43 problems, of which ONE
+# was the real defect.  The other 42 were honest English:
+#
+#   * reminiscence -- "I was the one they phoned at three in the
+#     morning", four rows of it during character creation, about a life
+#     twenty years before the Cataclysm;
+#   * generalisation -- "layers are the whole argument at four in the
+#     morning when the house is the same temperature as the yard";
+#   * retrospect -- "the blanket still folded back exactly where I left
+#     it at half past eight", "that lamp has been burning since eight
+#     o'clock";
+#   * intention -- "three hours puts me at ten past eight";
+#   * a span -- "eleven to five in the afternoon".
+#
+# None of those states what time it is.  Refusing them would make the
+# record unwritable in a human voice, and a gate that cries wolf 42 times
+# out of 43 is a gate somebody switches off -- which is exactly the
+# failure the advisory voice check already demonstrated.  So the scope is
+# narrow ON PURPOSE, and the module is explicit about the consequence: a
+# time MENTIONED without asserting the present is not adjudicated.  What
+# covers that ground instead is the discipline the pipeline enforces
+# structurally -- the sentence is written while looking at the frame, the
+# reading of that frame is committed in the row beside it, and both are
+# published -- rather than a check that would have to guess at tense.
+# ---------------------------------------------------------------------
+
+# "it is", "it's", "it is now", "the clock reads/says/shows", "the time
+# is", "today is", "the date is".  Present tense, first person or
+# instrument: the forms in which a person states the case rather than
+# recalling, planning or measuring one.  Deliberately excludes "it has
+# been", "it was", "since", "until" and "at", which are the four ways
+# every false positive above got in.
+_ASSERTION_RE = re.compile(
+    r"(?<![a-z])(?:it\s+is\s+now|it\s+is|it's|the\s+clock\s+"
+    r"(?:reads|says|shows|said)|the\s+time\s+is|the\s+time\s+reads|"
+    r"today\s+is|the\s+date\s+is|the\s+day\s+is)(?![a-z])",
+    re.IGNORECASE)
+
+# How far past the assertion the statement may begin.  Short enough that
+# "It is cold, and I remember being phoned at three in the morning" is
+# not read as a statement of the current time, and long enough that "It
+# is ten past eight in the morning" is.
+ASSERTION_TIME_WINDOW = 16
+
+# The same, for a date, measured from the end of the time the assertion
+# carried (or from the assertion itself when it carried none) so that
+# "It is ten past eight in the morning on the twenty-eighth of May"
+# reaches its date clause.
+ASSERTION_DATE_WINDOW = 24
+
+
+def _word_number(value):
+    """Return an integer for a digit string or a number word, or None."""
+    text = str(value or "").strip().lower()
+    if not text:
+        return None
+    if text.isdigit():
+        return int(text)
+    if text in _NUMBER_WORDS:
+        return _NUMBER_WORDS[text]
+    if text in _ORDINAL_WORDS:
+        return _ORDINAL_WORDS[text]
+    if text == "quarter":
+        return 15
+    if text == "half":
+        return 30
+    return None
+
+
+def _stated_seconds(hour, minute, tail):
+    """Return seconds since midnight for a 12- or 24-hour statement.
+
+    A twelve-hour statement is ambiguous by nature, so BOTH readings are
+    returned and the comparison accepts whichever is closer -- that is the
+    honest treatment: "five in the afternoon" is 17:00, but a bare "five"
+    could be either, and refusing a sentence for the ambiguity of English
+    would catch nothing real.
+    """
+    if hour is None or not 0 <= hour <= 23:
+        return ()
+    minute = 0 if minute is None else minute
+    if not 0 <= minute <= 59:
+        return ()
+    text = tail or ""
+    base = hour % 12
+    morning = base * 3600 + minute * 60
+    afternoon = (base + 12) * 3600 + minute * 60
+    if (_MERIDIEM_AFTERNOON_RE.search(text) or
+            _MERIDIEM_AFTERNOON_SUFFIX_RE.search(text)):
+        return (afternoon,)
+    if (_MERIDIEM_MORNING_RE.search(text) or
+            _MERIDIEM_MORNING_SUFFIX_RE.search(text)):
+        return (morning,)
+    if hour >= 13:
+        return (hour * 3600 + minute * 60,)
+    return (morning, afternoon)
+
+
+def _time_from_digits(match, text):
+    """Return (candidates, hedged) for a digit reading, or None."""
+    hour = _word_number(match.group("hour"))
+    minute = _word_number(match.group("minute"))
+    if hour is None or hour > 23:
+        return None
+    tail = text[match.end():match.end() + 20]
+    explicit = hour >= 13 or match.group("hour").startswith("0")
+    if explicit:
+        candidates = (hour * 3600 + (minute or 0) * 60,)
+    else:
+        candidates = _stated_seconds(hour, minute, tail)
+    if not candidates:
+        return None
+    return (candidates, bool(match.group("hedge")))
+
+
+def _time_from_relative(match, text):
+    """Return (candidates, hedged) for "ten past eight", or None."""
+    offset = _word_number(match.group("offset"))
+    hour = _word_number(match.group("hour"))
+    if offset is None or hour is None:
+        return None
+    direction = match.group("direction").lower()
+    if direction in ("to", "before"):
+        hour = (hour - 1) % 24
+        minute = 60 - offset
+    else:
+        minute = offset
+    if minute == 60:
+        minute = 0
+        hour = (hour + 1) % 24
+    candidates = _stated_seconds(
+        hour, minute, text[match.end():match.end() + 20])
+    if not candidates:
+        return None
+    return (candidates, bool(match.group("hedge")))
+
+
+def _time_from_hour(match, _text):
+    """Return (candidates, hedged) for "eight o'clock", or None."""
+    hour = _word_number(match.group("hour"))
+    if hour is None:
+        return None
+    minute = _word_number(match.group("extra")) or 0
+    if not 0 <= minute <= 59:
+        minute = 0
+    candidates = _stated_seconds(hour, minute, match.group("tail"))
+    if not candidates:
+        return None
+    return (candidates, bool(match.group("hedge")))
+
+
+_TIME_SHAPES = (
+    (_TIME_DIGITS_RE, _time_from_digits),
+    (_TIME_RELATIVE_RE, _time_from_relative),
+    (_TIME_HOUR_RE, _time_from_hour),
+)
+
+
+def _earliest_time_in(window):
+    """Return (offset, end, reading) for the first time in `window`.
+
+    All three shapes are tried and the one that begins earliest wins, so
+    the statement adjudicated is the one the assertion actually
+    introduced rather than whichever pattern happened to be tried first.
+    """
+    best = None
+    for expression, reader in _TIME_SHAPES:
+        match = expression.search(window)
+        while match is not None:
+            reading = reader(match, window)
+            if reading is not None:
+                if best is None or match.start() < best[0]:
+                    best = (match.start(), match.end(), reading)
+                break
+            match = expression.search(window, match.start() + 1)
+    return best
+
+
+def _earliest_date_in(window):
+    """Return (offset, (day, month)) for the first date in `window`."""
+    best = None
+    for expression in (_DATE_OF_RE, _DATE_MONTH_FIRST_RE):
+        for match in expression.finditer(window):
+            day = _word_number(match.group("day"))
+            if day is not None and not 1 <= day <= 31:
+                continue
+            if best is None or match.start() < best[0]:
+                best = (match.start(), (day, match.group("month").lower()))
+            break
+    return best
+
+
+def stated_times(text):
+    """Return each time of day `text` ASSERTS, as (seconds, hedged).
+
+    `seconds` is a tuple of the candidate readings (two for an ambiguous
+    twelve-hour statement, one otherwise) and `hedged` says whether the
+    sentence claimed precision.
+
+    ONLY AN ASSERTION OF THE PRESENT IS RETURNED -- a time introduced by
+    "it is", "it's", "the clock reads" or "the time is", and beginning
+    within ASSERTION_TIME_WINDOW characters of it.  A time merely
+    mentioned is NOT returned: see the note above _ASSERTION_RE for the
+    42 honest sentences that taught this restriction, and for what covers
+    that ground instead.
+
+    Read-only, and conservative twice over: only the three shapes above
+    are recognised, so an unrecognised way of saying a time is not
+    checked rather than guessed at.
+    """
+    if not isinstance(text, str) or not text.strip():
+        return []
+    found = []
+    for anchor in _ASSERTION_RE.finditer(text):
+        window = text[anchor.end():
+                      anchor.end() + ASSERTION_TIME_WINDOW + 64]
+        reading = _earliest_time_in(window)
+        if reading is None or reading[0] > ASSERTION_TIME_WINDOW:
+            continue
+        found.append(reading[2])
+    return found
+
+
+def stated_dates(text):
+    """Return each (day, month) `text` ASSERTS.  Read-only.
+
+    `day` may be None for a statement that names only a month.  The month
+    is a lower-cased string and the day an integer, which is what
+    observed_date_parts() returns for the sidebar's own line, so the
+    comparison is between like and like.
+
+    ONLY AN ASSERTION OF THE PRESENT is returned, on the same principle
+    as stated_times() -- reached either directly ("it is the twentieth of
+    May", "today is May 20") or across the time the assertion carried
+    ("it is ten past eight in the morning on the twenty-eighth of May"),
+    which is the shape the false frame-308 statement took.
+    """
+    if not isinstance(text, str) or not text.strip():
+        return []
+    found = []
+    for anchor in _ASSERTION_RE.finditer(text):
+        reach = (ASSERTION_TIME_WINDOW + ASSERTION_DATE_WINDOW + 96)
+        window = text[anchor.end():anchor.end() + reach]
+        reading = _earliest_time_in(window)
+        start = 0
+        if reading is not None and reading[0] <= ASSERTION_TIME_WINDOW:
+            start = reading[1]
+        stated = _earliest_date_in(window[start:])
+        if stated is None or stated[0] > ASSERTION_DATE_WINDOW:
+            continue
+        found.append(stated[1])
+    return found
+
+
+def observed_date_parts(date_text):
+    """Return (day, month) read out of a sidebar date line, or None.
+
+    The line is the engine's own -- "Thursday, May 20" under the default
+    SHOW_MONTHS, or a season and a day number when it is off
+    (src/display.cpp:193-205) -- and this reads whichever it is without
+    interpreting anything else.  None means the line said nothing this
+    can compare, which is treated as "cannot check" and never as
+    agreement.
+    """
+    if not isinstance(date_text, str) or not date_text.strip():
+        return None
+    lowered = date_text.lower()
+    month = None
+    for name in _MONTH_NAMES:
+        if re.search(r"\b%s\b" % name, lowered):
+            month = name
+            break
+    day = None
+    digits = re.search(r"\b(\d{1,2})\b", lowered)
+    if digits:
+        day = int(digits.group(1))
+    if month is None and day is None:
+        return None
+    return (day, month)
+
+
+def clock_seconds_of_day(clock):
+    """Return seconds since midnight for an exact HH:MM:SS reading.
+
+    None for anything that is not one -- a coarse phrase, "???", an
+    empty reading -- because those are readings that cannot be compared
+    with a stated time rather than readings that disagree with one.
+    """
+    if not isinstance(clock, str):
+        return None
+    text = clock.strip()
+    if not CLOCK_24H_RE.match(text):
+        return None
+    hour, minute, second = (int(part) for part in text.split(":"))
+    if hour > CLOCK_MAX_HOUR or minute > CLOCK_MAX_MINUTE:
+        return None
+    if second > CLOCK_MAX_SECOND:
+        return None
+    return hour * 3600 + minute * 60 + second
+
+
+def _observed_clocks(*readings):
+    """Return the distinct comparable readings among `readings`."""
+    seen = []
+    for reading in readings:
+        seconds = clock_seconds_of_day(reading)
+        if seconds is not None and (seconds, reading) not in seen:
+            seen.append((seconds, reading))
+    return seen
+
+
+def clock_honesty_problems(commentary, clock, date_text,
+                           label="commentary", check_dates=True,
+                           also_clock=None, also_date=None):
+    """Report every time or date `commentary` states that is not so.
+
+    THE GATE THE FALSE FRAME-308 STATEMENT WALKED PAST.  Returns a list
+    of problems; empty means every time and date the sentence ASSERTS
+    agrees with a reading that was actually observed, or that it asserts
+    none.  What counts as an assertion is deliberately narrow, and the
+    note above _ASSERTION_RE says why at length.
+
+    :param commentary: the survivor's own words.
+    :param clock: the reading the sentence's author had in front of them
+        -- the previous frame's, since the commentary explains why the
+        next key is about to be pressed.
+    :param date_text: the sidebar date line for the same frame.
+    :param label: what a message calls the field.
+    :param check_dates: False says THE CALLER HOLDS NO DATE EVIDENCE AT
+        ALL, which is different in kind from a date line that could not
+        be read.  The manifest schema carries no date column, so a
+        standalone audit of that file has no channel through which a date
+        could have been observed and leaves date statements
+        unadjudicated; the write-time gate and the publication gate both
+        do have one (the telemetry sidecar and the timeline's
+        `ingame_date`), so for them a missing line means the survivor
+        could not see a date, and stating one is refused.
+    :param also_clock: a SECOND observed reading the statement may agree
+        with instead -- the frame the caption is displayed over, which the
+        auditing callers have and the writing caller does not, because at
+        write time the key has not been sent yet.  Both readings are
+        observed and both are committed, so agreeing with either is
+        honest; the asymmetry only ever makes the WRITE-time gate the
+        stricter of the two, which is the safe direction and the better
+        discipline (say what the frame shows, not what it is about to).
+    :param also_date: the same, for the date line.
+    """
+    problems = []
+    if not isinstance(commentary, str) or not commentary.strip():
+        return problems
+    observed = _observed_clocks(clock, also_clock)
+    for candidates, hedged in stated_times(commentary):
+        tolerance = HEDGED_TIME_TOLERANCE if hedged else TIME_TOLERANCE
+        if not observed:
+            if hedged:
+                continue
+            problems.append(
+                "%s states a time of day, but the clock on the frame it "
+                "belongs to was %s.  A precise time on a frame whose "
+                "sidebar could not be read is a number nobody could "
+                "see: say what the survivor could actually tell (a "
+                "hedged phrase is fine -- \"some time after dark\"), or "
+                "read the clock off the frame.  The text was: %r"
+                % (label, "not read at all" if not (clock or "").strip()
+                   else "the coarse reading %r" % clock, commentary))
+            continue
+        best, against = min(
+            ((abs(candidate - seconds), reading)
+             for candidate in candidates for seconds, reading in observed),
+            key=lambda pair: pair[0])
+        if best <= tolerance:
+            continue
+        problems.append(
+            "%s states %s, but the clock on that frame read %s -- %s "
+            "out, past the %s allowed for %s statement.  The reading of "
+            "the frame is authoritative; nothing in this record is "
+            "written from memory.  The text was: %r"
+            % (label,
+               " or ".join(_format_seconds(one) for one in candidates),
+               against, _format_seconds(int(best)),
+               _format_seconds(int(tolerance)),
+               "a hedged" if hedged else "an exact",
+               commentary))
+    if not check_dates:
+        return problems
+    observed_date = observed_date_parts(date_text)
+    alternate_date = observed_date_parts(also_date)
+    for day, month in stated_dates(commentary):
+        if observed_date is None and alternate_date is None:
+            problems.append(
+                "%s states a calendar date, but the sidebar's date line "
+                "was not read on that frame, so there is nothing to "
+                "check it against.  A date the survivor could not see "
+                "is not recorded as though she could.  The text was: %r"
+                % (label, commentary))
+            continue
+        # Agreeing with EITHER observed line is honest, on the same
+        # footing as a time: both were read off a captured frame and both
+        # are committed.  The message names the line that came closest.
+        candidates = [(observed_date, date_text),
+                      (alternate_date, also_date)]
+        best = None
+        for parts, line in candidates:
+            if parts is None:
+                continue
+            seen_day, seen_month = parts
+            month_wrong = bool(
+                month is not None and seen_month is not None and
+                month != seen_month)
+            day_wrong = bool(
+                day is not None and seen_day is not None and
+                day != seen_day)
+            score = int(month_wrong) + int(day_wrong)
+            if best is None or score < best[0]:
+                best = (score, month_wrong, day_wrong, line)
+        if best is None or best[0] == 0:
+            continue
+        _, month_wrong, day_wrong, line = best
+        if month_wrong:
+            problems.append(
+                "%s states the month as %r, but the sidebar's date line "
+                "on that frame read %r.  A date is not approximate.  "
+                "The text was: %r"
+                % (label, month, line, commentary))
+        if day_wrong:
+            problems.append(
+                "%s states the day of the month as %d, but the "
+                "sidebar's date line on that frame read %r.  A date is "
+                "not approximate: the twenty-eighth is not the "
+                "twentieth.  The text was: %r"
+                % (label, day, line, commentary))
+    return problems
+
+
+def _format_seconds(total):
+    """Render seconds since midnight, or a duration, as HH:MM:SS."""
+    total = int(total)
+    return "%02d:%02d:%02d" % (total // 3600, (total % 3600) // 60,
+                               total % 60)
 
 
 def find_placeholder_words(text):
     """Return the placeholder markers in `text`, sorted.
 
     Whole-word and case-insensitive, so ordinary prose is not caught.
-    Unlike :func:`find_meta_vocabulary` this is NOT advisory: a hit
-    means the field was never filled in, and the callers below treat it
-    as a defect in the record rather than a note about its tone.
+    Like :func:`find_meta_vocabulary` a hit is a refusal, and the two are
+    kept separate because the remedy differs: a sentinel means the field
+    was never filled in and has to be written, while a meta remark is a
+    real observation recorded in the wrong place.
     """
     if not isinstance(text, str):
         return []
@@ -966,7 +1721,12 @@ def sentinel_problems(action, commentary, label):
 
 
 def _validated_commentary(value):
-    """Return the survivor's own words, with an advisory if needed."""
+    """Return the survivor's own words, or refuse them.
+
+    Length that is merely long is advised about and recorded as given;
+    an out-of-character sentence is REFUSED, because it would go verbatim
+    into the transcript and onto the film as a caption.
+    """
     text = _validated_text(value, "commentary")
     if len(text) > CUE_ADVISORY_LENGTH:
         # Advisory, not a refusal: this is about a caption being
@@ -981,14 +1741,18 @@ def _validated_commentary(value):
             "is at most 10 s, and this becomes one SRT cue): %r -- "
             "recorded as given, but consider saying it in a sentence"
             % (len(text), text[:80] + "..."))
-    hits = find_meta_vocabulary(text)
-    if hits:
-        _warn(
-            "commentary carries out-of-character wording (%s): %r -- "
-            "the in-character record stays in the survivor's voice, "
-            "and engineering observations belong in "
-            "playthrough/TECHNICAL_NOTES.md"
-            % (", ".join(hits), text))
+    # THE VOICE GATE, AND IT REFUSES.  It used to warn and append the
+    # row anyway, which meant a stderr line during a four-hundred-row
+    # session decided whether an engineering observation reached the
+    # committed transcript and the film's caption track.  By the time
+    # anybody read that line the row was evidence, and evidence is not
+    # rewritten afterwards -- so the refusal happens here, before the
+    # row exists.  See META_PATTERNS for why the patterns are precise
+    # rather than blunt: this has to be able to refuse "the engine's own
+    # pathfinding" without refusing "mechanical engineer".
+    problem = meta_vocabulary_problem(text, "commentary")
+    if problem is not None:
+        raise ManifestError(problem)
     return text
 
 
@@ -1720,19 +2484,21 @@ def row_field_problems(row, number):
             problems.append(
                 "row %d ingame_clock is neither a reading nor null: "
                 "%r" % (number, clock))
-    hits = find_meta_vocabulary(row["commentary"])
-    if hits:
-        # Advisory, never a problem: the match is a blunt substring
-        # test and a false positive must not fail the gate.
-        _warn_once(
-            "commentary-meta",
-            "row %d commentary carries out-of-character wording (%s); "
-            "advisory only, nothing was altered"
-            % (number, ", ".join(hits)))
-    # A HARD PROBLEM, unlike the advisory above.  See the PLACEHOLDER
-    # sentinels beside META_VOCABULARY for why the two are treated
-    # differently: a field marked as not yet filled in is not a record
-    # of anything, and every other check here passes straight over it.
+    # A HARD PROBLEM, not an advisory.  The patterns are precise enough
+    # to be one now (META_PATTERNS), and the requirement that meta and
+    # "gamey" remarks stay out of the in-character record is not
+    # satisfied by a warning nobody reads: a row that carries one is
+    # reported by every gate that reads this file, including the
+    # committed-artifact suite.
+    voice = meta_vocabulary_problem(row["commentary"],
+                                    "row %d commentary" % number)
+    if voice is not None:
+        problems.append(voice)
+    # A HARD PROBLEM, like the voice gate above and for a different
+    # reason.  See the PLACEHOLDER sentinels beside META_PATTERNS for why
+    # the two stay separate: a field marked as not yet filled in is not a
+    # record of anything, and every other check here passes straight
+    # over it.
     problems.extend(sentinel_problems(
         row["action"], row["commentary"], "row %d" % number))
     return problems
@@ -1833,19 +2599,76 @@ def _frame_problems(rows, frames_dir, root=None):
     return problems
 
 
+def honesty_problems(rows, dates=None):
+    """Report every stated time or date the record contradicts.
+
+    THE COMMITTED-RECORD HALF OF THE CLOCK-HONESTY GATE.  session.py
+    refuses a sentence before the key is sent; this holds the FILE to the
+    same rule afterwards, so a manifest that was assembled some other way
+    -- an older session, a hand edit, a run whose gate was bypassed -- is
+    still audited by every stage that reads it.
+
+    EACH ROW IS JUDGED AGAINST THE READING ITS AUTHOR HAD IN FRONT OF
+    THEM, which is the PREVIOUS row's clock rather than its own.  That is
+    not a convenience: `commentary` is the reason the survivor pressed the
+    key, so it belongs to the moment BEFORE the key, and the clock on the
+    row's own frame is the reading AFTER whatever time that action
+    consumed.  Judging "five past eight, so I am going to lie down"
+    against the clock that a nine-hour sleep produced would refuse an
+    honest sentence.  The first row has nothing before it and is judged
+    against its own reading.
+
+    :param rows: the manifest rows, in order.
+    :param dates: optional {frame: sidebar date line}, as the telemetry
+        sidecar records it.  The manifest schema carries no date column,
+        so without this there is no channel through which a date could
+        have been observed and date statements are left unadjudicated --
+        NOT treated as unreadable, which would refuse every honest
+        sentence that names the day.  Supply it and each date statement is
+        held to the line beside it.
+    """
+    problems = []
+    check_dates = isinstance(dates, dict) and bool(dates)
+    previous_clock = None
+    previous_date = None
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        frame = row.get("frame")
+        commentary = row.get("commentary")
+        clock = row.get("ingame_clock")
+        date_text = None
+        if isinstance(dates, dict) and isinstance(frame, int):
+            date_text = dates.get(frame)
+        against_clock = (clock if previous_clock is None
+                         else previous_clock)
+        against_date = (date_text if previous_date is None
+                        else previous_date)
+        problems.extend(clock_honesty_problems(
+            commentary, against_clock, against_date,
+            "row %s commentary" % frame, check_dates=check_dates,
+            also_clock=clock, also_date=date_text))
+        previous_clock = clock
+        if date_text:
+            previous_date = date_text
+    return problems
+
+
 def verify_manifest(manifest_path=None, frames_dir=None,
                     require_frames=False, root=None):
     """Return a list of problems with the manifest.  Read-only.
 
-    An empty list means the file satisfies the schema, the byte shape
-    and the one-row-per-frame invariant.  The schema half is
-    row_problems(), the shared gate timeline.py holds its rows to as
-    well, so this function adds the checks that need the FILE -- its
-    byte shape, and with `require_frames` the existence of the capture
-    each row names -- rather than restating the row rules.  Nothing is
-    repaired, reordered or rewritten: a problem is reported so that a
-    human can decide, which for this file means a note in
-    playthrough/TECHNICAL_NOTES.md rather than an edit here.
+    An empty list means the file satisfies the schema, the byte shape,
+    the one-row-per-frame invariant, the voice gate and the clock-honesty
+    gate.  The schema half is row_problems(), the shared gate timeline.py
+    holds its rows to as well, and honesty_problems() holds each row's
+    stated times and dates to the readings recorded beside them; this
+    function adds the checks that need the FILE -- its byte shape, and
+    with `require_frames` the existence of the capture each row names --
+    rather than restating the row rules.  Nothing is repaired, reordered
+    or rewritten: a problem is reported so that a human can decide, which
+    for this file means a note in playthrough/TECHNICAL_NOTES.md rather
+    than an edit here.
     """
     if manifest_path is None:
         manifest_path = default_manifest_path()
@@ -1858,6 +2681,7 @@ def verify_manifest(manifest_path=None, frames_dir=None,
         return [str(err)]
     problems = _shape_problems(path)
     problems.extend(row_problems(rows))
+    problems.extend(honesty_problems(rows))
     if require_frames:
         if frames_dir is None:
             frames_dir = default_frames_dir()

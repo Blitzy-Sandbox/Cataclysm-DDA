@@ -65,16 +65,29 @@ WHY A FAILED STEP STOPS THE SESSION, AND WHY IT NO LONGER LOSES A
 FRAME.  A keystroke is not undoable: once xdotool has delivered it the
 engine has already acted, and no retry can put the game back.  So the
 session is marked aborted and every later step refuses -- but the
-pre-send journal means the step itself is RECOVERABLE.  The next open
-finds the outstanding entry and finishes that index: it appends the row
-from the payload the capture reported, or, when no frame exists for the
-key at all, captures one at the SAME index and records the attempt count
-and `recovered: true` beside it.  This is the failure the first recorded
-session could not repair -- a delivered `Y` whose black capture the
-non-blank gate correctly refused, leaving a keystroke with no frame and
-no row -- and it is why the journal exists.  A key REFUSED before
-anything is sent is the opposite case: nothing happened, nothing was
-journalled, and the session stays usable.
+journal means the step itself is RECOVERABLE.  The next open finds the
+outstanding entry and finishes that index: it appends the row from the
+payload the capture reported, or, when no frame exists for the key at
+all, re-authenticates the engine and captures one at the SAME index,
+recording the attempt count and `recovered: true` beside it.  This is
+the failure the first recorded session could not repair -- a delivered
+`Y` whose black capture the non-blank gate correctly refused, leaving a
+keystroke with no frame and no row -- and it is why the journal exists.
+A key REFUSED before anything is sent is the opposite case: nothing
+happened, nothing was journalled, and the session stays usable.
+
+AND WHERE RECOVERY STOPS, BECAUSE ONE STATE IS GENUINELY UNKNOWABLE.
+The journal records `sending` before the key leaves and `delivered` only
+once xdotool has returned 0.  An interruption in between -- or xdotool
+itself failing, which says nothing about whether the X server acted --
+leaves `sending`, and NOTHING here resolves that: capturing a frame for
+it would invent evidence for a keystroke that may never have happened,
+and discarding it would drop one that did.  So the session HALTS and
+`session.py reconcile --outcome delivered|not-delivered` is where
+somebody who has looked at the game says which it was.  The earlier
+design wrote one phase before the send and treated it on recovery as
+delivered, which auto-committed a frame, a row and a first-person
+sentence for a key that had not been pressed.
 
 THE COUNTER IS RECOVERED FROM THE MANIFEST, NEVER FROM A DIRECTORY.
 manifest.last_recorded_frame() is the append-only record of what was
@@ -116,6 +129,18 @@ character, because an existing save must be CONTINUED rather than
 replaced.  A fresh checkout has no save at all, so this run creates a
 character -- and the resume branch is implemented in full regardless,
 since a branch that is only correct when it never runs is not correct.
+
+AND THE PIN IS ENFORCED AT THE KEY, not only observed in the save tree.
+A resumed session is in the `menu` UI phase until a captured frame shows
+the sidebar, and while it is there the five main-menu hotkeys that open
+a new survivor are REFUSED BEFORE send_key is reached -- because
+comparing the save tree with what it looked like a keystroke ago detects
+a second character only after the keystroke that created one has already
+landed.  The save-set comparison now also runs IMMEDIATELY after each
+key rather than before the next one, and when the sidebar first appears
+the engine's own <userdir>/config/lastworld.json must name the pinned
+world and character (src/main_menu.cpp:1080-1083), so "the existing save
+was continued" is a checked property rather than an assurance.
 
 CHARACTER CREATION HAS EXACTLY ONE PERMITTED DOOR.  The new-game
 submenu strings are quoted verbatim from src/main_menu.cpp:475-483:
@@ -169,6 +194,7 @@ confined to the playthrough/ tree in every case.
 from __future__ import annotations
 
 import argparse
+import base64
 import fcntl
 import itertools
 import json
@@ -438,6 +464,47 @@ MENU_FORBIDDEN_ENTRIES = (
     "Play Now!  (<D|d>efault Scenario)",
     "Play N<o|O>w!",
 )
+
+# EVERY HOTKEY THAT OPENS A NEW SURVIVOR, taken from the five entries
+# above -- the one permitted door and the four that are shut.  They are
+# the letters inside the <>: `u`/`U` for Custom Character, `p`/`P` for
+# Preset, `r`/`R` for Random, `d`/`D` for Play Now! (Default Scenario)
+# and `o`/`O` for Play Now!.
+#
+# WHY THIS SET IS ONLY REFUSED IN THE MENU PHASE OF A RESUMED SESSION.
+# Every one of these letters is also an ordinary in-world command -- `r`
+# reads, `p` and `o` and `d` are all bound to something a survivor does
+# -- so refusing them outright would make a session unplayable, and
+# refusing them by "what screen are we on" is the only refusal that is
+# both correct and enforceable.  A resumed session is at the main menu
+# until the pinned character is loaded, and while it is there NONE of
+# these may be pressed: the existing save is continued, never replaced.
+MENU_NEW_SURVIVOR_HOTKEYS = (
+    "u", "U",   # Custom Character  -- the only permitted door, and even
+                #                      it is shut while resuming
+    "p", "P",   # Preset Character  -- the template picker
+    "r", "R",   # Random Character
+    "d", "D",   # Play Now!  (Default Scenario)
+    "o", "O",   # Play Now!
+)
+
+# The two UI phases this module distinguishes, and the ONLY evidence it
+# accepts for the second.  `menu` is any screen the engine shows before a
+# survivor is in the world; `in-world` begins when a captured frame
+# carries a sidebar reading -- an exact clock, a coarse time phrase or
+# the date line -- because the sidebar is drawn for a loaded character
+# and for nothing else.  The phase is therefore OBSERVED from the pixels
+# that were photographed, never asserted by the driver.
+UI_PHASE_MENU = "menu"
+UI_PHASE_IN_WORLD = "in-world"
+
+# <userdir>/config/lastworld.json, which main_menu::load_game() writes AT
+# THE MOMENT a character is loaded -- `world_name` and the decoded
+# `character_name` (src/main_menu.cpp:1080-1083), and again on save
+# (src/game_io.cpp:763-766).  It is the engine's own statement about
+# which survivor is being played, which is what makes "the pinned
+# character was loaded" checkable rather than assumed.
+LASTWORLD_NAME = "lastworld.json"
 
 # data/json/scenarios.json: "id": "missed", "name": "Missed",
 # "points": 0, allowed_locs beginning sloc_house / sloc_house_boarded,
@@ -920,6 +987,93 @@ def keybindings_path(root: Optional[str] = None) -> str:
         ENV_KEYBINDINGS, fallback, "the keybindings file", root)
 
 
+def lastworld_path(root: Optional[str] = None) -> str:
+    """Return <userdir>/config/lastworld.json.
+
+    PATH_INFO::lastworld() = config_dir + "lastworld.json"
+    (src/path_info.cpp:316-318).  Absent until a character has been
+    loaded or saved, which is itself the answer on a fresh userdir.
+    """
+    return os.path.join(config_dir_path(root), LASTWORLD_NAME)
+
+
+def decoded_character_name(save_name: object) -> Optional[str]:
+    """Decode `#<b64>.sav` into the survivor's own name, or None.
+
+    The engine names a character file `#` + base64 of the save id
+    (src/catacharset.cpp:266-303, called from src/game_io.cpp), and
+    lastworld.json records the DECODED name -- so comparing the two needs
+    this one decode.  Two details of the engine's encoder matter and are
+    the reason this is not a plain b64decode:
+
+      * its alphabet's 63rd character is '-' rather than '/'
+        (src/catacharset.cpp:215), hence `altchars`;
+      * the '#' is a marker and not part of the payload
+        (src/catacharset.cpp:269-272).
+
+    Returns None for anything that does not decode to valid UTF-8.  An
+    undecodable name is reported as unknown, never guessed at: it is used
+    to CHECK which survivor was loaded, and a wrong answer there would
+    approve continuing the wrong one.
+    """
+    if not isinstance(save_name, str) or not save_name:
+        return None
+    body = save_name
+    for suffix in (COMPRESSED_SAVE_EXTENSION, SAVE_EXTENSION):
+        if body.endswith(suffix):
+            body = body[:-len(suffix)]
+            break
+    if not body.startswith(CHARACTER_PREFIX):
+        return None
+    body = body[len(CHARACTER_PREFIX):]
+    if not body or len(body) % 4 != 0:
+        return None
+    try:
+        return base64.b64decode(
+            body.encode("ascii"), altchars=b"+-",
+            validate=True).decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        return None
+
+
+def read_lastworld(path: Optional[str] = None,
+                   root: Optional[str] = None,
+                   ) -> Optional[Tuple[str, str]]:
+    """Return (world_name, character_name) from lastworld.json, or None.
+
+    THE ENGINE'S OWN STATEMENT about which survivor is being played,
+    written at the moment a character is loaded
+    (src/main_menu.cpp:1080-1083).  None means the question has no answer
+    yet -- no file, or a file this module will not interpret -- and every
+    caller treats that as "not loaded" rather than as permission.
+    """
+    target = lastworld_path(root) if path is None else _confined(
+        path, "the last-world record", root)
+    try:
+        with open(target, "r", encoding="utf-8") as handle:
+            text = handle.read()
+    except FileNotFoundError:
+        return None
+    except OSError as err:
+        raise SessionError(
+            "cannot read %s: %s.  It is the engine's own record of which "
+            "survivor was loaded, and a resumed session is held against "
+            "it" % (target, err)) from err
+    try:
+        record = json.loads(text)
+    except ValueError:
+        return None
+    if not isinstance(record, dict):
+        return None
+    world = record.get("world_name")
+    character = record.get("character_name")
+    if not isinstance(world, str) or not isinstance(character, str):
+        return None
+    if not world.strip() or not character.strip():
+        return None
+    return world, character
+
+
 # ---------------------------------------------------------------------
 # THE STEP TRANSACTION'S SCRATCH STATE: the lock and the journal.
 #
@@ -944,14 +1098,54 @@ JOURNAL_NAME = "step.json"
 DEFAULT_LOCK_TIMEOUT = 120
 ENV_LOCK_TIMEOUT = "PLAYTHROUGH_SESSION_LOCK_TIMEOUT"
 
-# The journal's two phases.  `intent` means a keystroke is about to be
-# delivered, or was delivered and nothing since has completed;
-# `captured` means the frame is committed to playthrough/frames/ and its
-# payload is recorded here, so the row can be completed without
-# re-photographing anything.
-JOURNAL_PHASE_INTENT = "intent"
+# THE JOURNAL'S THREE PHASES, AND WHY THERE ARE THREE.
+#
+# There used to be two, `intent` and `captured`, and `intent` was
+# written BEFORE xdotool ran.  Recovery then treated every `intent` for
+# the next index as a delivered keystroke: it photographed the screen at
+# that index and appended a row carrying the journalled key, action and
+# commentary.  So an interruption in the window between the journal write
+# and the key actually leaving -- a kill, an OOM, a lost X connection --
+# produced a frame, a manifest row and a first-person sentence for a
+# keystroke THAT NEVER HAPPENED, automatically, with `recovered: true`
+# as the only trace.  That is fabricated evidence, which is the one thing
+# this record may not contain.
+#
+# The phases now say what is actually known:
+#
+#   `sending`    the key has NOT been confirmed delivered.  It may have
+#                been (xdotool's own failure says nothing about whether
+#                the X server acted) or it may not.  DELIVERY IS
+#                UNKNOWN, and an unknown is never resolved by this
+#                module: recovery HALTS and asks for a decision from
+#                somebody who can look at the game.
+#   `delivered`  xdotool returned 0, so the keystroke reached the X
+#                server, and no frame is recorded for it yet.  Recovery
+#                photographs that index -- after re-authenticating and
+#                re-focusing the engine -- and appends the row.
+#   `captured`   the frame is committed to playthrough/frames/ and the
+#                payload capture.sh reported for it is in the journal, so
+#                the row is completed without re-photographing anything.
+#
+# The version is 2 BECAUSE of that change.  A version-1 journal says
+# `intent`, whose meaning was ambiguous, so it is refused rather than
+# reinterpreted: nothing may quietly decide after the fact that an
+# ambiguous record meant "delivered".
+JOURNAL_PHASE_SENDING = "sending"
+JOURNAL_PHASE_DELIVERED = "delivered"
 JOURNAL_PHASE_CAPTURED = "captured"
-JOURNAL_VERSION = 1
+JOURNAL_PHASES = (
+    JOURNAL_PHASE_SENDING,
+    JOURNAL_PHASE_DELIVERED,
+    JOURNAL_PHASE_CAPTURED,
+)
+JOURNAL_VERSION = 2
+
+# What an operator declares to `session.py reconcile` about a `sending`
+# journal, having established from the game itself which way it went.
+RECONCILE_DELIVERED = "delivered"
+RECONCILE_NOT_DELIVERED = "not-delivered"
+RECONCILE_OUTCOMES = (RECONCILE_DELIVERED, RECONCILE_NOT_DELIVERED)
 
 
 def _digest_of(text: str) -> str:
@@ -3003,6 +3197,57 @@ def append_observation(path: str, row: Mapping[str, object],
     return dict(row)
 
 
+def _reading_or_none(row: Mapping[str, object],
+                     name: str) -> Optional[str]:
+    """Return one sidecar column as text, or None when it is empty.
+
+    An empty reading and an absent one are the same fact -- nothing was
+    observed -- and both must arrive at the honesty gate as None rather
+    than as an empty string that a comparison could mistake for a value.
+    """
+    value = row.get(name)
+    text = str(value).strip() if value is not None else ""
+    return text or None
+
+
+def _observation_recorded(path: str, frame: int) -> bool:
+    """True when the telemetry sidecar already holds `frame`'s row.
+
+    Read-only, and deliberately tolerant of everything except an answer
+    it cannot give.  A sidecar that does not exist holds no rows; a line
+    that will not parse is skipped, because this asks ONE question --
+    "is this index recorded?" -- and a malformed neighbour is neither a
+    yes nor a no for the index being asked about.  verify_manifest() and
+    timeline.py are where a malformed sidecar is reported; here it must
+    not turn a missing row into a present one.
+
+    :raises RecordError: when the file exists and cannot be read at all,
+        because then the question genuinely has no answer and the caller
+        is about to discard the journal that could rebuild it.
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            lines = handle.readlines()
+    except FileNotFoundError:
+        return False
+    except OSError as err:
+        raise RecordError(
+            "cannot read the telemetry sidecar %s: %s.  A journal is "
+            "not discarded while it is unknown whether the row it could "
+            "rebuild is already there" % (path, err)) from err
+    for line in lines:
+        text = line.strip()
+        if not text:
+            continue
+        try:
+            row = json.loads(text)
+        except ValueError:
+            continue
+        if isinstance(row, dict) and row.get("frame") == frame:
+            return True
+    return False
+
+
 def _truncate_back(descriptor: int, offset: int, path: str) -> None:
     """Remove the bytes a failing append had begun to write.
 
@@ -3176,7 +3421,8 @@ class Session:
                  require_durable: bool = True,
                  root: Optional[str] = None,
                  lock_timeout: Optional[int] = None,
-                 requested_world: Optional[str] = None) -> None:
+                 requested_world: Optional[str] = None,
+                 settle_journal: bool = True) -> None:
         """Open a session against an existing or an empty record.
 
         Opening takes the step lock, settles any journal a previous run
@@ -3212,6 +3458,13 @@ class Session:
             step; $PLAYTHROUGH_SESSION_LOCK_TIMEOUT by default.
         :param requested_world: which world to continue when more than
             one is resumable; $PLAYTHROUGH_RESUME_WORLD by default.
+        :param settle_journal: False opens WITHOUT completing an
+            outstanding step, which is what `reconcile` needs and the
+            only thing it is for.  An ambiguous journal makes an ordinary
+            open raise, so a session that is being opened in order to
+            RESOLVE that journal cannot settle it first.  Every other
+            caller leaves this True: skipping recovery is how a step
+            would be lost.
         :raises SessionError: when the step lock cannot be taken, or the
             pinned mode contradicts $PLAYTHROUGH_SESSION_MODE.
         :raises RecordError: when the manifest and the frames directory
@@ -3267,7 +3520,8 @@ class Session:
             # An interrupted step is completed BEFORE the record is
             # verified, because an interrupted step is exactly what
             # makes the record fail verification.
-            self._recovered = self._settle_journal()
+            self._recovered: Tuple[str, ...] = (
+                self._settle_journal() if settle_journal else ())
             # The counter, recovered from the record rather than
             # invented.
             self._frame = self._recover_counter()
@@ -3276,6 +3530,12 @@ class Session:
             self._fingerprint = {
                 world.name: world.characters
                 for world in self._pin.worlds}
+            # THE UI PHASE, observed rather than declared.  A create run
+            # is at the menu until its survivor exists too, but only a
+            # RESUME run has anything refused while it is there -- see
+            # MENU_NEW_SURVIVOR_HOTKEYS for why the refusal has to be
+            # scoped to the screen rather than to the letter.
+            self._ui_phase = self._observed_ui_phase()
         except BaseException:
             self._lock.release()
             raise
@@ -3461,38 +3721,158 @@ class Session:
             return 0
         return manifest.last_recorded_frame(self._manifest, self._root)
 
+    def _validated_journal(self,
+                           record: Mapping[str, object],
+                           ) -> Dict[str, object]:
+        """Return the journal's fields, every one of them checked.
+
+        NOTHING IN A JOURNAL IS TAKEN ON TRUST.  It is scratch state
+        outside the working tree, written by a process that is no longer
+        running, and what it drives is a capture and an append to the
+        append-only record -- so a field this module does not check is a
+        field that can steer evidence.  Six of them used to be written
+        and never read back: the version, the phase, the manifest, the
+        frames directory, the display and the attempt count.  A journal
+        from a DIFFERENT checkout or a different X display would have
+        been completed against this one's record.
+
+        Every failure here raises rather than discarding: the record
+        describes a keystroke that may have been delivered, and a
+        keystroke cannot be taken back.
+        """
+        version = record.get("version")
+        if version != JOURNAL_VERSION:
+            raise RecordError(
+                "the step journal %s is version %r; this module writes "
+                "and understands version %d.  Version 1 recorded a "
+                "phase called 'intent' that did not distinguish a key "
+                "which had been delivered from one that had not, so it "
+                "is REFUSED rather than reinterpreted -- deciding after "
+                "the fact that an ambiguous record meant 'delivered' is "
+                "how a keystroke that never happened acquires a frame "
+                "and a sentence.  Establish from the game what happened "
+                "and run `session.py reconcile`"
+                % (self._journal, version, JOURNAL_VERSION))
+        phase = record.get("phase")
+        if phase not in JOURNAL_PHASES:
+            raise RecordError(
+                "the step journal %s records phase %r, which is not one "
+                "of %s.  A phase this module cannot interpret says "
+                "nothing about whether a keystroke was delivered, and "
+                "an uninterpretable state is not resolved by guessing"
+                % (self._journal, phase, ", ".join(JOURNAL_PHASES)))
+        frame = record.get("frame")
+        if not isinstance(frame, int) or isinstance(frame, bool):
+            raise RecordError(
+                "the step journal %s records frame %r, which is not an "
+                "index" % (self._journal, frame))
+        try:
+            validated_frame(frame)
+            validated_key = validate_key(record.get("key"))
+        except SessionError as err:
+            raise RecordError(
+                "the step journal %s cannot be believed (%s).  It "
+                "records a keystroke that may have been delivered, so "
+                "it is not discarded silently"
+                % (self._journal, err)) from err
+        for name, expected in (
+                ("manifest", manifest.relative_to_repo(self._manifest)),
+                ("frames_dir",
+                 manifest.relative_to_repo(self._frames))):
+            found = record.get(name)
+            if found != expected:
+                raise RecordError(
+                    "the step journal %s was written against %s %r, "
+                    "but this session's is %r.  A journal belongs to "
+                    "ONE record: completing it against another would "
+                    "append this keystroke's row to a manifest it was "
+                    "never part of"
+                    % (self._journal, name, found, expected))
+        display = record.get("display")
+        current = resolve_display()
+        if display != current:
+            raise RecordError(
+                "the step journal %s was written against display %r and "
+                "this session is on %r.  The keystroke it records was "
+                "sent to a different X server, so the window it reached "
+                "and the screen this session would photograph are not "
+                "the same screen"
+                % (self._journal, display, current))
+        attempts = record.get("capture_attempts")
+        if not isinstance(attempts, int) or isinstance(attempts, bool) \
+                or attempts < 1:
+            raise RecordError(
+                "the step journal %s records capture_attempts %r, which "
+                "is not a count of at least one"
+                % (self._journal, attempts))
+        payload = record.get("payload")
+        if phase == JOURNAL_PHASE_CAPTURED and not isinstance(
+                payload, dict):
+            raise RecordError(
+                "the step journal %s says frame %d was captured but "
+                "carries no payload, so there is nothing to complete "
+                "the row from.  The phase and the payload are written "
+                "in one durable operation, so this combination means "
+                "the file was altered"
+                % (self._journal, frame))
+        return {
+            "phase": phase,
+            "frame": frame,
+            "key": validated_key,
+            "action": assert_action_derived(
+                validated_key, record.get("action")),
+            "commentary": _required_text(
+                record.get("commentary"), "the journal's commentary"),
+            "capture_attempts": attempts,
+            "payload": ({str(name): str(value)
+                         for name, value in payload.items()}
+                        if isinstance(payload, dict) else None),
+        }
+
     def _settle_journal(self) -> Tuple[str, ...]:
-        """Complete or discard an interrupted step.  Returns what it did.
+        """Complete, halt on, or discard an interrupted step.
 
         THE RECOVERY HALF OF THE TRANSACTION.  A keystroke cannot be
         taken back, so the only way a failure after one has been
-        delivered can leave a sound record is if the intent to send it
-        was made durable FIRST and the step is finished afterwards.  This
-        is that finish, and it runs under the step lock before anything
-        else reads the record.
+        delivered can leave a sound record is if the fact of sending it
+        was made durable and the step is finished afterwards.  This is
+        that finish, and it runs under the step lock before anything else
+        reads the record.
 
-        Four states, each with exactly one honest answer:
+        Five states, each with exactly one honest answer:
 
         * no journal -- nothing was in flight;
         * a journal for an index the manifest already holds -- the row
-          landed and only the journal outlived it; it is discarded;
+          landed and only the journal outlived it.  Its TELEMETRY ROW is
+          confirmed present first, and repaired from the journal's own
+          payload if the interruption fell between the two appends,
+          because the sidecar carries the sidebar DATE line timeline.py
+          needs to tell a crossing of midnight from a clock that read
+          backwards.  Only then is the journal discarded;
         * `captured` for the next index -- the frame is committed to
           playthrough/frames/ and the journal holds the payload
-          capture.sh reported for it, so the row is appended from that
-          payload.  Nothing is measured again and nothing is invented:
-          every value came from the capture that really happened;
-        * `intent` for the next index -- the key WAS delivered and no
-          frame exists for it, which is the case that used to leave a
-          permanent gap in the record.  The frame is captured NOW, at
-          the SAME index, and the row is appended with the journal's own
-          key, action and commentary.  The sidecar records
-          `recovered: true` and the attempt count, so the later capture
-          is visible rather than passed off as a first one.
+          capture.sh reported for it.  The payload is re-checked against
+          the frame ON DISK before it is believed, and the row is then
+          appended from it.  Nothing is measured again and nothing is
+          invented;
+        * `delivered` for the next index -- xdotool returned 0, so the
+          key reached the X server, and no frame exists for it.  The
+          engine window is re-found, re-authenticated against the
+          process behind it and re-focused, and the frame is captured
+          NOW at the SAME index.  The sidecar records `recovered: true`
+          and the attempt count, so the later capture is visible rather
+          than passed off as a first one;
+        * `sending` for the next index -- DELIVERY IS UNKNOWN.  This
+          HALTS.  It is not photographed, not committed and not
+          discarded, because both answers are consistent with the file:
+          the key may have reached the game or it may not, and this
+          module cannot tell.  Only somebody who can look at the game
+          can, and `session.py reconcile` is where they say so.
 
-        An `intent` whose frame nevertheless exists is the narrow window
-        between capture.sh committing the PNG and this module recording
-        that it had: the frame is real, so it is kept and its clock is
-        re-read from the pixels by ocr_clock.py -- the same authority
+        An interruption between capture.sh committing the PNG and this
+        module recording that it had leaves `delivered` with the frame
+        already on disk.  The frame is real, so it is kept and its clock
+        is re-read from the pixels by ocr_clock.py -- the same authority
         that read it the first time -- rather than being invented or
         thrown away.
         """
@@ -3500,28 +3880,21 @@ class Session:
         record = read_journal(self._journal)
         if record is None:
             return ()
-        frame = record.get("frame")
-        key = record.get("key")
-        if not isinstance(frame, int) or isinstance(frame, bool):
-            raise RecordError(
-                "the step journal %s records frame %r, which is not an "
-                "index" % (self._journal, frame))
-        try:
-            validated_frame(frame)
-            validated_key = validate_key(key)
-        except SessionError as err:
-            raise RecordError(
-                "the step journal %s cannot be believed (%s).  It "
-                "records a keystroke that may have been delivered, so "
-                "it is not discarded silently"
-                % (self._journal, err)) from err
+        checked = self._validated_journal(record)
+        phase = str(checked["phase"])
+        frame = int(checked["frame"])
+        validated_key = str(checked["key"])
+        action = str(checked["action"])
+        commentary = str(checked["commentary"])
+        attempts = int(checked["capture_attempts"])
+        payload = checked["payload"]
         last = self._last_recorded()
         if frame <= last:
+            note = self._settle_recorded_journal(frame, validated_key,
+                                                 action, payload)
             clear_journal(self._journal)
-            LOG.info("discarded a stale journal entry for frame %d, "
-                     "which the manifest already records", frame)
-            return ("frame %d was already recorded; the journal entry "
-                    "for it was stale and has been discarded" % frame,)
+            LOG.info("%s", note)
+            return (note,)
         if frame != last + 1:
             raise RecordError(
                 "the step journal %s records frame %d but the manifest "
@@ -3530,22 +3903,44 @@ class Session:
                 "was edited or a journal was carried between "
                 "checkouts; this is not reconciled by guessing"
                 % (self._journal, frame, last))
-        action = assert_action_derived(
-            validated_key, record.get("action"))
-        commentary = _required_text(
-            record.get("commentary"), "the journal's commentary")
-        payload = record.get("payload")
-        attempts = record.get("capture_attempts")
-        attempts = attempts if isinstance(attempts, int) else 1
-        if record.get("phase") == JOURNAL_PHASE_CAPTURED and isinstance(
-                payload, dict):
+        if phase == JOURNAL_PHASE_SENDING:
+            # THE AMBIGUOUS STATE.  Nothing is captured, nothing is
+            # committed and nothing is discarded -- see the class of
+            # defect this refusal exists for in the JOURNAL_PHASE_*
+            # commentary above.
+            raise RecordError(
+                "THE STEP JOURNAL %s IS AMBIGUOUS AND THIS SESSION WILL "
+                "NOT GUESS.  It records that '%s' was about to be sent "
+                "for frame %d, and the run ended before delivery was "
+                "confirmed -- so the key may have reached the game or it "
+                "may not, and nothing on this host can tell which.  "
+                "Capturing a frame and appending a row from here would "
+                "invent evidence for a keystroke that may never have "
+                "happened, and appending nothing would drop one that "
+                "did.\n"
+                "  Look at the game and establish which it was (the "
+                "screen itself, and %s, which holds every frame up to "
+                "%d), then say so:\n"
+                "    session.py reconcile --outcome %s   # it DID land\n"
+                "    session.py reconcile --outcome %s   # it did NOT\n"
+                "Nothing else in this session runs until then."
+                % (self._journal, validated_key, frame,
+                   manifest.relative_to_repo(self._frames), last,
+                   RECONCILE_DELIVERED, RECONCILE_NOT_DELIVERED))
+        if phase == JOURNAL_PHASE_CAPTURED:
+            # THE PAYLOAD IS RE-CHECKED AGAINST THE FRAME ON DISK before
+            # it is believed.  It arrives from a file this session did
+            # not write, and it decides the row's `file`, `real_ts` and
+            # clock: an index that disagrees with the capture on disk, or
+            # a capture that is no longer there, has to fail here rather
+            # than become a row.
+            assert_payload_matches(frame, payload or {}, self._frames)
             note = ("frame %d was captured before the interruption; its "
                     "row has been appended from the payload the capture "
-                    "reported" % frame)
+                    "reported, which was re-checked against the frame "
+                    "on disk first" % frame)
             self._commit(frame, validated_key, action, commentary,
-                         {str(name): str(value)
-                          for name, value in payload.items()},
-                         attempts, True)
+                         payload or {}, attempts, True)
             LOG.warning("%s", note)
             return (note,)
         existing = os.path.join(
@@ -3556,17 +3951,80 @@ class Session:
                     "interrupted; its row has been appended and its "
                     "clock re-read from the capture itself" % frame)
         else:
+            # THE ENGINE IS RE-AUTHENTICATED BEFORE THE SHUTTER OPENS.
+            # This used to photograph the root window straight away, on
+            # the strength of a window id from a process that is no
+            # longer running -- so a recovery run could photograph
+            # whatever now occupies that display and file it as the
+            # frame this keystroke produced.  The window is found again,
+            # checked against the engine process behind it and focused,
+            # exactly as an ordinary step does it.
+            self._prepare_window_for(frame, validated_key, recovery=True)
             payload = self._capture_frame(frame)
             assert_payload_matches(frame, payload, self._frames)
             attempts += 1
             note = ("the keystroke '%s' for frame %d had been delivered "
-                    "but no frame existed for it; the frame has been "
-                    "captured at the same index and its row appended"
+                    "but no frame existed for it; the engine was "
+                    "re-authenticated, the frame captured at the same "
+                    "index and its row appended"
                     % (validated_key, frame))
         self._commit(frame, validated_key, action, commentary, payload,
                      attempts, True)
         LOG.warning("%s", note)
         return (note,)
+
+    def _settle_recorded_journal(self, frame: int, key: str,
+                                 action: str,
+                                 payload: Optional[Dict[str, str]],
+                                 ) -> str:
+        """Make a recorded frame's telemetry whole, then say what it did.
+
+        A journal for an index the manifest already holds means the row
+        landed; it does NOT mean the sidecar row beside it did.  The two
+        are separate appends, and _commit() clears the journal only after
+        both, so an interruption between them leaves exactly this state --
+        and clearing the journal here without looking used to lose that
+        row for good.  What is lost is not decorative: the sidecar
+        carries the sidebar DATE line, which is how timeline.py tells a
+        crossing of midnight from a clock that read backwards, and the
+        `key` attestation that makes the row auditable.
+
+        So the sidecar is repaired from the journal's own payload where
+        there is one, or measured from the committed frame where there is
+        not.  Either way every value comes from the capture that really
+        happened.  If it cannot be repaired, the journal is NOT cleared:
+        an unrepaired gap that nothing records is worse than a session
+        that stops while the evidence is still on disk.
+        """
+        if _observation_recorded(self._observations, frame):
+            return ("frame %d was already recorded; the journal entry "
+                    "for it was stale and has been discarded" % frame)
+        source = "the payload the capture reported"
+        if payload is None:
+            existing = os.path.join(
+                self._frames, manifest.FRAME_NAME_FORMAT % frame)
+            if not os.path.isfile(existing):
+                raise RecordError(
+                    "frame %d has a manifest row but no telemetry row "
+                    "in %s, and neither the journal's payload nor the "
+                    "capture at %s is available to rebuild it from.  "
+                    "The journal is left in place: that row carries the "
+                    "sidebar date timeline.py reconciles a midnight "
+                    "crossing with, and losing it silently is worse "
+                    "than stopping here"
+                    % (frame, manifest.relative_to_repo(
+                        self._observations), existing))
+            payload = self._payload_from_frame(frame, existing)
+            source = "measurements taken from the committed frame"
+        append_observation(
+            self._observations,
+            observation_row(frame, payload, key=key, action=action,
+                            capture_attempts=1, recovered=True),
+            require_durable=self._require_durable, root=self._root)
+        return ("frame %d had a manifest row but no telemetry row -- the "
+                "interruption fell between the two appends.  The "
+                "telemetry row has been rebuilt from %s and appended, "
+                "and the journal then discarded" % (frame, source))
 
     def _payload_from_frame(self, index: int,
                             path: str) -> Dict[str, str]:
@@ -3618,13 +4076,21 @@ class Session:
                   "the row records it as unread, which is what it is"
                   % (index, path, err))
             return payload
+        # THE CANONICAL STATUS VOCABULARY, which capture.sh defines as
+        # read | unreadable | fault | skipped.  This used to emit "exact"
+        # and "coarse" -- words from ocr_clock.py's own classification --
+        # so a recovered frame's telemetry row carried a status no other
+        # row in the sidecar used and no consumer knew.  The DISTINCTION
+        # those two words carried is not lost: an exact reading lands in
+        # CLOCK, a coarse phrase lands in TIME_PHRASE, and that is
+        # exactly how an ordinary capture reports the same difference.
         if reading.clock:
             payload["CLOCK"] = reading.clock
-            payload["CLOCK_STATUS"] = "exact"
+            payload["CLOCK_STATUS"] = "read"
         elif reading.phrase:
             payload["TIME_PHRASE"] = reading.phrase
             payload["CLOCK"] = reading.phrase
-            payload["CLOCK_STATUS"] = "coarse"
+            payload["CLOCK_STATUS"] = "read"
         if reading.date:
             payload["DATE"] = reading.date
             payload["DATE_STATUS"] = "read"
@@ -3787,6 +4253,131 @@ class Session:
             self._pin.save_dir, self._pin.world, self._root)
         return {world.name: world.characters for world in probe.worlds}
 
+    # -- the resume lifecycle ---------------------------------------
+
+    @property
+    def ui_phase(self) -> str:
+        """Which screen the engine is believed to be on: menu|in-world.
+
+        OBSERVED, from the last captured frame's own sidebar reading and
+        from the engine's own lastworld.json -- never declared by the
+        driver.  See UI_PHASE_MENU for what counts as evidence.
+        """
+        return self._ui_phase
+
+    def _loaded_survivor(self) -> Optional[Tuple[str, str]]:
+        """Return the (world, character) the engine says it loaded."""
+        return read_lastworld(None, self._root)
+
+    def _pinned_character_is_loaded(self) -> bool:
+        """True when lastworld.json names THE survivor this run continues.
+
+        Both halves are checked, because either alone would pass the
+        wrong thing: the world, so that loading a different world's
+        survivor is caught, and the character, decoded from the save
+        filenames the probe found in that world, so that loading a
+        SECOND survivor inside the right world is caught as well.
+        """
+        loaded = self._loaded_survivor()
+        if loaded is None:
+            return False
+        world, character = loaded
+        if self._pin.world and world != self._pin.world:
+            return False
+        names = {decoded_character_name(save)
+                 for save in self._fingerprint.get(world, ())}
+        names.discard(None)
+        return character in names
+
+    def _observed_ui_phase(self) -> str:
+        """Classify the current screen from committed evidence only."""
+        if self._pinned_character_is_loaded() and self._frame > 0:
+            return UI_PHASE_IN_WORLD
+        return UI_PHASE_MENU
+
+    def _assert_key_allowed_in_phase(self, index: int,
+                                     key: str) -> None:
+        """Refuse a new-survivor hotkey BEFORE it is delivered.
+
+        THE PREVENTION THE SAVE-SET CHECK IS NOT.  _assert_save_pin()
+        compares the save tree with what it looked like a keystroke ago,
+        which detects a second survivor only AFTER the keystroke that
+        created one has already been delivered and photographed -- and a
+        character, once created, is in the world's save directory whether
+        this run records it or not.  So in a resumed session the keys that
+        open the creator are refused here, before send_key is reached, for
+        as long as the engine is still on a menu.
+
+        The hard rule is that an existing save is CONTINUED rather than
+        replaced, and the refusal is what makes that a property of this
+        module instead of an instruction in a docstring.
+        """
+        if not self._pin.resume:
+            return
+        if self._ui_phase != UI_PHASE_MENU:
+            return
+        token = key.split(CHORD_SEPARATOR)[-1]
+        if token not in MENU_NEW_SURVIVOR_HOTKEYS:
+            return
+        raise CheatGuard(
+            "'%s' is REFUSED for frame %d and has NOT been sent.  This "
+            "session is resuming world '%s' and the engine is still on a "
+            "menu, and '%s' is one of the five main-menu entries that "
+            "open a new survivor -- %s and %s.  The existing save is "
+            "continued, never replaced: load world '%s' and the "
+            "character already in it (%s).  Once a captured frame shows "
+            "the sidebar, this session is in the world and every key is "
+            "available again"
+            % (key, index, self._pin.world, token,
+               MENU_CUSTOM_CHARACTER,
+               ", ".join(MENU_FORBIDDEN_ENTRIES), self._pin.world,
+               ", ".join(sorted(
+                   name or "an undecodable save name"
+                   for name in (
+                       decoded_character_name(save)
+                       for save in self._fingerprint.get(
+                           self._pin.world or "", ()))))))
+
+    def _settle_ui_phase(self, index: int,
+                         payload: Mapping[str, str]) -> None:
+        """Advance the UI phase from what the frame just taken shows.
+
+        Called AFTER the row is committed, on the evidence of the capture
+        itself: a sidebar reading means a survivor is in the world.  In a
+        resumed session the transition is also the moment the engine's own
+        lastworld.json has to name the pinned survivor -- if the sidebar
+        has appeared and it does not, something other than the pinned
+        character was loaded, and this session records exactly one
+        survivor.
+        """
+        if self._ui_phase == UI_PHASE_IN_WORLD:
+            return
+        readings = (payload.get("CLOCK"), payload.get("TIME_PHRASE"),
+                    payload.get("DATE"))
+        sidebar = any((one or "").strip() for one in readings)
+        if not sidebar:
+            return
+        if self._pin.resume and not self._pinned_character_is_loaded():
+            loaded = self._loaded_survivor()
+            raise CheatGuard(
+                "frame %d shows a sidebar, so a survivor is in the "
+                "world -- but %s names %s, and this session is resuming "
+                "world '%s'.  The existing save is the one that is "
+                "continued; a different world or a different character "
+                "is not this run's survivor"
+                % (index,
+                   manifest.relative_to_repo(lastworld_path(self._root)),
+                   "no survivor at all" if loaded is None
+                   else "'%s' in world '%s'" % (loaded[1], loaded[0]),
+                   self._pin.world))
+        self._ui_phase = UI_PHASE_IN_WORLD
+        loaded = self._loaded_survivor()
+        LOG.info(
+            "frame %d shows the sidebar, so the session is in the world "
+            "from here%s", index,
+            "" if loaded is None
+            else " as '%s' of world '%s'" % (loaded[1], loaded[0]))
+
     def _assert_save_pin(self) -> None:
         """Refuse a step that would create, reset or delete a save.
 
@@ -3846,6 +4437,45 @@ class Session:
         self._fingerprint = after
 
     # -- the capture ------------------------------------------------
+
+    def _prepare_window_for(self, index: int, key: str,
+                            recovery: bool = False) -> int:
+        """Find, authenticate and focus the engine.  Returns its id.
+
+        SHARED BY THE ORDINARY STEP AND BY RECOVERY, which is the point:
+        recovery used to photograph the root window without doing any of
+        this, on the strength of a window id recorded by a process that
+        had since died.  A screen is only evidence of what a keystroke
+        did if the engine that received the keystroke is the thing on it,
+        so the same three checks run either way -- the window is found by
+        class, the process behind it is checked against this checkout's
+        binary and userdir, and it is focused.
+
+        :raises WindowError: naming what was NOT sent, in the ordinary
+            case, so a caller knows the step can simply be retried; the
+            recovery case says the frame was not photographed.
+        """
+        try:
+            window = self.refresh_window()
+            focus_window(window, self._tool_timeout)
+            return window
+        except SessionError as err:
+            if recovery:
+                raise WindowError(
+                    "the keystroke '%s' for frame %d had been delivered, "
+                    "but the engine window could not be re-found, "
+                    "re-authenticated and focused, so NO frame was "
+                    "photographed for it: %s.  The journal is left in "
+                    "place, so the frame is captured at this same index "
+                    "once the engine is reachable again -- what is "
+                    "refused is photographing whatever else happens to "
+                    "be on that display and filing it as this "
+                    "keystroke's frame"
+                    % (key, index, err)) from err
+            raise WindowError(
+                "the game window could not be prepared for frame %d, so "
+                "'%s' was NOT sent: %s"
+                % (index, key, err)) from err
 
     def _capture_frame(self, index: int) -> Dict[str, str]:
         """Run the capturer for exactly one index and parse its report.
@@ -4071,11 +4701,18 @@ class Session:
         text = (build_action(validated, note) if action is None
                 else assert_action_derived(validated, action))
         voice = _required_text(commentary, "commentary")
-        self._advise_on_voice(voice)
+        # THE TWO HONESTY GATES, both BEFORE anything irreversible and
+        # both refusals rather than advisories.  A sentence that is not
+        # the survivor's voice, or that states a time or a date the
+        # frames do not support, never becomes a row -- because a row is
+        # evidence and evidence is not corrected afterwards.
+        self._assert_voice(voice)
+        self._assert_clock_honesty(voice)
 
         # THE INTEGRITY PRE-FLIGHTS, on every step and before anything
-        # irreversible.  Both are cheap, both read committed artifacts,
-        # and both would be worthless if a driver could skip them.
+        # irreversible.  All three are cheap, all three read committed
+        # artifacts, and all three would be worthless if a driver could
+        # skip them.
         self.audit_bindings()
         self._assert_save_pin()
 
@@ -4087,32 +4724,54 @@ class Session:
         index = validated_frame(self._frame + 1)
         attempts = 1
 
-        try:
-            window = self.refresh_window()
-            focus_window(window, self._tool_timeout)
-        except SessionError as err:
-            # Nothing has been sent, and nothing was journalled, so the
-            # session stays usable: a window that cannot be found or
-            # focused is a condition to fix and retry.
-            raise WindowError(
-                "the game window could not be prepared for frame %d, so "
-                "'%s' was NOT sent: %s"
-                % (index, validated, err)) from err
+        # THE MODE-AWARE REFUSAL, before the window is even prepared: a
+        # resumed session may not press a key that opens the character
+        # creator while the engine is still on a menu.
+        self._assert_key_allowed_in_phase(index, validated)
 
-        # THE PRE-SEND JOURNAL.  Durable before the keystroke, because
-        # after the keystroke it is too late to write down that it
-        # happened.
+        # Nothing has been sent and nothing has been journalled yet, so a
+        # window that cannot be found or focused leaves the session
+        # usable: it is a condition to fix and retry.
+        window = self._prepare_window_for(index, validated)
+
+        # THE PRE-SEND JOURNAL, phase `sending`.  Durable before the
+        # keystroke, because after the keystroke it is too late to write
+        # down that it happened -- and phrased as SENDING rather than as
+        # an intent that recovery may read as delivery, because between
+        # this line and the next the honest answer is "unknown".
         write_journal(
             self._journal,
             self._journal_record(index, validated, text, voice,
-                                 JOURNAL_PHASE_INTENT, attempts))
+                                 JOURNAL_PHASE_SENDING, attempts))
 
         try:
             send_key(window, validated, self._tool_timeout)
         except SessionError as err:
-            self._abort("keystroke '%s' for frame %d could not be "
-                        "delivered: %s" % (validated, index, err))
+            # The journal STAYS at `sending`.  xdotool's own failure says
+            # nothing about whether the X server acted, so this is the
+            # ambiguous case by construction: the next session halts on
+            # it and asks somebody who can look at the game, rather than
+            # this module deciding the key landed (which would invent a
+            # frame) or that it did not (which would drop a real one).
+            self._abort(
+                "keystroke '%s' for frame %d could not be delivered: "
+                "%s.  Whether it reached the game is UNKNOWN -- xdotool "
+                "failing says nothing about whether the X server acted "
+                "-- so the journal at %s is left ambiguous and the next "
+                "session will halt on it.  Establish what happened from "
+                "the game and run `session.py reconcile`"
+                % (validated, index, err, self._journal))
             raise
+
+        # DELIVERED.  xdotool returned 0, so the keystroke reached the X
+        # server: the ambiguity is over and recovery may photograph this
+        # index without inventing anything.  Durable before the capture
+        # for the same reason the `sending` record was durable before the
+        # send.
+        write_journal(
+            self._journal,
+            self._journal_record(index, validated, text, voice,
+                                 JOURNAL_PHASE_DELIVERED, attempts))
 
         try:
             payload = self._capture_frame(index)
@@ -4138,6 +4797,23 @@ class Session:
         row = self._commit(index, validated, text, voice, payload,
                            attempts, False)
 
+        # THE POST-KEY INTEGRITY CHECKS, on the same step rather than the
+        # next one.  The save-set comparison used to run only BEFORE a
+        # key, which meant a keystroke that created a second survivor was
+        # detected one whole step late -- after another key had been sent
+        # into a game state this module had already lost track of.  Both
+        # run here, with the row already committed, because the keystroke
+        # and the frame really happened and the record says so; what stops
+        # is everything after them.
+        try:
+            self._assert_save_pin()
+            self._settle_ui_phase(index, payload)
+        except SessionError as err:
+            self._abort(
+                "frame %d is captured and recorded, and then the state "
+                "of the save tree refused the step: %s" % (index, err))
+            raise
+
         result = StepResult(
             frame=index,
             key=validated,
@@ -4160,26 +4836,176 @@ class Session:
         LOG.info("%s", result.describe())
         return result
 
-    def _advise_on_voice(self, commentary: str) -> None:
-        """Warn when the commentary reads as meta rather than in voice.
+    def reconcile(self, outcome: str) -> Tuple[str, ...]:
+        """Resolve an ambiguous `sending` journal.  Returns what it did.
 
-        Advisory only, and never a rewrite: `commentary` is part of the
-        in-character record, and the transcript gate downstream applies
-        the same substring check, so a warning here predicts a failure
-        there.  manifest.py owns the vocabulary; this only reports what
-        it finds, once per word per process, so a habit is mentioned
-        rather than nagged about.
+        THE OPERATOR'S ANSWER TO THE ONE QUESTION THIS MODULE CANNOT
+        ANSWER ITSELF.  A run that ended between the pre-send journal and
+        confirmed delivery leaves a keystroke whose fate is genuinely
+        unknown; both possible answers produce a different record, and
+        choosing one automatically is how evidence gets invented (see the
+        JOURNAL_PHASE_* commentary).  So the session halts, somebody looks
+        at the game, and says which it was:
+
+        * ``delivered`` -- the key DID land.  The journal is promoted to
+          that phase and the ordinary recovery path finishes the step:
+          the engine is re-authenticated, the frame is captured at the
+          SAME index, and the row is appended with `recovered: true`.
+        * ``not-delivered`` -- the key did NOT land.  The journal is
+          discarded, no frame is captured and no row is written, so the
+          index stays free for the next `step`.
+
+        This is deliberately NOT usable to resolve anything else: a
+        journal in any other phase is left exactly as it is, because
+        recovery already has an honest answer for it and an operator
+        override would be a way past that answer.
+
+        :raises RecordError: when there is nothing ambiguous to resolve,
+            or when the declared outcome is not one of the two.
         """
-        found = manifest.find_meta_vocabulary(commentary)
-        for word in found:
-            _warn_once(
-                "meta-%s" % word,
-                "the commentary uses %r, which reads as an engineering "
-                "observation rather than the survivor's own voice.  "
-                "Meta and 'gamey' remarks belong in "
-                "playthrough/TECHNICAL_NOTES.md; this text goes into "
-                "playthrough/transcript.md and becomes a caption"
-                % word)
+        if outcome not in RECONCILE_OUTCOMES:
+            raise RecordError(
+                "an outcome is '%s' or '%s', got %r.  The two answers "
+                "are the two things that can have happened to the key"
+                % (RECONCILE_DELIVERED, RECONCILE_NOT_DELIVERED,
+                   outcome))
+        self._lock.assert_held()
+        record = read_journal(self._journal)
+        if record is None:
+            raise RecordError(
+                "there is no step journal at %s, so there is nothing to "
+                "reconcile: no keystroke is in flight"
+                % self._journal)
+        checked = self._validated_journal(record)
+        if str(checked["phase"]) != JOURNAL_PHASE_SENDING:
+            raise RecordError(
+                "the step journal %s is in phase '%s', which is not "
+                "ambiguous: recovery completes it on its own evidence "
+                "when the next session opens.  Only a '%s' journal is "
+                "reconciled by hand, because only that one asks a "
+                "question this module cannot answer"
+                % (self._journal, checked["phase"],
+                   JOURNAL_PHASE_SENDING))
+        frame = int(checked["frame"])
+        key = str(checked["key"])
+        if outcome == RECONCILE_NOT_DELIVERED:
+            clear_journal(self._journal)
+            note = ("declared NOT delivered: '%s' never reached the game, "
+                    "so frame %d has no capture and no row and the index "
+                    "stays free for the next step" % (key, frame))
+            LOG.warning("%s", note)
+            self._recovered = self._recovered + (note,)
+            return (note,)
+        write_journal(
+            self._journal,
+            self._journal_record(
+                frame, key, str(checked["action"]),
+                str(checked["commentary"]), JOURNAL_PHASE_DELIVERED,
+                int(checked["capture_attempts"]),
+                checked["payload"]
+                if isinstance(checked["payload"], dict) else None))
+        notes = (("declared delivered: '%s' reached the game, so frame "
+                  "%d is completed at the same index" % (key, frame)),)
+        notes = notes + self._settle_journal()
+        for note in notes:
+            LOG.warning("%s", note)
+        self._frame = self._recover_counter()
+        self._recovered = self._recovered + notes
+        return notes
+
+    def _assert_voice(self, commentary: str) -> None:
+        """Refuse a commentary that is not the survivor's own voice.
+
+        A REFUSAL, BEFORE THE KEY IS SENT.  It used to be a warning, one
+        per word per process, and the row was appended regardless -- so a
+        stderr line during a four-hundred-row session was all that stood
+        between an engineering observation and the committed transcript,
+        which becomes a caption on the film.  The requirement is that
+        meta and "gamey" remarks stay out of the in-character record and
+        go to playthrough/TECHNICAL_NOTES.md instead, and nothing that
+        can be walked past satisfies it.
+
+        manifest.py owns the vocabulary and the message, so the gate here
+        and the gate at publication cannot differ in strength.  Nothing
+        is sent and nothing is journalled, so the step is simply retried
+        with the sentence rewritten.
+        """
+        problem = manifest.meta_vocabulary_problem(
+            commentary, "commentary")
+        if problem is not None:
+            raise RecordError(problem)
+
+    def _assert_clock_honesty(self, commentary: str) -> None:
+        """Refuse a stated time or date the frames contradict.
+
+        THE GATE THE FALSE FRAME-308 STATEMENT WALKED PAST.  Its
+        commentary reads "It is ten past eight in the morning on the
+        twenty-eighth of May" on a frame captured at 08:05:36 on
+        Thursday, May 20 -- both statements untrue, in a record whose
+        first requirement is that nothing in it is fabricated, and
+        invisible to every structural check because the row is internally
+        consistent and the arithmetic is exact.
+
+        The comparison is against the LAST READING THIS SESSION
+        OBSERVED, which is what the driver had in front of them when the
+        sentence was written and therefore the honest comparand: the
+        commentary explains why this key is about to be pressed, so it
+        belongs to the state before it.  manifest.py owns the parser and
+        the tolerances (three minutes for an exact statement, a quarter
+        of an hour for a hedged one); this only supplies the reading and
+        refuses.
+
+        Nothing is sent, so a refusal costs the call and nothing else.
+        """
+        clock, date_text = self._last_reading()
+        problems = manifest.clock_honesty_problems(
+            commentary, clock, date_text, "commentary")
+        if problems:
+            raise RecordError(
+                "the commentary states something the frames do not "
+                "support, so '%s' was NOT sent.  %s"
+                % ("the next keystroke", "  ".join(problems)))
+
+    def _last_reading(self) -> Tuple[Optional[str], Optional[str]]:
+        """Return the last observed (clock, date), from the record.
+
+        Taken from the telemetry sidecar, which carries both columns, and
+        read from disk rather than remembered -- because the intended
+        shape of a session is ONE PROCESS PER STEP, so the previous
+        frame's reading was observed by a process that has already
+        exited.  A session that has just recovered a step gets the
+        recovered frame's reading, which is correct: that is the last
+        thing anybody could have looked at.
+        """
+        if self._observation:
+            return (_reading_or_none(self._observation, "ingame_clock"),
+                    _reading_or_none(self._observation, "date"))
+        last: Optional[Dict[str, object]] = None
+        try:
+            with open(self._observations, "r",
+                      encoding="utf-8") as handle:
+                for line in handle:
+                    text = line.strip()
+                    if not text:
+                        continue
+                    try:
+                        row = json.loads(text)
+                    except ValueError:
+                        continue
+                    if isinstance(row, dict):
+                        last = row
+        except FileNotFoundError:
+            return (None, None)
+        except OSError as err:
+            raise RecordError(
+                "cannot read the telemetry sidecar %s: %s.  It carries "
+                "the reading the commentary is held against, and a "
+                "statement about the time is not accepted unchecked"
+                % (self._observations, err)) from err
+        if last is None:
+            return (None, None)
+        return (_reading_or_none(last, "ingame_clock"),
+                _reading_or_none(last, "date"))
 
 
 # ---------------------------------------------------------------------
@@ -4233,6 +5059,22 @@ one key, one frame, one row
   frame and the clock this prints before choosing the next key.  Pass
   the REASON with --note; the "press '<key>'" half of the row is derived
   from --key and cannot be overridden.
+
+resuming instead of creating
+  With a character save already under playthrough/userdir/save/, this
+  session RESUMES it: load that world and that character, and never
+  press u/U, p/P, r/R, d/D or o/O at the menu -- all five are refused
+  before delivery while the engine is still on one.  The session is in
+  the world once a captured frame shows the sidebar, and at that moment
+  <userdir>/config/lastworld.json must name the pinned survivor.
+
+an interrupted send
+  `step` journals `sending` before the key leaves and `delivered` once
+  xdotool returns 0.  A run that dies in between leaves the delivery
+  UNKNOWN, and the next session halts rather than guessing.  Establish
+  from the game which way it went and then:
+    session.py reconcile --outcome delivered      # capture that index
+    session.py reconcile --outcome not-delivered  # record nothing
 
 how the session ends
   Only by realistic sleep or by death, with no in-game time cap, and
@@ -4318,6 +5160,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="omit the points-pool check, which only applies to a "
              "character being created")
 
+    reconcile = sub.add_parser(
+        "reconcile",
+        help="resolve an ambiguous journal after an interrupted send")
+    reconcile.add_argument(
+        "--outcome", required=True, choices=list(RECONCILE_OUTCOMES),
+        help="what an operator ESTABLISHED from the game itself: "
+             "'delivered' if the keystroke landed, so the frame is "
+             "captured at the same index and the row appended; "
+             "'not-delivered' if it did not, so the journal is "
+             "discarded and nothing is recorded.  There is no default: "
+             "this exists precisely because the answer cannot be "
+             "inferred")
+
     sub.add_parser(
         "status", help="report the counter and verify the record")
     return parser
@@ -4348,13 +5203,15 @@ def _emit(key: str, value: object) -> None:
 
 
 def _open_session(args: argparse.Namespace,
-                  window_id: object = None) -> Session:
+                  window_id: object = None,
+                  settle_journal: bool = True) -> Session:
     """Build a Session from the parsed command line."""
     return Session(
         manifest_path=args.manifest,
         frames_dir=args.frames_dir,
         observations_path=args.observations,
         window_id=window_id,
+        settle_journal=settle_journal,
     )
 
 
@@ -4386,6 +5243,25 @@ def _command_step(args: argparse.Namespace) -> int:
               manifest.relative_to_repo(session.manifest_path))
         _emit("OBSERVATIONS",
               manifest.relative_to_repo(session.observations_path))
+    return EXIT_OK
+
+
+def _command_reconcile(args: argparse.Namespace) -> int:
+    """Resolve an ambiguous journal on an operator's declaration.
+
+    Opened WITHOUT settling the journal, because an ambiguous journal is
+    exactly what an ordinary open refuses to continue past -- and this
+    command exists to resolve that state.
+    """
+    with _open_session(args, None, settle_journal=False) as opened:
+        for note in opened.reconcile(args.outcome):
+            sys.stderr.write("playthrough: reconciled: %s\n" % note)
+        _emit("OUTCOME", args.outcome)
+        _emit("FRAME_INDEX", opened.frame)
+        _emit("MANIFEST",
+              manifest.relative_to_repo(opened.manifest_path))
+        _emit("OBSERVATIONS",
+              manifest.relative_to_repo(opened.observations_path))
     return EXIT_OK
 
 
@@ -4478,6 +5354,7 @@ def _command_status(args: argparse.Namespace) -> int:
 
 _COMMANDS = {
     "step": _command_step,
+    "reconcile": _command_reconcile,
     "probe": _command_probe,
     "window": _command_window,
     "audit": _command_audit,

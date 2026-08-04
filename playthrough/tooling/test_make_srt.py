@@ -125,6 +125,7 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
 import make_srt                                        # noqa: E402
+import manifest                                        # noqa: E402
 import timeline                                        # noqa: E402
 
 
@@ -178,11 +179,21 @@ MARKDOWN_ENTRY_RE = re.compile(
     r"(?m)^\*\*[0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3}\*\*")
 MARKDOWN_STAMP_RE = re.compile(
     r"([0-9]{2}):([0-9]{2}):([0-9]{2})[,.]([0-9]{3})")
+# The out-of-character gate, spelled here as the SPECIFICATION spells it
+# rather than imported, for the same reason as the two above: a test that
+# reused the module's own table would pass with that table wrong.  These
+# are the meta senses -- "engine" but not "engineer", a numbered frame but
+# not the frame of a door -- because that precision is what let the gate
+# become a refusal instead of an advisory.
 META_GATE_RE = re.compile(
-    r"frame|screenshot|capture|ocr|tesseract|imagemagick|ffmpeg|"
-    r"moviepy|manifest|timeline|duration|keystroke|xdotool|pipeline|"
-    r"tileset|sidebar|option|commit|git |debug|requirement|R1[0-3]|"
-    r"R[1-9]\b", re.IGNORECASE)
+    r"\bgames?\b|\bengines?\b|\bsource[- ]files?\b|\bpath-?finding\b|"
+    r"\bdebug\w*\b|\bcheat(?:s|ed|ing)?\b|\bside-?bars?\b|"
+    r"\bmoves?[- ]counter\b|\btile-?sets?\b|\bframes?[ _-]?\d+\b|"
+    r"\bscreen-?shots?\b|\bcaptur\w+\b|\bocr\b|\btesseract\b|"
+    r"\bffmpeg\b|\bmoviepy\b|\bmp4\b|\bmanifests?\b|\btimelines?\b|"
+    r"\bkey-?strokes?\b|\bxdotool\b|\bpipelines?\b|"
+    r"\bcommit(?:s|ted|ting)?\b|\bgit\b|\brepositor(?:y|ies)\b|"
+    r"\boptions?\.json\b|\bR1[0-3]\b|\bR[1-9]\b", re.IGNORECASE)
 STYLING_RE = re.compile(r"\{\\an|<font|<i>|<b>|</i>|</b>")
 
 # The artifact paths a test redirects.  All three, not two: a class that
@@ -590,14 +601,18 @@ class TestTheSubRipContract(unittest.TestCase):
                          msg="the cue after a transition starts a "
                              "second later, or the captions drift")
 
-    def test_cue_text_is_at_most_two_short_plain_lines(self):
+    def test_cue_text_is_short_plain_lines_of_whole_words(self):
         for lines in self.blocks:
             text = lines[2:]
-            self.assertTrue(1 <= len(text) <= make_srt.CUE_MAX_LINES)
+            self.assertGreaterEqual(len(text), 1)
             for line in text:
                 self.assertTrue(line.strip())
-                self.assertLessEqual(len(line),
-                                     make_srt.CUE_LINE_WIDTH)
+                # A word longer than the geometry overruns rather than
+                # being cut, so the bound is per-word and not per-line.
+                for word in line.split():
+                    self.assertLessEqual(
+                        len(word),
+                        max(make_srt.CUE_LINE_WIDTH, len(word)))
 
     def test_nothing_is_styled_or_positioned(self):
         self.assertIsNone(STYLING_RE.search(self.srt))
@@ -620,10 +635,12 @@ class TestTheSubRipContract(unittest.TestCase):
         with self.assertRaises(make_srt.TranscriptError):
             make_srt.render_srt(cues)
 
-    def test_a_cue_of_too_many_lines_is_refused(self):
-        cues = [self.cues[0]._replace(lines=("a", "b", "c"))]
-        with self.assertRaises(make_srt.TranscriptError):
-            make_srt.render_srt(cues)
+    def test_a_cue_of_many_lines_is_accepted(self):
+        """mov_text carries multi-line cues, so the sentence is whole."""
+        cues = [self.cues[0]._replace(lines=("a", "b", "c", "d", "e"))]
+        rendered = make_srt.render_srt(cues)
+        for line in ("a", "b", "c", "d", "e"):
+            self.assertIn("\n%s" % line, rendered)
 
     def test_a_cue_with_no_text_is_refused(self):
         with self.assertRaises(make_srt.TranscriptError):
@@ -724,8 +741,8 @@ class TestTheOutOfCharacterGate(unittest.TestCase):
                          len(cues))
 
     def test_the_module_refuses_to_generate_a_meta_word(self):
-        for text in ("Frame index", "the timeline", "Duration",
-                     "git status", "options", "R2 satisfied"):
+        for text in ("frame index", "the timeline", "the game",
+                     "git status", "options.json", "R2 satisfied"):
             with self.subTest(text=text):
                 with self.assertRaises(make_srt.TranscriptError):
                     make_srt.assert_in_character(text, "a header")
@@ -740,28 +757,93 @@ class TestTheOutOfCharacterGate(unittest.TestCase):
         make_srt.assert_in_character(make_srt.MARKDOWN_HEADER,
                                      "the header")
 
-    def test_meta_wording_in_the_survivors_words_is_advisory(self):
-        words = ("I check the sidebar, frame by frame.",) + \
+    def test_meta_wording_in_the_survivors_words_blocks_publication(
+            self):
+        """A REFUSAL now, and the remedy is upstream of this file.
+
+        It used to be an advisory: the line was printed and the
+        transcript written, so a stderr message decided whether an
+        engineering observation reached the film's caption track.
+        """
+        words = ("I check the sidebar for the move counter.",) + \
             REFERENCE_WORDS[1:]
         document = build(words=words)
         srt, markdown, cues = make_srt.build_transcripts(document)
-        advisories = make_srt.commentary_advisories(cues)
-        self.assertEqual(len(advisories), 1)
-        self.assertIn("sidebar", advisories[0])
+        problems = make_srt.voice_problems(cues)
+        self.assertEqual(len(problems), 1)
+        self.assertIn("sidebar", problems[0])
+        self.assertIn("move counter", problems[0])
+        self.assertIn("re-recorded", problems[0])
         self.assertIn(words[0], markdown,
-                      msg="reported, never rewritten")
+                      msg="nothing is rewritten; publication is refused")
+
+    def test_the_survivors_own_words_are_not_false_positives(self):
+        """The precision that let the advisory become a refusal."""
+        for sentence in (
+                "Mechanical engineer, twenty-two years.",
+                "I stand in the frame of the door and look out.",
+                "My father's watch, and a phone with a lamp in it."):
+            with self.subTest(sentence=sentence):
+                self.assertEqual(make_srt.meta_gate_words(sentence), [])
+
+    def test_a_false_statement_of_time_blocks_publication(self):
+        """The frame-308 defect, at the publication gate.
+
+        Its commentary states a time and a date the frame's own timing
+        fields contradict, and every structural check passed over it.
+        """
+        words = ("It is ten past eight on the twenty-eighth of May.",) \
+            + REFERENCE_WORDS[1:]
+        document = build(words=words)
+        for entry in document["frames"]:
+            entry["ingame_clock"] = "08:05:36"
+            entry["ingame_date"] = "Thursday, May 20"
+        srt, markdown, cues = make_srt.build_transcripts(document)
+        problems = make_srt.honesty_problems(
+            cues, make_srt.timeline_entries(document))
+        self.assertEqual(len(problems), 2)
+        self.assertTrue(any("08:05:36" in one for one in problems))
+        self.assertTrue(any("twentieth" in one for one in problems))
+
+    def test_a_true_statement_of_time_publishes(self):
+        words = ("Five past eight, and I have no water.",) \
+            + REFERENCE_WORDS[1:]
+        document = build(words=words)
+        for entry in document["frames"]:
+            entry["ingame_clock"] = "08:05:36"
+            entry["ingame_date"] = "Thursday, May 20"
+        srt, markdown, cues = make_srt.build_transcripts(document)
+        self.assertEqual(
+            make_srt.honesty_problems(
+                cues, make_srt.timeline_entries(document)), [])
 
     def test_a_clean_record_reports_nothing(self):
         srt, markdown, cues = make_srt.build_transcripts(build())
         self.assertEqual(make_srt.commentary_advisories(cues), [])
 
-    def test_the_gate_words_are_matched_as_substrings(self):
-        self.assertEqual(make_srt.meta_gate_words("a framework"),
-                         ["frame"])
-        self.assertEqual(make_srt.meta_gate_words("optional"),
-                         ["option"])
-        self.assertEqual(make_srt.meta_gate_words("legitimate work"),
-                         [])
+    def test_the_gate_matches_the_meta_sense_and_not_the_other(self):
+        self.assertEqual(make_srt.meta_gate_words("a framework"), [])
+        self.assertEqual(make_srt.meta_gate_words("optional"), [])
+        self.assertEqual(make_srt.meta_gate_words("legitimate work"), [])
+        self.assertEqual(make_srt.meta_gate_words("frame 308"),
+                         ["frame index"])
+        self.assertEqual(make_srt.meta_gate_words("the engine's own"),
+                         ["engine"])
+
+    def test_the_vocabulary_has_exactly_one_implementation(self):
+        """Two lists meant two answers to one question.
+
+        The second list here named "duration" and "imagemagick" while
+        manifest.py's named "option", and neither named the game, the
+        engine, a source file, pathfinding, a move counter or cheating.
+        """
+        self.assertIs(make_srt.meta_gate_words("x") is None, False)
+        for sentence in ("the game", "the engine's own pathfinding",
+                         "my move counter", "I did not cheat"):
+            with self.subTest(sentence=sentence):
+                self.assertEqual(
+                    make_srt.meta_gate_words(sentence),
+                    manifest.find_meta_vocabulary(sentence))
 
 
 class TestTheTwoArtifactsAgree(unittest.TestCase):
@@ -823,16 +905,37 @@ class TestTheTwoArtifactsAgree(unittest.TestCase):
 
 
 class TestTheCaptionIsTheOnlyTransformation(unittest.TestCase):
-    """Wrapping shortens the caption; the record keeps the sentence."""
+    """Wrapping is the ONLY transformation, and it drops nothing.
 
-    def test_a_long_sentence_is_shortened_only_in_the_caption(self):
+    The module used to cap a caption at two lines and mark the cut with a
+    bracketed elision; 168 of the 395 cues in the first re-recorded
+    session ended that way, and many lost the survivor's actual reason
+    for acting.  The requirement is that the timestamped transcript IS the
+    caption track, so these tests hold the cue to the whole sentence.
+    """
+
+    def test_a_long_sentence_reaches_the_caption_entire(self):
         words = (A_LONG_SENTENCE,) + REFERENCE_WORDS[1:]
         srt, markdown, cues = make_srt.build_transcripts(
             build(words=words))
-        self.assertEqual(len(cues[0].lines), make_srt.CUE_MAX_LINES)
-        self.assertTrue(cues[0].lines[-1].endswith(make_srt.CUE_ELISION))
+        self.assertGreater(len(cues[0].lines), 2,
+                           msg="this sentence needs more than two lines")
+        joined = " ".join(cues[0].lines)
+        self.assertEqual(joined, " ".join(A_LONG_SENTENCE.split()),
+                         msg="every word, in order, in the cue itself")
+        self.assertNotIn("[...]", srt)
         self.assertIn(A_LONG_SENTENCE, markdown,
                       msg="the record keeps the whole sentence")
+
+    def test_a_long_caption_is_reported_but_not_cut(self):
+        long_enough = " ".join(["one two three four five"] * 12)
+        words = (long_enough,) + REFERENCE_WORDS[1:]
+        srt, markdown, cues = make_srt.build_transcripts(
+            build(words=words))
+        advisories = make_srt.length_advisories(cues)
+        self.assertEqual(len(advisories), 1)
+        self.assertIn("nothing is shortened", advisories[0])
+        self.assertIn(long_enough, srt.replace("\n", " "))
 
     def test_no_word_is_ever_broken_through(self):
         long_word = "supercalifragilisticexpialidocious" * 2
@@ -843,7 +946,7 @@ class TestTheCaptionIsTheOnlyTransformation(unittest.TestCase):
         # it is still the whole word when it does.
         self.assertIn(long_word, "\n".join(lines))
         for line in lines:
-            for word in line.replace(make_srt.CUE_ELISION, "").split():
+            for word in line.split():
                 self.assertIn(word, sentence)
 
     def test_a_word_longer_than_the_line_keeps_its_own_line(self):
@@ -854,8 +957,6 @@ class TestTheCaptionIsTheOnlyTransformation(unittest.TestCase):
     def test_a_sentence_that_fits_is_left_alone(self):
         self.assertEqual(make_srt.wrap_cue_text("I wait here."),
                          ["I wait here."])
-        self.assertNotIn(make_srt.CUE_ELISION,
-                         "".join(make_srt.wrap_cue_text("I wait.")))
 
     def test_a_line_is_filled_to_the_geometry(self):
         exact = "x" * make_srt.CUE_LINE_WIDTH
@@ -874,8 +975,6 @@ class TestTheCaptionIsTheOnlyTransformation(unittest.TestCase):
     def test_a_caption_needs_room_to_exist(self):
         with self.assertRaises(make_srt.TranscriptError):
             make_srt.wrap_cue_text("I wait.", width=0)
-        with self.assertRaises(make_srt.TranscriptError):
-            make_srt.wrap_cue_text("I wait.", max_lines=0)
 
     def test_text_is_required(self):
         with self.assertRaises(make_srt.TranscriptError):
@@ -1043,6 +1142,64 @@ class TestWritingBothArtifacts(unittest.TestCase):
                 make_srt.write_transcripts("a\n", "b\n", same, same,
                                            root)
 
+    def test_the_pair_is_published_as_one_recoverable_generation(self):
+        """The journal and the manifest the docstring used to claim.
+
+        Two atomic renames are not one atomic pair: an interruption
+        between them left a caption file describing this timeline beside a
+        Markdown transcript describing the previous one, permanently and
+        with nothing recording that they disagreed.
+        """
+        with workspace() as root:
+            seed_timeline(root)
+            self.assertEqual(make_srt.main([], root=root), 0)
+            # The journal is cleared once both files are verified.
+            self.assertIsNone(timeline.read_generation_journal(
+                make_srt.LOCK_NAME, root))
+            # And the manifest binds both digests to the timeline's.
+            record = json.loads(open(
+                make_srt.generation_manifest_path(root),
+                encoding="utf-8").read())
+            self.assertEqual(record["stage"], "transcripts")
+            self.assertEqual(
+                record["timeline"]["sha256"],
+                timeline.file_digest(
+                    os.path.join(root, "timeline.json")))
+            published = {one["path"].rsplit("/", 1)[-1]: one["sha256"]
+                         for one in record["outputs"]}
+            for name in ("transcript.srt", "transcript.md"):
+                self.assertEqual(
+                    published[name],
+                    timeline.file_digest(os.path.join(root, name)),
+                    msg="the manifest attests the bytes on disk")
+
+    def test_an_interrupted_pair_is_detected_and_repaired(self):
+        with workspace() as root:
+            seed_timeline(root)
+            self.assertEqual(make_srt.main([], root=root), 0)
+            srt = os.path.join(root, "transcript.srt")
+            # A mixed generation: one file from another run, and the
+            # journal that says a publication was in flight.
+            with open(srt, "w", encoding="utf-8") as handle:
+                handle.write("1\n00:00:00,000 --> 00:00:01,000\nstale\n")
+            timeline.write_generation_journal(
+                make_srt.LOCK_NAME,
+                {"version": timeline.GENERATION_VERSION,
+                 "stage": make_srt.LOCK_NAME,
+                 "timeline": "playthrough/timeline.json",
+                 "targets": [{"path": srt, "sha256": "0" * 64}]},
+                root)
+            problems = timeline.generation_journal_problems(
+                make_srt.LOCK_NAME, root)
+            self.assertEqual(len(problems), 1)
+            self.assertIn("MIXED", problems[0])
+            # Re-running republishes both from the one timeline, which is
+            # the repair, and clears the journal.
+            self.assertEqual(make_srt.main([], root=root), 0)
+            self.assertIsNone(timeline.read_generation_journal(
+                make_srt.LOCK_NAME, root))
+            self.assertNotIn("stale", open(srt, encoding="utf-8").read())
+
     def test_a_refused_timeline_exits_non_zero_and_writes_nothing(self):
         with workspace() as root:
             document = build()
@@ -1125,8 +1282,13 @@ class TestTheModuleKeepsItsPromises(unittest.TestCase):
                 cue.end, timeline.format_srt_timecode(entry["cue_end"]))
 
     def test_nothing_outside_the_standard_library_is_imported(self):
-        allowed = ("argparse", "math", "os", "re", "sys", "tempfile",
-                   "textwrap", "typing", "timeline")
+        # `manifest` joins the list because the voice vocabulary and
+        # the clock-statement parser have ONE implementation, in the
+        # module that also refuses a row at write time; timeline.py
+        # already imports it, so it is not a new dependency.
+        allowed = ("argparse", "hashlib", "json", "math", "os", "re",
+                   "sys", "tempfile", "textwrap", "typing", "timeline",
+                   "manifest")
         for node in ast.walk(ast.parse(module_source())):
             if isinstance(node, ast.Import):
                 for alias in node.names:

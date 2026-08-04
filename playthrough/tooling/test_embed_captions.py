@@ -64,6 +64,8 @@ Standard library only.  Nothing outside the temporary directory is
 written.
 """
 
+import hashlib
+import json
 import os
 import shutil
 import stat
@@ -137,6 +139,12 @@ REAL_TOOLS = (
     # cue file.  All coreutils or util-linux, and listed here because
     # this PATH is exhaustive.
     "stat", "id", "realpath", "flock", "cut", "sleep", "mktemp",
+    # sha256sum is what the provenance gate compares a manifest's declared
+    # digest against, and what the single post-rename check uses to prove
+    # the published bytes are the bytes that were verified.  It is the
+    # genuine tool rather than a stub throughout: a digest that a stub
+    # could make agree would make the gate a formality.
+    "sha256sum",
 )
 
 
@@ -482,6 +490,25 @@ class MuxFixture(unittest.TestCase):
         # the real cue count so the round-trip comparison is meaningful.
         self.write(self.movie, "x" * 32768)
         self.write(self.srt, SRT_BODY)
+        # The two generation manifests, with REAL digests of the two files
+        # just written.  The provenance gate reads them before it muxes
+        # anything, so a fixture without them exercises the refusal rather
+        # than the mux -- and the digests are genuine because a fixture
+        # that could make them agree without hashing would make the gate a
+        # formality here and nowhere else.
+        self.movie_manifest = os.path.join(self.dir, "build",
+                                           "movie.json")
+        self.transcript_manifest = os.path.join(self.dir, "build",
+                                                "transcript.json")
+        self.timeline_sha = "a" * 64
+        self.publish_manifests()
+        # The two names the publication step uses around the rename: the
+        # previous film, copied aside so a failure can be undone, and the
+        # quarantine a container whose publication could not be confirmed
+        # is moved to.
+        self.retained = os.path.join(self.dir, ".cata-play-cc.previous.mp4")
+        self.quarantine = os.path.join(self.dir,
+                                       ".cata-play-cc.rejected.mp4")
         self.stub_log = os.path.join(self.root, "stub.log")
         self.bin = os.path.join(self.root, "bin")
         os.makedirs(self.bin)
@@ -510,6 +537,59 @@ class MuxFixture(unittest.TestCase):
         if mode is not None:
             os.chmod(path, mode)
         return path
+
+    def digest_of(self, path):
+        """Return the sha256 of a file's bytes, as the script reads it."""
+        with open(path, "rb") as handle:
+            return hashlib.sha256(handle.read()).hexdigest()
+
+    def publish_manifests(self, movie_timeline=None, srt_timeline=None,
+                          movie_sha=None, srt_sha=None):
+        """Write the two generation manifests the mux requires.
+
+        Defaults describe the films and cues actually on disk under one
+        timeline, which is the honest case.  Every argument exists so a
+        test can break exactly one link of the provenance chain.
+        """
+        movie = {
+            "version": 1,
+            "stage": "movie",
+            "timeline": {
+                "path": "playthrough/timeline.json",
+                "sha256": (self.timeline_sha if movie_timeline is None
+                           else movie_timeline),
+            },
+            "concat_list": {"path": "playthrough/build/concat.txt",
+                            "sha256": "c" * 64, "bytes": 1},
+            "movie": {
+                "path": "playthrough/cata-play.mp4",
+                "sha256": (self.digest_of(self.movie) if movie_sha is None
+                           else movie_sha),
+                "bytes": os.path.getsize(self.movie),
+            },
+        }
+        transcript = {
+            "version": 1,
+            "stage": "transcript",
+            "timeline": {
+                "path": "playthrough/timeline.json",
+                "sha256": (self.timeline_sha if srt_timeline is None
+                           else srt_timeline),
+            },
+            "outputs": [
+                {"path": "playthrough/transcript.srt",
+                 "sha256": (self.digest_of(self.srt) if srt_sha is None
+                            else srt_sha),
+                 "bytes": os.path.getsize(self.srt)},
+                {"path": "playthrough/transcript.md",
+                 "sha256": "d" * 64, "bytes": 2},
+            ],
+        }
+        self.write(self.movie_manifest,
+                   json.dumps(movie, indent=2, sort_keys=True) + "\n")
+        self.write(self.transcript_manifest,
+                   json.dumps(transcript, indent=2,
+                              sort_keys=True) + "\n")
 
     def link_real_tools(self):
         """Symlink the genuine coreutils the script needs."""
@@ -609,30 +689,58 @@ class MuxFixture(unittest.TestCase):
                  % self.staging_files()))
         return err + out
 
-    def refuse_after_publish(self, code, args=(), **environment):
-        """Run a mux refused AFTER the rename, and prove the evidence
-        survived.
+    def corrupt_the_rename(self):
+        """Make `mv` change the bytes it moves onto the output.
 
-        The checks that run once the container is in place -- the
-        stream census, the two verbatim readouts, the size -- are
-        asking whether the RENAME changed what the file carries, so a
-        failure there is a fault below this mux.  The script says so and
-        deliberately leaves the file for inspection rather than deleting
-        it, which is the opposite of the invariant refuse() asserts.
-        Deleting the evidence of a filesystem fault would help nobody.
+        THE ONLY WAY TO SIMULATE THE FAULT THE POST-RENAME CHECK EXISTS
+        FOR, which is a filesystem that does not move bytes faithfully.
+        Every other `mv` -- including the two the restore performs --
+        delegates to the genuine tool, so what is being exercised is one
+        corrupted publication and a real recovery around it.
+        """
+        real = shutil.which("mv")
+        marker = os.path.join(self.root, "rename-corrupted")
+        # ONCE ONLY, and the marker is what limits it: the restore itself
+        # moves the retained copy back onto the same destination, so a stub
+        # that corrupted every move onto the output would break the
+        # recovery it is meant to exercise.
+        self.stub("mv", (
+            'for arg in "$@"; do :; done\n'
+            'if [ "${arg}" = "%s" ] && [ ! -e "%s" ]; then\n'
+            '    : >"%s"\n'
+            '    %s "$@"\n'
+            '    printf "corrupted by the fixture\\n" >"${arg}"\n'
+            '    exit 0\n'
+            'fi\n'
+            'exec %s "$@"\n')
+            % (self.output, marker, marker, real, real))
+
+    def refuse_after_publish(self, code, args=(), **environment):
+        """Run a mux refused AFTER the rename, and prove the recovery.
+
+        THE CONTRACT THIS ASSERTS IS A CORRECTED ONE.  The script used to
+        run the byte-size comparison, both verbatim readouts and the stream
+        census after the rename and, on failure, "leave the file in place
+        for inspection" -- which meant the unverified container became the
+        published film while the previous one, which had passed every
+        check, was already gone.
+
+        Every question about what the container HOLDS is now answered
+        before the rename.  The one check after it compares the published
+        bytes against the bytes that were verified, and a mismatch RESTORES
+        the previous film and QUARANTINES the file that failed.
         """
         status, out, err = self.run_mux(args, **environment)
         self.assertEqual(
             status, code,
             msg="expected exit %d, got %d:\n%s" % (code, status, err))
-        self.assertIsNotNone(
-            self.published_bytes(),
-            msg=("a fault found after the rename must leave the file "
-                 "in place for inspection"))
-        self.assertEqual(
-            [], self.staging_files(),
-            msg=("the staging name survived a published refusal: %s"
-                 % self.staging_files()))
+        self.assertTrue(
+            os.path.exists(self.quarantine),
+            msg=("a container whose publication could not be confirmed "
+                 "is quarantined, not left as the published film"))
+        self.assertFalse(
+            os.path.exists(self.retained),
+            msg="and the retained copy is not left behind as well")
         return err + out
 
     # -- reading the result ------------------------------------------
@@ -921,20 +1029,49 @@ class TestTheStreamCensus(MuxFixture):
         self.assertEqual([], self.staging_files())
         self.assertEqual([], self.stub_calls("ffmpeg"))
 
-    def test_a_published_container_that_gained_audio_is_refused(self):
-        """The readouts after the rename select only the streams they
-        expect to find, so a fourth stream would be invisible to them.
-        This asks the published file what it holds."""
-        message = self.refuse_after_publish(
-            EX_VERIFY, STUB_OUT_A_STREAMS="1")
-        self.assertIn("audio", message)
-        self.assertIn("cata-play-cc.mp4", message)
+    def test_the_whole_census_happens_before_the_rename(self):
+        """THE DEFECT THIS TEST EXISTS FOR IS A REAL ONE.
 
-    def test_a_published_container_that_gained_an_attachment_is_refused(
-            self):
-        message = self.refuse_after_publish(
-            EX_VERIFY, STUB_OUT_T_STREAMS="1")
-        self.assertIn("attachment", message)
+        The audio/data/attachment census used to run TWICE -- once on the
+        staged container and once on the published one -- and the second
+        pass could exit non-zero with the canonical captioned MP4 already
+        replaced.  So a fault it found left the unverified container in the
+        working tree as the film while the previous one, which had passed
+        every check, was already gone.
+
+        There is exactly one census now, and it is on the staging file, so
+        a container that fails it never reaches the output path at all.
+        """
+        for name, variable in (("audio", "STUB_A_STREAMS"),
+                               ("data", "STUB_D_STREAMS"),
+                               ("attachment", "STUB_T_STREAMS")):
+            with self.subTest(stream=name):
+                self.write(self.output, "the previous film\n")
+                message = self.refuse(EX_VERIFY, **{variable: "1"})
+                self.assertIn(name, message)
+                with open(self.output, encoding="utf-8") as handle:
+                    self.assertEqual(
+                        "the previous film\n", handle.read(),
+                        msg="and the previous film is untouched")
+
+    def test_the_published_file_is_never_re_interrogated(self):
+        """One check after the rename, and it asks about BYTES only.
+
+        Re-asking what a container holds after publishing it is what made
+        the previous ordering unsafe: every such question can fail, and by
+        then the previous film is gone.  So the only thing measured after
+        the rename is whether the filesystem moved the verified bytes
+        faithfully -- and even that is now recoverable.
+        """
+        self.mux()
+        published = os.path.realpath(self.output)
+        after = [argv for argv in self.stub_calls("ffprobe")
+                 if any(os.path.realpath(word) == published
+                        for word in argv.split())]
+        self.assertEqual(
+            after, [],
+            msg=("ffprobe was asked about the published container: %r"
+                 % after))
 
     def test_the_summary_states_the_audio_count(self):
         """0, measured -- not inferred from the absence of a
@@ -1039,6 +1176,214 @@ class TestTheCaptionTiming(MuxFixture):
         message = self.refuse(EX_VERIFY, STUB_V_DURATION="N/A",
                               STUB_IN_V_DURATION="N/A")
         self.assertIn("could not measure", message)
+
+    def test_captions_ending_short_of_the_picture_are_refused(self):
+        """THE DEFECT THIS TEST EXISTS FOR IS A REAL ONE.
+
+        The comparison was one-sided: only a caption track running PAST
+        the end of the picture was refused.  A track that ends EARLY was
+        published, and early is the direction a STALE cue file fails in --
+        an SRT left over from a shorter session muxes cleanly into a
+        longer film, the cue-count check passes because it is checked
+        against that same stale file, and the artifact ships with captions
+        that stop partway through and that describe another session's
+        keystrokes throughout.
+        """
+        message = self.refuse(EX_VERIFY, STUB_S_DURATION="120.000000")
+        self.assertIn("END SHORT", message)
+        self.assertIn("120.000000", message)
+        self.assertIn(VIDEO_DURATION, message)
+        self.assertIn("STALE", message)
+        self.assertIn("make_srt.py", message)
+
+    def test_the_bound_is_absolute_and_sized_for_quantisation(self):
+        """Both directions, one number, and it is not arbitrary.
+
+        The subtitle stream's duration is the last cue's end, which
+        make_srt.py writes equal to the timeline total exactly; the video
+        stream's is the container's, which render_movie.py measures as the
+        total plus 0.02 to 0.06 s of concat-demuxer quantisation.  The
+        smallest staleness worth catching is a session one keystroke
+        shorter, which differs by at least the 0.25 s floor -- so the bound
+        sits between 0.06 and 0.19, and 0.12 is what render_movie.py uses
+        for the same comparison for the same reason.
+        """
+        # Inside the bound in each direction: accepted.
+        self.mux(STUB_S_DURATION="337.450000")
+        self.mux(STUB_S_DURATION="337.670000")
+        # Outside it in each direction: refused.
+        self.refuse(EX_VERIFY, STUB_S_DURATION="337.400000")
+        self.refuse(EX_VERIFY, STUB_S_DURATION="337.700000")
+
+    def test_a_stale_cue_file_from_one_shorter_session_is_caught(self):
+        """The realistic case, not a contrived one.
+
+        One keystroke fewer is the smallest honest difference between two
+        sessions, and the timeline's floor makes that at least 0.25 s.
+        """
+        short = "%.6f" % (float(VIDEO_DURATION) - 0.25)
+        message = self.refuse(EX_VERIFY, STUB_S_DURATION=short)
+        self.assertIn("END SHORT", message)
+
+
+class TestTheProvenanceGate(MuxFixture):
+    """Do the film and the caption track describe the same session?
+
+    THE DEFECT THIS CLASS EXISTS FOR.  Every other check in this stage
+    compares the output against the INPUTS, and that is the wrong axis for
+    the failure that matters most: a film and a caption track can agree in
+    length, in cue count, in codec and in geometry while describing two
+    different sessions.  A re-record of the same scripted opening, or a
+    re-render of one session beside a transcript from another, produces
+    exactly that.  Only the digest of the document each was computed from
+    settles it, and both producers publish precisely that.
+    """
+
+    def test_a_matching_pair_is_muxed(self):
+        payload, err = self.mux()
+        self.assertIn(self.timeline_sha, err)
+        self.assertIn("both attributed to", err)
+        self.assertTrue(payload["OUTPUT_FILE"].endswith("cata-play-cc.mp4"))
+
+    def test_two_different_timelines_are_refused_before_the_mux(self):
+        self.publish_manifests(srt_timeline="b" * 64)
+        message = self.refuse(EX_INPUT)
+        self.assertIn("DIFFERENT", message)
+        self.assertIn(self.timeline_sha, message)
+        self.assertIn("b" * 64, message)
+        self.assertEqual(
+            [], self.stub_calls("ffmpeg"),
+            msg="a refusal here costs nothing: nothing was muxed")
+        self.assertFalse(os.path.exists(self.output))
+
+    def test_a_replaced_film_no_longer_matches_its_manifest(self):
+        """A manifest that agrees with another manifest says nothing if
+        the bytes beside it have since been replaced."""
+        self.write(self.movie, "y" * 32768)
+        message = self.refuse(EX_INPUT)
+        self.assertIn("has been replaced", message)
+        self.assertIn("render_movie.py", message)
+        self.assertEqual([], self.stub_calls("ffmpeg"))
+
+    def test_a_replaced_cue_file_no_longer_matches_its_manifest(self):
+        self.write(self.srt, SRT_BODY + "\n")
+        message = self.refuse(EX_INPUT)
+        self.assertIn("has been replaced", message)
+        self.assertIn("make_srt.py", message)
+
+    def test_an_absent_manifest_is_a_refusal_not_a_skip(self):
+        """Treating it as "nothing to check" would switch the gate off
+        for exactly the older render it exists to catch."""
+        for path, producer in ((self.movie_manifest, "render_movie.py"),
+                               (self.transcript_manifest,
+                                "make_srt.py")):
+            with self.subTest(manifest=os.path.basename(path)):
+                self.publish_manifests()
+                os.unlink(path)
+                message = self.refuse(EX_INPUT)
+                self.assertIn("no generation manifest", message)
+                self.assertIn("REFUSAL", message)
+                self.assertIn(producer, message)
+
+    def test_an_empty_manifest_is_a_refusal(self):
+        self.write(self.movie_manifest, "")
+        self.refuse(EX_INPUT)
+
+    def test_a_manifest_that_will_not_parse_is_a_refusal(self):
+        self.write(self.movie_manifest, "{not json\n")
+        message = self.refuse(EX_INPUT)
+        self.assertIn("timeline digest", message)
+
+    def test_a_manifest_naming_no_digest_is_a_refusal(self):
+        self.write(self.movie_manifest,
+                   json.dumps({"version": 1, "stage": "movie"}) + "\n")
+        message = self.refuse(EX_INPUT)
+        self.assertIn("names no timeline digest", message)
+
+    def test_a_manifest_naming_no_digest_for_the_cue_file_is_refused(self):
+        self.write(self.transcript_manifest, json.dumps({
+            "version": 1, "stage": "transcript",
+            "timeline": {"path": "playthrough/timeline.json",
+                         "sha256": self.timeline_sha},
+            "outputs": [{"path": "playthrough/transcript.md",
+                         "sha256": "d" * 64, "bytes": 2}],
+        }, indent=2, sort_keys=True) + "\n")
+        message = self.refuse(EX_INPUT)
+        self.assertIn("transcript.srt", message)
+
+    def test_a_digest_that_is_not_a_digest_is_a_refusal(self):
+        """Fail closed: "unreadable" must not be mistaken for
+        "matches"."""
+        for value in ("", "not-a-digest", "A" * 64, "a" * 63):
+            with self.subTest(sha=value):
+                self.publish_manifests(movie_timeline=value)
+                self.refuse(EX_INPUT)
+
+
+class TestThePublicationIsRecoverable(MuxFixture):
+    """The canonical film is replaced once, and only by verified bytes.
+
+    THE DEFECT THIS CLASS EXISTS FOR IS A REAL ONE.  The byte-size
+    comparison, both mandated probe readouts and the audio/data/attachment
+    census all used to run AFTER the rename, against the published file,
+    and each could exit non-zero.  So the committed captioned MP4 was
+    replaced first and interrogated second, and a failure left the
+    unverified container in the working tree as the film while the previous
+    one -- which had passed every check -- was already gone.  The stated
+    policy, "the file is left in place for inspection", meant in practice
+    that a broken artifact became the published one.
+    """
+
+    def test_a_clean_run_leaves_no_retained_or_quarantined_file(self):
+        self.write(self.output, "the previous film\n")
+        self.mux()
+        self.assertFalse(os.path.exists(self.retained))
+        self.assertFalse(os.path.exists(self.quarantine))
+        self.assertEqual([], self.staging_files())
+
+    def test_a_corrupted_rename_restores_the_previous_film(self):
+        self.write(self.output, "the previous film\n")
+        self.corrupt_the_rename()
+        message = self.refuse_after_publish(EX_VERIFY)
+        self.assertIn("carries", message)
+        self.assertIn("restored", message)
+        with open(self.output, encoding="utf-8") as handle:
+            self.assertEqual("the previous film\n", handle.read(),
+                             msg="the film that passed is back in place")
+        with open(self.quarantine, encoding="utf-8") as handle:
+            self.assertEqual("corrupted by the fixture\n", handle.read(),
+                             msg="and the one that failed is quarantined")
+
+    def test_a_corrupted_first_publication_has_nothing_to_restore(self):
+        """There is no previous film, so the message says so rather than
+        claiming a restore that did not happen."""
+        self.corrupt_the_rename()
+        message = self.refuse_after_publish(EX_VERIFY)
+        self.assertIn("no previous film to restore", message)
+        self.assertFalse(os.path.exists(self.output))
+
+    def test_a_retained_copy_left_by_a_killed_run_is_swept(self):
+        self.write(self.retained, "a killed run left this\n")
+        self.mux()
+        self.assertFalse(os.path.exists(self.retained))
+
+    def test_a_quarantined_file_is_reported_and_left_alone(self):
+        """It is the only record of a filesystem fault, so it is not
+        deleted -- and it is inside a tree .gitignore re-includes, so the
+        warning says it must not be committed."""
+        self.write(self.quarantine, "an earlier fault\n")
+        _, err = self.mux()
+        self.assertIn("quarantined", err)
+        self.assertIn("before committing", err)
+        with open(self.quarantine, encoding="utf-8") as handle:
+            self.assertEqual("an earlier fault\n", handle.read())
+
+    def test_the_size_floor_is_checked_before_the_rename(self):
+        self.write(self.output, "the previous film\n")
+        message = self.refuse(EX_VERIFY, STUB_MUX_BYTES="16")
+        self.assertIn("header, not a film", message)
+        with open(self.output, encoding="utf-8") as handle:
+            self.assertEqual("the previous film\n", handle.read())
 
 
 class TestTheBoundedCalls(MuxFixture):

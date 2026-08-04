@@ -529,6 +529,27 @@ class TestPlanningTheGroups(TransitionFixture):
         self.assertEqual(self.frame_names(),
                          ["frame_00001.png", "frame_00002.png"])
 
+    def test_the_documentation_describes_the_refusal_it_implements(self):
+        """A docstring that contradicts the code is a defect.
+
+        THE DEFECT THIS TEST EXISTS FOR IS A REAL ONE.  plan_groups() and
+        Result both documented a flagged final entry as being HONOURED by
+        fading the last capture back into itself -- with two stated
+        reasons -- while the code twenty lines below raised
+        TransitionError.  A reader debugging a refused run was sent
+        looking for a self-fade that has never existed, and a reader
+        maintaining it would have "fixed" the code to match the prose.
+        """
+        for text in (mt.plan_groups.__doc__, mt.Result.__doc__,
+                     mt.Group.__doc__):
+            with self.subTest(doc=text.splitlines()[0]):
+                self.assertNotIn("honoured rather than skipped", text)
+                self.assertNotIn("fades back into", text)
+                self.assertNotIn("every flag is honoured", text)
+        self.assertIn("REFUSED", mt.plan_groups.__doc__)
+        self.assertIn("TransitionError", mt.plan_groups.__doc__)
+        self.assertIn("raise", mt.Result.__doc__)
+
     def test_a_flagged_final_entry_is_refused_before_earlier_ones(self):
         # Not "the earlier groups are composed and then it stops": the
         # planning is complete before any imagery exists, so a malformed
@@ -887,6 +908,184 @@ class TestComposingOneGroup(TransitionFixture):
         for path in self.compose(first, second, index=9):
             self.assertTrue(
                 mt.TRANSITION_NAME_RE.match(os.path.basename(path)))
+
+
+class TestTheGenerationManifest(TransitionFixture):
+    """The provenance published INSIDE the group set.
+
+    THE DEFECT IT EXISTS FOR IS A REAL ONE.  render_movie.py accepted a
+    group because twelve files with the right NAMES and the right PIXEL
+    DIMENSIONS existed for each flagged index -- and the same twelve names
+    exist at the same geometry in every session that flags frame 2.  So a
+    group composed from a different timeline, a group left behind for an
+    index that is no longer flagged, and a frame whose pixels changed under
+    its own name were all indistinguishable from the right thing.
+    """
+
+    def manifest_record(self):
+        """Return the published provenance record."""
+        return json.loads(_read(
+            mt.generation_manifest_path(self.transitions)))
+
+    def test_a_run_publishes_its_provenance_inside_the_group_set(self):
+        self.captures(4)
+        self.write_timeline(4, flagged={1, 3})
+        self.run_make()
+        self.assertIn(mt.GENERATION_MANIFEST_NAME, self.all_names())
+        record = self.manifest_record()
+        self.assertEqual(record["version"], timeline.GENERATION_VERSION)
+        self.assertEqual(record["stage"], mt.LOCK_NAME)
+        self.assertEqual([one["frame"] for one in record["groups"]],
+                         [1, 3])
+        self.assertEqual(record["frames_per_group"],
+                         mt.FRAMES_PER_GROUP)
+        self.assertEqual(record["transition_seconds"],
+                         mt.EXPECTED_TRANSITION)
+
+    def test_it_binds_the_groups_to_the_timeline_and_the_captures(self):
+        self.captures(3)
+        self.write_timeline(3, flagged={2})
+        self.run_make()
+        record = self.manifest_record()
+        self.assertEqual(record["timeline"]["sha256"],
+                         timeline.file_digest(self.timeline_path))
+        sources = record["groups"][0]["sources"]
+        self.assertEqual(len(sources), 2)
+        self.assertEqual(
+            sources[0]["sha256"],
+            timeline.file_digest(os.path.join(self.frames,
+                                              "frame_00002.png")))
+        self.assertEqual(
+            sources[1]["sha256"],
+            timeline.file_digest(os.path.join(self.frames,
+                                              "frame_00003.png")))
+        self.assertEqual(
+            record["font"]["sha256"],
+            mt.font_digest(mt.font_path(REPO_ROOT)),
+            msg=("the card's typeface is parsed input too, so it is part "
+                 "of what the imagery is attributed to"))
+
+    def test_every_output_is_named_with_the_bytes_that_were_written(self):
+        self.captures(3)
+        self.write_timeline(3, flagged={2})
+        self.run_make()
+        outputs = self.manifest_record()["groups"][0]["outputs"]
+        self.assertEqual(len(outputs), mt.FRAMES_PER_GROUP)
+        for declared in outputs:
+            path = os.path.join(self.transitions, declared["name"])
+            with self.subTest(name=declared["name"]):
+                self.assertEqual(declared["sha256"],
+                                 timeline.file_digest(path))
+                self.assertEqual(declared["bytes"],
+                                 os.path.getsize(path))
+
+    def test_a_published_generation_validates_against_its_timeline(self):
+        self.captures(4)
+        self.write_timeline(4, flagged={1, 3})
+        self.run_make()
+        self.assertEqual(
+            mt.generation_manifest_problems(
+                self.transitions, self.timeline_path, [1, 3]),
+            [])
+
+    def test_it_is_switched_in_with_the_frames_not_beside_them(self):
+        """One rename publishes both, so they cannot be out of step.
+
+        A manifest published separately could be switched in on its own,
+        which is exactly the mixed state it exists to rule out.
+        """
+        self.captures(3)
+        self.write_timeline(3, flagged={2})
+        self.run_make()
+        self.assertEqual(
+            [one["frame"] for one in self.manifest_record()["groups"]],
+            [2])
+        # A re-run for a different flag replaces the manifest along with
+        # the group set: the previous manifest is not carried across the
+        # switch as though somebody else had left it there.
+        self.write_timeline(3, flagged={1})
+        again = self.run_make()
+        self.assertEqual(
+            [one["frame"] for one in self.manifest_record()["groups"]],
+            [1], msg="the manifest describes the CURRENT generation")
+        self.assertEqual(
+            mt.generation_manifest_problems(
+                self.transitions, self.timeline_path, [1]), [])
+        self.assertTrue(
+            any(name.endswith(mt.GENERATION_MANIFEST_NAME)
+                for name in again.removed),
+            msg="and the replaced one is reported as removed: %r"
+                % again.removed)
+
+    def test_it_carries_no_host_detail_and_no_timestamp(self):
+        self.captures(3)
+        self.write_timeline(3, flagged={2})
+        self.run_make()
+        text = _read(mt.generation_manifest_path(self.transitions))
+        self.assertNotIn("timestamp", text)
+        record = json.loads(text)
+        for section in (record["timeline"], record["font"]):
+            self.assertFalse(os.path.isabs(section["path"]))
+
+    def test_a_re_run_produces_the_same_manifest_bytes(self):
+        self.captures(3)
+        self.write_timeline(3, flagged={2})
+        self.run_make()
+        first = _read(mt.generation_manifest_path(self.transitions))
+        self.run_make()
+        self.assertEqual(
+            _read(mt.generation_manifest_path(self.transitions)), first,
+            msg=("deterministic, or a committed tree churns on every "
+                 "render"))
+
+    def test_an_absent_manifest_is_a_fault_and_not_a_default(self):
+        self.captures(3)
+        self.write_timeline(3, flagged={2})
+        self.run_make()
+        os.unlink(mt.generation_manifest_path(self.transitions))
+        with self.assertRaises(mt.TransitionError):
+            mt.read_generation_manifest(self.transitions)
+        problems = mt.generation_manifest_problems(
+            self.transitions, self.timeline_path, [2])
+        self.assertTrue(
+            any("cannot be attributed to any timeline" in one
+                for one in problems), msg=repr(problems))
+
+    def test_a_manifest_that_will_not_parse_is_a_fault(self):
+        self.captures(3)
+        self.write_timeline(3, flagged={2})
+        self.run_make()
+        path = mt.generation_manifest_path(self.transitions)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("{not json")
+        self.assertTrue(mt.generation_manifest_problems(
+            self.transitions, self.timeline_path, [2]))
+
+    def test_a_manifest_from_another_schema_version_is_refused(self):
+        self.captures(3)
+        self.write_timeline(3, flagged={2})
+        self.run_make()
+        path = mt.generation_manifest_path(self.transitions)
+        record = json.loads(_read(path))
+        record["version"] = timeline.GENERATION_VERSION + 1
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(mt.generation_manifest_text(record))
+        problems = mt.generation_manifest_problems(
+            self.transitions, self.timeline_path, [2])
+        self.assertTrue(
+            any("cannot interpret" in one for one in problems),
+            msg=repr(problems))
+
+    def test_the_manifest_is_not_counted_as_a_transition_frame(self):
+        self.captures(3)
+        self.write_timeline(3, flagged={2})
+        result = self.run_make()
+        self.assertEqual(len(result.written), mt.FRAMES_PER_GROUP)
+        self.assertEqual(len(self.written_names()), mt.FRAMES_PER_GROUP)
+        self.assertNotIn(mt.GENERATION_MANIFEST_NAME,
+                         self.written_names(),
+                         msg=("verify_artifacts.sh globs trans_*.png, so "
+                              "the manifest must not be inside that glob"))
 
 
 class TestTheDirectoryDescribesTheTimeline(TransitionFixture):

@@ -143,6 +143,9 @@ HELPERS = (
     "playthrough_trust_refresh",
     "playthrough_trust_explain",
     "playthrough_assert_trusted",
+    "playthrough_trust_unverifiable",
+    "playthrough_trusted_util",
+    "playthrough_assert_utilities",
 )
 
 # Every field playthrough_env_summary() promises to print.  The list is
@@ -200,6 +203,7 @@ SUMMARY_FIELDS = (
     "PLAYTHROUGH_PYTHON_ABI",
     "PLAYTHROUGH_TRUST_STATE",
     "PLAYTHROUGH_TRUST_BYPASSES",
+    "PLAYTHROUGH_TRUST_UNVERIFIED",
 )
 
 
@@ -1331,6 +1335,119 @@ class TestTheTrustState(EnvFixture):
         self.assertIn("PLAYTHROUGH_TRUST_STATE", text)
         self.assertIn("diagnostic", text)
         self.assertIn("PLAYTHROUGH_ALLOW_ANY_COMPILER", text)
+
+
+class TestTheTrustedUtilityBootstrap(EnvFixture):
+    """The programs the security checks are MADE OF are resolved first.
+
+    Every ownership and mode check in this file is a call to `stat`,
+    `readlink` or `chmod`.  Resolving those through the inherited PATH
+    put the answer to every check in the hands of whoever could write a
+    directory on it, and a missing `stat` was answered with `return 0` --
+    an unperformed check reporting success, which no caller can tell from
+    a verified one.  These tests hold the two halves of that fix: the
+    utilities come from fixed system directories, and an inability to
+    verify is a refusal AND a trust state rather than a warning.
+    """
+
+    UTILITIES = ("STAT", "READLINK", "CHMOD")
+
+    def test_each_utility_resolves_to_a_fixed_system_directory(self):
+        result = self.sourced()
+        self.assertEqual(result["PLAYTHROUGH_UTILITY_TRUST"], "trusted")
+        for name in self.UTILITIES:
+            with self.subTest(utility=name):
+                path = result["PLAYTHROUGH_UTIL_" + name]
+                self.assertTrue(
+                    os.path.isabs(path),
+                    msg="a utility is invoked by absolute path")
+                self.assertTrue(
+                    path.startswith(("/usr/bin/", "/bin/",
+                                     "/usr/sbin/", "/sbin/")),
+                    msg=("resolved from the trusted directories, never "
+                         "from PATH: %r" % path))
+                self.assertTrue(os.path.isfile(path))
+
+    def test_a_thin_path_no_longer_costs_the_checks_their_tools(self):
+        """The case the old fail-open branch existed for.
+
+        `thin_path` carries no `stat`, so the previous implementation
+        warned and returned success from every ownership check.  Now the
+        utilities are found on disk rather than on PATH, so the checks
+        actually run -- and the source stays silent, which is the proof
+        that nothing fell back.
+        """
+        result = self.source(path=self.thin_path())
+        self.assertEqual(result.status, 0, msg=result.stderr)
+        self.assertEqual(result["PLAYTHROUGH_UTILITY_TRUST"], "trusted")
+        self.assertEqual(result["PLAYTHROUGH_TRUST_STATE"], "trusted")
+        self.assertEqual(result["PLAYTHROUGH_TRUST_UNVERIFIED"], "")
+        self.assertNotIn("could not be verified", result.stderr)
+
+    def test_an_unresolvable_utility_fails_closed(self):
+        """No `stat` anywhere means REFUSED, not "carried on".
+
+        The sabotage points the trusted directory list at an empty
+        directory, which is the only way to reach this state on a host
+        that has coreutils.  The source must fail, the diagnostic must
+        say the check could not be performed, and the reason must be
+        exported so a stage that never made the call can still read it.
+        """
+        empty = os.path.join(self.root, "no-utilities")
+        os.makedirs(empty, exist_ok=True)
+        root, copy = self.sabotaged_copy(
+            'PLAYTHROUGH_TRUSTED_UTIL_DIRS="/usr/bin /bin /usr/sbin '
+            '/sbin"',
+            'PLAYTHROUGH_TRUSTED_UTIL_DIRS="%s"' % empty,
+            name="no-utilities")
+        result = self.source(script=copy, cwd=root)
+        self.assertNotEqual(
+            result.status, 0,
+            msg=("a security check that cannot be performed must not "
+                 "report success: %s" % result.stderr))
+        self.assertIn("cannot be performed", result.stderr)
+        self.assertIn("REFUSAL", result.stderr)
+
+    def test_an_unperformable_check_holds_the_trust_state(self):
+        """It is recorded, not only warned about.
+
+        The state is what launch_game.sh and capture.sh consult, so a
+        check that could not run has to reach them the same way a
+        deliberate bypass does.
+        """
+        result = self.sourced(
+            after='playthrough_trust_unverifiable "a probe could not '
+                  'read an owner"\n'
+                  'export STATE="${PLAYTHROUGH_TRUST_STATE}"\n'
+                  'export WHY="${PLAYTHROUGH_TRUST_UNVERIFIED}"\n'
+                  'if playthrough_assert_trusted "to capture"; then\n'
+                  '    export GATE=passed\nelse\n'
+                  '    export GATE=refused\nfi')
+        self.assertEqual(result.get("STATE"), "diagnostic")
+        self.assertIn("could not read an owner", result.get("WHY", ""))
+        self.assertEqual(
+            result.get("GATE"), "refused",
+            msg=("production capture must refuse while any check is "
+                 "unverified, exactly as it refuses a named bypass"))
+
+    def test_the_reason_is_recorded_once_however_often_it_fires(self):
+        result = self.sourced(
+            after='playthrough_trust_unverifiable "one reason"\n'
+                  'playthrough_trust_unverifiable "one reason"\n'
+                  'export WHY="${PLAYTHROUGH_TRUST_UNVERIFIED}"')
+        self.assertEqual(result.get("WHY"), "one reason")
+
+    def test_the_utility_name_vocabulary_is_closed(self):
+        """Nothing resembling a path can be appended to a trusted dir."""
+        result = self.sourced(
+            after='if playthrough_trusted_util "../../tmp/evil"; then\n'
+                  '    export RESOLVED=yes\nelse\n'
+                  '    export RESOLVED=no\nfi\n'
+                  'if playthrough_trusted_util "stat"; then\n'
+                  '    export PLAIN=yes\nelse\n'
+                  '    export PLAIN=no\nfi')
+        self.assertEqual(result.get("RESOLVED"), "no")
+        self.assertEqual(result.get("PLAIN"), "yes")
 
 
 class TestTheToolPackageTable(EnvFixture):

@@ -145,6 +145,8 @@ kind.
 """
 
 import argparse
+import hashlib
+import json
 import math
 import os
 import re
@@ -177,6 +179,17 @@ try:
                           approved_root, assert_timeline_document,
                           default_timeline_path, format_srt_timecode,
                           read_timeline, validate_timeline)
+    # The generation facility: one journal and one manifest
+    # implementation for the three producers that publish several
+    # artifacts which only mean anything together.
+    import timeline as timeline_module
+    # AND THE TWO HONESTY GATES, from the module that owns them.  The
+    # voice vocabulary and the clock-statement parser are imported rather
+    # than restated so that a sentence which passes when the row is
+    # written cannot fail when the transcript is published, or -- far
+    # worse -- the other way round.  timeline.py already imports this
+    # module, so it is not a new dependency of this stage.
+    import manifest
 except ImportError:
     # Imported from somewhere other than this directory: put the
     # tooling directory on the path and try once more.  A second
@@ -186,38 +199,38 @@ except ImportError:
                           approved_root, assert_timeline_document,
                           default_timeline_path, format_srt_timecode,
                           read_timeline, validate_timeline)
+    import timeline as timeline_module
+    import manifest
 
 
-# The caption geometry.  Two lines of about forty-two columns is the
-# SubRip convention and roughly what a reader takes in at a glance; it
-# is a presentational limit on the CAPTION only, never on the sentence
-# in playthrough/transcript.md.
+# The caption geometry.  Forty-two columns is the SubRip convention and
+# roughly what a reader takes in at a glance, so it is where each cue's
+# text is WRAPPED -- and wrapping is the only thing it decides.
+#
+# THERE IS NO LINE CAP, AND THAT IS THE FIX FOR A REAL DEFECT.  This
+# module used to cap a caption at two lines and shorten anything longer
+# at a word boundary with a bracketed elision mark: 168 of the 395 cues
+# in the first re-recorded session ended in "[...]", and many of them
+# lost the survivor's actual reason for acting.  The requirement is that
+# the timestamped transcript is EMBEDDED as a selectable caption track,
+# so a track carrying two-fifths of it abridged is not that transcript,
+# however honestly the abridgement was marked.  Nothing about the format
+# forced it either: mov_text carries multi-line cues, and a two-line
+# convention is a readability preference, not a limit.
+#
+# So every cue now carries the whole sentence, wrapped, and the
+# READABILITY concern is answered where it belongs -- CUE_COMFORTABLE_LINES
+# reports a cue that will be a mouthful, so the sentence can be written
+# shorter BEFORE it is captured rather than cut afterwards.
 CUE_LINE_WIDTH = 42
-CUE_MAX_LINES = 2
 
-# What marks a caption that had to be shortened to fit two lines.
-#
-# WHY NOT A BARE ELLIPSIS.  A lone "..." reads as the survivor's own
-# trailing-off punctuation -- this pipeline writes literal ellipses of
-# its own, in the transition card's "...time passes..." -- so a viewer
-# cannot tell a shortened caption from a complete one that happens to
-# end that way.  A caption that quietly drops the end of a sentence and
-# looks complete is an altered record, which is the one thing the
-# transcript may not be.  The bracketed form is conventional for
-# elision, unmistakable, and machine-detectable, so
-# caption_is_abridged() can MEASURE which captions carry it instead of
-# the count being asserted.
-#
-# ASCII only, no markup, and no digits: it must survive the mov_text
-# muxer unchanged, it must not trip STYLE_RE, and it must not add a
-# match to the Markdown's timestamp count.
-#
-# The shortening is a presentational limit on the CAPTION alone.
-# playthrough/transcript.md carries every sentence entire, and the
-# advisory below says so and says which entries to read there.
-CUE_ELISION = " [...]"
+# How many wrapped lines a cue can carry before the advisory mentions it.
+# Four lines of 42 columns is about 170 characters, which is comfortably
+# readable inside even a short window; past that the note says so, and
+# the answer is a shorter sentence at capture time.
+CUE_COMFORTABLE_LINES = 4
 
-# How many abridged captions the single advisory names before it stops
+# How many long captions the single advisory names before it stops
 # listing and reports the remainder as a count.  An advisory per cue
 # would bury the out-of-character notes beside it; a check that cries
 # wolf teaches an operator to ignore the one that matters.
@@ -257,26 +270,17 @@ TIMECODE_LINE_RE = re.compile(
     r"^[0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3}"
     r" --> [0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3}$")
 
-# The out-of-character vocabulary, mirroring the substring grep the
-# transcript gate applies -- bluntness included, so that a report here
-# predicts a failure there.  It is held against every word THIS module
-# generates, and reported (never rewritten) for the survivor's own.
-META_GATE_WORDS = (
-    "frame", "screenshot", "capture", "ocr", "tesseract",
-    "imagemagick", "ffmpeg", "moviepy", "manifest", "timeline",
-    "duration", "keystroke", "xdotool", "pipeline", "tileset",
-    "sidebar", "option", "commit", "git ", "debug", "requirement",
-)
-
-# The two patterned members of the same gate: a bare requirement
-# number.  Spelled as the gate spells them, including that the first
-# has no trailing word boundary.
-META_GATE_PATTERNS = (r"R1[0-3]", r"R[1-9]\b")
-
-META_GATE_RE = re.compile(
-    "|".join([re.escape(word) for word in META_GATE_WORDS] +
-             list(META_GATE_PATTERNS)),
-    re.IGNORECASE)
+# THE OUT-OF-CHARACTER VOCABULARY LIVES IN manifest.py, and is imported
+# rather than restated.  It used to be a second list here, and the two
+# had already drifted: this one named "duration" and "imagemagick" while
+# the other named "option", and NEITHER named the game, the engine, a
+# source file, pathfinding, a move counter or cheating -- all six of
+# which reached the committed record.  Two lists mean two answers to one
+# question, and the question decides whether a sentence is publishable.
+#
+# It is held against every word THIS module generates (see
+# assert_in_character) and, since the review, against the survivor's own
+# as a REFUSAL rather than an advisory (see voice_problems).
 
 # Styling and positioning codes.  mov_text is a minimal format and the
 # track has to be a clean selectable caption stream, so an override
@@ -316,6 +320,14 @@ STAGING_SUFFIX = ".tmp"
 # for the same .gitignore reason.
 LOCK_NAME = "transcripts"
 
+# The generation manifest this stage publishes beside its artifacts, and
+# the directory it lives in.  playthrough/build/ holds every derived,
+# committed intermediate -- the concat list, the telemetry sidecar, the
+# transition frames -- so the provenance record for the transcripts
+# belongs there too, next to the movie's own.
+BUILD_DIR_NAME = "build"
+GENERATION_MANIFEST_NAME = "transcript.json"
+
 
 class TranscriptError(Exception):
     """The timeline cannot be turned into an honest transcript.
@@ -348,11 +360,6 @@ class Cue(NamedTuple):
     end: str
     lines: Sequence[str]
     commentary: str
-    # True when `lines` had to be shortened to fit the cue geometry, so
-    # the count of altered captions is measured rather than asserted and
-    # the advisory can name them.  `commentary` is always the whole
-    # sentence, which is what the Markdown writes.
-    abridged: bool = False
 
 
 class Summary(NamedTuple):
@@ -505,17 +512,13 @@ def frame_index(entry: Dict[str, Any], position: int) -> int:
 
 
 def meta_gate_words(text: Any) -> List[str]:
-    """Return the out-of-character words `text` would be caught by.
+    """Return the out-of-character CONCEPTS `text` carries.
 
-    Mirrors the substring gate the transcript is held to downstream,
-    bluntness included -- `option` inside "options", `frame` inside
-    "framework" -- so that a report here predicts a failure there.
-    Sorted and deduplicated, lowercased, so the report is stable.
+    A thin pass-through to manifest.py's single implementation, kept as a
+    name in this module because the header check and the tests read
+    better for it -- not as a second vocabulary.
     """
-    if not isinstance(text, str):
-        return []
-    return sorted({match.group(0).lower()
-                   for match in META_GATE_RE.finditer(text)})
+    return manifest.find_meta_vocabulary(text)
 
 
 def assert_in_character(text: str, label: str) -> None:
@@ -844,21 +847,25 @@ def document_problems(
 def wrap_cue_text(
     text: str,
     width: int = CUE_LINE_WIDTH,
-    max_lines: int = CUE_MAX_LINES,
 ) -> List[str]:
-    """Return `text` as at most `max_lines` lines of about `width`.
+    """Return `text` wrapped to `width`, WHOLE.  Nothing is dropped.
 
     Wrapped at word boundaries only: neither long words nor hyphens are
-    broken through, so a caption never shows half a word.  A single
-    word longer than the width therefore overruns it rather than being
-    cut, which is the right trade for a format whose width is a
-    readability convention and not a hard limit.
+    broken through, so a caption never shows half a word.  A single word
+    longer than the width therefore overruns it rather than being cut,
+    which is the right trade for a format whose width is a readability
+    convention and not a hard limit.
 
-    A sentence that needs more lines than there is room for is
-    SHORTENED, at a word boundary, with an ellipsis marking where it
-    was cut -- and only in the caption.  Nothing is summarised or
-    reworded: the words that remain are the survivor's own, in order,
-    and the Markdown carries the sentence entire.
+    THE SENTENCE IS NEVER SHORTENED.  This used to cap the result at two
+    lines and mark the cut with a bracketed elision, which left two
+    fifths of the first re-recorded session's captions carrying less than
+    the survivor said -- and the requirement is that the timestamped
+    transcript IS the caption track.  So the number of lines is whatever
+    the sentence needs, the words are the survivor's own, in order, and
+    every one of them is in the cue.  A sentence long enough to be a
+    mouthful is REPORTED (see :func:`length_advisories`) so it can be
+    written shorter before the frame is captured; it is not cut
+    afterwards.
     """
     if not isinstance(text, str):
         raise TranscriptError(
@@ -872,42 +879,13 @@ def wrap_cue_text(
         raise TranscriptError(
             "a caption cannot be made from blank text; every captured "
             "frame records why the survivor acted")
-    if width < 1 or max_lines < 1:
+    if width < 1:
         raise TranscriptError(
-            "a caption needs at least one line of at least one "
-            "column, got %d line(s) of %d" % (max_lines, width))
-    lines = textwrap.wrap(collapsed, width=width,
-                          break_long_words=False,
-                          break_on_hyphens=False)
-    if len(lines) <= max_lines:
-        return lines
-    kept = lines[:max_lines]
-    kept[-1] = _shortened(kept[-1], width)
-    return kept
-
-
-def _shortened(line: str, width: int) -> str:
-    """Return `line` marked as cut short, dropping whole words to fit.
-
-    Trailing words come off one at a time until the mark fits inside
-    the width; a line of one long word keeps that word and overruns,
-    because cutting through it would show half a word.
-    """
-    words = line.split(" ")
-    limit = width - len(CUE_ELISION)
-    while len(words) > 1 and len(" ".join(words)) > limit:
-        words.pop()
-    return " ".join(words) + CUE_ELISION
-
-
-def caption_is_abridged(lines: Sequence[str]) -> bool:
-    """True when this caption carries the abridgement mark.
-
-    MEASURED FROM THE RENDERED LINES, never predicted from the source
-    length: the wrap decides whether a sentence fits, so the only
-    honest answer comes from what the wrap produced.
-    """
-    return any(line.endswith(CUE_ELISION) for line in lines)
+            "a caption needs a line of at least one column, got %d"
+            % width)
+    return textwrap.wrap(collapsed, width=width,
+                         break_long_words=False,
+                         break_on_hyphens=False)
 
 
 # ---------------------------------------------------------------------
@@ -958,7 +936,6 @@ def build_cues(entries: Any, gap: Optional[float] = None) -> List[Cue]:
             end=_timecode(entry["cue_end"], position, "cue end"),
             lines=lines,
             commentary=commentary,
-            abridged=caption_is_abridged(lines),
         ))
     return cues
 
@@ -988,10 +965,7 @@ def render_srt(cues: Sequence[Cue]) -> str:
             raise TranscriptError(
                 "cue %d has no text; every captured frame records why "
                 "the survivor acted" % position)
-        if len(cue.lines) > CUE_MAX_LINES:
-            raise TranscriptError(
-                "cue %d is %d lines; a caption is at most %d"
-                % (position, len(cue.lines), CUE_MAX_LINES))
+
         timing = cue.start + SRT_ARROW + cue.end
         if not TIMECODE_LINE_RE.match(timing):
             raise TranscriptError(
@@ -1151,49 +1125,113 @@ def summary_problems(summary: Summary) -> List[str]:
     return problems
 
 
-def commentary_advisories(cues: Sequence[Cue]) -> List[str]:
-    """Report out-of-character wording in the survivor's own words.
+def voice_problems(cues: Sequence[Cue]) -> List[str]:
+    """Refuse out-of-character wording in the survivor's own words.
 
-    ADVISORY, exactly as manifest.py is advisory about the same
-    vocabulary at write time: the sentence belongs to whoever wrote it,
-    so a hit is reported and the text is copied through untouched.  It
-    is worth reporting because the same words are what the transcript
-    gate greps for downstream, so this is the earliest place the
-    problem can be seen and the cheapest place to fix it.
+    A PUBLICATION-BLOCKING GATE, and it used to be an advisory that
+    printed a line and wrote the file anyway.  Two things were wrong with
+    that.  The vocabulary was short -- it named neither the game, nor the
+    engine, nor a source file, nor pathfinding, nor a move counter, nor
+    cheating, and every one of those reached the committed transcript --
+    and a warning is not a gate: the requirement that engineering and
+    "gamey" remarks stay out of the in-character record cannot be
+    satisfied by a stderr line beside a written file.
+
+    The vocabulary and the message come from manifest.py, which is the
+    module that also refuses the sentence at write time.  One
+    implementation, so the two cannot disagree; and a hit here means the
+    session has to be RE-RECORDED rather than the transcript edited,
+    because the sentence is already in the append-only record.
     """
-    advisories = []
+    problems = []
     for cue in cues:
-        hits = meta_gate_words(cue.commentary)
-        if hits:
-            advisories.append(
-                "entry %d carries out-of-character wording (%s): %r "
-                "-- the record stays in the survivor's voice, and "
-                "engineering observations belong in "
-                "playthrough/TECHNICAL_NOTES.md"
-                % (cue.index, ", ".join(hits), cue.commentary))
-    advisories.extend(abridgement_advisories(cues))
-    return advisories
+        problem = manifest.meta_vocabulary_problem(
+            cue.commentary, "entry %d commentary" % cue.index)
+        if problem is not None:
+            problems.append(
+                "%s  The sentence is already in "
+                "playthrough/manifest.jsonl, which is append-only, so "
+                "the session is re-recorded rather than this file "
+                "edited." % problem)
+    return problems
 
 
-def abridged_entries(cues: Sequence[Cue]) -> List[int]:
-    """Return the entry numbers whose caption was shortened."""
-    return [cue.index for cue in cues if cue.abridged]
+def honesty_problems(cues: Sequence[Cue],
+                     entries: Sequence[Dict[str, Any]]) -> List[str]:
+    """Refuse a stated time or date the captured frames contradict.
 
+    THE PUBLICATION HALF OF THE GATE THE FALSE FRAME-308 STATEMENT WALKED
+    PAST: its commentary reads "It is ten past eight in the morning on the
+    twenty-eighth of May" against timing fields of 08:05:36 and
+    "Thursday, May 20", and every structural check passed over it because
+    the row is internally consistent.
 
-def abridgement_advisories(cues: Sequence[Cue]) -> List[str]:
-    """Report, ONCE, which captions carry the abridgement mark.
+    EACH ENTRY IS JUDGED AGAINST THE READING ITS AUTHOR HAD IN FRONT OF
+    THEM -- the PREVIOUS entry's clock and date -- AND against its own,
+    accepting agreement with either.  The commentary is the reason the
+    survivor pressed that key, so it belongs to the moment before it, and
+    judging "five past eight, so I am going to lie down" against the clock
+    a nine-hour sleep produced would refuse an honest sentence; equally,
+    the frame this cue is DISPLAYED OVER carries its own reading, and a
+    sentence that agrees with what the viewer can see is not a
+    fabrication.  Both readings were observed and both are committed, so
+    either is honest evidence.  The first entry has nothing before it and
+    is judged against its own reading alone.
 
-    A caption that had to be shortened is a caption that does not carry
-    the whole sentence, and that must be visible rather than inferred
-    from reading the file.  It is stated once, with a count and a
-    bounded sample, and it names where the sentences are whole -- one
-    advisory per cue would bury the out-of-character notes beside it.
-
-    Not a failure: the sentence is intact in playthrough/transcript.md,
-    the mark says so in the caption itself, and Cue.abridged makes the
-    count checkable.
+    manifest.py owns the parser and the tolerances, for the same reason
+    the voice gate does.
     """
-    marked = abridged_entries(cues)
+    problems = []
+    previous_clock = None
+    previous_date = None
+    for position, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            continue
+        commentary = entry.get("commentary")
+        clock = entry.get("ingame_clock")
+        date_text = entry.get("ingame_date")
+        against_clock = (clock if previous_clock is None
+                         else previous_clock)
+        against_date = (date_text if previous_date is None
+                        else previous_date)
+        problems.extend(manifest.clock_honesty_problems(
+            commentary, against_clock, against_date,
+            "entry %d commentary" % (position + 1),
+            also_clock=clock, also_date=date_text))
+        previous_clock = clock
+        if date_text:
+            previous_date = date_text
+    return problems
+
+
+def commentary_advisories(cues: Sequence[Cue]) -> List[str]:
+    """Report what is worth saying but is not a refusal.
+
+    Only the caption-length note remains here: the out-of-character
+    vocabulary became :func:`voice_problems`, which blocks publication,
+    and nothing else about a sentence is this module's business.
+    """
+    return length_advisories(cues)
+
+
+def long_entries(cues: Sequence[Cue]) -> List[int]:
+    """Return the entries whose caption is longer than comfortable."""
+    return [cue.index for cue in cues
+            if len(cue.lines) > CUE_COMFORTABLE_LINES]
+
+
+def length_advisories(cues: Sequence[Cue]) -> List[str]:
+    """Report, ONCE, which captions are a mouthful to read.
+
+    NOT A FAILURE AND NOT A CUT.  Every cue carries the whole sentence --
+    that is the point of the change this replaces -- so the only thing
+    left to say about a long one is that a viewer may not finish it
+    inside its window, and the remedy is a shorter sentence at capture
+    time.  It is stated once, with a count and a bounded sample, because
+    one advisory per cue would bury the out-of-character refusals beside
+    it.
+    """
+    marked = long_entries(cues)
     if not marked:
         return []
     shown = marked[:CUE_ADVISORY_SAMPLE]
@@ -1202,13 +1240,13 @@ def abridgement_advisories(cues: Sequence[Cue]) -> List[str]:
     sample = (listed if remainder <= 0 else
               "%s and %d more" % (listed, remainder))
     return [
-        "%d of %d caption(s) did not fit %d lines of %d columns and "
-        "carry the %r mark (entries %s).  The caption is shortened at a "
-        "word boundary; NO WORD IS CHANGED and nothing is summarised.  "
-        "playthrough/transcript.md carries every sentence entire -- "
-        "read those entries there"
-        % (len(marked), len(cues), CUE_MAX_LINES, CUE_LINE_WIDTH,
-           CUE_ELISION.strip(), sample)]
+        "%d of %d caption(s) wrap to more than %d lines of %d columns "
+        "(entries %s).  Every word is in the cue -- nothing is "
+        "shortened -- but a viewer may not finish reading one inside its "
+        "window, and the answer to that is a shorter sentence when the "
+        "frame is captured, never a cut afterwards"
+        % (len(marked), len(cues), CUE_COMFORTABLE_LINES,
+           CUE_LINE_WIDTH, sample)]
 
 
 # ---------------------------------------------------------------------
@@ -1488,32 +1526,49 @@ def write_transcripts(
     srt_path: Optional[str] = None,
     markdown_path: Optional[str] = None,
     root: Optional[str] = None,
+    timeline_path: Optional[str] = None,
 ) -> Tuple[str, str]:
-    """Write both artifacts as ONE generation.  Returns the two paths.
+    """Write both artifacts as ONE RECOVERABLE generation.
 
-    THE PAIR IS PUBLISHED TOGETHER OR NOT AT ALL.  Both texts are
-    complete before this is called and both paths are validated before
-    either file is opened, and each individual write is atomic -- but
-    that was not enough, because the two writes were still two events.
-    The SRT landed first, so between the two os.replace() calls the
-    caption file described this timeline while the Markdown transcript
-    still described the previous one; and if the second write failed, or
-    the process was killed between them, the tree was left holding a
-    mismatched pair permanently.  Both are committed artifacts and the
-    whole point of writing them in one pass is that a reader can trust
-    they carry the same numbers, so a window in which they do not is the
-    defect.
+    Returns the two paths.
 
-    Two things close it.  An exclusive lock -- the same lock the other
-    producers take, held in the pipeline's scratch directory outside the
-    tree -- means a concurrent run waits for the whole pair rather than
-    interleaving with half of it.  And both texts are staged and fsynced
-    BEFORE either is switched in, so by the time the first rename
-    happens the second cannot fail for any reason a filesystem reports:
-    the bytes are already on the device, and only two metadata
-    operations remain.  That is as close to writing two files at once as
-    a filesystem allows, and the remaining window is a pair of adjacent
-    renames rather than a pair of writes.
+    THE PAIR IS PUBLISHED TOGETHER OR NOT AT ALL, and where that cannot
+    be guaranteed it is at least RECOVERABLE.  Both texts are complete
+    before this is called, both paths are validated before either file is
+    opened, and each individual write is atomic -- but two atomic renames
+    are not one atomic pair.  The SRT lands first, so between the two
+    os.replace() calls the caption file describes this timeline while the
+    Markdown transcript still describes the previous one; and a process
+    killed between them used to leave that mismatch on disk permanently,
+    with each file internally valid and nothing recording that they
+    disagreed.  The module's own docstring claimed a journal made this
+    "detectable and finishable".  There was no journal.  There is now.
+
+    Four things close it, in this order:
+
+      * an EXCLUSIVE LOCK -- the same lock the other producers take, in
+        the scratch directory outside the tree -- so a concurrent run
+        waits for the whole pair rather than interleaving with half of it;
+      * both texts are STAGED AND FSYNCED before either is switched in,
+        so by the time the first rename happens the second cannot fail
+        for any reason a filesystem reports: the bytes are already on the
+        device and only two metadata operations remain;
+      * a GENERATION JOURNAL, written durably before the first rename,
+        naming both targets and the digest each is about to carry.  Its
+        presence at startup proves a publication was interrupted and its
+        contents say exactly which file should hold what, so the state is
+        detectable and this stage -- which is deterministic for a given
+        timeline -- finishes it by simply publishing again;
+      * a GENERATION MANIFEST at playthrough/build/transcript.json,
+        committed beside the artifacts, binding both digests to the
+        digest of the timeline they were computed from.  That is what
+        lets embed_captions.sh refuse a stale caption file against a
+        freshly rendered movie: the two manifests must name the same
+        timeline.
+
+    Both records are published before the journal is cleared, and every
+    published digest is re-read and checked first.  A publication that
+    cannot be verified leaves the journal in place.
     """  # noqa: D401
     srt_target = validated_output_path(
         default_srt_path() if srt_path is None else srt_path,
@@ -1526,14 +1581,52 @@ def write_transcripts(
         raise TranscriptError(
             "both artifacts would be written to %s; the captions and "
             "the transcript are two files" % srt_target)
+    source = (default_timeline_path() if timeline_path is None
+              else timeline_path)
     with ArtifactLock(LOCK_NAME, root):
+        # AN INTERRUPTED PREVIOUS RUN IS REPORTED BEFORE THIS ONE
+        # PUBLISHES.  It is not an error -- this run is about to replace
+        # both files with a consistent pair, which is exactly the repair
+        # -- but it must not pass in silence, because a mixed generation
+        # may already have been read by a later stage.
+        for problem in timeline_module.generation_journal_problems(
+                LOCK_NAME, root):
+            _warn("a previous transcript publication was interrupted: "
+                  "%s.  This run republishes both files from the same "
+                  "timeline, which repairs it" % problem)
         staged = []
         try:
             for target, text in ((srt_target, srt_text),
                                  (markdown_target, markdown_text)):
                 staged.append((stage_text(target, text), target))
+            # ABSOLUTE PATHS IN THE JOURNAL, deliberately: it lives in
+            # the private scratch directory outside the tree, it is
+            # machinery rather than committed evidence, and recovery has
+            # to be able to find the exact file it named without
+            # re-deriving a repository root that may not be the one this
+            # run had.  The committed MANIFEST is the opposite case and
+            # carries repository-relative paths.
+            journal = {
+                "version": timeline_module.GENERATION_VERSION,
+                "stage": LOCK_NAME,
+                "timeline": os.path.abspath(source),
+                "targets": [
+                    {"path": os.path.abspath(target),
+                     "sha256": _digest_of_text(text)}
+                    for target, text in ((srt_target, srt_text),
+                                         (markdown_target,
+                                          markdown_text))],
+            }
+            timeline_module.write_generation_journal(
+                LOCK_NAME, journal, root)
             for temporary, target in staged:
                 _publish_staged(temporary, target)
+            _assert_published(srt_target, srt_text)
+            _assert_published(markdown_target, markdown_text)
+            write_generation_manifest(
+                srt_target, srt_text, markdown_target, markdown_text,
+                source, root)
+            timeline_module.clear_generation_journal(LOCK_NAME, root)
         finally:
             for temporary, _ in staged:
                 if os.path.exists(temporary):
@@ -1543,6 +1636,82 @@ def write_transcripts(
                         _warn("could not remove the staging file %s (%s)"
                               % (temporary, err))
     return srt_target, markdown_target
+
+
+def _digest_of_text(text: str) -> str:
+    """Return the sha256 of exactly the bytes that will be written."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _assert_published(target: str, text: str) -> None:
+    """Confirm `target` now holds exactly `text`.  Raises if not.
+
+    The rename is atomic with respect to a reader, which is not the same
+    as being verified: this re-reads the published file and compares its
+    digest with the bytes that were staged, so the journal is only
+    cleared once the tree demonstrably holds this generation.
+    """
+    expected = _digest_of_text(text)
+    found = timeline_module.file_digest(target)
+    if found != expected:
+        raise TranscriptError(
+            "%s was published but now carries %s rather than the %s "
+            "that was staged and verified.  The generation journal is "
+            "left in place, so the next run finishes this publication"
+            % (relative_to_repo(target), found[:16], expected[:16]))
+
+
+def generation_manifest_path(root: Optional[str] = None) -> str:
+    """Return playthrough/build/transcript.json."""
+    return os.path.join(approved_root(root), BUILD_DIR_NAME,
+                        GENERATION_MANIFEST_NAME)
+
+
+def write_generation_manifest(srt_target: str, srt_text: str,
+                              markdown_target: str,
+                              markdown_text: str,
+                              timeline_path: str,
+                              root: Optional[str] = None) -> str:
+    """Write playthrough/build/transcript.json.  Returns the path.
+
+    THE PROVENANCE THE MUX READS.  It names the timeline these transcripts
+    were computed from -- by that document's own digest, not by its path,
+    which any two runs share -- and the digest of each file this run
+    published.  embed_captions.sh holds the caption file it is about to
+    mux against this, and holds this against the movie's own manifest, so
+    a caption track from one session cannot be muxed into a film from
+    another.  Deterministic: no timestamp, no host, no absolute path.
+    """
+    target = generation_manifest_path(root)
+    parent = os.path.dirname(target)
+    if not os.path.isdir(parent):
+        try:
+            os.makedirs(parent, exist_ok=True)
+        except OSError as err:
+            raise TranscriptError(
+                "cannot create %s for the generation manifest: %s"
+                % (parent, err)) from err
+    record = {
+        "version": timeline_module.GENERATION_VERSION,
+        "stage": LOCK_NAME,
+        "timeline": {
+            "path": relative_to_repo(timeline_path),
+            "sha256": timeline_module.file_digest(timeline_path),
+        },
+        "outputs": [
+            {"path": relative_to_repo(srt_target),
+             "sha256": _digest_of_text(srt_text),
+             "bytes": len(srt_text.encode("utf-8"))},
+            {"path": relative_to_repo(markdown_target),
+             "sha256": _digest_of_text(markdown_text),
+             "bytes": len(markdown_text.encode("utf-8"))},
+        ],
+    }
+    text = json.dumps(record, ensure_ascii=False, indent=2,
+                      sort_keys=True) + "\n"
+    temporary = stage_text(target, text)
+    _publish_staged(temporary, target)
+    return target
 
 
 def stage_text(target: str, text: str) -> str:
@@ -1704,7 +1873,15 @@ def main(
         srt_text, markdown_text, cues = build_transcripts(document)
         entries = timeline_entries(document)
         summary = summarise(document, entries, cues, markdown_text)
+
         problems = summary_problems(summary)
+        # THE TWO HONESTY GATES, held BEFORE anything is written and
+        # counted among the problems rather than warned about beside
+        # them: a transcript that carries an engineering observation or a
+        # statement the frames contradict is not publishable, and the
+        # remedy for either is upstream of this file.
+        problems.extend(voice_problems(cues))
+        problems.extend(honesty_problems(cues, entries))
         if problems:
             _report(problems)
             print("make_srt.py: %d problem(s) found" % len(problems),
@@ -1716,7 +1893,8 @@ def main(
             destination = "nothing written"
         else:
             written = write_transcripts(
-                srt_text, markdown_text, args.srt, args.md, root)
+                srt_text, markdown_text, args.srt, args.md, root,
+                timeline_path=source)
             destination = ", ".join(
                 relative_to_repo(target) for target in written)
         if not args.quiet:

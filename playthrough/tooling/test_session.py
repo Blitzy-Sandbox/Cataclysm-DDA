@@ -226,6 +226,81 @@ class SessionFixture(unittest.TestCase):
         with open(self.observations, "r", encoding="utf-8") as handle:
             return [json.loads(line) for line in handle if line.strip()]
 
+    def journal(self, **overrides):
+        """Write a COMPLETE journal record for this tree.
+
+        Every field session.py validates on recovery is supplied, because
+        the validation is part of the contract: a journal from another
+        checkout, another manifest or another X display must not be
+        completed against this one.  A test that needs one of them wrong
+        overrides it deliberately.
+        """
+        record = {
+            "version": session.JOURNAL_VERSION,
+            "phase": session.JOURNAL_PHASE_DELIVERED,
+            "frame": 1,
+            "key": "j",
+            "action": "press 'j'",
+            "commentary": "South.",
+            "capture_attempts": 1,
+            "manifest": manifest.relative_to_repo(self.manifest),
+            "frames_dir": manifest.relative_to_repo(self.frames),
+            "display": session.resolve_display(),
+            "opened_at": FIXED_REAL_TS,
+        }
+        record.update(overrides)
+        for name in [key for key, value in record.items()
+                     if value is None]:
+            record.pop(name)
+        session.write_journal(session.journal_path(self.root), record)
+        return record
+
+    def stub_window_module(self, window=4242):
+        """Stub window resolution BEFORE a session is opened.
+
+        Recovery re-authenticates and re-focuses the engine before it
+        photographs anything, which happens inside Session.__init__ --
+        so a recovery test has to replace the module-level helpers rather
+        than the instance method stub_window() patches.
+        """
+        self.sent = []
+
+        def record(identifier, key, timeout=None):
+            self.sent.append(key)
+            return key
+
+        originals = {
+            "authenticated_window": session.authenticated_window,
+            "focus_window": session.focus_window,
+            "send_key": session.send_key,
+        }
+        session.authenticated_window = (
+            lambda prefer=None, timeout=None, root=None:
+            session.WindowIdentity(
+                window=window, pid=1, executable="stub", cwd="stub",
+                userdir="stub", display=session.resolve_display()))
+        session.focus_window = (
+            lambda identifier, timeout=None: window)
+        session.send_key = record
+        for name, value in originals.items():
+            self.addCleanup(setattr, session, name, value)
+        return window
+
+    def lastworld(self, world="Fern Creek", character="A"):
+        """Write the record main_menu::load_game() writes on load.
+
+        The engine writes <userdir>/config/lastworld.json the moment a
+        character is loaded (src/main_menu.cpp:1080-1083), so a resumed
+        session that has reached the world has one -- and session.py holds
+        the pinned survivor against it.  The default character name is
+        what "#QQ==" decodes to, which is the fixture world's own.
+        """
+        path = os.path.join(self.config, session.LASTWORLD_NAME)
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump({"world_name": world,
+                       "character_name": character}, handle)
+        return path
+
     def world(self, name="Fern Creek", characters=("#QQ==",)):
         """Create a world directory that probe_save_resume believes."""
         directory = os.path.join(self.save, name)
@@ -370,20 +445,25 @@ class TheStep(SessionFixture):
 
 
 class JournalRecovery(SessionFixture):
-    """Finding 1: an interrupted step leaves no gap in the record."""
+    """Finding 1: an interrupted step leaves no gap and invents nothing.
+
+    The three phases are the whole point.  `delivered` means the key
+    reached the X server, so the frame may honestly be photographed at
+    that index; `captured` means the frame is already on disk, so the row
+    is completed from the payload; `sending` means DELIVERY IS UNKNOWN,
+    and that one is halted on rather than resolved, because either answer
+    would be a statement this module cannot support.
+    """
 
     def test_a_delivered_key_with_no_frame_is_captured_at_that_index(
             self):
         # Exactly the committed defect: the key went in, the capture was
         # refused, and the session stopped with nothing recorded for it.
-        session.write_journal(
-            session.journal_path(self.root),
-            {"version": session.JOURNAL_VERSION,
-             "phase": session.JOURNAL_PHASE_INTENT,
-             "frame": 1, "key": "Y",
-             "action": "press 'Y' -- confirm the character sheet",
-             "commentary": "Sign it and open the door.",
-             "capture_attempts": 1})
+        self.stub_window_module()
+        self.journal(phase=session.JOURNAL_PHASE_DELIVERED, frame=1,
+                     key="Y",
+                     action="press 'Y' -- confirm the character sheet",
+                     commentary="Sign it and open the door.")
         opened = self.open_session()
         rows = self.rows()
         self.assertEqual(len(rows), 1)
@@ -402,22 +482,145 @@ class JournalRecovery(SessionFixture):
         self.assertFalse(
             os.path.isfile(session.journal_path(self.root)))
 
+    def test_recovery_re_authenticates_before_it_photographs(self):
+        """The engine is re-found, not assumed still there.
+
+        Recovery used to photograph the root window immediately, on the
+        strength of a window id from a process that had died -- so it
+        could file whatever now occupied the display as the frame a
+        keystroke produced.
+        """
+        self.journal(phase=session.JOURNAL_PHASE_DELIVERED, key="Y",
+                     action="press 'Y'", commentary="Sign it.")
+        asked = []
+        original = session.authenticated_window
+        session.authenticated_window = (
+            lambda prefer=None, timeout=None, root=None: (
+                asked.append(prefer) or session.WindowIdentity(
+                    window=99, pid=1, executable="stub", cwd="stub",
+                    userdir="stub",
+                    display=session.resolve_display())))
+        self.addCleanup(
+            setattr, session, "authenticated_window", original)
+        focused = []
+        original_focus = session.focus_window
+        session.focus_window = (
+            lambda identifier, timeout=None: focused.append(identifier))
+        self.addCleanup(
+            setattr, session, "focus_window", original_focus)
+        self.open_session()
+        self.assertEqual(len(asked), 1)
+        self.assertEqual(focused, [99])
+        self.assertEqual(len(self.rows()), 1)
+
+    def test_an_unreachable_engine_leaves_the_journal_alone(self):
+        """A frame is not invented because the window went away."""
+        self.journal(phase=session.JOURNAL_PHASE_DELIVERED, key="Y",
+                     action="press 'Y'", commentary="Sign it.")
+        original = session.authenticated_window
+
+        def refuse(prefer=None, timeout=None, root=None):
+            raise session.WindowError("no engine on the display")
+
+        session.authenticated_window = refuse
+        self.addCleanup(
+            setattr, session, "authenticated_window", original)
+        with self.assertRaises(session.WindowError):
+            self.open_session()
+        self.assertEqual(self.rows(), [])
+        self.assertIsNotNone(
+            session.read_journal(session.journal_path(self.root)))
+
+    def test_an_ambiguous_send_halts_and_records_nothing(self):
+        """`sending` is never resolved automatically.
+
+        This is the fabrication the review found: a crash between the
+        journal write and the key leaving produced a frame, a row and a
+        first-person sentence for a keystroke that never happened.
+        """
+        self.stub_window_module()
+        self.journal(phase=session.JOURNAL_PHASE_SENDING, key="Y",
+                     action="press 'Y'", commentary="Sign it.")
+        with self.assertRaises(session.RecordError) as caught:
+            self.open_session()
+        self.assertIn("AMBIGUOUS", str(caught.exception))
+        self.assertIn("reconcile", str(caught.exception))
+        self.assertEqual(self.rows(), [])
+        self.assertEqual(self.sidecar(), [])
+        self.assertFalse(os.path.isfile(
+            os.path.join(self.frames, "frame_00001.png")))
+        self.assertIsNotNone(
+            session.read_journal(session.journal_path(self.root)))
+
+    def test_reconciling_as_delivered_completes_that_index(self):
+        self.stub_window_module()
+        self.journal(phase=session.JOURNAL_PHASE_SENDING, key="Y",
+                     action="press 'Y'", commentary="Sign it.")
+        opened = session.Session(
+            manifest_path=self.manifest, frames_dir=self.frames,
+            observations_path=self.observations,
+            capture_script=self.capture, window_id=None,
+            root=self.root, settle_journal=False)
+        self.addCleanup(opened.close)
+        notes = opened.reconcile(session.RECONCILE_DELIVERED)
+        self.assertTrue(any("delivered" in note for note in notes))
+        rows = self.rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["action"], "press 'Y'")
+        self.assertEqual(opened.frame, 1)
+        self.assertIs(self.sidecar()[0]["recovered"], True)
+        self.assertFalse(
+            os.path.isfile(session.journal_path(self.root)))
+
+    def test_reconciling_as_not_delivered_records_nothing(self):
+        self.stub_window_module()
+        self.journal(phase=session.JOURNAL_PHASE_SENDING, key="Y",
+                     action="press 'Y'", commentary="Sign it.")
+        opened = session.Session(
+            manifest_path=self.manifest, frames_dir=self.frames,
+            observations_path=self.observations,
+            capture_script=self.capture, window_id=None,
+            root=self.root, settle_journal=False)
+        self.addCleanup(opened.close)
+        opened.reconcile(session.RECONCILE_NOT_DELIVERED)
+        self.assertEqual(self.rows(), [])
+        self.assertEqual(self.sidecar(), [])
+        self.assertEqual(opened.frame, 0)
+        self.assertFalse(
+            os.path.isfile(session.journal_path(self.root)))
+
+    def test_reconcile_refuses_a_phase_that_is_not_ambiguous(self):
+        self.stub_window_module()
+        opened = session.Session(
+            manifest_path=self.manifest, frames_dir=self.frames,
+            observations_path=self.observations,
+            capture_script=self.capture, window_id=None,
+            root=self.root, settle_journal=False)
+        self.addCleanup(opened.close)
+        self.journal(phase=session.JOURNAL_PHASE_DELIVERED)
+        with self.assertRaises(session.RecordError):
+            opened.reconcile(session.RECONCILE_DELIVERED)
+
     def test_a_captured_frame_completes_from_the_stored_payload(self):
+        self.stub_window_module()
         with open(os.path.join(self.frames, "frame_00001.png"),
                   "w", encoding="utf-8") as handle:
             handle.write("stub")
-        session.write_journal(
-            session.journal_path(self.root),
-            {"version": session.JOURNAL_VERSION,
-             "phase": session.JOURNAL_PHASE_CAPTURED,
-             "frame": 1, "key": "Return",
-             "action": "press 'Return'",
-             "commentary": "English, same as every form.",
-             "capture_attempts": 1,
-             "payload": {"REAL_TS": FIXED_REAL_TS,
-                         "CLOCK": "08:00:00",
-                         "CLOCK_STATUS": "exact",
-                         "DATE": "Spring, day 61"}})
+        self.journal(
+            phase=session.JOURNAL_PHASE_CAPTURED, key="Return",
+            action="press 'Return'",
+            commentary="English, same as every form.",
+            payload={session.CAPTURE_MODE_KEY:
+                     session.CAPTURE_MODE_PRODUCTION,
+                     "FRAME_INDEX": "1",
+                     "FRAME_NAME": "frame_00001.png",
+                     "FRAME_FILE": "playthrough/frames/frame_00001.png",
+                     "FRAME_PATH": os.path.join(
+                         self.frames, "frame_00001.png"),
+                     "REAL_TS": FIXED_REAL_TS,
+                     "CLOCK": "08:00:00",
+                     "CLOCK_STATUS": "read",
+                     "DATE": "Spring, day 61"})
         opened = self.open_session()
         rows = self.rows()
         self.assertEqual(len(rows), 1)
@@ -426,21 +629,91 @@ class JournalRecovery(SessionFixture):
         self.assertEqual(opened.frame, 1)
         self.assertIs(self.sidecar()[0]["recovered"], True)
 
+    def test_a_captured_payload_for_another_frame_is_refused(self):
+        """The payload is re-checked against the capture on disk.
+
+        It arrives from a file this session did not write and it decides
+        the row's `file`, `real_ts` and clock, so an index that disagrees
+        with the frame on disk must fail rather than become a row.
+        """
+        self.stub_window_module()
+        with open(os.path.join(self.frames, "frame_00001.png"),
+                  "w", encoding="utf-8") as handle:
+            handle.write("stub")
+        self.journal(
+            phase=session.JOURNAL_PHASE_CAPTURED, key="Return",
+            action="press 'Return'", commentary="English.",
+            payload={session.CAPTURE_MODE_KEY:
+                     session.CAPTURE_MODE_PRODUCTION,
+                     "FRAME_INDEX": "7",
+                     "FRAME_NAME": "frame_00007.png",
+                     "FRAME_FILE": "playthrough/frames/frame_00007.png",
+                     "FRAME_PATH": os.path.join(
+                         self.frames, "frame_00007.png"),
+                     "REAL_TS": FIXED_REAL_TS,
+                     "CLOCK": "08:00:00",
+                     "CLOCK_STATUS": "read"})
+        with self.assertRaises(session.SessionError):
+            self.open_session()
+        self.assertEqual(self.rows(), [])
+
     def test_a_stale_entry_is_discarded_not_replayed(self):
         opened = self.open_session()
         self.stub_window(opened)
         opened.step("j", commentary="South.")
         opened.close()
-        session.write_journal(
-            session.journal_path(self.root),
-            {"version": session.JOURNAL_VERSION,
-             "phase": session.JOURNAL_PHASE_INTENT,
-             "frame": 1, "key": "j", "action": "press 'j'",
-             "commentary": "South.", "capture_attempts": 1})
+        self.journal(phase=session.JOURNAL_PHASE_DELIVERED, frame=1,
+                     key="j", action="press 'j'", commentary="South.")
         again = self.open_session()
         self.assertEqual(len(self.rows()), 1)
+        self.assertEqual(len(self.sidecar()), 1)
         self.assertEqual(again.frame, 1)
         self.assertTrue(again.recovered)
+
+    def test_a_stale_entry_repairs_a_missing_telemetry_row(self):
+        """The sidecar is made whole before the journal is discarded.
+
+        _commit() appends the manifest row, then the telemetry row, then
+        clears the journal -- so an interruption between the two appends
+        leaves a manifest row with no sidecar row, and discarding the
+        journal without looking used to lose it for good.  That row
+        carries the sidebar DATE line timeline.py reconciles a midnight
+        crossing with.
+        """
+        self.stub_window_module()
+        with open(os.path.join(self.frames, "frame_00001.png"),
+                  "w", encoding="utf-8") as handle:
+            handle.write("stub")
+        manifest.append_row(
+            self.manifest, 1, "playthrough/frames/frame_00001.png",
+            FIXED_REAL_TS, "08:00:00", "press 'j'", "South.",
+            root=self.root)
+        self.assertEqual(self.sidecar(), [])
+        self.journal(
+            phase=session.JOURNAL_PHASE_CAPTURED, frame=1, key="j",
+            action="press 'j'", commentary="South.",
+            payload={session.CAPTURE_MODE_KEY:
+                     session.CAPTURE_MODE_PRODUCTION,
+                     "FRAME_INDEX": "1",
+                     "FRAME_NAME": "frame_00001.png",
+                     "FRAME_FILE": "playthrough/frames/frame_00001.png",
+                     "FRAME_PATH": os.path.join(
+                         self.frames, "frame_00001.png"),
+                     "REAL_TS": FIXED_REAL_TS,
+                     "CLOCK": "08:00:00",
+                     "CLOCK_STATUS": "read",
+                     "DATE": "Spring, day 61"})
+        opened = self.open_session()
+        repaired = self.sidecar()
+        self.assertEqual(len(repaired), 1)
+        self.assertEqual(repaired[0]["frame"], 1)
+        self.assertEqual(repaired[0]["date"], "Spring, day 61")
+        self.assertEqual(repaired[0]["key"], "j")
+        self.assertIs(repaired[0]["recovered"], True)
+        self.assertEqual(len(self.rows()), 1)
+        self.assertEqual(opened.frame, 1)
+        self.assertFalse(
+            os.path.isfile(session.journal_path(self.root)))
 
     def test_an_unbelievable_journal_stops_the_session(self):
         with open(session.journal_path(self.root), "w",
@@ -450,12 +723,40 @@ class JournalRecovery(SessionFixture):
             self.open_session()
 
     def test_a_journal_ahead_of_the_record_is_refused(self):
-        session.write_journal(
-            session.journal_path(self.root),
-            {"version": session.JOURNAL_VERSION,
-             "phase": session.JOURNAL_PHASE_INTENT,
-             "frame": 9, "key": "j", "action": "press 'j'",
-             "commentary": "South.", "capture_attempts": 1})
+        self.journal(phase=session.JOURNAL_PHASE_DELIVERED, frame=9)
+        with self.assertRaises(session.RecordError):
+            self.open_session()
+
+    def test_an_older_journal_version_is_refused_not_reinterpreted(self):
+        """Version 1's `intent` did not distinguish delivery.
+
+        Deciding after the fact that an ambiguous record meant
+        "delivered" is precisely how a keystroke that never happened
+        acquires a frame and a sentence.
+        """
+        self.stub_window_module()
+        self.journal(version=1, phase="intent", key="Y",
+                     action="press 'Y'", commentary="Sign it.")
+        with self.assertRaises(session.RecordError) as caught:
+            self.open_session()
+        self.assertIn("version", str(caught.exception))
+        self.assertEqual(self.rows(), [])
+
+    def test_a_journal_from_another_record_is_refused(self):
+        self.stub_window_module()
+        self.journal(manifest="playthrough/somebody-elses.jsonl")
+        with self.assertRaises(session.RecordError):
+            self.open_session()
+
+    def test_a_journal_from_another_display_is_refused(self):
+        self.stub_window_module()
+        self.journal(display=":77")
+        with self.assertRaises(session.RecordError):
+            self.open_session()
+
+    def test_an_uninterpretable_phase_is_refused(self):
+        self.stub_window_module()
+        self.journal(phase="halfway")
         with self.assertRaises(session.RecordError):
             self.open_session()
 
@@ -471,14 +772,37 @@ class JournalRecovery(SessionFixture):
         self.assertIsNotNone(record)
         self.assertEqual(record["frame"], 1)
         self.assertEqual(record["key"], "Y")
-        self.assertEqual(record["phase"], session.JOURNAL_PHASE_INTENT)
+        self.assertEqual(
+            record["phase"], session.JOURNAL_PHASE_DELIVERED,
+            msg=("xdotool returned 0, so the key DID reach the X "
+                 "server: recovery may photograph this index"))
         opened.close()
         # And the next session finishes it at the same index.
         os.environ["STUB_FAIL"] = ""
+        self.stub_window_module()
         again = self.open_session()
         self.assertEqual(again.frame, 1)
         self.assertEqual(len(self.rows()), 1)
         self.assertEqual(self.sidecar()[0]["key"], "Y")
+
+    def test_a_send_that_failed_leaves_the_journal_ambiguous(self):
+        """xdotool failing says nothing about whether X acted."""
+        opened = self.open_session()
+        self.stub_window(opened)
+        original = session.send_key
+
+        def refuse(identifier, key, timeout=None):
+            raise session.WindowError("xdotool exited 1")
+
+        session.send_key = refuse
+        self.addCleanup(setattr, session, "send_key", original)
+        with self.assertRaises(session.WindowError):
+            opened.step("Y", commentary="Sign it.")
+        record = session.read_journal(session.journal_path(self.root))
+        self.assertEqual(
+            record["phase"], session.JOURNAL_PHASE_SENDING,
+            msg="an unknown delivery stays unknown in the journal")
+        self.assertEqual(self.rows(), [])
 
 
 class TheStepLock(SessionFixture):
@@ -586,6 +910,7 @@ class MandatoryAudits(SessionFixture):
 
     def test_a_second_character_during_a_resume_is_refused(self):
         self.world()
+        self.lastworld()
         opened = self.open_session()
         self.stub_window(opened)
         opened.step("j", commentary="South.")
@@ -593,8 +918,116 @@ class MandatoryAudits(SessionFixture):
         with self.assertRaises(session.CheatGuard):
             opened.step("k", commentary="North.")
 
+    def test_a_resumed_session_refuses_the_creator_before_sending(self):
+        """The prevention the save-set comparison is not.
+
+        Comparing the save tree with what it looked like a keystroke ago
+        detects a second survivor only AFTER the key that created one has
+        landed -- and a character, once created, is in that world's save
+        directory whether this run records it or not.  So the five
+        main-menu hotkeys that open a new survivor are refused before
+        send_key is reached, for as long as the engine is on a menu.
+        """
+        self.world()
+        opened = self.open_session()
+        self.stub_window(opened)
+        self.assertEqual(opened.pin.mode, session.SESSION_MODE_RESUME)
+        self.assertEqual(opened.ui_phase, session.UI_PHASE_MENU)
+        for key in session.MENU_NEW_SURVIVOR_HOTKEYS:
+            with self.subTest(key=key):
+                with self.assertRaises(session.CheatGuard):
+                    opened.step(key, commentary="No.")
+        self.assertEqual(self.sent, [])
+        self.assertEqual(self.rows(), [])
+
+    def test_a_created_session_may_press_custom_character(self):
+        """The refusal is scoped to a RESUME, not to the letter."""
+        opened = self.open_session()
+        self.stub_window(opened)
+        self.assertEqual(opened.pin.mode, session.SESSION_MODE_CREATE)
+        opened.step("u", commentary="The custom sheet.")
+        self.assertEqual(self.sent, ["u"])
+
+    def test_the_world_is_entered_only_on_the_sidebar_appearing(self):
+        """The phase is observed from the pixels, never declared."""
+        self.world()
+        self.lastworld()
+        opened = self.open_session()
+        self.stub_window(opened)
+        self.assertEqual(opened.ui_phase, session.UI_PHASE_MENU)
+        # The stub capture reports a clock, which is the sidebar, which
+        # is what a loaded character draws.
+        opened.step("Return", commentary="Continue.")
+        self.assertEqual(opened.ui_phase, session.UI_PHASE_IN_WORLD)
+        # And from there the same letters are ordinary commands again.
+        opened.step("r", commentary="Read the label on it.")
+        self.assertEqual(self.sent, ["Return", "r"])
+
+    def test_a_resume_that_reaches_the_world_as_somebody_else_stops(
+            self):
+        """lastworld.json is the engine's own statement of WHO.
+
+        A sidebar means a survivor is in the world; this run records
+        exactly one, and it is the one that already existed.
+        """
+        self.world()
+        self.lastworld(character="Somebody Else")
+        opened = self.open_session()
+        self.stub_window(opened)
+        with self.assertRaises(session.CheatGuard):
+            opened.step("Return", commentary="Continue.")
+        # The keystroke and its frame really happened, so the record says
+        # so; what stops is everything after them.
+        self.assertEqual(self.sent, ["Return"])
+        self.assertEqual(len(self.rows()), 1)
+        self.assertIsNotNone(opened.aborted)
+
+    def test_a_second_survivor_is_detected_on_the_same_step(self):
+        """Not one step late.
+
+        The save-set comparison used to run only before a key, so a
+        keystroke that created a survivor was noticed after ANOTHER key
+        had been sent into a game state this module had lost track of.
+        """
+        opened = self.open_session()
+        self.stub_window(opened)
+        original = session.send_key
+
+        def create(identifier, key, timeout=None):
+            """A keystroke that makes a second survivor appear."""
+            self.sent.append(key)
+            self.world("Fern Creek", ("#QQ==", "#UkI="))
+            return key
+
+        session.send_key = create
+        self.addCleanup(setattr, session, "send_key", original)
+        with self.assertRaises(session.CheatGuard):
+            opened.step("u", commentary="The custom sheet.")
+        self.assertEqual(self.sent, ["u"])
+        self.assertEqual(
+            len(self.rows()), 1,
+            msg="the key was delivered, so the row records it")
+        self.assertIsNotNone(opened.aborted)
+
+    def test_the_decoded_character_name_is_the_engines_own(self):
+        """#<b64>.sav decodes with the engine's own alphabet.
+
+        Its 63rd character is '-' rather than '/'
+        (src/catacharset.cpp:215), and the '#' is a marker rather than
+        payload, so a plain b64decode would answer wrongly or raise.
+        """
+        self.assertEqual(
+            session.decoded_character_name(
+                "#RGVscGhpbmUgT3VlbGxldHRl.sav"),
+            "Delphine Ouellette")
+        self.assertEqual(
+            session.decoded_character_name("#QQ==.sav.zzip"), "A")
+        self.assertIsNone(session.decoded_character_name("not-a-save"))
+        self.assertIsNone(session.decoded_character_name("#zz.sav"))
+
     def test_a_deleted_character_is_refused(self):
         self.world()
+        self.lastworld()
         opened = self.open_session()
         self.stub_window(opened)
         os.unlink(os.path.join(self.save, "Fern Creek", "#QQ==.sav"))

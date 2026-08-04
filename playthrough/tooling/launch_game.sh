@@ -335,6 +335,11 @@ INTERPRETER_PILLOW=""
 INTERPRETER_PREFLIGHT=""
 SAVE_WORLD=""
 SAVE_WORLD_COUNT=0
+# The UI state a captured session must start from, and it is DECLARED
+# here and VERIFIED below rather than assumed.  See
+# verify_resume_ui_state for what each value means and how it is
+# established; "" means no capture launch has been taken yet.
+INITIAL_UI_STATE=""
 SAVE_CHAR_COUNT=0
 # Which canonical character-file form(s) the save tree holds: ".sav",
 # ".sav.zzip", both, or empty when there is no character file at all.
@@ -3161,8 +3166,85 @@ running and could NOT be stopped"
 }
 
 # emit_launch_facts -- the machine-readable half of a launch.
+# verify_resume_ui_state -- prove a resumed session starts at a menu,
+# and declare the ONE transaction it has to perform first.
+#
+# THE DEFECT THIS CLOSES.  The resume branch of the capture launch used
+# to differ from the create branch by a log line: it started the same
+# process at the same screen and left "do not create a new character"
+# entirely to a key driver that could not tell one screen from another.
+# So a run that was supposed to CONTINUE the existing survivor could
+# walk into the character creator, and the only thing that would notice
+# was the save-set comparison -- one keystroke after a second survivor
+# already existed on disk.
+#
+# WHAT IS ESTABLISHED HERE, AND WHAT IS DELIBERATELY NOT.  This script
+# cannot load the character itself: every keystroke of a captured session
+# must be one captured frame with one manifest row (R2), and a key sent
+# from here would produce neither.  What it can do is establish and
+# VERIFY the state the session starts from, and hand the session the
+# world and character it must load:
+#
+#   * the engine is NOT already in the world.  A DIAGNOSTIC capture --
+#     PLAYTHROUGH_CAPTURE_MODE=diagnostic, which withdraws its PNG out of
+#     the working tree, emits no repository-relative path and exits 9, so
+#     it can never be mistaken for a frame of the record -- reads the
+#     sidebar region.  A readable clock, time phrase or date there means
+#     a survivor is already loaded, which for a launch this script has
+#     just taken means it is not the launch it thinks it is;
+#   * a save exists to load, and which world and character it is;
+#   * PLAYTHROUGH_INITIAL_UI_STATE is emitted so session.py's own
+#     mode-aware refusal and the operator are working from the same
+#     declared state rather than from two assumptions.
+verify_resume_ui_state() {
+    local payload status clock phrase date_text
+    INITIAL_UI_STATE="main-menu-load-required"
+    # The highest permitted index, deliberately: a diagnostic capture is
+    # withdrawn out of the tree and owed no row, and no session will ever
+    # reach 99999, so this probe cannot collide with a real frame.
+    payload="$(
+        PLAYTHROUGH_CAPTURE_MODE=diagnostic \
+        FRAME_INDEX=99999 \
+        "${PLAYTHROUGH_DIR}/tooling/capture.sh" 2>/dev/null
+    )" && status=0 || status=$?
+    if [ "${status}" -ne 9 ]; then
+        playthrough_warn "the diagnostic capture that checks the" \
+            "starting screen exited ${status} rather than 9, so what" \
+            "the engine is showing could not be read.  The resume" \
+            "state is recorded as unverified; session.py still refuses" \
+            "every new-survivor hotkey while it is on a menu."
+        INITIAL_UI_STATE="unverified"
+        return 0
+    fi
+    clock="$(printf '%s\n' "${payload}" |
+        sed -n 's/^CLOCK=//p' | head -n 1)"
+    phrase="$(printf '%s\n' "${payload}" |
+        sed -n 's/^TIME_PHRASE=//p' | head -n 1)"
+    date_text="$(printf '%s\n' "${payload}" |
+        sed -n 's/^DATE=//p' | head -n 1)"
+    if [ -n "${clock}${phrase}${date_text}" ]; then
+        die "${EX_LAYOUT}" "the launch this session would be captured" \
+            "from is ALREADY IN THE WORLD: the sidebar reads" \
+            "clock='${clock}' phrase='${phrase}' date='${date_text}'." \
+            "A resumed session has to begin at the main menu and load" \
+            "world '${SAVE_WORLD}' through the game's own character" \
+            "list, so that the load is itself captured, one frame per" \
+            "keystroke.  Stop the engine (the 'stop' subcommand) and" \
+            "run this again."
+    fi
+    playthrough_log "RESUME UI STATE verified: the engine is at a menu" \
+        "(no sidebar reading), ${SAVE_CHAR_COUNT} character save(s)" \
+        "exist in world '${SAVE_WORLD}', and the first captured" \
+        "keystrokes must LOAD that character.  None of the five" \
+        "new-survivor menu entries may be pressed: session.py refuses" \
+        "u/U, p/P, r/R, d/D and o/O until a captured frame shows the" \
+        "sidebar."
+    return 0
+}
+
 emit_launch_facts() {
     emit PLAYTHROUGH_LAUNCH_PHASE "${LAUNCH_PHASE}"
+    emit PLAYTHROUGH_INITIAL_UI_STATE "${INITIAL_UI_STATE}"
     emit PLAYTHROUGH_FIRST_RUN "${FIRST_RUN}"
     emit PLAYTHROUGH_WINDOW_ID "${WINDOW_ID}"
     emit PLAYTHROUGH_WINDOW_CLASS "${PLAYTHROUGH_WINDOW_CLASS}"
@@ -3527,9 +3609,16 @@ launch_game() {
     else
         playthrough_log "CAPTURE LAUNCH: create the survivor" \
             "through the custom point-buy creator"
+        INITIAL_UI_STATE="main-menu-create-permitted"
     fi
     launch_instance
     check_capture_geometry strict
+    # THE RESUME CONTRACT, established and verified AFTER the window is
+    # up and its geometry confirmed -- the diagnostic capture below reads
+    # the sidebar region of that window, so it needs both.
+    if [ "${SESSION_MODE}" = "resume" ]; then
+        verify_resume_ui_state
+    fi
     emit_launch_facts
     return 0
 }

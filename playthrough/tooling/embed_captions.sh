@@ -188,13 +188,42 @@
 #   * A previously published, verified film is not destroyed by a
 #     failed re-run.  It is replaced only by a film that passed.
 #
+# EVERY FALLIBLE CHECK HAPPENS BEFORE THE RENAME.  That is a correction,
+# not a restatement: the byte-size comparison, both mandated probe
+# readouts and the audio/data/attachment census all used to run AFTER the
+# rename, against the published file, and each of them could exit
+# non-zero.  So the canonical captioned MP4 -- a committed artifact -- was
+# replaced first and interrogated second, and a failure left the
+# unverified container in the working tree as the film while the previous
+# one, which had passed every check, was already gone.
+#
+# After the rename there is now exactly ONE check, and it asks nothing
+# about what the container holds: the sha256 of the published bytes
+# against the sha256 of the bytes that were verified.  The previous film
+# is copied aside first, so a mismatch RESTORES it and quarantines the
+# file that failed rather than merely reporting the loss.
+#
+# ---------------------------------------------------------------------
+# THE PROVENANCE GATE
+#
+# Length, cue count, codec and geometry can all agree between a film and
+# a caption track that describe DIFFERENT sessions -- a re-record of the
+# same opening, or a re-render of one session beside a transcript from
+# another.  So before anything is muxed, this stage reads the generation
+# manifests render_movie.py and make_srt.py publish beside their outputs,
+# requires both to name the same playthrough/timeline.json BY THAT
+# DOCUMENT'S OWN DIGEST, and requires each input to carry the digest its
+# own manifest declares.  A missing manifest is a refusal: treating it as
+# "nothing to check" would switch the gate off for exactly the older
+# render it exists to catch.
+#
 # ---------------------------------------------------------------------
 # THE EVIDENCE THIS SCRIPT PRINTS
 #
 # It does not claim the track is there; it shows the probe output that
 # proves it, then exits on any assertion that fails.  The two mandated
-# readouts are run verbatim against the published file and printed on
-# stderr as they came back --
+# readouts are run verbatim against the container that is published and
+# printed on stderr as they came back --
 #
 #     ffprobe -v error -select_streams s \
 #       -show_entries stream=index,codec_name:stream_tags=language \
@@ -476,6 +505,61 @@ readonly MIN_OUTPUT_BYTES=4096
 # and the stream-hash check below catches both regardless.
 readonly DURATION_EPSILON="0.001"
 
+# ---------------------------------------------------------------------
+# HOW FAR THE CAPTION TRACK MAY DIFFER FROM THE PICTURE, IN EITHER
+# DIRECTION
+#
+# THE DEFECT THIS REPLACES.  The comparison used to be one-sided: only a
+# caption track running PAST the end of the picture was refused.  A track
+# that ends EARLY was accepted, and that is the direction a stale cue file
+# fails in -- an SRT left over from a shorter session muxes cleanly into a
+# longer film, every count tallies because the cue count is checked
+# against that same stale file, and the result is a committed artifact
+# whose captions stop partway through and whose every cue after the first
+# few describes a different session's keystrokes.
+#
+# So the bound is now on the ABSOLUTE difference.  The number comes from
+# arithmetic the two upstream stages already document:
+#
+#   * the subtitle stream's duration is the last cue's end, and make_srt.py
+#     writes that equal to the timeline total exactly;
+#   * the video stream's duration is the container's, which render_movie.py
+#     measures as the timeline total plus [0.02, 0.06] s -- the concat
+#     demuxer's per-entry quantisation plus the repeated final entry's own
+#     default packet.
+#
+# Measured on the committed artifacts: timeline total 301.000, video
+# stream 301.040, subtitle stream 301.000 -- a difference of 0.040.
+#
+# The smallest staleness worth catching is a session one keystroke shorter,
+# which differs by at least the timeline's 0.25 s floor.  0.12 s therefore
+# sits between the largest honest quantisation (0.06) and the smallest
+# possible staleness (0.25 - 0.06 = 0.19), which is the same reasoning and
+# the same value as render_movie.py's own DURATION_TOLERANCE.
+# ---------------------------------------------------------------------
+readonly CAPTION_DURATION_TOLERANCE="0.12"
+
+# ---------------------------------------------------------------------
+# THE GENERATION MANIFESTS, and why this stage reads them
+#
+# THE DEFECT.  Holding the caption track against the length of the
+# picture catches a track from a session of a DIFFERENT length.  It cannot
+# catch one from a session of the SAME length -- and "same length" is not
+# far-fetched: a re-record of the same scripted opening, or a re-render of
+# one session with a transcript from another, produces two artifacts whose
+# durations agree to the millisecond and whose contents describe different
+# keystrokes.  Duration is a weak proxy for identity and a digest is not.
+#
+# So both producers publish a generation manifest naming the timeline they
+# computed from BY THAT DOCUMENT'S OWN DIGEST, and this stage requires the
+# two to name the same one, and requires the movie and the cue file on disk
+# to carry the digests their own manifests declare.  That makes muxing a
+# caption track from one session into a film from another arithmetically
+# impossible rather than merely unlikely.
+# ---------------------------------------------------------------------
+readonly MOVIE_MANIFEST_NAME="movie.json"
+readonly TRANSCRIPT_MANIFEST_NAME="transcript.json"
+
 # ffprobe's plain KEY=value form, and its bare-value form.  Parsed by
 # key rather than by position, because ffprobe prints the fields in its
 # own order and not in the order they were asked for.
@@ -755,8 +839,14 @@ assert_path_shape "${OUTPUT_MOVIE}" "output"
 # would be defeated by "playthrough/../playthrough/cata-play-cc.mp4",
 # which is why the gate compares resolved paths instead.
 # ---------------------------------------------------------------------
-if ! playthrough_require_tools ffmpeg ffprobe grep awk wc mv rm \
-        timeout readlink; then
+#
+# sha256sum is the addition that makes the provenance check possible: the
+# two generation manifests name their inputs by digest, and a digest has
+# to be computed to be compared.  cp retains the previous generation
+# beside the target so a publication that cannot be verified can be undone
+# rather than merely reported.
+if ! playthrough_require_tools ffmpeg ffprobe grep awk wc mv cp rm \
+        sha256sum timeout readlink; then
     exit "${EX_PREREQ}"
 fi
 
@@ -776,9 +866,90 @@ readonly GREP="${PLAYTHROUGH_BIN_GREP}"
 readonly AWK="${PLAYTHROUGH_BIN_AWK}"
 readonly WC="${PLAYTHROUGH_BIN_WC}"
 readonly MV="${PLAYTHROUGH_BIN_MV}"
+readonly CP="${PLAYTHROUGH_BIN_CP}"
 readonly RM="${PLAYTHROUGH_BIN_RM}"
+readonly SHA256SUM="${PLAYTHROUGH_BIN_SHA256SUM}"
 readonly TIMEOUT="${PLAYTHROUGH_BIN_TIMEOUT}"
 readonly READLINK="${PLAYTHROUGH_BIN_READLINK}"
+
+# file_digest FILE
+#   The sha256 of a file's exact bytes, or empty on failure.  Bare hex,
+#   with the filename coreutils appends stripped, so the value compares
+#   directly against a manifest field.
+file_digest() {
+    local out
+    out="$("${SHA256SUM}" -- "$1" 2>/dev/null)" || return 1
+    out="${out%% *}"
+    case "${out}" in
+        [0-9a-f]*)
+            if [ "${#out}" -eq 64 ]; then
+                printf '%s\n' "${out}"
+                return 0
+            fi
+            ;;
+    esac
+    return 1
+}
+
+# manifest_digest FILE SECTION [BASENAME]
+#   Read one sha256 out of a generation manifest.
+#
+#   READ WITH A REAL JSON PARSER, not scraped.  These manifests are the
+#   evidence that two artifacts belong to one session, so a reader that
+#   could mis-parse a nested object -- which every awk or grep approach
+#   can, given a field named the same way at a different depth -- would
+#   turn the provenance gate into a formality.  $PLAYTHROUGH_PYTHON is the
+#   interpreter env.sh already resolved and verified, and it is
+#   unconditionally present whenever this stage runs: the two producers
+#   immediately upstream of it are Python.
+#
+#   The program is a fixed literal and the paths arrive as argv, never
+#   interpolated into source -- the repository's CodeQL python leg gates on
+#   exactly that [.github/workflows/codeql-analysis.yml:35].
+#
+#   With BASENAME, the digest is taken from the "outputs" list entry whose
+#   path ends in that name; without it, from the named top-level object.
+#   Prints nothing and returns non-zero when the value is absent or is not
+#   a 64-character hex digest, so a caller cannot mistake "unreadable" for
+#   "matches".
+manifest_digest() {
+    local file="$1" section="$2" basename="${3:-}" out
+    out="$("${PLAYTHROUGH_PYTHON}" -c '
+import json
+import posixpath
+import sys
+
+path, section = sys.argv[1], sys.argv[2]
+wanted = sys.argv[3] if len(sys.argv) > 3 else ""
+with open(path, "r", encoding="utf-8") as handle:
+    record = json.load(handle)
+if not isinstance(record, dict):
+    raise SystemExit(1)
+if wanted:
+    for entry in record.get("outputs") or []:
+        if not isinstance(entry, dict):
+            continue
+        if posixpath.basename(str(entry.get("path", ""))) == wanted:
+            print(entry.get("sha256", ""))
+            raise SystemExit(0)
+    raise SystemExit(1)
+found = record.get(section)
+if not isinstance(found, dict):
+    raise SystemExit(1)
+print(found.get("sha256", ""))
+' "${file}" "${section}" ${basename:+"${basename}"} 2>/dev/null)" ||
+        return 1
+    out="${out//[[:space:]]/}"
+    case "${out}" in
+        [0-9a-f]*)
+            if [ "${#out}" -eq 64 ]; then
+                printf '%s\n' "${out}"
+                return 0
+            fi
+            ;;
+    esac
+    return 1
+}
 
 # run_bounded LABEL COMMAND...
 #   Run one external command under the stage ceiling, reporting an
@@ -1057,6 +1228,106 @@ if [ "${CUES_IN}" -eq 0 ]; then
 fi
 
 # ---------------------------------------------------------------------
+# THE PROVENANCE.  Do these two files describe the same session?
+#
+# Asked BEFORE the mux, because the answer decides whether there is
+# anything worth muxing, and a refusal here costs nothing at all.
+#
+# Every other check in this file compares the output against the INPUTS.
+# That is the wrong axis for the failure that matters most: a caption
+# track and a film can agree in length, in cue count, in geometry and in
+# codec while describing two different sessions.  Only the digest of the
+# document they were each computed from settles it, and each producer
+# publishes exactly that.
+#
+# The manifests are required rather than optional.  Treating an absent one
+# as "nothing to check" would mean the gate silently stopped applying the
+# moment an older render left none behind -- and an older render is
+# precisely the case it exists to catch.
+# ---------------------------------------------------------------------
+MOVIE_MANIFEST="${PLAYTHROUGH_BUILD_DIR}/${MOVIE_MANIFEST_NAME}"
+TRANSCRIPT_MANIFEST="${PLAYTHROUGH_BUILD_DIR}/\
+${TRANSCRIPT_MANIFEST_NAME}"
+readonly MOVIE_MANIFEST TRANSCRIPT_MANIFEST
+
+assert_manifest_present() {
+    local path="$1" producer="$2"
+    if [ -f "${path}" ] && [ -s "${path}" ]; then
+        return 0
+    fi
+    die "${EX_INPUT}" "there is no generation manifest at" \
+        "$(rel "${path}"), so the film and the caption track cannot be" \
+        "proved to describe the same session.  Run ${producer}, which" \
+        "publishes it beside its own output.  A missing manifest is a" \
+        "REFUSAL rather than a check that quietly stops applying: an" \
+        "older render is exactly the case this gate exists to catch."
+}
+
+assert_manifest_present "${MOVIE_MANIFEST}" \
+    "playthrough/tooling/render_movie.py"
+assert_manifest_present "${TRANSCRIPT_MANIFEST}" \
+    "playthrough/tooling/make_srt.py"
+
+MOVIE_TIMELINE_SHA="$(manifest_digest "${MOVIE_MANIFEST}" timeline)" ||
+    die "${EX_INPUT}" "$(rel "${MOVIE_MANIFEST}") names no timeline" \
+        "digest, so the film cannot be attributed to a document." \
+        "Re-run render_movie.py."
+SRT_TIMELINE_SHA="$(manifest_digest "${TRANSCRIPT_MANIFEST}" \
+    timeline)" ||
+    die "${EX_INPUT}" "$(rel "${TRANSCRIPT_MANIFEST}") names no" \
+        "timeline digest, so the caption track cannot be attributed to" \
+        "a document.  Re-run make_srt.py."
+readonly MOVIE_TIMELINE_SHA SRT_TIMELINE_SHA
+
+if [ "${MOVIE_TIMELINE_SHA}" != "${SRT_TIMELINE_SHA}" ]; then
+    die "${EX_INPUT}" "THE FILM AND THE CAPTIONS COME FROM DIFFERENT" \
+        "TIMELINES.  $(rel "${INPUT_MOVIE}") was paced by the document" \
+        "whose digest is ${MOVIE_TIMELINE_SHA} and" \
+        "$(rel "${INPUT_SRT}") was written from ${SRT_TIMELINE_SHA}." \
+        "Two sessions of the same length agree on every count this" \
+        "stage can otherwise measure, so the digests are the only" \
+        "thing that settles it.  Re-run render_movie.py and" \
+        "make_srt.py from one playthrough/timeline.json.  Nothing was" \
+        "muxed."
+fi
+
+# And each input must be the file its own manifest describes.  A manifest
+# that agrees with another manifest says nothing if the bytes beside it
+# have since been replaced.
+assert_matches_manifest() {
+    local file="$1" declared="$2" label="$3" producer="$4" found
+    found="$(file_digest "${file}")" ||
+        die "${EX_INPUT}" "could not hash the ${label}" \
+            "$(rel "${file}"), so it cannot be held against its own" \
+            "generation manifest"
+    if [ "${found}" = "${declared}" ]; then
+        return 0
+    fi
+    die "${EX_INPUT}" "the ${label} $(rel "${file}") carries" \
+        "${found} and its generation manifest describes ${declared}." \
+        "The file has been replaced since it was published, so the" \
+        "manifest no longer attests to it and the provenance chain is" \
+        "broken.  Re-run ${producer}.  Nothing was muxed."
+}
+
+_ec_declared="$(manifest_digest "${MOVIE_MANIFEST}" movie)" ||
+    die "${EX_INPUT}" "$(rel "${MOVIE_MANIFEST}") names no digest for" \
+        "the film it published.  Re-run render_movie.py."
+assert_matches_manifest "${INPUT_MOVIE}" "${_ec_declared}" \
+    "input film" "playthrough/tooling/render_movie.py"
+
+_ec_declared="$(manifest_digest "${TRANSCRIPT_MANIFEST}" outputs \
+    "${INPUT_SRT##*/}")" ||
+    die "${EX_INPUT}" "$(rel "${TRANSCRIPT_MANIFEST}") names no" \
+        "digest for ${INPUT_SRT##*/}.  Re-run make_srt.py."
+assert_matches_manifest "${INPUT_SRT}" "${_ec_declared}" \
+    "cue file" "playthrough/tooling/make_srt.py"
+unset _ec_declared
+
+playthrough_log "the film and the caption track are both attributed to" \
+    "the timeline whose digest is ${MOVIE_TIMELINE_SHA}"
+
+# ---------------------------------------------------------------------
 # WHERE THE OUTPUT GOES.
 #
 # The parent directory must already exist: this stage publishes into a
@@ -1159,6 +1430,45 @@ if [ -e "${STAGING_FILE}" ]; then
         "$(rel "${STAGING_FILE}")"
     "${RM}" -f -- "${STAGING_FILE}"
 fi
+
+# ---------------------------------------------------------------------
+# WHAT A PREVIOUS RUN'S PUBLICATION MAY HAVE LEFT.
+#
+# Two names, treated differently on purpose, and both matter because
+# .gitignore's terminal `!/playthrough/**` negation re-includes everything
+# under this tree -- so a leftover here is a file that would be COMMITTED.
+#
+#   the retained copy    machinery.  A run killed between the copy and the
+#                        confirmation leaves it; the film it holds is
+#                        already published at its own path, so the copy is
+#                        redundant and is swept.
+#   the quarantined file EVIDENCE.  It exists only because a publication
+#                        was undone, which is a filesystem fault worth
+#                        somebody's attention.  It is REPORTED and left
+#                        alone -- deleting the only record of the fault
+#                        would help nobody -- and the report says it must
+#                        not be committed.
+# ---------------------------------------------------------------------
+_ec_retained_leftover="${OUTPUT_DIR}/\
+.${OUTPUT_NAME%"${MOVIE_SUFFIX}"}.previous${MOVIE_SUFFIX}"
+if [ -f "${_ec_retained_leftover}" ]; then
+    playthrough_log "removing a retained copy left by an earlier run:" \
+        "$(rel "${_ec_retained_leftover}")"
+    "${RM}" -f -- "${_ec_retained_leftover}" || true
+fi
+unset _ec_retained_leftover
+
+_ec_quarantine_leftover="${OUTPUT_DIR}/\
+.${OUTPUT_NAME%"${MOVIE_SUFFIX}"}.rejected${MOVIE_SUFFIX}"
+if [ -e "${_ec_quarantine_leftover}" ]; then
+    playthrough_warn "an earlier run quarantined a container at" \
+        "$(rel "${_ec_quarantine_leftover}") because publishing it" \
+        "could not be confirmed.  It is left where it is, because it" \
+        "is the only record of that fault -- but it is inside" \
+        "playthrough/, which .gitignore re-includes, so move it out of" \
+        "the tree before committing."
+fi
+unset _ec_quarantine_leftover
 
 # ---------------------------------------------------------------------
 # PROBING.  Small helpers so that every measurement below reads as the
@@ -1842,28 +2152,37 @@ if [ "${CUES_ROUND_TRIP}" != "${CUES_IN}" ]; then
         "them is not this transcript.  Nothing was published."
 fi
 
-# The cue file is written from the same timeline the film is paced by,
-# so its last cue should end inside the picture.  A track that runs
-# past the end is an upstream disagreement between the timeline and the
-# render rather than a fault in this mux.  IT IS STILL A REFUSAL.
+# --- the captions cover the picture, in BOTH directions ---------------
 #
-# This used to warn and publish anyway, on the reasoning that
-# misattributing an upstream drift to this stage would send an operator
-# to the wrong file.  The message can say where the fault is without the
-# film shipping: a published container whose last cues point past the end
-# of the picture is a broken artifact whichever stage broke it, and it is
-# COMMITTED -- so warning and publishing means the defect reaches the
-# repository with a note about it in a log nobody re-reads.  The refusal
-# names both numbers and both upstream stages, so it sends the operator
-# to the right file AND leaves the previous film in place.
+# The cue file is written from the same timeline the film is paced by, so
+# its last cue ends where the picture ends -- give or take the concat
+# demuxer's quantisation, which is what CAPTION_DURATION_TOLERANCE is
+# sized for.  A disagreement is an upstream drift between the timeline and
+# the render rather than a fault in this mux.  IT IS STILL A REFUSAL.
 #
-# AND AN UNMEASURABLE DURATION IS ALSO A REFUSAL.  The comparison used
-# to be skipped when either value was not a number, which is precisely
-# the case where nothing is known: ffprobe printing N/A for the subtitle
-# stream's duration means the overrun check did not run, and a skipped
-# check that leaves no trace is indistinguishable from a check that
-# passed.  Both values must be measurable, or the container is refused
-# for being unverifiable rather than published as unverified.
+# Warning and publishing anyway was tried, on the reasoning that
+# misattributing an upstream drift to this stage would send an operator to
+# the wrong file.  The message can say where the fault is without the film
+# shipping: a published container whose captions do not cover its picture
+# is a broken artifact whichever stage broke it, and it is COMMITTED -- so
+# warning and publishing means the defect reaches the repository with a
+# note about it in a log nobody re-reads.
+#
+# *** THE COMPARISON IS ABSOLUTE, AND THAT IS THE FIX ***  It used to
+# refuse only a track running PAST the end of the picture.  A track that
+# ends EARLY was published, and early is the direction a STALE cue file
+# fails in: an SRT left over from a shorter session muxes cleanly into a
+# longer film, the cue-count check passes because it is checked against
+# that same stale file, and the artifact ships with captions that stop
+# partway through and that describe another session's keystrokes
+# throughout.  Both directions are now bounded, and each gets its own
+# message because the diagnosis differs.
+#
+# AND AN UNMEASURABLE DURATION IS ALSO A REFUSAL.  The comparison used to
+# be skipped when either value was not a number, which is precisely the
+# case where nothing is known: ffprobe printing N/A for the subtitle
+# stream's duration means the check did not run, and a skipped check that
+# leaves no trace is indistinguishable from a check that passed.
 if ! is_number "${SUBTITLE_DURATION}"; then
     die "${EX_VERIFY}" "ffprobe could not measure the caption" \
         "track's duration in the muxed container (it reported" \
@@ -1879,80 +2198,76 @@ if ! is_number "${OUT_VIDEO_DURATION}"; then
         "the length of the picture.  Nothing was published."
 fi
 if float_exceeds "${SUBTITLE_DURATION}" "${OUT_VIDEO_DURATION}" \
-        "${DURATION_EPSILON}"; then
+        "${CAPTION_DURATION_TOLERANCE}"; then
     die "${EX_VERIFY}" "THE CAPTIONS OUTLAST THE PICTURE.  The" \
         "caption track runs to ${SUBTITLE_DURATION}s but the picture" \
         "ends at ${OUT_VIDEO_DURATION}s, so the last cues fall past" \
-        "the end of the film.  The mux is faithful to" \
+        "the end of the film -- more than the" \
+        "${CAPTION_DURATION_TOLERANCE}s the concat demuxer's" \
+        "quantisation accounts for.  The mux is faithful to" \
         "$(rel "${INPUT_SRT}"), so the disagreement is upstream:" \
         "re-run render_movie.py and make_srt.py from the same" \
         "playthrough/timeline.json, which is the single source both" \
         "read.  Nothing was published, so" \
         "$(rel "${OUTPUT_MOVIE}") is whatever it was before this run."
 fi
+if float_exceeds "${OUT_VIDEO_DURATION}" "${SUBTITLE_DURATION}" \
+        "${CAPTION_DURATION_TOLERANCE}"; then
+    die "${EX_VERIFY}" "THE CAPTIONS END SHORT OF THE PICTURE.  The" \
+        "caption track stops at ${SUBTITLE_DURATION}s and the picture" \
+        "runs to ${OUT_VIDEO_DURATION}s, so the film ends on a" \
+        "stretch no cue covers" \
+        "-- a gap larger than the ${CAPTION_DURATION_TOLERANCE}s of" \
+        "quantisation that separates an honest pair.  This is the" \
+        "direction a STALE cue file fails in: an SRT from a shorter" \
+        "session muxes cleanly into a longer film and every count" \
+        "still tallies, because the cue count is checked against that" \
+        "same file.  Re-run make_srt.py from the timeline" \
+        "render_movie.py paced this film by.  Nothing was published."
+fi
 
 CONTAINER_DURATION="$(probe_container_duration "${STAGING_FILE}")"
 readonly CONTAINER_DURATION
 
 # ---------------------------------------------------------------------
-# PUBLISH.  A rename inside one directory, so a reader sees either the
-# previous film or this one.
-# ---------------------------------------------------------------------
-if ! "${MV}" -f -- "${STAGING_FILE}" "${OUTPUT_MOVIE}"; then
-    die "${EX_VERIFY}" "could not publish the verified container to" \
-        "$(rel "${OUTPUT_MOVIE}")"
-fi
-
-_ec_published_bytes="$("${WC}" -c < "${OUTPUT_MOVIE}")"
-_ec_published_bytes="${_ec_published_bytes//[[:space:]]/}"
-if [ "${_ec_published_bytes}" != "${OUTPUT_BYTES}" ]; then
-    die "${EX_VERIFY}" "$(rel "${OUTPUT_MOVIE}") is" \
-        "${_ec_published_bytes} bytes but the container that passed" \
-        "verification was ${OUTPUT_BYTES}.  The published file is" \
-        "left in place for inspection rather than deleted, because a" \
-        "rename that changes a file's size is a fault in the" \
-        "filesystem and not in this mux."
-fi
-unset _ec_published_bytes
-
-# ---------------------------------------------------------------------
-# THE EVIDENCE.  The two probe readouts the acceptance gate names, run
-# verbatim against the PUBLISHED file and printed as they came back --
-# so what is shown describes the artifact that shipped, not a claim
-# about it.  They are re-asserted afterwards, which is what turns the
-# rename above from an assumption into a checked step.
+# THE EVIDENCE, MEASURED BEFORE ANYTHING IS PUBLISHED
+#
+# THE DEFECT THIS ORDERING FIXES.  These two probe readouts, the stream
+# census beneath them and the byte-size comparison all used to run AFTER
+# the rename, against the published file, and each of them could `die`.
+# So the canonical captioned MP4 -- a committed artifact -- was replaced
+# first and interrogated second, and a failure left the unverified
+# container sitting in the working tree as the film while the previous
+# one, which had passed every check, was already gone.  "The file is left
+# in place for inspection" was the stated policy, and what it meant in
+# practice was that a broken artifact became the published one.
+#
+# Every fallible measurement therefore happens HERE, on the staging file.
+# The rename below is preceded by a copy of the previous generation and
+# followed by ONE cheap, infallible-by-construction check: the digest of
+# the published bytes against the digest of the bytes that were measured.
+# Printing the staged readouts as the evidence is sound precisely because
+# of that check -- the published file is proved to be the same bytes.
 # ---------------------------------------------------------------------
 SUBTITLE_READOUT="$(run_bounded "the caption stream readout" \
     "${FFPROBE}" -v error -select_streams s \
     -show_entries stream=index,codec_name:stream_tags=language \
-    -of "${PROBE_KEYED}" -i "${OUTPUT_MOVIE}")"
+    -of "${PROBE_KEYED}" -i "${STAGING_FILE}")"
 VIDEO_READOUT="$(run_bounded "the video stream readout" \
     "${FFPROBE}" -v error -select_streams v \
     -show_entries stream=codec_name,width,height \
-    -of "${PROBE_KEYED}" -i "${OUTPUT_MOVIE}")"
+    -of "${PROBE_KEYED}" -i "${STAGING_FILE}")"
 readonly SUBTITLE_READOUT VIDEO_READOUT
-
-{
-    printf '%s\n' "--- ffprobe, caption stream(s) of \
-$(rel "${OUTPUT_MOVIE}") ---"
-    printf '%s\n' "${SUBTITLE_READOUT}"
-    printf '%s\n' "--- ffprobe, video stream(s) of \
-$(rel "${OUTPUT_MOVIE}") ---"
-    printf '%s\n' "${VIDEO_READOUT}"
-} >&2
 
 assert_readout_contains() {
     local readout="$1" needle="$2" what="$3"
     case "${readout}" in
         *"${needle}"*) return 0 ;;
     esac
-    die "${EX_VERIFY}" "the published $(rel "${OUTPUT_MOVIE}") does" \
-        "not report ${what}: '${needle}' is absent from the ffprobe" \
-        "readout above, although the container that was verified" \
-        "before the rename did report it.  The file is left in place" \
-        "for inspection rather than deleted: a rename that changes" \
-        "what a container carries is a fault below this mux, and" \
-        "deleting the evidence of it would help nobody."
+    die "${EX_VERIFY}" "the muxed container does not report ${what}:" \
+        "'${needle}' is absent from the ffprobe readout.  Nothing was" \
+        "published, so $(rel "${OUTPUT_MOVIE}") is whatever it was" \
+        "before this run."
 }
 
 assert_readout_contains "${SUBTITLE_READOUT}" \
@@ -1967,30 +2282,111 @@ assert_readout_contains "${VIDEO_READOUT}" \
 assert_readout_contains "${VIDEO_READOUT}" \
     "height=${VIDEO_HEIGHT_EXPECTED}" "the capture height"
 
-# And the third point of the same contract: the input carried no audio,
-# data or attachment, the staged mux carried none, and the file that is
-# now in the working tree carries none either.  The readouts above only
-# select the streams they expect to find, so a fourth stream would be
-# invisible to them -- this asks the published container what it holds.
-for _ec_kind in a:audio d:data t:attachment; do
-    _ec_spec="${_ec_kind%%:*}"
-    _ec_name="${_ec_kind##*:}"
-    _ec_extra="$(count_streams "${OUTPUT_MOVIE}" "${_ec_spec}")" ||
-        die "${EX_VERIFY}" "ffprobe could not count the" \
-            "${_ec_name} streams of the published" \
-            "$(rel "${OUTPUT_MOVIE}"), although the container that" \
-            "was verified before the rename read cleanly.  The file" \
-            "is left in place for inspection."
-    if [ "${_ec_extra}" != "0" ]; then
-        die "${EX_VERIFY}" "the published $(rel "${OUTPUT_MOVIE}")" \
-            "carries ${_ec_extra} ${_ec_name} stream(s) and the" \
-            "container that passed verification carried none.  The" \
-            "file is left in place for inspection rather than" \
-            "deleted: a rename that changes what a container holds" \
-            "is a fault below this mux."
+# The digest of what is about to be published, taken while the bytes are
+# still reachable under a name this stage controls.  It is the whole basis
+# of the identity check after the rename, and it cannot be taken
+# afterwards: by then the only file to hash is the one whose identity is
+# in question.
+STAGED_SHA="$(file_digest "${STAGING_FILE}")" ||
+    die "${EX_VERIFY}" "could not hash the verified container, so its" \
+        "publication could not be confirmed afterwards.  Nothing was" \
+        "published."
+readonly STAGED_SHA
+
+# ---------------------------------------------------------------------
+# PUBLISH.  A rename inside one directory, so a reader sees either the
+# previous film or this one -- with the previous one retained beside it
+# until this one is confirmed.
+#
+# The retained copy is what turns "the file is left in place for
+# inspection" into an actual recovery.  It is a plain copy rather than a
+# rename, so the previous film stays readable at its published path right
+# up to the moment it is replaced, and it is removed only once the new
+# bytes are confirmed.
+# ---------------------------------------------------------------------
+RETAINED_FILE="${OUTPUT_DIR}/.${OUTPUT_NAME%"${MOVIE_SUFFIX}"}\
+.previous${MOVIE_SUFFIX}"
+QUARANTINE_FILE="${OUTPUT_DIR}/.${OUTPUT_NAME%"${MOVIE_SUFFIX}"}\
+.rejected${MOVIE_SUFFIX}"
+readonly RETAINED_FILE QUARANTINE_FILE
+
+if [ -e "${RETAINED_FILE}" ]; then
+    "${RM}" -f -- "${RETAINED_FILE}" || true
+fi
+_ec_retained=0
+if [ -f "${OUTPUT_MOVIE}" ]; then
+    if "${CP}" -p -- "${OUTPUT_MOVIE}" "${RETAINED_FILE}"; then
+        _ec_retained=1
+    else
+        die "${EX_VERIFY}" "could not retain the previous" \
+            "$(rel "${OUTPUT_MOVIE}") before replacing it.  A" \
+            "publication that cannot be undone is not attempted:" \
+            "nothing was published."
     fi
-done
-unset _ec_kind _ec_spec _ec_name _ec_extra
+fi
+
+# restore_previous REASON...
+#   Put the previous film back, quarantine the file that failed, and die.
+#   Called only after the rename, and only when the published bytes are
+#   not the bytes that were verified.
+restore_previous() {
+    local restored="no previous film to restore"
+    if [ -e "${OUTPUT_MOVIE}" ]; then
+        "${MV}" -f -- "${OUTPUT_MOVIE}" "${QUARANTINE_FILE}" || true
+    fi
+    if [ "${_ec_retained}" -eq 1 ] && [ -f "${RETAINED_FILE}" ]; then
+        if "${MV}" -f -- "${RETAINED_FILE}" "${OUTPUT_MOVIE}"; then
+            restored="the previous film has been restored"
+        else
+            restored="the previous film is at \
+$(rel "${RETAINED_FILE}") and could NOT be moved back"
+        fi
+    fi
+    die "${EX_VERIFY}" "$@" "The rejected container is quarantined at" \
+        "$(rel "${QUARANTINE_FILE}") and ${restored}."
+}
+
+if ! "${MV}" -f -- "${STAGING_FILE}" "${OUTPUT_MOVIE}"; then
+    if [ "${_ec_retained}" -eq 1 ]; then
+        "${RM}" -f -- "${RETAINED_FILE}" || true
+    fi
+    die "${EX_VERIFY}" "could not publish the verified container to" \
+        "$(rel "${OUTPUT_MOVIE}").  The previous film is untouched."
+fi
+
+# THE ONE CHECK AFTER THE RENAME, and it is a byte-identity check rather
+# than a re-interrogation.  Every question about what the container HOLDS
+# was answered above, on the bytes this digest names; all that remains is
+# whether the filesystem moved those bytes faithfully.  A mismatch here is
+# a fault below this mux, and it is now RECOVERABLE.
+_ec_published_sha="$(file_digest "${OUTPUT_MOVIE}")" ||
+    restore_previous "the container published as" \
+        "$(rel "${OUTPUT_MOVIE}") could not be hashed, so it cannot be" \
+        "confirmed to be the file that passed verification."
+if [ "${_ec_published_sha}" != "${STAGED_SHA}" ]; then
+    restore_previous "$(rel "${OUTPUT_MOVIE}") carries" \
+        "${_ec_published_sha} and the container that passed every" \
+        "check was ${STAGED_SHA}.  A rename that changes a file's" \
+        "bytes is a fault in the filesystem and not in this mux, but" \
+        "the artifact is committed, so an unverified film does not" \
+        "stay published."
+fi
+unset _ec_published_sha
+
+# The previous generation has served its purpose.
+if [ "${_ec_retained}" -eq 1 ]; then
+    "${RM}" -f -- "${RETAINED_FILE}" || true
+fi
+unset _ec_retained
+
+{
+    printf '%s\n' "--- ffprobe, caption stream(s) of \
+$(rel "${OUTPUT_MOVIE}") ---"
+    printf '%s\n' "${SUBTITLE_READOUT}"
+    printf '%s\n' "--- ffprobe, video stream(s) of \
+$(rel "${OUTPUT_MOVIE}") ---"
+    printf '%s\n' "${VIDEO_READOUT}"
+} >&2
 
 # ---------------------------------------------------------------------
 # THE SUMMARY.  KEY=value, one per line, in the order the header

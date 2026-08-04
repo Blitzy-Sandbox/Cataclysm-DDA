@@ -126,6 +126,7 @@ There is no subprocess, no shell and no network surface of any kind.
 
 import argparse
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -134,8 +135,8 @@ import sys
 import tempfile
 import time
 
-from typing import (Any, Dict, Iterable, List, NamedTuple, Optional,
-                    Sequence, Set, Tuple)
+from typing import (Any, Dict, Iterable, List, Mapping, NamedTuple,
+                    Optional, Sequence, Set, Tuple)
 
 # Set BEFORE the third-party and sibling imports below.  env.sh exports
 # PYTHONDONTWRITEBYTECODE=1, but this module is documented as runnable
@@ -295,6 +296,42 @@ TRANSITION_NAME_RE = re.compile(r"^trans_[0-9]{5}_[0-9]{2}\.png$")
 # this module wrote.
 TRANSITION_GLOB_PREFIX = "trans_"
 PNG_SUFFIX = ".png"
+
+# ---------------------------------------------------------------------
+# THE GENERATION MANIFEST
+#
+# THE DEFECT IT EXISTS FOR.  A published group set had no provenance
+# whatsoever.  render_movie.py accepted a group because twelve files with
+# the right NAMES and the right PIXEL DIMENSIONS existed for each flagged
+# index -- and a name and a size are not evidence.  Three failures walked
+# straight through that:
+#
+#   * A group composed from a DIFFERENT timeline.  Frame 42 is flagged in
+#     both, both runs write trans_00042_00..11.png, both sets are 1920 by
+#     1080, and the film silently fades between two captures from a
+#     session that is not the one being rendered.
+#   * A group left behind for an index that is NO LONGER FLAGGED.  The
+#     per-entry check only ever looked at the indices the current timeline
+#     flags, so a stale group for an index the recomputed timeline dropped
+#     was never even inspected -- while verify_artifacts.sh, which globs
+#     the whole directory, counts it.
+#   * A frame whose CONTENT changed after it was composed.  Same name,
+#     same geometry, different pixels.
+#
+# So this module now publishes generation.json INSIDE the group set, which
+# means it is switched in by the same atomic rename and cannot be a
+# generation out of step with the frames beside it.  It binds the groups
+# to the timeline by that document's own digest, to the captures they were
+# faded between by theirs, to the card's typeface, and to its own output
+# bytes.  render_movie.py REQUIRES it and checks the group index set
+# GLOBALLY against the flags -- so an extra group is a refusal, not an
+# omission.
+#
+# Deterministic by construction: no timestamp, no host name, no absolute
+# path.  Two runs over one timeline produce byte-identical manifests, so a
+# committed tree does not churn.
+# ---------------------------------------------------------------------
+GENERATION_MANIFEST_NAME = "generation.json"
 
 # The eight-byte PNG signature [RFC 2083 section 3.1].  Every image this
 # module reads must begin with it, checked before any decoder is
@@ -1028,24 +1065,23 @@ def plan_groups(
     group needs both: `current` is faded out of and `successor` is faded
     in to.
 
-    THE FLAGGED-LAST-ENTRY CASE, DECIDED DELIBERATELY.  In a well-formed
-    timeline it cannot arise: timeline.raw_deltas() gives the final frame
-    a raw delta of 0.0 because it has no successor to difference
-    against, timeline.is_transition() is strictly greater than the
-    ceiling, and timeline.validate_timeline() reports
+    THE FLAGGED-LAST-ENTRY CASE IS REFUSED, and nothing is written.  In a
+    well-formed timeline it cannot arise: timeline.raw_deltas() gives the
+    final frame a raw delta of 0.0 because it has no successor to
+    difference against, timeline.is_transition() is strictly greater than
+    the ceiling, and timeline.validate_timeline() reports
     'final-frame-flagged' if the last entry carries the flag anyway.  So
-    reaching it means the document is malformed.
+    reaching it means the document is malformed, and this raises
+    TransitionError naming that problem code.
 
-    It is honoured rather than skipped, and the frame fades back into
-    ITSELF.  Two reasons.  First, the group count on disk then equals the
-    flag count in the timeline unconditionally, which is exactly the
-    identity verify_artifacts.sh asserts -- skipping would make that gate
-    fail on a document this module had silently decided to disagree with.
-    Second, a full group is the only alternative to a short one: eleven
-    frames, or none, would leave render_movie.py charging a second of
-    video that the images do not fill.  The anomaly is REPORTED on
-    stderr, naming timeline.py's own problem code, so it is visible
-    rather than absorbed.
+    It is neither skipped nor honoured, because the only two ways to
+    honour it are both dishonest.  Fading the last capture back into
+    ITSELF is imagery of an event that did not happen, and the whole
+    film's honesty rests on every frame being a photograph of something
+    the survivor saw; emitting a short group or none would leave
+    render_movie.py charging a second of video that the images do not
+    fill.  The right repair is upstream -- recompute the timeline -- so
+    the refusal points there rather than absorbing the anomaly here.
     """
     captures = frames_dir(root)
     groups: List[Group] = []
@@ -1666,15 +1702,383 @@ def _remove_tree(directory: str) -> None:
               % (directory, err))
 
 
+# ---------------------------------------------------------------------
+# The generation manifest: written here, read by render_movie.py.
+#
+# The SCHEMA LIVES IN THIS MODULE, next to the producer, and the renderer
+# validates through generation_manifest_problems() rather than reading the
+# fields itself.  A second, laxer copy of these rules in the consumer is
+# exactly how a provenance check becomes decorative.
+# ---------------------------------------------------------------------
+
+def generation_manifest_path(directory: str) -> str:
+    """Return the manifest path inside a transitions directory."""
+    return os.path.join(directory, GENERATION_MANIFEST_NAME)
+
+
+def _is_owned_name(name: str) -> bool:
+    """True for a name this module publishes and therefore replaces.
+
+    The manifest belongs to the generation, so on a re-run it must be
+    REPLACED rather than carried across the switch as though somebody
+    else had left it -- carrying it would overwrite the new manifest with
+    the previous generation's, which is the one mixed state this whole
+    facility exists to make impossible.
+    """
+    return name == GENERATION_MANIFEST_NAME
+
+
+def build_generation_manifest(
+    groups: Sequence[Group],
+    timeline_path: str,
+    geometry: Tuple[int, int],
+    face: str,
+    staged_by_frame: Mapping[int, Sequence[str]],
+) -> Dict[str, Any]:
+    """Return the provenance record for one composed generation.
+
+    Pure apart from reading the bytes it hashes.  Binds four things the
+    renderer cannot otherwise check: the TIMELINE these groups were
+    computed from, by that document's own digest; the two CAPTURES each
+    group was faded between, by theirs; the card's TYPEFACE; and this
+    run's own OUTPUT bytes.
+    """
+    width, height = geometry
+    record: Dict[str, Any] = {
+        "version": timeline.GENERATION_VERSION,
+        "stage": LOCK_NAME,
+        "timeline": {
+            "path": relative_to_repo(timeline_path),
+            "sha256": timeline.file_digest(timeline_path),
+        },
+        "font": {
+            "path": relative_to_repo(face),
+            "sha256": font_digest(face),
+        },
+        "geometry": {"width": width, "height": height},
+        "frames_per_group": FRAMES_PER_GROUP,
+        "transition_seconds": EXPECTED_TRANSITION,
+        "groups": [],
+    }
+    for group in groups:
+        outputs = []
+        for path in staged_by_frame[group.frame]:
+            outputs.append({
+                "name": os.path.basename(path),
+                "sha256": timeline.file_digest(path),
+                "bytes": os.path.getsize(path),
+            })
+        record["groups"].append({
+            "frame": group.frame,
+            "sources": [
+                {"path": relative_to_repo(group.current),
+                 "sha256": timeline.file_digest(group.current)},
+                {"path": relative_to_repo(group.successor),
+                 "sha256": timeline.file_digest(group.successor)},
+            ],
+            "outputs": outputs,
+        })
+    return record
+
+
+def generation_manifest_text(record: Mapping[str, Any]) -> str:
+    """Render the manifest deterministically."""
+    return json.dumps(dict(record), ensure_ascii=False, indent=2,
+                      sort_keys=True) + "\n"
+
+
+def read_generation_manifest(directory: str) -> Dict[str, Any]:
+    """Return the provenance record published in `directory`.
+
+    :raises TransitionError: when it is absent, unreadable or not a
+        record.  ABSENCE IS A FAULT, not a default: a group set without
+        provenance is a group set nobody can attribute to a timeline, and
+        accepting one is the defect this manifest exists to close.
+    """
+    path = generation_manifest_path(directory)
+    if os.path.islink(path):
+        raise TransitionError(
+            "%s is a symbolic link; the provenance of a generation is "
+            "not read through one" % path)
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            text = handle.read()
+    except FileNotFoundError:
+        raise TransitionError(
+            "%s has no %s, so the transition frames in it cannot be "
+            "attributed to any timeline.  Run make_transitions.py "
+            "against the timeline being rendered: twelve files with the "
+            "right names and the right pixel dimensions are not evidence "
+            "that they were composed from this session's captures."
+            % (directory, GENERATION_MANIFEST_NAME)) from None
+    except OSError as err:
+        raise TransitionError(
+            "cannot read %s: %s" % (path, err)) from err
+    try:
+        record = json.loads(text)
+    except ValueError as err:
+        raise TransitionError(
+            "%s is not valid JSON (%s), so the generation on disk cannot "
+            "be attributed.  Recompose it." % (path, err)) from err
+    if not isinstance(record, dict):
+        raise TransitionError(
+            "%s holds a %s, not a record" % (path, type(record).__name__))
+    return record
+
+
+def _manifest_group_outputs(
+    entry: Any,
+    problems: List[str],
+) -> Optional[Tuple[int, List[Dict[str, Any]]]]:
+    """Return (frame, outputs) for one manifest group, or None."""
+    if not isinstance(entry, dict):
+        problems.append(
+            "the generation manifest holds a %s where a group record "
+            "belongs" % type(entry).__name__)
+        return None
+    frame = entry.get("frame")
+    if isinstance(frame, bool) or not isinstance(frame, int):
+        problems.append(
+            "a group in the generation manifest has no integer frame "
+            "index: %r" % (frame,))
+        return None
+    outputs = entry.get("outputs")
+    if not isinstance(outputs, list) or not outputs:
+        problems.append(
+            "the group for frame %d names no outputs" % frame)
+        return None
+    return (frame, outputs)
+
+
+def generation_manifest_problems(
+    directory: str,
+    timeline_path: str,
+    flagged: Iterable[int],
+) -> List[str]:
+    """Report every way a published group set fails its provenance.
+
+    THE GLOBAL CHECK.  `flagged` is EVERY frame index the timeline being
+    rendered carries ``transition_after`` on, and the group set on disk
+    must be exactly that -- so a stale group left behind for an index the
+    recomputed timeline no longer flags is a REFUSAL rather than something
+    nobody looks at.  The per-entry check that preceded this one could
+    only ever inspect the indices the current timeline flags, which is
+    precisely why an extra group was invisible to it while
+    verify_artifacts.sh, which globs the whole directory, counted it.
+
+    Read-only.  An empty list means the frames in `directory` were
+    composed by this module, from this timeline, out of these captures,
+    and still carry the bytes it wrote.
+    """
+    problems: List[str] = []
+    try:
+        record = read_generation_manifest(directory)
+    except TransitionError as err:
+        return [str(err)]
+    if record.get("version") != timeline.GENERATION_VERSION:
+        return ["the generation manifest in %s is version %r, which this "
+                "module cannot interpret; recompose the transitions"
+                % (directory, record.get("version"))]
+    if record.get("stage") != LOCK_NAME:
+        problems.append(
+            "the generation manifest in %s was written by stage %r, not "
+            "%r" % (directory, record.get("stage"), LOCK_NAME))
+    problems.extend(_timeline_provenance_problems(record, timeline_path))
+    problems.extend(_geometry_provenance_problems(record))
+    wanted = sorted({int(one) for one in flagged})
+    entries = record.get("groups")
+    if not isinstance(entries, list):
+        problems.append(
+            "the generation manifest in %s names no groups" % directory)
+        return problems
+    seen: List[int] = []
+    for entry in entries:
+        resolved = _manifest_group_outputs(entry, problems)
+        if resolved is None:
+            continue
+        frame, outputs = resolved
+        seen.append(frame)
+        problems.extend(
+            _group_output_problems(directory, frame, outputs))
+    problems.extend(_group_set_problems(directory, sorted(seen), wanted))
+    return problems
+
+
+def _timeline_provenance_problems(
+    record: Mapping[str, Any],
+    timeline_path: str,
+) -> List[str]:
+    """Report a group set composed from a different timeline."""
+    stated = record.get("timeline")
+    if not isinstance(stated, dict):
+        return ["the generation manifest names no timeline, so its "
+                "groups cannot be attributed to the document being "
+                "rendered"]
+    declared = stated.get("sha256")
+    if not isinstance(declared, str) or not declared:
+        return ["the generation manifest names no timeline digest"]
+    try:
+        observed = timeline.file_digest(timeline_path)
+    except (timeline.TimelineError, OSError) as err:
+        return ["the timeline %s could not be hashed to check the "
+                "transitions against it: %s" % (timeline_path, err)]
+    if declared == observed:
+        return []
+    return ["the transition frames were composed from a timeline whose "
+            "digest is %s, but the timeline being rendered is %s.  The "
+            "group indices and the geometry would match anyway -- a "
+            "flagged frame 42 is trans_00042_* in every session -- so "
+            "the film would fade between captures from a session that is "
+            "not this one.  Run make_transitions.py against this "
+            "timeline." % (declared[:16], observed[:16])]
+
+
+def _geometry_provenance_problems(
+    record: Mapping[str, Any],
+) -> List[str]:
+    """Report a generation composed under different constants."""
+    problems = []
+    geometry = record.get("geometry")
+    width, height = expected_size()
+    if not isinstance(geometry, dict) or \
+            geometry.get("width") != width or \
+            geometry.get("height") != height:
+        problems.append(
+            "the generation manifest declares geometry %r, and this film "
+            "is %dx%d" % (geometry, width, height))
+    if record.get("frames_per_group") != FRAMES_PER_GROUP:
+        problems.append(
+            "the generation manifest declares %r frames per group, and "
+            "this module composes %d"
+            % (record.get("frames_per_group"), FRAMES_PER_GROUP))
+    return problems
+
+
+def _group_output_problems(
+    directory: str,
+    frame: int,
+    outputs: Sequence[Mapping[str, Any]],
+) -> List[str]:
+    """Report a group whose files are not the ones that were composed."""
+    problems: List[str] = []
+    expected = [os.path.basename(path) for path in
+                group_frame_paths(TRANSITION_STEM_FORMAT % frame)]
+    named = [one.get("name") for one in outputs
+             if isinstance(one, dict)]
+    if named != expected:
+        problems.append(
+            "the generation manifest's group for frame %d names %r, and "
+            "a group is %r" % (frame, named, expected))
+        return problems
+    for declared in outputs:
+        name = declared.get("name")
+        path = os.path.join(directory, str(name))
+        digest = declared.get("sha256")
+        size = declared.get("bytes")
+        if os.path.islink(path) or not os.path.isfile(path):
+            problems.append(
+                "%s is named by the generation manifest and is not a "
+                "regular file on disk" % path)
+            continue
+        if not isinstance(digest, str) or not digest:
+            problems.append("%s is named with no digest" % path)
+            continue
+        try:
+            observed = timeline.file_digest(path)
+            observed_size = os.path.getsize(path)
+        except (timeline.TimelineError, OSError) as err:
+            problems.append("%s could not be hashed: %s" % (path, err))
+            continue
+        if observed != digest:
+            problems.append(
+                "%s carries %s but was composed as %s: same name, same "
+                "geometry, different pixels.  The film would encode "
+                "imagery this generation did not produce."
+                % (path, observed[:16], digest[:16]))
+        elif isinstance(size, int) and not isinstance(size, bool) \
+                and observed_size != size:
+            problems.append(
+                "%s is %d bytes and the generation manifest declares %d"
+                % (path, observed_size, size))
+    return problems
+
+
+def _group_set_problems(
+    directory: str,
+    seen: Sequence[int],
+    wanted: Sequence[int],
+) -> List[str]:
+    """Report the group index set not being exactly the flagged set."""
+    if list(seen) == list(wanted):
+        return []
+    extra = sorted(set(seen) - set(wanted))
+    missing = sorted(set(wanted) - set(seen))
+    problems = []
+    if extra:
+        problems.append(
+            "%s holds a transition group for frame(s) %s, which the "
+            "timeline being rendered does not flag.  A stale group is "
+            "counted by verify_artifacts.sh, which globs this directory, "
+            "so it is refused here rather than left to be found there.  "
+            "Recompose the transitions against this timeline."
+            % (directory, ", ".join(str(one) for one in extra)))
+    if missing:
+        problems.append(
+            "%s holds no transition group for flagged frame(s) %s.  The "
+            "timeline has already charged video time to each of them, so "
+            "the film would be short of imagery for it."
+            % (directory, ", ".join(str(one) for one in missing)))
+    if not extra and not missing:
+        problems.append(
+            "%s names its groups in the order %r, and the timeline flags "
+            "%r" % (directory, list(seen), list(wanted)))
+    return problems
+
+
+def _write_generation_manifest(
+    staging: str,
+    groups: Sequence[Group],
+    timeline_path: str,
+    geometry: Tuple[int, int],
+    face: str,
+    staged_by_frame: Mapping[int, Sequence[str]],
+) -> str:
+    """Write generation.json into the staged generation.  Returns it.
+
+    Written last, so it describes a complete generation, and fsynced,
+    because the rename that publishes it is a metadata operation on bytes
+    that must already be on the device.
+    """
+    record = build_generation_manifest(
+        groups, timeline_path, geometry, face, staged_by_frame)
+    target = generation_manifest_path(staging)
+    data = generation_manifest_text(record).encode("utf-8")
+    descriptor = os.open(
+        target, os.O_CREAT | os.O_WRONLY | os.O_TRUNC | os.O_CLOEXEC,
+        0o644)
+    try:
+        written = os.write(descriptor, data)
+        if written != len(data):
+            raise TransitionError(
+                "only %d of %d bytes of the generation manifest reached "
+                "%s" % (written, len(data), target))
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    return target
+
+
 class Result(NamedTuple):
     """What one run of :func:`make_transitions` did.
 
     `flagged` is how many entries asked for a transition, `groups` how
     many were composed, and `written` every path written in order.
-    `flagged` and `groups` are equal by construction -- every flag is
-    honoured, including the malformed final-frame case -- and both are
-    reported so the operator sees the identity rather than being told
-    about it.
+    `flagged` and `groups` are equal on every run that RETURNS, because
+    each flag composes exactly one group and the one flag that cannot --
+    the malformed final-frame case -- makes plan_groups() raise
+    TransitionError before anything is planned rather than composing a
+    fade from the last capture back into itself.  Both are reported so
+    the operator sees the identity rather than being told about it.
     """
 
     flagged: int
@@ -1737,6 +2141,11 @@ def make_transitions(
     geometry = expected_size()
     face = font_path(repo_root_dir)
     groups = plan_groups(entries, root)
+    # The document this generation is attributed to, resolved the same way
+    # read_timeline() resolved it so the digest names the file that was
+    # actually read.
+    source = (timeline.default_timeline_path() if timeline_path is None
+              else timeline_path)
 
     directory = (transitions_dir if transitions_dir
                  else default_transitions_dir(root))
@@ -1776,13 +2185,25 @@ def make_transitions(
         try:
             os.chmod(staging, 0o755)
             staged: List[str] = []
+            staged_by_frame: Dict[int, List[str]] = {}
             for group in groups:
-                staged.extend(compose_transition_group(
+                composed = compose_transition_group(
                     group.current, group.successor,
                     os.path.join(staging,
                                  TRANSITION_STEM_FORMAT % group.frame),
-                    face, geometry, root, repo_root_dir))
+                    face, geometry, root, repo_root_dir)
+                staged_by_frame[group.frame] = list(composed)
+                staged.extend(composed)
             _assert_generation_complete(staging, staged, names)
+            # THE PROVENANCE, WRITTEN INSIDE THE GENERATION so the same
+            # atomic rename publishes both.  A manifest beside the
+            # directory could be switched in separately and would then be
+            # exactly the mixed state it exists to rule out.  It is
+            # hashed from the STAGED bytes, which are the bytes about to
+            # be published -- the switch is a rename, so it moves them
+            # rather than rewriting them.
+            _write_generation_manifest(
+                staging, groups, source, geometry, face, staged_by_frame)
             # THE LAST LOOK BEFORE THE SWITCH.  The published directory
             # is re-listed and compared with what it held when the run
             # started, because the switch REPLACES it: a frame that
@@ -1904,7 +2325,8 @@ def _foreign_entries(directory: str) -> List[str]:
         return []
     keep = []
     for name in names:
-        if _glob_matches(name) or _is_own_litter(name):
+        if _glob_matches(name) or _is_own_litter(name) or \
+                _is_owned_name(name):
             continue
         target = os.path.join(directory, name)
         if os.path.islink(target) or not os.path.isfile(target):
@@ -2013,7 +2435,7 @@ def _previous_generation(directory: str) -> List[str]:
         raise TransitionError(
             "could not read %s: %s" % (directory, err)) from err
     return [os.path.join(directory, name) for name in names
-            if TRANSITION_NAME_RE.match(name)]
+            if TRANSITION_NAME_RE.match(name) or _is_owned_name(name)]
 
 
 def _assert_generation_complete(
@@ -2048,11 +2470,14 @@ def _assert_generation_complete(
             "that the groups on disk match the flags, so the mismatch "
             "is refused before it is published."
             % (len(on_disk), len(wanted)))
-    if every != on_disk:
+    unaccounted = sorted(
+        name for name in set(every) - set(on_disk)
+        if not _is_owned_name(name))
+    if unaccounted:
         raise TransitionError(
             "the staged generation holds %s, which this module did not "
             "compose; it is refused rather than published"
-            % ", ".join(sorted(set(every) - set(on_disk))))
+            % ", ".join(unaccounted))
 
 
 # ---------------------------------------------------------------------

@@ -128,6 +128,7 @@ re-encoded and re-measured in any checkout that has ffmpeg.
 """
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -140,8 +141,8 @@ import tempfile
 import time
 
 from decimal import Decimal
-from typing import (Any, Dict, List, NamedTuple, Optional, Sequence,
-                    Tuple)
+from typing import (Any, Dict, List, Mapping, NamedTuple, Optional,
+                    Sequence, Tuple)
 
 # Set BEFORE the sibling imports below, which are the only imports here
 # that can write into the repository working tree.  env.sh exports
@@ -162,23 +163,29 @@ try:
     # all live in the sibling module.  Importing them is what keeps the
     # numbers this film is paced by from existing twice and drifting
     # apart.
-    from timeline import (CEIL, EPSILON, FLOOR, ArtifactLock,
-                          TimelineError, approved_root,
+    from timeline import (CEIL, EPSILON, FLOOR, GENERATION_VERSION,
+                          ArtifactLock, TimelineError, approved_root,
                           assert_timeline_document,
-                          default_timeline_path, fsync_directory,
-                          read_timeline, round_seconds,
-                          timeline_total)
+                          clear_generation_journal,
+                          default_timeline_path, file_digest,
+                          fsync_directory,
+                          generation_journal_problems, read_timeline,
+                          round_seconds, timeline_total,
+                          write_generation_journal)
 except ImportError:
     # Imported from somewhere other than this directory: put the
     # tooling directory on the path and try once more.  A second
     # failure is a genuinely broken checkout and is allowed to raise.
     sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
-    from timeline import (CEIL, EPSILON, FLOOR, ArtifactLock,
-                          TimelineError, approved_root,
+    from timeline import (CEIL, EPSILON, FLOOR, GENERATION_VERSION,
+                          ArtifactLock, TimelineError, approved_root,
                           assert_timeline_document,
-                          default_timeline_path, fsync_directory,
-                          read_timeline, round_seconds,
-                          timeline_total)
+                          clear_generation_journal,
+                          default_timeline_path, file_digest,
+                          fsync_directory,
+                          generation_journal_problems, read_timeline,
+                          round_seconds, timeline_total,
+                          write_generation_journal)
 
 try:
     # The transition naming, the group size, the capture-path validator
@@ -484,6 +491,12 @@ class Probe(NamedTuple):
     # could be taken -- a count that could not be measured is reported
     # as absent rather than guessed at.
     frames: Optional[int] = None
+    # The file these measurements were taken FROM, which during a render
+    # is the staging sibling and not the published movie.  It travels with
+    # the measurements so the generation manifest hashes the same bytes
+    # that were verified: the publish step renames them rather than
+    # rewriting them, so the digest holds either side of the switch.
+    path: str = ""
 
 
 # ---------------------------------------------------------------------
@@ -985,27 +998,79 @@ def _assert_trustworthy_tool(real: str, name: str, origin: str) -> None:
 # arithmetic rather than an approximation.
 # ---------------------------------------------------------------------
 
-# Microsecond resolution in the list.  The timeline itself is written at
-# millisecond resolution, but a transition second divided twelve ways is
-# not expressible in milliseconds, and rounding it there would leave the
-# group short or long by up to 4 ms EVERY TIME the ceiling engages --
-# which the container would then disagree with the captions about, once
-# per transition, cumulatively.
+# Microsecond resolution for a transition share.  The timeline itself is
+# written at millisecond resolution, but a transition second divided
+# twelve ways is not expressible in milliseconds, and rounding it there
+# would leave the group short or long by up to 4 ms EVERY TIME the ceiling
+# engages -- which the container would then disagree with the captions
+# about, once per transition, cumulatively.
 DURATION_DECIMALS = 6
 MICROSECONDS = 10 ** DURATION_DECIMALS
 
+# ---------------------------------------------------------------------
+# TWO WIDTHS, AND WHY THE LIST NO LONGER STRIPS ZEROS
+#
+# THE DEFECT.  Every duration used to be written at microsecond precision
+# and then stripped of trailing fractional zeros, so a captured frame's
+# 0.25 s came out as "0.25", 1 s as "1.0" and the ceiling as "10.0".  The
+# arithmetic was right -- ffmpeg parses "0.25" and 0.250 identically -- but
+# the committed concat list is EVIDENCE, and as evidence it disagreed with
+# every other artifact describing the same numbers: timeline.json writes
+# durations at three decimals, verify_artifacts.sh reads the clamp bounds
+# as 0.250 and 10.000, and the report quotes them that way.  A reader
+# comparing the list against the timeline had to know that "10.0" and
+# 10.000 were the same value and that "0.083333" was a different KIND of
+# number from either.
+#
+# So the two kinds are now written at the width each is computed at, and
+# neither is stripped:
+#
+#   * A CAPTURED FRAME's duration comes from timeline.py, which clamps and
+#     rounds to milliseconds.  Three decimals is exactly that resolution:
+#     "0.250", "1.000", "10.000".
+#   * A TRANSITION SHARE is a twelfth of a second computed in whole
+#     microseconds, with the remainder charged to the last frame.  Six
+#     decimals is exactly that resolution: "0.083333" eleven times and
+#     "0.083337" once.
+#
+# The width therefore SAYS which kind of duration a line carries, and a
+# re-run stays byte-identical because both formats are fixed.
+# ---------------------------------------------------------------------
+
+# The resolution timeline.py rounds a clamped duration to.  Restated here
+# rather than imported for the same reason timeline.py restates its own
+# field names: the constant is part of this module's output format.
+CAPTURE_DECIMALS = 3
+
 
 def format_duration(seconds: float) -> str:
-    """Return `seconds` as a concat duration value.
+    """Return `seconds` as a concat duration at microsecond width.
 
-    Fixed at microsecond resolution and then stripped of trailing
-    fractional zeros, so 0.25 stays "0.25", 10.0 stays "10.0" and a
-    twelfth of a second becomes "0.083333" -- the documented shape, and
-    deterministic, which is what makes a re-run byte-identical.
+    The width used for a TRANSITION SHARE, which is computed in whole
+    microseconds: a twelfth of a second is "0.083333" and the remainder
+    frame "0.083337".  Fixed width, never stripped, so a re-run is
+    byte-identical and the number in the list is the number that was
+    computed.
 
-    The stripping is confined to the fractional part on purpose: a naive
-    rstrip("0") over the whole string turns "100.000000" into "1".
+    :func:`format_capture_duration` is the other half; see the note above
+    for why the two widths differ and what the difference says.
     """
+    return _format_seconds(seconds, DURATION_DECIMALS)
+
+
+def format_capture_duration(seconds: float) -> str:
+    """Return `seconds` as a concat duration at millisecond width.
+
+    The width used for a CAPTURED FRAME, whose duration timeline.py has
+    already clamped and rounded to milliseconds: the floor is "0.250" and
+    the ceiling "10.000", which is how timeline.json, the acceptance gate
+    and the report all spell them.
+    """
+    return _format_seconds(seconds, CAPTURE_DECIMALS)
+
+
+def _format_seconds(seconds: Any, decimals: int) -> str:
+    """Return a validated, fixed-width decimal for a concat duration."""
     try:
         number = float(seconds)
     except (TypeError, ValueError) as err:
@@ -1016,9 +1081,22 @@ def format_duration(seconds: float) -> str:
     if number < 0.0:
         raise RenderError(
             "a duration must not be negative, got %r" % seconds)
-    whole, _, fraction = format(
-        number, ".%df" % DURATION_DECIMALS).partition(".")
-    return whole + "." + (fraction.rstrip("0") or "0")
+    return format(number, ".%df" % decimals)
+
+
+def format_entry_duration(entry: "ConcatEntry") -> str:
+    """Return the duration line's value for one planned entry.
+
+    THE ONE PLACE THE WIDTH IS CHOSEN, keyed off the entry's own kind, so
+    a capture cannot be written at a share's width or the other way round.
+    """
+    if entry.kind == KIND_TRANSITION:
+        return format_duration(entry.duration)
+    if entry.kind != KIND_CAPTURE:
+        raise RenderError(
+            "a concat entry is either a %r or a %r, got %r"
+            % (KIND_CAPTURE, KIND_TRANSITION, entry.kind))
+    return format_capture_duration(entry.duration)
 
 
 def transition_durations(
@@ -1251,6 +1329,7 @@ def _declared(document: Any, key: str) -> Optional[float]:
 def plan_render(
     document: Any,
     root: Optional[str] = None,
+    timeline_path: Optional[str] = None,
 ) -> Plan:
     """Resolve and check every input before a byte is written.
 
@@ -1261,7 +1340,8 @@ def plan_render(
     the one that can be materialised; every entry's frame index,
     duration and flag are well formed; every capture named exists and
     lies inside playthrough/frames/; every flagged entry's group is
-    exactly on disk; and the total the entries imply is the total the
+    exactly on disk AND is attributed by its own generation manifest to
+    THIS timeline; and the total the entries imply is the total the
     document declares.
 
     A MISSING FRAME ABORTS AND IS NEVER SKIPPED.  Skipping one would
@@ -1269,6 +1349,11 @@ def plan_render(
     container would be produced -- while breaking the
     one-frame-per-keystroke invariant and shifting every caption after
     it by that frame's window.
+
+    :param timeline_path: the document's own path, needed to hold the
+        transition groups' provenance against it.  When it is not given
+        the default timeline is assumed, which is what a direct call
+        without an explicit document path means.
     """
     try:
         entries = make_transitions.timeline_entries(document)
@@ -1318,6 +1403,7 @@ def plan_render(
     planned: List[ConcatEntry] = []
     durations: List[float] = []
     flags: List[bool] = []
+    flagged_frames: List[int] = []
     groups = 0
     for position, entry in enumerate(entries, start=1):
         index = _entry_frame_index(entry, position)
@@ -1352,7 +1438,33 @@ def plan_render(
             planned.append(ConcatEntry(
                 path, _relative_entry(path, base), share,
                 KIND_TRANSITION, index, ordinal))
+        flagged_frames.append(index)
         groups += 1
+
+    # THE PROVENANCE OF THE GROUP SET, CHECKED GLOBALLY AND ONLY ONCE.
+    # _assert_group() above proves each flagged index has exactly its
+    # twelve files at the right geometry, and a name and a size are not
+    # evidence: the same twelve names exist in every session that flags
+    # frame 42.  This holds the whole directory to the generation manifest
+    # make_transitions.py published INSIDE it -- which binds the groups to
+    # a timeline by that document's digest, to the captures they were faded
+    # between, and to their own bytes -- and holds the group INDEX SET to
+    # the flags in THIS document, so a stale group for an index the
+    # recomputed timeline no longer flags is refused instead of being
+    # invisible here and counted by verify_artifacts.sh.
+    #
+    # Skipped only when the timeline flags nothing at all, in which case
+    # there is no group set to attribute; _assert_group() is likewise never
+    # reached, and the directory may legitimately not exist.
+    if flagged_frames:
+        source = (default_timeline_path() if timeline_path is None
+                  else timeline_path)
+        problems = make_transitions.generation_manifest_problems(
+            transitions or _transitions_dir(root), source, flagged_frames)
+        if problems:
+            raise RenderError(
+                "the transition frames cannot be attributed to this "
+                "timeline: %s" % "  ".join(problems))
 
     # The expected total, computed two ways from the same entries so
     # that the comparison below is checking something rather than
@@ -1443,6 +1555,10 @@ def format_concat_list(plan: Plan) -> str:
     reaches the length the captions were written for.  Whatever ends up
     last in the sequence is what gets repeated, whether that is a
     capture or the twelfth frame of a group.
+
+    A capture's duration is written at millisecond width and a transition
+    share's at microsecond width, each being the resolution it was
+    computed at; see the note above :func:`format_duration`.
     """
     if not plan.entries:
         raise RenderError("there are no entries to write")
@@ -1451,7 +1567,7 @@ def format_concat_list(plan: Plan) -> str:
         lines.append(
             CONCAT_FILE_PREFIX + entry.relative + CONCAT_FILE_SUFFIX)
         lines.append(
-            CONCAT_DURATION_PREFIX + format_duration(entry.duration))
+            CONCAT_DURATION_PREFIX + format_entry_duration(entry))
     # *** THE REPEATED FINAL ENTRY.  NOT OPTIONAL.  See the module
     # docstring: without it the last duration line does not take
     # effect, the container comes up short, and every caption past the
@@ -1641,24 +1757,15 @@ def write_text(path: str, text: str) -> str:
     return path
 
 
-def write_concat_list(
-    plan: Plan,
+def concat_target(
     path: Optional[str] = None,
     root: Optional[str] = None,
-) -> Tuple[str, str]:
-    """Write the committed concat list.  Returns (path, text written).
+) -> str:
+    """Resolve the concat list's destination and ensure its directory.
 
-    The parent build directory is created if it is not there, because
-    this module owns build/concat.txt and creating its directory is the
+    This module owns build/concat.txt and creating its directory is the
     whole of its directory management -- build/transitions/ belongs to
     make_transitions.py.
-
-    The bytes are read back after the write and compared with what was
-    intended, and the structural file-equals-duration-plus-one relation
-    is asserted on the bytes that are actually on disk rather than on
-    the string in memory.  A concat list is the instruction sheet for
-    the encode; verifying the instruction sheet costs microseconds and
-    catches a full disk.
     """
     target = (default_concat_path(root) if path is None
               else _validated_output(path, "the concat list", root=root))
@@ -1669,23 +1776,109 @@ def write_concat_list(
         raise RenderError(
             "could not create the build directory %s: %s"
             % (parent, err)) from err
-    text = format_concat_list(plan)
-    concat_counts(text)
-    write_text(target, text)
+    return target
+
+
+def _assert_list_on_disk(path: str, text: str) -> str:
+    """Read a written list back and prove it is the intended bytes."""
     try:
-        with open(target, "r", encoding="utf-8") as handle:
+        with open(path, "r", encoding="utf-8") as handle:
             written = handle.read()
     except OSError as err:
         raise RenderError(
             "could not read back the concat list %s: %s"
-            % (target, err)) from err
+            % (path, err)) from err
     if written != text:
         raise RenderError(
             "the concat list on disk is not what was written to %s (%d "
             "bytes intended, %d bytes read back)"
-            % (target, len(text), len(written)))
+            % (path, len(text), len(written)))
     concat_counts(written)
-    return target, written
+    return written
+
+
+def stage_concat_list(
+    plan: Plan,
+    path: Optional[str] = None,
+    root: Optional[str] = None,
+) -> Tuple[str, str, str]:
+    """Stage the concat list beside its target.  Returns three strings.
+
+    ``(target, staging, text)`` -- where the list will be published, where
+    it is now, and the bytes it carries.
+
+    STAGED IN THE TARGET'S OWN DIRECTORY, WHICH IS LOAD-BEARING.  Every
+    `file` entry is spelled relative to the LIST's directory, because that
+    is what ffmpeg's concat demuxer resolves it against.  Staging it
+    anywhere else -- a temporary directory, the scratch area -- would make
+    those entries resolve somewhere else or not at all, so the encoder
+    would have to be handed a different list from the one committed, which
+    is precisely the defect this module already fixed once.  Staged here,
+    the bytes handed to ffmpeg and the bytes published are the SAME BYTES,
+    moved by a rename rather than rewritten.
+
+    The bytes are read back and the structural
+    file-equals-duration-plus-one relation is asserted on what is actually
+    on disk rather than on the string in memory.  A concat list is the
+    instruction sheet for the encode; verifying it costs microseconds and
+    catches a full disk.
+    """
+    target = concat_target(path, root)
+    text = format_concat_list(plan)
+    concat_counts(text)
+    staging = staging_path(target)
+    write_text(staging, text)
+    try:
+        _assert_list_on_disk(staging, text)
+    except BaseException:
+        try:
+            os.unlink(staging)
+        except OSError as cleanup:  # pragma: no cover - defensive
+            _warn("could not remove the staged concat list %s (%s)"
+                  % (staging, cleanup))
+        raise
+    return target, staging, text
+
+
+def publish_concat_list(staging: str, target: str) -> str:
+    """Rename a staged concat list onto its canonical path."""
+    try:
+        os.replace(staging, target)
+    except OSError as err:
+        raise RenderError(
+            "could not publish the concat list as %s: %s.  The previous "
+            "list is untouched." % (target, err)) from err
+    _sync_directory(os.path.dirname(target))
+    return target
+
+
+def write_concat_list(
+    plan: Plan,
+    path: Optional[str] = None,
+    root: Optional[str] = None,
+) -> Tuple[str, str]:
+    """Write and publish the concat list.  Returns (path, text written).
+
+    THE CONCAT-ONLY PATH.  ``--concat-only`` exists so an operator can
+    inspect the instruction sheet without spending an encode, and in that
+    mode there is no movie for the list to be consistent with, so
+    publishing it on its own is the whole of the job.
+
+    The full render does NOT come through here: it stages the list, encodes
+    from the staged bytes, and publishes the list and the movie together as
+    one generation.  See :func:`stage_concat_list` and
+    :func:`publish_generation` for why.
+    """
+    target, staging, text = stage_concat_list(plan, path, root)
+    try:
+        publish_concat_list(staging, target)
+    except BaseException:
+        try:
+            os.unlink(staging)
+        except OSError:  # pragma: no cover - defensive
+            pass
+        raise
+    return target, _assert_list_on_disk(target, text)
 
 
 # ---------------------------------------------------------------------
@@ -1957,28 +2150,36 @@ def encode(
     list_text: str,
     output: str,
     root: Optional[str] = None,
+    list_path: Optional[str] = None,
 ) -> str:
     """Encode the film in one pass.  Returns the output path.
 
-    THE COMMITTED LIST IS THE FILE THE ENCODER IS HANDED.  Its entries
-    are spelled relative to its own directory, which is what ffmpeg's
-    concat demuxer resolves them against, so it needs no second form to
-    be runnable.  That matters beyond tidiness: while a transient
+    THE LIST THE ENCODER IS HANDED IS THE BYTES THAT GET COMMITTED.  Its
+    entries are spelled relative to its own directory, which is what
+    ffmpeg's concat demuxer resolves them against, so it needs no second
+    form to be runnable.  That matters beyond tidiness: while a transient
     absolute copy was handed to ffmpeg instead, the artifact committed as
     the film's input was never the input, and re-running the encode from
-    the committed list failed outright.  Now the committed list is
-    reproducible by anyone who checks the repository out.
+    the committed list failed outright.
 
-    It is still verified before it is used: every entry is re-read from
-    the bytes on disk and resolved back to the planned absolute path, so
-    a short or corrupted write, or an entry pointing outside the two
-    approved directories, stops the encode instead of pacing a film from
-    it.
+    `list_path` is the file to hand ffmpeg, and the full render passes the
+    STAGED list -- which sits in the published list's own directory, so
+    every entry resolves identically and the bytes are moved into place by
+    a rename afterwards rather than rewritten.  That is what lets the
+    encode happen BEFORE the list is published without the encoder and the
+    repository ever seeing different instructions.  It defaults to the
+    published path for the concat-only and direct-call cases.
+
+    The list is verified before it is used either way: every entry is
+    re-read from the bytes on disk and resolved back to the planned
+    absolute path, so a short or corrupted write, or an entry pointing
+    outside the two approved directories, stops the encode instead of
+    pacing a film from it.
     """
     allowed = [_captures_dir(root)]
     if plan.group_count:
         allowed.append(_transitions_dir(root))
-    concat = default_concat_path(root)
+    concat = list_path if list_path else default_concat_path(root)
     verify_committed_list(list_text, os.path.dirname(concat),
                           allowed, plan)
     ffmpeg = verified_tool(FFMPEG)
@@ -1994,6 +2195,204 @@ def encode(
         raise RenderError(
             "ffmpeg reported success but %s is not there" % output)
     return output
+
+
+# ---------------------------------------------------------------------
+# THE GENERATION: the concat list and the movie, published together
+#
+# THE DEFECT.  The list was written and published BEFORE the lock was
+# taken and before a byte was encoded, and the movie was published after.
+# Two consequences, both silent:
+#
+#   * A FAILED OR INTERRUPTED ENCODE left a NEW concat list beside an OLD
+#     movie.  Each file was internally valid, the list described a film
+#     that was never made, and nothing on disk recorded that they
+#     disagreed -- so `ffprobe` on the movie and a read of the list gave
+#     two different answers about the same session and both looked
+#     authoritative.
+#   * The list was published OUTSIDE the lock, so two runs could
+#     interleave: one publishing its list while the other encoded from it.
+#
+# So the whole publication is now one generation.  The lock is taken
+# first, the list is staged in its own target directory (which is what
+# makes the encoder's bytes and the committed bytes the same bytes), the
+# encode runs from the staged list, the container is verified, and only
+# then are the list and the movie switched in -- with a durable journal
+# naming both and the digest each is about to carry, so an interruption
+# during the switch is detectable and finishable rather than permanent.
+#
+# build/movie.json is the committed half: it binds the movie to the
+# timeline it was paced from, by that document's own digest, and to the
+# list it was encoded from.  embed_captions.sh holds it against
+# build/transcript.json to refuse a caption track from another session.
+# ---------------------------------------------------------------------
+
+BUILD_DIR_NAME = "build"
+GENERATION_MANIFEST_NAME = "movie.json"
+
+
+def generation_manifest_path(root: Optional[str] = None) -> str:
+    """Return playthrough/build/movie.json.
+
+    Joined onto the APPROVED root -- playthrough/ -- exactly as
+    CONCAT_REL_PARTS is, because the manifest lives beside the concat list
+    it describes.  render_root() is the parent of that and is what a
+    concat ENTRY is spelled relative to; the two are one directory apart
+    and confusing them puts the manifest outside the committed tree.
+    """
+    return _join(_approved_root(root),
+                 (BUILD_DIR_NAME, GENERATION_MANIFEST_NAME))
+
+
+def build_generation_manifest(
+    plan: Plan,
+    timeline_path: str,
+    list_path: str,
+    list_text: str,
+    movie_path: str,
+    probe: "Probe",
+) -> Dict[str, Any]:
+    """Return the provenance record for one published film.
+
+    Deterministic: no timestamp, no host name, no absolute path.  The
+    movie's digest is read from the STAGED file, whose bytes the publish
+    step moves rather than rewrites.
+    """
+    return {
+        "version": GENERATION_VERSION,
+        "stage": LOCK_NAME,
+        "timeline": {
+            "path": relative_to_repo(timeline_path),
+            "sha256": file_digest(timeline_path),
+        },
+        "concat_list": {
+            "path": relative_to_repo(list_path),
+            "sha256": hashlib.sha256(
+                list_text.encode("utf-8")).hexdigest(),
+            "bytes": len(list_text.encode("utf-8")),
+        },
+        "movie": {
+            "path": relative_to_repo(movie_path),
+            "sha256": file_digest(probe.path),
+            "bytes": os.path.getsize(probe.path),
+        },
+        "expected_total": plan.expected_total,
+        "capture_count": plan.capture_count,
+        "group_count": plan.group_count,
+        "width": plan.width,
+        "height": plan.height,
+    }
+
+
+def write_generation_manifest(
+    record: Mapping[str, Any],
+    root: Optional[str] = None,
+) -> str:
+    """Write build/movie.json atomically.  Returns the path."""
+    target = generation_manifest_path(root)
+    parent = os.path.dirname(target)
+    try:
+        os.makedirs(parent, exist_ok=True)
+    except OSError as err:
+        raise RenderError(
+            "could not create %s for the generation manifest: %s"
+            % (parent, err)) from err
+    text = json.dumps(dict(record), ensure_ascii=False, indent=2,
+                      sort_keys=True) + "\n"
+    descriptor, temporary = tempfile.mkstemp(
+        dir=parent, prefix=".movie-", suffix=".tmp")
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8",
+                       newline="\n") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, 0o644)
+        os.replace(temporary, target)
+    except OSError:
+        try:
+            os.unlink(temporary)
+        except OSError:  # pragma: no cover - defensive
+            pass
+        raise
+    _sync_directory(parent)
+    return target
+
+
+def publish_generation(
+    plan: Plan,
+    timeline_path: str,
+    list_target: str,
+    list_staging: str,
+    list_text: str,
+    movie_target: str,
+    probe: "Probe",
+    root: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Switch in the concat list and the movie as one generation.
+
+    Returns the manifest record that was written.  Called with the lock
+    held and only after the container has been verified, so nothing here
+    can fail for a reason that should have stopped the run.
+
+    The journal goes down FIRST, durably, naming both targets and both
+    digests.  Between the two renames the tree is momentarily half
+    switched, and the journal is what makes that state readable instead of
+    permanent: the next run reports exactly which file should hold what,
+    and this stage -- deterministic for a given timeline -- finishes it by
+    publishing again.
+    """
+    record = build_generation_manifest(
+        plan, timeline_path, list_target, list_text, movie_target, probe)
+    for problem in generation_journal_problems(LOCK_NAME, root):
+        _warn("a previous render publication was interrupted: %s.  This "
+              "run republishes both files from the same timeline, which "
+              "repairs it" % problem)
+    write_generation_journal(LOCK_NAME, {
+        "version": GENERATION_VERSION,
+        "stage": LOCK_NAME,
+        "timeline": os.path.abspath(timeline_path),
+        "targets": [
+            {"path": os.path.abspath(list_target),
+             "sha256": record["concat_list"]["sha256"]},
+            {"path": os.path.abspath(movie_target),
+             "sha256": record["movie"]["sha256"]},
+        ],
+    }, root)
+    publish_concat_list(list_staging, list_target)
+    publish(probe.path, movie_target)
+    _assert_generation_published(record, list_target, movie_target)
+    write_generation_manifest(record, root)
+    clear_generation_journal(LOCK_NAME, root)
+    return record
+
+
+def _assert_generation_published(
+    record: Mapping[str, Any],
+    list_target: str,
+    movie_target: str,
+) -> None:
+    """Prove both published files carry the digests just journalled.
+
+    Re-read from disk rather than assumed, and checked BEFORE the journal
+    is cleared, so a publication that cannot be verified leaves the
+    journal in place for the next run to report.
+    """
+    for path, declared in ((list_target, record["concat_list"]["sha256"]),
+                           (movie_target, record["movie"]["sha256"])):
+        try:
+            found = file_digest(path)
+        except (TimelineError, OSError) as err:
+            raise RenderError(
+                "%s was published and cannot be re-read to verify it: "
+                "%s.  The generation journal is left in place."
+                % (path, err)) from err
+        if found != declared:
+            raise RenderError(
+                "%s carries %s after publication and the generation was "
+                "%s.  The generation journal is left in place so the "
+                "next run reports the mixed state rather than accepting "
+                "it." % (path, found[:16], declared[:16]))
 
 
 # ---------------------------------------------------------------------
@@ -2119,6 +2518,7 @@ def probe_output(path: str, root: Optional[str] = None) -> Probe:
         height=_integer(first.get("height")) if video else None,
         size=size,
         frames=counted,
+        path=path,
     )
 
 
@@ -2395,26 +2795,40 @@ def main(
         # captions: held to the same containment and no-symlink rules
         # and opened with O_NOFOLLOW.
         document = read_timeline(source, root)
-        plan = plan_render(document, root)
-        list_path, list_text = write_concat_list(
-            plan, list_target, root)
         if args.concat_only:
+            # NO ENCODE, SO NO GENERATION.  --concat-only exists to let an
+            # operator read the instruction sheet without spending a
+            # render, and there is no movie for the list to be consistent
+            # with -- so the list is published on its own, and it is the
+            # ONE path that does that.
+            plan = plan_render(document, root, source)
+            list_path, _ = write_concat_list(plan, list_target, root)
             if not args.quiet:
                 print(summary_line(plan, list_path))
             return EXIT_OK
-        # ENCODE, VERIFY, THEN PUBLISH -- in that order, under a lock.
-        # The film is written to a staging sibling and measured THERE, so
-        # a container that fails its own duration check never replaces
-        # the movie that passed one.  Only a verified file is renamed
-        # into place; a failure removes the staging file and leaves the
-        # published movie exactly as it was.
+        # PLAN, STAGE, ENCODE, VERIFY, THEN PUBLISH BOTH -- in that order
+        # and ALL of it under the lock.  The list used to be published
+        # before the lock was taken and before a byte was encoded, so a
+        # failed encode left a new list beside an old movie: two valid
+        # files describing different sessions, with nothing on disk saying
+        # so.  Now the list is staged in its own target directory, the
+        # encode runs from those exact bytes, the container is measured
+        # while it is still a staging sibling, and the list and the film
+        # are switched in together under a journal.
         with ArtifactLock(LOCK_NAME, root):
+            plan = plan_render(document, root, source)
             for stale in clear_stale_staging(output):
                 _warn("removed a staging file a previous run left "
                       "behind: %s" % relative_to_repo(stale))
+            for stale in clear_stale_staging(list_target):
+                _warn("removed a staged concat list a previous run left "
+                      "behind: %s" % relative_to_repo(stale))
+            list_path, list_staging, list_text = stage_concat_list(
+                plan, list_target, root)
             staging = staging_path(output)
+            published = False
             try:
-                encode(plan, list_text, staging, root)
+                encode(plan, list_text, staging, root, list_staging)
                 probe = probe_output(staging, root)
                 problems = verify_problems(plan, probe, tolerance)
                 # The summary is printed BEFORE the verdict on purpose:
@@ -2424,20 +2838,30 @@ def main(
                     print(summary_line(plan, list_path, output, probe))
                 if problems:
                     _report(problems)
-                    print("render_movie.py: %d problem(s) found -- the "
-                          "encode was NOT published, so %s is whatever "
-                          "it was before this run"
-                          % (len(problems), relative_to_repo(output)),
-                          file=sys.stderr)
+                    print("render_movie.py: %d problem(s) found -- "
+                          "NEITHER the concat list nor the encode was "
+                          "published, so %s and %s are both whatever "
+                          "they were before this run"
+                          % (len(problems), relative_to_repo(list_path),
+                             relative_to_repo(output)), file=sys.stderr)
                     return EXIT_FAILED
-                publish(staging, output)
+                publish_generation(
+                    plan, source, list_path, list_staging, list_text,
+                    output, probe, root)
+                published = True
             finally:
-                if os.path.exists(staging):
+                # A run that did not publish takes BOTH staged files with
+                # it, so the tree is exactly as it was.  A run that did
+                # published them by rename, so neither path is there.
+                for leftover in ((staging, list_staging)
+                                 if not published else ()):
+                    if not os.path.exists(leftover):
+                        continue
                     try:
-                        os.unlink(staging)
+                        os.unlink(leftover)
                     except OSError as err:  # pragma: no cover
                         _warn("could not remove the staging file %s (%s)"
-                              % (staging, err))
+                              % (leftover, err))
     except RenderError as err:
         print("render_movie.py: %s" % err, file=sys.stderr)
         return EXIT_FAILED

@@ -1430,6 +1430,110 @@ class TestTheWindowLookup(LaunchFixture):
                  "not a silent success"))
 
 
+class TestTheResumeUiState(LaunchFixture):
+    """A resumed session must START from a menu, provably.
+
+    The resume branch of the capture launch used to differ from the
+    create branch by one log line: the same process at the same screen,
+    with "do not create a new character" left entirely to a key driver
+    that could not tell one screen from another.  So the launcher now
+    establishes the state a resumed session begins in and VERIFIES it
+    with a diagnostic capture -- one whose PNG is withdrawn out of the
+    working tree and whose exit status is 9, so it can never be mistaken
+    for a frame of the record.
+    """
+
+    def install_capture_stub(self, clock="", phrase="", date="",
+                             status=9):
+        """A capture.sh stand-in that reports one sidebar reading."""
+        path = os.path.join(self.tooling, "capture.sh")
+        self.write(path, (
+            "#!/bin/sh\n"
+            "printf 'CAPTURE_MODE=diagnostic\\n'\n"
+            "printf 'FRAME_INDEX=%%s\\n' \"${FRAME_INDEX-}\"\n"
+            "printf 'FRAME_FILE=\\n'\n"
+            "printf 'CLOCK_STATUS=read\\n'\n"
+            "printf 'CLOCK=%s\\n'\n"
+            "printf 'TIME_PHRASE=%s\\n'\n"
+            "printf 'CLOCK_DATE=\\n'\n"
+            "printf 'DATE=%s\\n'\n"
+            "printf 'DATE_STATUS=read\\n'\n"
+            "exit %d\n" % (clock, phrase, date, status)))
+        os.chmod(path, 0o755)
+        return path
+
+    def verify(self, **overrides):
+        """Call verify_resume_ui_state with a pinned world."""
+        after = ('SAVE_WORLD="Sunnyside"\n'
+                 'SAVE_CHAR_COUNT=1\n'
+                 'verify_resume_ui_state\n'
+                 'printf "STATUS=%s\\n" "$?"\n'
+                 'printf "STATE=%s\\n" "${INITIAL_UI_STATE}"\n')
+        return self.run_sourced(after, **overrides)
+
+    def test_a_menu_screen_is_accepted_and_declared(self):
+        self.install_capture_stub()
+        status, out, err = self.verify()
+        self.assertEqual(status, 0)
+        emitted = self.emitted(out)
+        self.assertEqual(emitted["STATUS"], "0")
+        self.assertEqual(emitted["STATE"], "main-menu-load-required")
+        self.assertIn("RESUME UI STATE verified", err)
+        self.assertIn("must LOAD that character", err)
+
+    def test_a_screen_already_in_the_world_is_refused(self):
+        """A sidebar reading means a survivor is already loaded.
+
+        For a launch this script has just taken, that means the engine is
+        not where a resumed session has to begin -- and the load itself
+        must be captured, one frame per keystroke, rather than having
+        happened before the recording started.
+        """
+        self.install_capture_stub(
+            clock="08:15:33", date="Thursday, May 20")
+        status, out, err = self.verify()
+        self.assertEqual(status, EX_LAYOUT)
+        self.assertNotIn("STATE=", out)
+        self.assertIn("ALREADY IN THE WORLD", err)
+        self.assertIn("08:15:33", err)
+
+    def test_a_coarse_time_phrase_counts_as_the_world_too(self):
+        """No watch does not mean no sidebar.
+
+        display::time_string() falls back to a coarse phrase without a
+        time-telling device (src/display.cpp:159-185), and that phrase is
+        still drawn only for a loaded character.
+        """
+        self.install_capture_stub(phrase="Around dawn")
+        status, _, err = self.verify()
+        self.assertEqual(status, EX_LAYOUT)
+        self.assertIn("ALREADY IN THE WORLD", err)
+
+    def test_an_unreadable_probe_is_recorded_as_unverified(self):
+        """It does not silently pass as verified.
+
+        A probe that could not be taken has established nothing, so the
+        state says so -- and session.py's own refusal of every
+        new-survivor hotkey stands whatever this reports.
+        """
+        self.install_capture_stub(status=4)
+        status, out, err = self.verify()
+        self.assertEqual(status, 0)
+        self.assertEqual(self.emitted(out)["STATE"], "unverified")
+        self.assertIn("recorded as unverified", err)
+
+    def test_the_declared_state_reaches_the_machine_channel(self):
+        """emit_launch_facts publishes it, like every other fact."""
+        after = ('LAUNCH_PHASE="capture"\n'
+                 'INITIAL_UI_STATE="main-menu-load-required"\n'
+                 'emit_launch_facts\n')
+        status, out, _ = self.run_sourced(after)
+        self.assertEqual(status, 0)
+        self.assertEqual(
+            self.emitted(out)["PLAYTHROUGH_INITIAL_UI_STATE"],
+            "main-menu-load-required")
+
+
 class TestTheCaptureGeometryGate(LaunchFixture):
     """A window smaller than the grid must not be captured."""
 
