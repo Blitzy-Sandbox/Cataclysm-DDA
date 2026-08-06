@@ -140,7 +140,12 @@ landed.  The save-set comparison now also runs IMMEDIATELY after each
 key rather than before the next one, and when the sidebar first appears
 the engine's own <userdir>/config/lastworld.json must name the pinned
 world and character (src/main_menu.cpp:1080-1083), so "the existing save
-was continued" is a checked property rather than an assurance.
+was continued" is a checked property rather than an assurance.  The one
+legitimate disappearance is the engine's own death cleanup: it is
+accepted only when the graveyard save, character log, memorial pair and
+captured post-death record all agree on the pinned survivor.  A bare
+deletion, or any incomplete imitation of that evidence, still stops the
+session.
 
 CHARACTER CREATION HAS EXACTLY ONE PERMITTED DOOR.  The new-game
 submenu strings are quoted verbatim from src/main_menu.cpp:475-483:
@@ -431,6 +436,8 @@ COMPRESSED_SAVE_EXTENSION = SAVE_EXTENSION + ZZIP_SUFFIX
 USERDIR_NAME = "userdir"
 CONFIG_DIR_NAME = "config"
 SAVE_DIR_NAME = "save"
+GRAVEYARD_DIR_NAME = "graveyard"
+MEMORIAL_DIR_NAME = "memorial"
 ENV_SAVE_DIR = "PLAYTHROUGH_SAVE_DIR"
 ENV_CONFIG_DIR = "PLAYTHROUGH_CONFIG_DIR"
 
@@ -1034,6 +1041,24 @@ def decoded_character_name(save_name: object) -> Optional[str]:
             validate=True).decode("utf-8")
     except (ValueError, UnicodeDecodeError):
         return None
+
+
+def encoded_character_stem(character_name: object) -> Optional[str]:
+    """Return the engine's `#<base64-name>` save stem, or None.
+
+    This is the inverse of :func:`decoded_character_name`, using the
+    engine's `+`/`-` alphabet rather than Python's default `+`/`/`
+    alphabet.  Death cleanup moves the existing character files into
+    <userdir>/graveyard/, so the stem is the immutable identity that
+    binds the live save this session pinned to the graveyard generation
+    the engine produced after death.
+    """
+    if not isinstance(character_name, str) or not character_name:
+        return None
+    encoded = base64.b64encode(
+        character_name.encode("utf-8"),
+        altchars=b"+-").decode("ascii")
+    return CHARACTER_PREFIX + encoded
 
 
 def read_lastworld(path: Optional[str] = None,
@@ -2500,6 +2525,29 @@ class SaveProbe:
         }
 
 
+@dataclass(frozen=True)
+class DeathCleanupEvidence:
+    """Engine-authored evidence that the pinned survivor really died.
+
+    A vanished live save is not enough: manual deletion has exactly that
+    shape.  The exception is admitted only when four independent
+    artifacts agree -- the graveyard save and log, the JSON and text
+    memorials, and the append-only manifest's last-words/post-death
+    sequence.  The paths are returned so the checkpoint layer can hold
+    these exact files against git after publication.
+    """
+
+    world: str
+    character: str
+    save_stem: str
+    grave_save: str
+    grave_log: str
+    memorial_json: str
+    memorial_text: str
+    death_frame: int
+    last_words: str
+
+
 def _character_saves(world_dir: str) -> Tuple[Tuple[str, ...],
                                               Tuple[str, ...]]:
     """Return one world's character names and the forms they use.
@@ -2661,6 +2709,284 @@ def _real_subdirectory(parent: str, name: str) -> Optional[str]:
             % (candidate, canonical,
                os.path.join(canonical_parent, name)))
     return candidate
+
+
+def _evidence_directory(parent: str, name: str, label: str) -> str:
+    """Return one real evidence directory or refuse the missing check."""
+    directory = _real_subdirectory(parent, name)
+    if directory is None:
+        raise CheatGuard(
+            "%s is missing under %s, so a vanished live save is not "
+            "evidenced as the engine's death cleanup"
+            % (label, parent))
+    return directory
+
+
+def _evidence_listing(directory: str, label: str) -> List[str]:
+    """List an evidence directory, failing closed on an unreadable one."""
+    try:
+        return sorted(os.listdir(directory))
+    except OSError as err:
+        raise CheatGuard(
+            "cannot inspect %s at %s: %s.  Death cleanup is accepted "
+            "only when every part of its evidence can be checked"
+            % (label, directory, err)) from err
+
+
+def _load_evidence_json(path: str, label: str) -> Mapping[str, object]:
+    """Read one engine JSON artifact as an object, never as a guess."""
+    if not _real_regular_file(path, label):
+        raise CheatGuard(
+            "%s is missing at %s, so the engine's death cleanup is not "
+            "fully evidenced" % (label, path))
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            record = json.load(handle)
+    except (OSError, UnicodeError, ValueError) as err:
+        raise CheatGuard(
+            "%s at %s is unreadable as JSON: %s.  An unverifiable death "
+            "artifact is a refusal, not an assumed match"
+            % (label, path, err)) from err
+    if not isinstance(record, dict):
+        raise CheatGuard(
+            "%s at %s is not a JSON object, so it cannot identify the "
+            "survivor whose live save vanished" % (label, path))
+    return record
+
+
+def _memorial_names_avatar(value: object, character: str) -> bool:
+    """True when a memorial stats tree names `character` as its avatar."""
+    if isinstance(value, Mapping):
+        named = value.get("avatar_name")
+        if named == ["string", character]:
+            return True
+        return any(
+            _memorial_names_avatar(one, character)
+            for one in value.values())
+    if isinstance(value, list):
+        return any(
+            _memorial_names_avatar(one, character) for one in value)
+    return False
+
+
+def _graveyard_files(userdir: str, save_stem: str
+                     ) -> Tuple[str, str]:
+    """Return the sole graveyard save and its same-generation log."""
+    graveyard = _evidence_directory(
+        userdir, GRAVEYARD_DIR_NAME, "the graveyard")
+    saves: List[str] = []
+    for generation_name in _evidence_listing(
+            graveyard, "the graveyard"):
+        generation = _real_subdirectory(graveyard, generation_name)
+        if generation is None:
+            continue
+        for entry in _evidence_listing(
+                generation, "a graveyard generation"):
+            if not (entry.startswith(CHARACTER_PREFIX) and
+                    entry.endswith(SAVE_EXTENSION)):
+                continue
+            candidate = os.path.join(generation, entry)
+            if _real_regular_file(candidate, "a graveyard save"):
+                saves.append(candidate)
+    expected_name = save_stem + SAVE_EXTENSION
+    expected = [
+        one for one in saves if os.path.basename(one) == expected_name]
+    if len(saves) != 1 or len(expected) != 1:
+        raise CheatGuard(
+            "the graveyard holds %d character save(s), with %d matching "
+            "the pinned survivor %s.  Engine death cleanup for this "
+            "one-survivor session must move exactly that one save"
+            % (len(saves), len(expected), expected_name))
+    grave_save = expected[0]
+    grave_log = os.path.join(
+        os.path.dirname(grave_save), save_stem + ".log")
+    if not _real_regular_file(grave_log, "the graveyard character log"):
+        raise CheatGuard(
+            "the graveyard save %s has no same-generation character log "
+            "at %s.  A lone copied save is not sufficient evidence of "
+            "the engine's death cleanup" % (grave_save, grave_log))
+    return grave_save, grave_log
+
+
+def _memorial_files(userdir: str, world: str, character: str
+                    ) -> Tuple[str, str]:
+    """Return the sole JSON/text memorial pair for this survivor."""
+    memorial = _evidence_directory(
+        userdir, MEMORIAL_DIR_NAME, "the memorial directory")
+    world_dir = _evidence_directory(
+        memorial, world, "the pinned world's memorial directory")
+    prefix = character + "-"
+    json_files: List[str] = []
+    text_files: List[str] = []
+    for entry in _evidence_listing(
+            world_dir, "the pinned world's memorial directory"):
+        if not entry.startswith(prefix):
+            continue
+        candidate = os.path.join(world_dir, entry)
+        if entry.endswith(".json") and _real_regular_file(
+                candidate, "the JSON memorial"):
+            json_files.append(candidate)
+        if entry.endswith(".txt") and _real_regular_file(
+                candidate, "the text memorial"):
+            text_files.append(candidate)
+    if len(json_files) != 1 or len(text_files) != 1:
+        raise CheatGuard(
+            "the memorial directory for world '%s' holds %d JSON and "
+            "%d text memorial(s) for '%s'.  Engine death cleanup must "
+            "produce one matching pair" %
+            (world, len(json_files), len(text_files), character))
+    return json_files[0], text_files[0]
+
+
+def _manifest_death_observation(
+        manifest_path: Optional[str], root: Optional[str],
+        last_words: str) -> int:
+    """Return the first last-words frame in a captured death sequence."""
+    try:
+        rows = manifest.read_rows(manifest_path, root)
+    except (OSError, UnicodeError, ValueError,
+            manifest.ManifestError) as err:
+        raise CheatGuard(
+            "the append-only record cannot be checked for the captured "
+            "death sequence: %s" % err) from err
+    last_words_frame: Optional[int] = None
+    post_death_frame: Optional[int] = None
+    words_recorded = not last_words
+    post_markers = (
+        "post-death",
+        "after death",
+        "deathcam",
+        "scores screen",
+        "follower epilogue",
+    )
+    for row in rows:
+        frame = row.get("frame")
+        action = str(row.get("action") or "")
+        commentary = str(row.get("commentary") or "")
+        lowered = action.lower()
+        if last_words_frame is None and "last words" in lowered:
+            if isinstance(frame, int):
+                last_words_frame = frame
+        elif (last_words_frame is not None and
+              isinstance(frame, int) and frame > last_words_frame and
+              any(marker in lowered for marker in post_markers)):
+            post_death_frame = frame
+        if last_words and last_words.lower() in (
+                action + "\n" + commentary).lower():
+            words_recorded = True
+    if last_words_frame is None or post_death_frame is None:
+        raise CheatGuard(
+            "the manifest does not contain a captured last-words screen "
+            "followed by a captured post-death screen.  Graveyard files "
+            "alone cannot prove that this recorded session observed the "
+            "death cleanup it is asking to accept")
+    if not words_recorded:
+        raise CheatGuard(
+            "the memorial records last words %r, but no manifest action "
+            "or commentary records that same text" % last_words)
+    return last_words_frame
+
+
+def assert_death_cleanup_evidence(
+        world: str, character: str, expected_stem: Optional[str] = None,
+        manifest_path: Optional[str] = None,
+        root: Optional[str] = None) -> DeathCleanupEvidence:
+    """Prove a vanished live save is the engine's legitimate death path.
+
+    CDDA moves the character files into a timestamped graveyard
+    generation, writes JSON and text memorials, then may reset the world
+    according to WORLD_END.  That is observably different from a manual
+    deletion only when ALL of those products agree with the survivor
+    lastworld.json says was loaded and the append-only record shows the
+    death UI.  This function is that fail-closed distinction.
+    """
+    if not isinstance(world, str) or not world.strip():
+        raise CheatGuard(
+            "death cleanup has no pinned world to attribute it to")
+    if not isinstance(character, str) or not character.strip():
+        raise CheatGuard(
+            "death cleanup has no pinned survivor to attribute it to")
+    save_stem = encoded_character_stem(character)
+    if save_stem is None:
+        raise CheatGuard(
+            "the pinned survivor's name cannot be encoded as a save")
+    if expected_stem is not None and expected_stem != save_stem:
+        raise CheatGuard(
+            "lastworld.json names '%s', whose save stem is %s, but the "
+            "live save that vanished was %s" %
+            (character, save_stem, expected_stem))
+
+    userdir = userdir_path(root)
+    grave_save, grave_log = _graveyard_files(userdir, save_stem)
+    grave = _load_evidence_json(grave_save, "the graveyard save")
+    player = grave.get("player")
+    player_name = (
+        player.get("name") if isinstance(player, Mapping) else None)
+    if player_name != character:
+        raise CheatGuard(
+            "the graveyard save names player %r rather than the pinned "
+            "survivor %r" % (player_name, character))
+    if grave.get("debug_mode") is not False:
+        raise CheatGuard(
+            "the graveyard save does not record debug_mode=false; a "
+            "death ending cannot relax the no-cheating evidence")
+
+    memorial_json, memorial_text = _memorial_files(
+        userdir, world, character)
+    memorial = _load_evidence_json(
+        memorial_json, "the JSON memorial")
+    entries = memorial.get("log")
+    messages = [
+        str(one.get("message") or "")
+        for one in entries
+        if isinstance(one, Mapping)
+    ] if isinstance(entries, list) else []
+    if "%s was killed." % character not in messages:
+        raise CheatGuard(
+            "the JSON memorial does not say that %s was killed"
+            % character)
+    if "Died" not in messages:
+        raise CheatGuard(
+            "the JSON memorial has no terminal 'Died' event")
+    if not _memorial_names_avatar(memorial, character):
+        raise CheatGuard(
+            "the JSON memorial's death statistics do not name %s as "
+            "the avatar" % character)
+    last_words = ""
+    for message in messages:
+        if message.startswith("Last words: "):
+            last_words = message[len("Last words: "):]
+            break
+
+    if not _real_regular_file(memorial_text, "the text memorial"):
+        raise CheatGuard(
+            "the text memorial is missing at %s" % memorial_text)
+    try:
+        with open(memorial_text, "r", encoding="utf-8") as handle:
+            memorial_prose = handle.read()
+    except (OSError, UnicodeError) as err:
+        raise CheatGuard(
+            "the text memorial cannot be read: %s" % err) from err
+    if "In memory of: %s" % character not in memorial_prose:
+        raise CheatGuard(
+            "the text memorial is not in memory of %s" % character)
+    if " died on " not in memorial_prose:
+        raise CheatGuard(
+            "the text memorial does not record when the survivor died")
+
+    death_frame = _manifest_death_observation(
+        manifest_path, root, last_words)
+    return DeathCleanupEvidence(
+        world=world,
+        character=character,
+        save_stem=save_stem,
+        grave_save=grave_save,
+        grave_log=grave_log,
+        memorial_json=memorial_json,
+        memorial_text=memorial_text,
+        death_frame=death_frame,
+        last_words=last_words,
+    )
 
 
 def probe_save_resume(save_dir: Optional[str] = None,
@@ -4378,8 +4704,64 @@ class Session:
             "" if loaded is None
             else " as '%s' of world '%s'" % (loaded[1], loaded[0]))
 
+    def _death_cleanup_for_transition(
+            self, before: Mapping[str, Tuple[str, ...]],
+            after: Mapping[str, Tuple[str, ...]],
+            disappeared: Sequence[str],
+            lost: Mapping[str, Tuple[str, ...]],
+            appeared: Sequence[str]) -> Optional[DeathCleanupEvidence]:
+        """Return evidence for the one legitimate save disappearance.
+
+        The candidate transition itself is deliberately narrow: exactly
+        the survivor lastworld.json says was loaded vanished, no other
+        world or character vanished, and no new survivor appeared on the
+        same key.  Only then are the graveyard, memorial and manifest
+        artifacts read.  A candidate with incomplete evidence raises;
+        a transition that is plainly something else returns None for the
+        ordinary save-pin refusal below.
+        """
+        if appeared:
+            return None
+        loaded = self._loaded_survivor()
+        if loaded is None:
+            return None
+        world, character = loaded
+        if self._pin.world and world != self._pin.world:
+            return None
+        save_stem = encoded_character_stem(character)
+        if save_stem is None:
+            return None
+        live_save_name = save_stem + SAVE_EXTENSION
+        if live_save_name not in before.get(world, ()):
+            return None
+        loss_pairs = {
+            (name, one)
+            for name, characters in lost.items()
+            for one in characters
+        }
+        if loss_pairs != {(world, live_save_name)}:
+            return None
+        if set(disappeared) - {world}:
+            return None
+        if live_save_name in after.get(world, ()):
+            return None
+        evidence = assert_death_cleanup_evidence(
+            world=world,
+            character=character,
+            expected_stem=save_stem,
+            manifest_path=self._manifest,
+            root=self._root,
+        )
+        LOG.info(
+            "accepted the engine's death cleanup for %s / %s at frame "
+            "%d: %s moved to the graveyard and the memorial pair and "
+            "captured post-death record agree",
+            evidence.world, evidence.character, evidence.death_frame,
+            evidence.save_stem)
+        return evidence
+
     def _assert_save_pin(self) -> None:
-        """Refuse a step that would create, reset or delete a save.
+        """Refuse a step that would create, reset or delete a live save.
 
         Checked from the save tree itself rather than from what a
         keystroke was believed to mean, which is the only way to check it
@@ -4393,30 +4775,53 @@ class Session:
         * in CREATE mode the one survivor may appear (0 -> 1) and no
           more, and only in one world.
 
-        Anything else stops the session while the save is still intact.
+        The exception is engine-authored DEATH cleanup.  CDDA moves the
+        character files to graveyard/, writes the memorials and may reset
+        the world; that transition is accepted only when those artifacts
+        and the captured post-death rows all match the loaded survivor.
+        A bare deletion still stops the session.
         """
         before = self._fingerprint
         after = self._save_fingerprint()
-        for name, characters in before.items():
-            if name not in after:
-                raise CheatGuard(
-                    "world '%s' is no longer under %s.  A world is not "
-                    "deleted or reset during a recorded session: the "
-                    "save that exists is the save that is continued"
-                    % (name, self._pin.save_dir))
-            lost = sorted(set(characters) - set(after[name]))
-            if lost:
-                raise CheatGuard(
-                    "character save(s) %s vanished from world '%s'.  A "
-                    "survivor is not deleted during a recorded session, "
-                    "for any reason and explicitly including avoiding "
-                    "death" % (", ".join(lost), name))
+        disappeared = sorted(
+            name for name in before if name not in after)
+        lost = {
+            name: tuple(sorted(
+                set(characters) - set(after.get(name, ()))))
+            for name, characters in before.items()
+        }
+        lost = {
+            name: characters
+            for name, characters in lost.items() if characters
+        }
         appeared = sorted(
             "%s/%s" % (name, one)
             for name, characters in after.items()
             for one in sorted(set(characters) - set(
                 before.get(name, ())))
         )
+        if disappeared or lost:
+            evidence = self._death_cleanup_for_transition(
+                before, after, disappeared, lost, appeared)
+            if evidence is not None:
+                self._fingerprint = after
+                return
+            if disappeared:
+                name = disappeared[0]
+                raise CheatGuard(
+                    "world '%s' is no longer under %s.  A world is not "
+                    "deleted or reset during a recorded session unless "
+                    "the engine's graveyard, memorial and captured "
+                    "post-death record all evidence the pinned "
+                    "survivor's death cleanup"
+                    % (name, self._pin.save_dir))
+            name = sorted(lost)[0]
+            raise CheatGuard(
+                "character save(s) %s vanished from world '%s'.  A "
+                "survivor is not manually deleted during a recorded "
+                "session; only fully evidenced engine death cleanup is "
+                "accepted"
+                % (", ".join(lost[name]), name))
         if not appeared:
             self._fingerprint = after
             return

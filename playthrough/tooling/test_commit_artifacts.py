@@ -358,6 +358,69 @@ class CheckpointFixture(unittest.TestCase):
                                "character_name": CHARACTER},
                               indent=2) + "\n")
 
+    def mark_death_in_record(self):
+        """Make the last two captured rows the observed death sequence."""
+        with open(self.manifest, "r", encoding="utf-8") as handle:
+            rows = [json.loads(line) for line in handle if line.strip()]
+        self.assertGreaterEqual(len(rows), 2)
+        rows[-2]["action"] = (
+            "press 'Return' -- submit Delphine Ouellette's last words: "
+            "keep moving")
+        rows[-2]["commentary"] = "Leave it there: keep moving."
+        rows[-1]["action"] = (
+            "press 'Escape' -- exit the post-death scores screen")
+        rows[-1]["commentary"] = "Let it end."
+        with open(self.manifest, "w", encoding="utf-8") as handle:
+            for row in rows:
+                handle.write(json.dumps(row) + "\n")
+
+    def write_death_persistence(self, mark_record=True):
+        """Replace the live save with the engine's death-generation set."""
+        for path in (self.save_file, self.master):
+            if os.path.exists(path):
+                os.unlink(path)
+        generation = os.path.join(
+            self.dir, "userdir", "graveyard",
+            "2026-08-06T06-53-53")
+        grave_save = self.write(
+            os.path.join(generation, SAVE_BASENAME),
+            json.dumps({
+                "debug_mode": False,
+                "player": {"name": CHARACTER},
+            }) + "\n")
+        grave_log = self.write(
+            os.path.join(generation, SAVE_BASENAME[:-4] + ".log"),
+            "character log\n")
+        memorial_base = os.path.join(
+            self.dir, "userdir", "memorial", WORLD,
+            "%s-2026-08-06-06-53-53" % CHARACTER)
+        memorial_json = self.write(
+            memorial_base + ".json",
+            json.dumps({
+                "log": [
+                    {"message": "%s was killed." % CHARACTER},
+                    {"message": "Last words: keep moving"},
+                    {"message": "Died"},
+                ],
+                "stats": {
+                    "data": {
+                        "game_avatar_death": {
+                            "event_counts": [[{
+                                "avatar_name": [
+                                    "string", CHARACTER],
+                            }, {"count": 1}]],
+                        },
+                    },
+                },
+            }) + "\n")
+        memorial_text = self.write(
+            memorial_base + ".txt",
+            "In memory of: %s\nShe died on Year 1, May 20.\n"
+            % CHARACTER)
+        if mark_record:
+            self.mark_death_in_record()
+        return (grave_save, grave_log, memorial_json, memorial_text)
+
     def git(self, *args, identity=True, check=True):
         """Run git in the sandbox, hermetically."""
         env = {
@@ -939,6 +1002,58 @@ class TestTheSaveGate(CheckpointFixture):
         fields, _ = self.take_creation()
         self.assertEqual(fields["WORLD"], WORLD)
         self.assertEqual(fields["CHARACTER"], CHARACTER)
+
+    def test_final_accepts_the_engine_death_generation(self):
+        """Death moves the survivor; it does not erase persistence."""
+        self.take_creation()
+        self.play_session()
+        persistence = self.write_death_persistence()
+
+        fields, err = self.checkpoint("final")
+
+        self.assertEqual(fields["WORLD"], WORLD)
+        self.assertEqual(fields["CHARACTER"], CHARACTER)
+        self.assertIn("death persistence", err)
+        self.assertIn("- save data", self.message())
+        for path in persistence:
+            relative = os.path.relpath(path, self.checkout)
+            with self.subTest(path=relative):
+                self.assertTrue(self.is_tracked(relative))
+        self.assertFalse(self.is_tracked(
+            "playthrough/userdir/save/%s/%s"
+            % (WORLD, SAVE_BASENAME)))
+
+    def test_final_refuses_death_files_without_a_memorial_pair(self):
+        self.take_creation()
+        self.play_session()
+        _, _, memorial_json, _ = self.write_death_persistence()
+        os.unlink(memorial_json)
+
+        message = self.refuse(EX_EVIDENCE, ("final",))
+
+        self.assertIn("memorial", message)
+        self.assertIn("one matching pair", message)
+
+    def test_final_refuses_death_files_without_observed_death(self):
+        self.take_creation()
+        self.play_session()
+        self.write_death_persistence(mark_record=False)
+
+        message = self.refuse(EX_EVIDENCE, ("final",))
+
+        self.assertIn("captured last-words", message)
+        self.assertIn("post-death", message)
+
+    def test_final_refuses_no_live_or_graveyard_survivor(self):
+        self.take_creation()
+        self.play_session()
+        os.unlink(self.save_file)
+        os.unlink(self.master)
+
+        message = self.refuse(EX_EVIDENCE, ("final",))
+
+        self.assertIn("no live survivor", message)
+        self.assertIn("manual deletion is not a death ending", message)
 
 
 class TestTheEvidenceGate(CheckpointFixture):

@@ -1425,15 +1425,18 @@ file rather than by running the command whose absence is the point.
 ## The two checkpoints, and what each one refuses to commit over
 
 The requirement is not merely that the artifacts end up committed; it is *when*.
-One commit immediately after the survivor is created, a separate one after she
-has saved and quit. A single commit taken at the end satisfies "everything is
-committed" and still fails, because the history then cannot show that the save
-existed before the session was played — which is the shape a fabricated session
-would have. The review found exactly that: one commit bundling the first frame,
-the last frame, both films and the final save.
+One commit immediately after the survivor is created, a separate one after the
+in-game ending has closed the session. A sleep ending retains the live Save &
+Quit tree. A death ending moves the character files into `graveyard/`, writes
+the memorial pair, and may reset the world under `WORLD_END`. A single commit
+taken at the end satisfies "everything is committed" and still fails, because
+the history then cannot show that the save existed before the session was
+played — which is the shape a fabricated session would have. The review found
+exactly that: one commit bundling the first frame, the last frame, both films
+and the final persistence.
 
     playthrough/tooling/commit_artifacts.sh creation   # after creation
-    playthrough/tooling/commit_artifacts.sh final      # after Save & Quit
+    playthrough/tooling/commit_artifacts.sh final      # after the ending
     playthrough/tooling/commit_artifacts.sh status     # read-only
 
 Each commit carries a `Playthrough-Checkpoint: <name>` trailer, and that
@@ -1452,7 +1455,7 @@ gate is the one somebody takes when the other refuses:
 | repository | a different checkout; detached HEAD; no history; a rebase, merge, cherry-pick, revert or bisect in progress |
 | scope | staged changes outside `.gitignore`, `.gitattributes`, `playthrough/` — a commit publishes the whole index, so those would ride along |
 | hygiene | `__pycache__`, `*.pyc`, `blitzy_adhoc_test_*`, a retained or quarantined film |
-| save | not exactly one world; no `master.gsav`; not exactly one survivor; `lastworld.json` missing, unreadable, or naming a world or character the save on disk does not |
+| persistence | at `creation`, not exactly one live world and survivor; at `final`, neither that live shape nor one matching graveyard save/log, memorial pair and captured death sequence; `lastworld.json` missing, unreadable, or naming a different survivor |
 | evidence | `manifest.py verify --require-frames` reporting anything; frames ≠ rows; a missing or short observation sidecar |
 | no-cheating | a `keybindings.json` naming `debug`, `debug_mode` or `debug_hour_timer` |
 | lifecycle (`final` only) | no `creation` checkpoint; a record that has not grown since it |
@@ -1473,11 +1476,13 @@ that archived them has to be undone by hand.
 **The same negation is why the commit is verified by name afterwards.** Counting
 staged paths cannot detect the negation being lost, because `git add` reports
 success either way and every count still tallies. So after committing, the
-checkpoint asks git for the manifest, the world save and the character save
-*individually* with `git ls-files --error-unmatch`, and compares the tracked
-frame count against the count on disk. `test_commit_artifacts.py` removes the
-negation line from a sandbox `.gitignore` and asserts the checkpoint fails with
-exit 7 naming the missing rule.
+checkpoint asks git for the manifest and every selected persistence file
+*individually* with `git ls-files --error-unmatch` — live save plus
+`master.gsav`, or graveyard save/log plus both memorial files — and compares
+the tracked frame count against the count on disk.
+`test_commit_artifacts.py` removes the negation line from a sandbox
+`.gitignore` and asserts the checkpoint fails with exit 7 naming the missing
+rule.
 
 **The save gate can name the survivor because the engine writes it down.**
 `<userdir>/config/lastworld.json` carries the world name and the *decoded*
@@ -1486,6 +1491,15 @@ the save file carries the same name base64-encoded with `+` and `-` as the last
 two alphabet characters (`src/catacharset.cpp:215`). Two spellings of one fact,
 so they can be held against each other: `#RGVscGhpbmUgT3VlbGxldHRl.sav` is
 `Delphine Ouellette` and nothing else.
+
+At death, absence of that live path is not accepted on trust. The graveyard
+must contain that exact save and its same-generation character log; the JSON
+memorial must say Delphine was killed, carry a terminal `Died` event, and name
+her in the avatar-death statistics; the text memorial must name her and record
+the death date; and the append-only manifest must show a last-words screen
+followed by a post-death screen. A manual deletion, a copied save, a memorial
+without captured death, or prose claiming death without engine artifacts all
+remain refusals.
 
 **The evidence gate delegates rather than duplicates.** `manifest.py verify
 --require-frames` already owns the six-field schema, the 1..n sequence, the
@@ -1512,4 +1526,22 @@ hundred argv entries, so the argument-list limit is not approached at any
 session length. Expanding the glob in the shell first would be the version of
 "batching" that has a limit to respect. Nothing here rewrites history, amends,
 forces, pushes, tags, resets or cleans.
+
+## Frame 397 correction after the death ending
+
+**Recorded on Thursday, August 6, 2026.** Frame 397's `y` was chosen while
+Delphine was still visible in the crush, as one more attempt to break the
+tough-zombie torso grab and the zombie's right-leg grab against the empty
+northwest wall. By the time the key landed and the required post-key capture
+settled, the death screen had already appeared. The row therefore preserves
+the sincere **pre-send intent** — “My body is breaking. The torso and right leg
+are still held. Pull.” — rather than pretending that the key was chosen after
+death or rewriting the evidence once the result was known.
+
+That distinction is why this is a correction note and not a manifest edit.
+`playthrough/manifest.jsonl` is append-only: frame 397 continues to record the
+intent that was actually journalled before delivery, frame 398 is the first row
+whose action responds to the observed last-words screen, and the engine's
+graveyard and memorial artifacts establish that Delphine died at 08:30:48 on
+Thursday, May 20 in the game. No row was rewritten after the fact.
 

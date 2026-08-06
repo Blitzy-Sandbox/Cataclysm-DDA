@@ -6,12 +6,14 @@
 #
 # The playthrough requirement does not merely ask that the artifacts end
 # up committed; it asks WHEN.  One commit immediately after the survivor
-# is created, and a separate commit after she has saved and quit.  A
-# single commit taken at the end satisfies "everything is committed" and
-# still fails the requirement, because the history then cannot show that
-# the save existed before the session was played -- which is precisely
-# the shape a fabricated session would have.  This file is the checked,
-# re-runnable form of that lifecycle.
+# is created, and a separate commit after the in-game ending has closed
+# the session.  A sleep ending retains the live Save & Quit tree; a death
+# ending moves the character into graveyard/, writes the memorials and
+# may reset the world.  A single commit taken at the end satisfies
+# "everything is committed" and still fails the requirement, because the
+# history then cannot show that the save existed before the session was
+# played -- which is precisely the shape a fabricated session would
+# have.  This file is the checked, re-runnable form of that lifecycle.
 #
 # USAGE
 #     playthrough/tooling/commit_artifacts.sh creation
@@ -50,9 +52,10 @@
 #     the published one.  Everywhere else in the repository those are
 #     ignored; inside this tree the negation makes them committable, so
 #     they are refused rather than silently archived
-#   * a save tree that is not exactly one world holding exactly one
-#     survivor, or one whose loaded world and character do not match the
-#     save on disk
+#   * at `creation`, a save tree that is not exactly one world holding
+#     exactly one survivor; at `final`, neither that live shape nor a
+#     graveyard save/log plus matching memorial pair and captured death
+#     sequence for the loaded survivor
 #   * a manifest that does not verify against the frames, or a frame
 #     count, row count and observation count that disagree
 #   * a keybindings file that binds any debug action
@@ -555,21 +558,31 @@ assert_no_machine_files() {
 }
 
 # ---------------------------------------------------------------------
-# THE SAVE GATE.  Exactly one world, exactly one survivor, and the
-# engine's own record of which one it last loaded agreeing with both.
+# THE PERSISTENCE GATE.  At creation there is exactly one live world and
+# one live survivor.  At final there is either that same live shape
+# (sleep + Save & Quit) OR the engine's death shape: the character save
+# and log moved into graveyard/, one matching JSON/text memorial pair,
+# and a captured last-words/post-death sequence in the manifest.
 #
 # `<userdir>/config/lastworld.json` is written by the engine when a
 # world is loaded and carries the world name and the DECODED character
 # name.  The save file carries the same name base64-encoded with '+' and
 # '-' as the last two alphabet characters (src/catacharset.cpp:215), so
 # the two can be held against each other -- which is what makes "this
-# save is the survivor the session was about" a checkable property
-# rather than an assurance.
+# persistence belongs to the survivor the session was about" a checkable
+# property rather than an assurance.  A missing live save with no full
+# death generation is still a refusal.
 # ---------------------------------------------------------------------
 
 WORLD_NAME=""
 CHARACTER_NAME=""
+ENCODED_CHARACTER=""
 SAVE_FILE=""
+PERSISTENCE_KIND=""
+declare -a REQUIRED_PERSISTENCE_FILES=()
+LOADED_WORLD=""
+LOADED_CHARACTER=""
+LOADED_ENCODED=""
 
 # The decoder.  A fixed program with the path in argv, never
 # interpolated into the source: an unvalidated path joined into a
@@ -590,53 +603,117 @@ encoded = base64.b64encode(
 sys.stdout.write("%s\n%s\n%s\n" % (world, character, encoded))
 '
 
-assert_save_tree() {
-    if [ ! -d "${PLAYTHROUGH_SAVE_DIR}" ]; then
-        die "${EX_EVIDENCE}" "there is no save tree at" \
-            "$(rel "${PLAYTHROUGH_SAVE_DIR}").  A checkpoint records a" \
-            "save that exists; it does not promise one."
-    fi
-    local worlds=() path
-    while IFS= read -r path; do
-        [ -n "${path}" ] || continue
-        worlds+=("${path}")
-    done < <("${FIND}" "${PLAYTHROUGH_SAVE_DIR}" -mindepth 1 \
-        -maxdepth 1 -type d -print 2>/dev/null | "${SORT}")
-    if [ "${#worlds[@]}" -ne 1 ]; then
-        die "${EX_EVIDENCE}" "the save tree holds" \
-            "${#worlds[@]} world director(ies) and the session is one" \
-            "world: ${worlds[*]:-none}.  A second world means a second" \
-            "run has written here, and which one the artifacts belong" \
-            "to is then unanswerable.  Nothing was committed."
-    fi
-    local world_dir="${worlds[0]}"
-    WORLD_NAME="${world_dir##*/}"
-    if [ ! -f "${world_dir}/master.gsav" ]; then
-        die "${EX_EVIDENCE}" "$(rel "${world_dir}") holds no" \
-            "master.gsav, so the world has not been saved.  Save and" \
-            "quit through the game's own menu first."
-    fi
-    local saves=()
-    while IFS= read -r path; do
-        [ -n "${path}" ] || continue
-        saves+=("${path}")
-    done < <("${FIND}" "${world_dir}" -mindepth 1 -maxdepth 1 \
-        -type f -name '#*.sav' -print 2>/dev/null | "${SORT}")
-    if [ "${#saves[@]}" -ne 1 ]; then
-        die "${EX_EVIDENCE}" "${#saves[@]} character save(s) in" \
-            "$(rel "${world_dir}") and the requirement is one unique" \
-            "survivor: ${saves[*]:-none}.  Nothing was committed."
-    fi
-    SAVE_FILE="${saves[0]}"
-    readonly WORLD_NAME SAVE_FILE
-    assert_loaded_character_matches "${world_dir}"
-    playthrough_log "the save is ${WORLD_NAME} /" \
-        "${CHARACTER_NAME:-<unnamed>}, at $(rel "${SAVE_FILE}")"
-    return 0
-}
+readonly DEATH_EVIDENCE_READER='
+import json
+import sys
 
-assert_loaded_character_matches() {
-    local world_dir="$1"
+
+def fail(message):
+    sys.stderr.write("playthrough: death evidence: %s\n" % message)
+    raise SystemExit(1)
+
+
+def load_object(path, label):
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            value = json.load(handle)
+    except (OSError, UnicodeError, ValueError) as error:
+        fail("%s is unreadable as JSON: %s" % (label, error))
+    if not isinstance(value, dict):
+        fail("%s is not a JSON object" % label)
+    return value
+
+
+def names_avatar(value, character):
+    if isinstance(value, dict):
+        if value.get("avatar_name") == ["string", character]:
+            return True
+        return any(names_avatar(one, character)
+                   for one in value.values())
+    if isinstance(value, list):
+        return any(names_avatar(one, character) for one in value)
+    return False
+
+
+grave_path, memorial_path, prose_path, manifest_path, character = (
+    sys.argv[1:])
+grave = load_object(grave_path, "the graveyard save")
+player = grave.get("player")
+if not isinstance(player, dict) or player.get("name") != character:
+    fail("the graveyard save does not name %r as its player" % character)
+if grave.get("debug_mode") is not False:
+    fail("the graveyard save does not record debug_mode=false")
+
+memorial = load_object(memorial_path, "the JSON memorial")
+entries = memorial.get("log")
+messages = [
+    str(one.get("message") or "")
+    for one in entries
+    if isinstance(one, dict)
+] if isinstance(entries, list) else []
+if "%s was killed." % character not in messages:
+    fail("the JSON memorial does not say that %s was killed" % character)
+if "Died" not in messages:
+    fail("the JSON memorial has no terminal Died event")
+if not names_avatar(memorial, character):
+    fail("the memorial statistics do not name %s as avatar" % character)
+last_words = ""
+for message in messages:
+    if message.startswith("Last words: "):
+        last_words = message[len("Last words: "):]
+        break
+
+try:
+    with open(prose_path, "r", encoding="utf-8") as handle:
+        prose = handle.read()
+except (OSError, UnicodeError) as error:
+    fail("the text memorial is unreadable: %s" % error)
+if "In memory of: %s" % character not in prose:
+    fail("the text memorial names another survivor")
+if " died on " not in prose:
+    fail("the text memorial does not record the death date")
+
+try:
+    with open(manifest_path, "r", encoding="utf-8") as handle:
+        rows = [json.loads(line) for line in handle if line.strip()]
+except (OSError, UnicodeError, ValueError) as error:
+    fail("the manifest is unreadable: %s" % error)
+last_words_frame = None
+post_death_frame = None
+words_recorded = not last_words
+post_markers = (
+    "post-death",
+    "after death",
+    "deathcam",
+    "scores screen",
+    "follower epilogue",
+)
+for row in rows:
+    if not isinstance(row, dict):
+        fail("the manifest contains a non-object row")
+    frame = row.get("frame")
+    action = str(row.get("action") or "")
+    commentary = str(row.get("commentary") or "")
+    lowered = action.lower()
+    if last_words_frame is None and "last words" in lowered:
+        if isinstance(frame, int):
+            last_words_frame = frame
+    elif (last_words_frame is not None and isinstance(frame, int)
+          and frame > last_words_frame
+          and any(marker in lowered for marker in post_markers)):
+        post_death_frame = frame
+    if last_words and last_words.lower() in (
+            action + "\n" + commentary).lower():
+        words_recorded = True
+if last_words_frame is None or post_death_frame is None:
+    fail("the manifest has no captured last-words screen followed by "
+         "a captured post-death screen")
+if not words_recorded:
+    fail("the manifest never records the memorial last words %r"
+         % last_words)
+'
+
+read_loaded_identity() {
     local lastworld="${PLAYTHROUGH_CONFIG_DIR}/lastworld.json"
     if [ ! -f "${lastworld}" ]; then
         die "${EX_EVIDENCE}" "the engine has written no" \
@@ -654,37 +731,217 @@ assert_loaded_character_matches() {
             "held against the save on disk.  An unreadable check is a" \
             "refusal here, not a skipped one.  Nothing was committed."
     fi
-    local loaded_world loaded_character encoded
     local -a fields=()
     # mapfile rather than a pipeline: three fields read in the shell
     # itself, so nothing depends on another external tool and a name
     # carrying an unexpected character cannot be re-split by a filter.
     mapfile -t fields <<<"${reading}"
-    loaded_world="${fields[0]-}"
-    loaded_character="${fields[1]-}"
-    encoded="${fields[2]-}"
-    if [ -z "${loaded_world}" ] || [ -z "${loaded_character}" ]; then
+    LOADED_WORLD="${fields[0]-}"
+    LOADED_CHARACTER="${fields[1]-}"
+    LOADED_ENCODED="${fields[2]-}"
+    if [ -z "${LOADED_WORLD}" ] || [ -z "${LOADED_CHARACTER}" ]; then
         die "${EX_EVIDENCE}" "$(rel "${lastworld}") names no world or" \
             "no character, so the session cannot be attributed to a" \
             "survivor.  Nothing was committed."
     fi
-    if [ "${loaded_world}" != "${WORLD_NAME}" ]; then
+    return 0
+}
+
+assert_live_save() {
+    local world_dir="$1"
+    local -a saves=()
+    local path
+    WORLD_NAME="${world_dir##*/}"
+    if [ ! -f "${world_dir}/master.gsav" ]; then
+        die "${EX_EVIDENCE}" "$(rel "${world_dir}") holds no" \
+            "master.gsav, so the world has not been saved.  Save and" \
+            "quit through the game's own menu first."
+    fi
+    while IFS= read -r path; do
+        [ -n "${path}" ] || continue
+        saves+=("${path}")
+    done < <("${FIND}" "${world_dir}" -mindepth 1 -maxdepth 1 \
+        -type f -name '#*.sav' -print 2>/dev/null | "${SORT}")
+    if [ "${#saves[@]}" -ne 1 ]; then
+        die "${EX_EVIDENCE}" "${#saves[@]} character save(s) in" \
+            "$(rel "${world_dir}") and the requirement is one unique" \
+            "survivor: ${saves[*]:-none}.  Nothing was committed."
+    fi
+    SAVE_FILE="${saves[0]}"
+    read_loaded_identity
+    if [ "${LOADED_WORLD}" != "${WORLD_NAME}" ]; then
         die "${EX_EVIDENCE}" "the engine last loaded the world" \
-            "'${loaded_world}' and the only save on disk is" \
+            "'${LOADED_WORLD}' and the only save on disk is" \
             "'${WORLD_NAME}'.  The artifacts and the save would be" \
             "attributed to different worlds.  Nothing was committed."
     fi
-    local expected="${world_dir}/#${encoded}.sav"
+    local expected="${world_dir}/#${LOADED_ENCODED}.sav"
     if [ "${expected}" != "${SAVE_FILE}" ]; then
         die "${EX_EVIDENCE}" "the engine last loaded" \
-            "'${loaded_character}', whose save file would be" \
+            "'${LOADED_CHARACTER}', whose save file would be" \
             "$(rel "${expected}"), and the only save on disk is" \
             "$(rel "${SAVE_FILE}").  A checkpoint cannot say which" \
             "survivor it is about, so it says nothing.  Nothing was" \
             "committed."
     fi
-    CHARACTER_NAME="${loaded_character}"
-    readonly CHARACTER_NAME
+    CHARACTER_NAME="${LOADED_CHARACTER}"
+    ENCODED_CHARACTER="${LOADED_ENCODED}"
+    PERSISTENCE_KIND="live"
+    REQUIRED_PERSISTENCE_FILES=(
+        "${SAVE_FILE}"
+        "${world_dir}/master.gsav"
+    )
+    return 0
+}
+
+assert_death_persistence() {
+    local world_dir="${1-}"
+    read_loaded_identity
+    WORLD_NAME="${LOADED_WORLD}"
+    CHARACTER_NAME="${LOADED_CHARACTER}"
+    ENCODED_CHARACTER="${LOADED_ENCODED}"
+    if [ -n "${world_dir}" ] &&
+       [ "${world_dir##*/}" != "${WORLD_NAME}" ]; then
+        die "${EX_EVIDENCE}" "the engine last loaded the world" \
+            "'${WORLD_NAME}' and the only post-death world directory is" \
+            "'${world_dir##*/}'.  The death artifacts and engine record" \
+            "would be attributed to different worlds.  Nothing was" \
+            "committed."
+    fi
+
+    local graveyard="${PLAYTHROUGH_USERDIR}/graveyard"
+    local -a grave_saves=()
+    local path
+    if [ -d "${graveyard}" ]; then
+        while IFS= read -r path; do
+            [ -n "${path}" ] || continue
+            grave_saves+=("${path}")
+        done < <("${FIND}" "${graveyard}" -mindepth 2 -maxdepth 2 \
+            -type f -name '#*.sav' -print 2>/dev/null | "${SORT}")
+    fi
+    local expected_name="#${ENCODED_CHARACTER}.sav"
+    if [ "${#grave_saves[@]}" -ne 1 ] ||
+       [ "${grave_saves[0]##*/}" != "${expected_name}" ]; then
+        die "${EX_EVIDENCE}" "the final checkpoint has no live survivor" \
+            "and the graveyard holds ${#grave_saves[@]} character" \
+            "save(s), not exactly the pinned survivor" \
+            "${expected_name}: ${grave_saves[*]:-none}.  A manual" \
+            "deletion is not a death ending.  Nothing was committed."
+    fi
+    local grave_save="${grave_saves[0]}"
+    local grave_log="${grave_save%.sav}.log"
+    if [ ! -f "${grave_log}" ]; then
+        die "${EX_EVIDENCE}" "$(rel "${grave_save}") has no" \
+            "same-generation character log at $(rel "${grave_log}")." \
+            "A copied save is not the engine's complete death cleanup." \
+            "Nothing was committed."
+    fi
+
+    local memorial_dir="${PLAYTHROUGH_USERDIR}/memorial/${WORLD_NAME}"
+    local -a memorial_json=() memorial_text=()
+    if [ -d "${memorial_dir}" ]; then
+        while IFS= read -r path; do
+            [ -n "${path}" ] || continue
+            local name="${path##*/}"
+            case "${name}" in
+                "${CHARACTER_NAME}"-*.json)
+                    memorial_json+=("${path}")
+                    ;;
+                "${CHARACTER_NAME}"-*.txt)
+                    memorial_text+=("${path}")
+                    ;;
+            esac
+        done < <("${FIND}" "${memorial_dir}" -mindepth 1 -maxdepth 1 \
+            -type f -print 2>/dev/null | "${SORT}")
+    fi
+    if [ "${#memorial_json[@]}" -ne 1 ] ||
+       [ "${#memorial_text[@]}" -ne 1 ]; then
+        die "${EX_EVIDENCE}" "the graveyard save exists, but" \
+            "$(rel "${memorial_dir}") holds ${#memorial_json[@]} JSON" \
+            "and ${#memorial_text[@]} text memorial(s) for" \
+            "'${CHARACTER_NAME}'.  Death cleanup requires one matching" \
+            "pair.  Nothing was committed."
+    fi
+
+    if ! "${PLAYTHROUGH_PYTHON}" -c "${DEATH_EVIDENCE_READER}" \
+            "${grave_save}" "${memorial_json[0]}" \
+            "${memorial_text[0]}" "${PLAYTHROUGH_MANIFEST}" \
+            "${CHARACTER_NAME}"; then
+        die "${EX_EVIDENCE}" "the death-generation artifacts above do" \
+            "not jointly prove the pinned survivor's engine-authored" \
+            "death cleanup.  Nothing was committed."
+    fi
+    SAVE_FILE="${grave_save}"
+    PERSISTENCE_KIND="death"
+    REQUIRED_PERSISTENCE_FILES=(
+        "${grave_save}"
+        "${grave_log}"
+        "${memorial_json[0]}"
+        "${memorial_text[0]}"
+    )
+    return 0
+}
+
+assert_save_tree() {
+    local checkpoint="$1"
+    local -a worlds=()
+    local path
+    if [ -d "${PLAYTHROUGH_SAVE_DIR}" ]; then
+        while IFS= read -r path; do
+            [ -n "${path}" ] || continue
+            worlds+=("${path}")
+        done < <("${FIND}" "${PLAYTHROUGH_SAVE_DIR}" -mindepth 1 \
+            -maxdepth 1 -type d -print 2>/dev/null | "${SORT}")
+    elif [ "${checkpoint}" != "${CHECKPOINT_FINAL}" ]; then
+        die "${EX_EVIDENCE}" "there is no save tree at" \
+            "$(rel "${PLAYTHROUGH_SAVE_DIR}").  A checkpoint records a" \
+            "save that exists; it does not promise one."
+    fi
+    if [ "${#worlds[@]}" -gt 1 ]; then
+        die "${EX_EVIDENCE}" "the save tree holds" \
+            "${#worlds[@]} world director(ies) and the session is one" \
+            "world: ${worlds[*]}.  A second world means a second run" \
+            "has written here, and which one the artifacts belong to is" \
+            "then unanswerable.  Nothing was committed."
+    fi
+
+    if [ "${#worlds[@]}" -eq 1 ]; then
+        local world_dir="${worlds[0]}"
+        local live_count
+        live_count="$("${FIND}" "${world_dir}" -mindepth 1 -maxdepth 1 \
+            -type f -name '#*.sav' -print 2>/dev/null |
+            "${WC}" -l | "${TR}" -d ' ')"
+        if [ "${live_count}" -gt 0 ]; then
+            assert_live_save "${world_dir}"
+        elif [ "${checkpoint}" = "${CHECKPOINT_FINAL}" ]; then
+            assert_death_persistence "${world_dir}"
+        elif [ ! -f "${world_dir}/master.gsav" ]; then
+            die "${EX_EVIDENCE}" "$(rel "${world_dir}") holds no" \
+                "master.gsav, so the world has not been saved.  Save" \
+                "and quit through the game's own menu first."
+        else
+            die "${EX_EVIDENCE}" "0 character save(s) in" \
+                "$(rel "${world_dir}") and the requirement is one unique" \
+                "survivor.  Nothing was committed."
+        fi
+    elif [ "${checkpoint}" = "${CHECKPOINT_FINAL}" ]; then
+        assert_death_persistence
+    else
+        die "${EX_EVIDENCE}" "the save tree holds 0 world director(ies)" \
+            "and the session is one world.  Nothing was committed."
+    fi
+
+    readonly WORLD_NAME CHARACTER_NAME ENCODED_CHARACTER SAVE_FILE
+    readonly PERSISTENCE_KIND
+    readonly -a REQUIRED_PERSISTENCE_FILES
+    if [ "${PERSISTENCE_KIND}" = "death" ]; then
+        playthrough_log "the death persistence is ${WORLD_NAME} /" \
+            "${CHARACTER_NAME}, at $(rel "${SAVE_FILE}") with one" \
+            "matching memorial pair"
+    else
+        playthrough_log "the save is ${WORLD_NAME} /" \
+            "${CHARACTER_NAME:-<unnamed>}, at $(rel "${SAVE_FILE}")"
+    fi
     return 0
 }
 
@@ -930,7 +1187,10 @@ staged_classes() {
     while IFS= read -r path; do
         [ -n "${path}" ] || continue
         case "${path}" in
-            playthrough/userdir/save/*) save=1 ;;
+            playthrough/userdir/save/*|\
+playthrough/userdir/graveyard/*|playthrough/userdir/memorial/*)
+                save=1
+                ;;
             playthrough/userdir/config/*) config=1 ;;
             playthrough/userdir/*) config=1 ;;
             playthrough/frames/*) frames=1 ;;
@@ -1063,11 +1323,8 @@ verify_commit() {
 # the character save and reports success, so the only way to know it is
 # tracked is to ask for it by name.
 assert_tracked_at_head() {
-    local -a required=(
-        "${PLAYTHROUGH_MANIFEST}"
-        "${SAVE_FILE}"
-        "${PLAYTHROUGH_SAVE_DIR}/${WORLD_NAME}/master.gsav"
-    )
+    local -a required=("${PLAYTHROUGH_MANIFEST}")
+    required+=("${REQUIRED_PERSISTENCE_FILES[@]}")
     local path
     for path in "${required[@]}"; do
         if ! "${GIT}" ls-files --error-unmatch -- "${path}" \
@@ -1109,19 +1366,20 @@ assert_tracked_at_head() {
 # ---------------------------------------------------------------------
 
 run_common_gates() {
+    local checkpoint="$1"
     assert_identity
     assert_repository
     assert_scope
     report_foreign_worktree_changes
     assert_no_machine_files
-    assert_save_tree
+    assert_save_tree "${checkpoint}"
     assert_evidence
     assert_no_debug_bindings
     return 0
 }
 
 do_creation() {
-    run_common_gates
+    run_common_gates "${CHECKPOINT_CREATION}"
     # A `creation` checkpoint taken when one already exists is either a
     # re-run over an unchanged tree -- which commit_checkpoint handles by
     # doing nothing -- or a second creation in one history, which would
@@ -1148,7 +1406,7 @@ do_creation() {
 }
 
 do_final() {
-    run_common_gates
+    run_common_gates "${CHECKPOINT_FINAL}"
     assert_creation_checkpoint
     stage_artifacts
     commit_checkpoint "${CHECKPOINT_FINAL}" "${SUBJECT_FINAL}"

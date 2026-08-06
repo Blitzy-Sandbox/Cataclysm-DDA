@@ -314,6 +314,65 @@ class SessionFixture(unittest.TestCase):
                 handle.write("{}")
         return directory
 
+    def record_death_sequence(self, opened):
+        """Record the last-words and post-death screens a death exposes."""
+        opened.step(
+            "Return",
+            note="submit A's last words: keep moving",
+            commentary="Leave it there: keep moving.")
+        opened.step(
+            "Escape",
+            note="exit the post-death scores screen",
+            commentary="Let it end.")
+
+    def write_death_persistence(self, world="Fern Creek",
+                                character="A", stem="#QQ=="):
+        """Write the engine's graveyard and memorial death products."""
+        generation = os.path.join(
+            self.root, "userdir", session.GRAVEYARD_DIR_NAME,
+            "2026-08-06T06-53-53")
+        os.makedirs(generation, exist_ok=True)
+        grave_save = os.path.join(
+            generation, stem + session.SAVE_EXTENSION)
+        with open(grave_save, "w", encoding="utf-8") as handle:
+            json.dump({
+                "debug_mode": False,
+                "player": {"name": character},
+            }, handle)
+        with open(
+                os.path.join(generation, stem + ".log"),
+                "w", encoding="utf-8") as handle:
+            handle.write("character log\n")
+
+        memorial = os.path.join(
+            self.root, "userdir", session.MEMORIAL_DIR_NAME, world)
+        os.makedirs(memorial, exist_ok=True)
+        base = os.path.join(
+            memorial, "%s-2026-08-06-06-53-53" % character)
+        with open(base + ".json", "w", encoding="utf-8") as handle:
+            json.dump({
+                "log": [
+                    {"message": "%s was killed." % character},
+                    {"message": "Last words: keep moving"},
+                    {"message": "Died"},
+                ],
+                "stats": {
+                    "data": {
+                        "game_avatar_death": {
+                            "event_counts": [[{
+                                "avatar_name": [
+                                    "string", character],
+                            }, {"count": 1}]],
+                        },
+                    },
+                },
+            }, handle)
+        with open(base + ".txt", "w", encoding="utf-8") as handle:
+            handle.write(
+                "In memory of: %s\nShe died on Year 1, May 20.\n"
+                % character)
+        return grave_save
+
 
 class ChordPolicy(unittest.TestCase):
     """Finding 19: no chord may reach a debug action or the process."""
@@ -1022,6 +1081,10 @@ class MandatoryAudits(SessionFixture):
             "Delphine Ouellette")
         self.assertEqual(
             session.decoded_character_name("#QQ==.sav.zzip"), "A")
+        self.assertEqual(
+            session.encoded_character_stem("Delphine Ouellette"),
+            "#RGVscGhpbmUgT3VlbGxldHRl")
+        self.assertEqual(session.encoded_character_stem("A"), "#QQ==")
         self.assertIsNone(session.decoded_character_name("not-a-save"))
         self.assertIsNone(session.decoded_character_name("#zz.sav"))
 
@@ -1033,6 +1096,54 @@ class MandatoryAudits(SessionFixture):
         os.unlink(os.path.join(self.save, "Fern Creek", "#QQ==.sav"))
         with self.assertRaises(session.CheatGuard):
             opened.step("j", commentary="South.")
+
+    def test_evidenced_engine_death_cleanup_is_accepted(self):
+        """The engine may move the save and reset its world after death."""
+        self.world()
+        self.lastworld()
+        opened = self.open_session()
+        self.stub_window(opened)
+        self.record_death_sequence(opened)
+        os.unlink(os.path.join(
+            self.save, "Fern Creek", "#QQ==.sav"))
+        os.unlink(os.path.join(
+            self.save, "Fern Creek", session.SAVE_MASTER_NAME))
+        grave_save = self.write_death_persistence()
+
+        opened._assert_save_pin()
+
+        self.assertTrue(os.path.isfile(grave_save))
+        self.assertNotIn("Fern Creek", opened._fingerprint)
+        # Once accepted, the now-empty live set remains stable.
+        opened._assert_save_pin()
+
+    def test_death_files_without_a_captured_death_are_refused(self):
+        """Grave files cannot be planted as a deletion bypass."""
+        self.world()
+        self.lastworld()
+        opened = self.open_session()
+        self.stub_window(opened)
+        opened.step("j", commentary="South.")
+        os.unlink(os.path.join(
+            self.save, "Fern Creek", "#QQ==.sav"))
+        self.write_death_persistence()
+
+        with self.assertRaisesRegex(
+                session.CheatGuard, "captured last-words"):
+            opened._assert_save_pin()
+
+    def test_a_captured_death_without_engine_artifacts_is_refused(self):
+        """Intent prose cannot excuse a manually deleted save."""
+        self.world()
+        self.lastworld()
+        opened = self.open_session()
+        self.stub_window(opened)
+        self.record_death_sequence(opened)
+        os.unlink(os.path.join(
+            self.save, "Fern Creek", "#QQ==.sav"))
+
+        with self.assertRaisesRegex(session.CheatGuard, "graveyard"):
+            opened._assert_save_pin()
 
     def test_the_survivor_may_appear_once_on_a_create_run(self):
         opened = self.open_session()

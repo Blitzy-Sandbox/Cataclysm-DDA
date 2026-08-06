@@ -58,3 +58,61 @@
 19:20:16.979 WARNING : Portal Storms Ignore NPCs pack load time:: 230us (avg: 230us) (count: 1)
 19:20:30.705 INFO : Loaded tileset: MshockXottoplus
 19:20:30.810 INFO : Loaded tileset: Larwick Overmap
+
+-----------------------------------------
+18:49:20.687 : Starting log.
+18:49:20.687 INFO : Cataclysm DDA version e50300eeb0
+18:49:20.687 INFO : [main] C locale set to LC_CTYPE=C.UTF-8;LC_NUMERIC=C;LC_TIME=C;LC_COLLATE=C;LC_MONETARY=C;LC_MESSAGES=C;LC_PAPER=C;LC_NAME=C;LC_ADDRESS=C;LC_TELEPHONE=C;LC_MEASUREMENT=C;LC_IDENTIFICATION=C
+18:49:20.687 INFO : [main] C++ locale set to LC_CTYPE=C.UTF-8;LC_NUMERIC=C;LC_TIME=C;LC_COLLATE=C;LC_MONETARY=C;LC_MESSAGES=C;LC_PAPER=C;LC_NAME=C;LC_ADDRESS=C;LC_TELEPHONE=C;LC_MEASUREMENT=C;LC_IDENTIFICATION=C
+18:49:20.687 INFO : SDL version used during compile is 2.32.4
+18:49:20.687 INFO : SDL version used during linking and in runtime is 2.32.4
+18:49:20.704 INFO : SDL render devices: software, opengl, opengles2
+18:49:20.706 INFO : [options] C locale set to LC_CTYPE=C.UTF-8;LC_NUMERIC=C;LC_TIME=C;LC_COLLATE=C;LC_MONETARY=C;LC_MESSAGES=C;LC_PAPER=C;LC_NAME=C;LC_ADDRESS=C;LC_TELEPHONE=C;LC_MEASUREMENT=C;LC_IDENTIFICATION=C
+18:49:20.706 INFO : [options] C++ locale set to LC_CTYPE=C.UTF-8;LC_NUMERIC=C;LC_TIME=C;LC_COLLATE=C;LC_MONETARY=C;LC_MESSAGES=C;LC_PAPER=C;LC_NAME=C;LC_ADDRESS=C;LC_TELEPHONE=C;LC_MEASUREMENT=C;LC_IDENTIFICATION=C
+18:49:20.706 INFO : Setting language to: 'en'
+18:49:20.706 INFO : [i18n] Scanning mod translations from playthrough/userdir/mods/
+18:49:20.706 INFO : [i18n] Scanning core translations from lang/mo/
+18:49:21.138 INFO : USE_COLOR_MODULATED_TEXTURES is set to 0
+18:49:21.166 INFO : Setting language to: 'en'
+18:49:21.167 INFO : [i18n] Scanning mod translations from playthrough/userdir/mods/
+18:49:21.167 INFO : [i18n] Scanning core translations from lang/mo/
+18:49:44.092 INFO : Setting language to: 'en'
+18:49:44.092 INFO : [i18n] Scanning mod translations from playthrough/userdir/mods/
+18:49:44.092 INFO : [i18n] Scanning core translations from lang/mo/
+19:10:29.656 INFO : src/mod_tracker.h:68: Tried check if 'vector_null' had a duplicate, but type 'attack_vector' does not track object sources
+19:10:31.672 WARNING : Dark Days Ahead pack load time:: 1908730us (avg: 1908730us) (count: 1)
+19:10:31.672 WARNING : Disable NPC Needs pack load time:: 189us (avg: 189us) (count: 1)
+19:10:31.672 WARNING : Portal Storms Ignore NPCs pack load time:: 279us (avg: 279us) (count: 1)
+19:10:44.935 INFO : Loaded tileset: MshockXottoplus
+19:10:45.040 INFO : Loaded tileset: Larwick Overmap
+02:43:53.382 ERROR GAME : (error message will follow backtrace)
+    ./cataclysm-tiles(+0xd65aa0) [0x5aa601eb8aa0]
+    ./cataclysm-tiles(+0xd67f44) [0x5aa601ebaf44]
+    ./cataclysm-tiles(+0xe97271) [0x5aa601fea271]
+    ./cataclysm-tiles(+0xe9881b) [0x5aa601feb81b]
+    ./cataclysm-tiles(+0x5d18f8) [0x5aa6017248f8]
+    /lib/x86_64-linux-gnu/libc.so.6(+0x2a575) [0x7bda634bd575]
+    /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x88) [0x7bda634bd628]
+    ./cataclysm-tiles(_start+0x25) [0x5aa6018bb495]
+
+    Attempting to repeat stack trace using debug symbols…
+    ??
+    ??:0
+    ??
+    ??:0
+    ??
+    ??:0
+    ??
+    ??:0
+    ??
+    ??:0
+    ??
+    ??:0
+    ??
+    ??:0
+    _start
+    ??:?
+Backtrace emission took 11 seconds.
+(continued from above) ERROR : src/do_turn.cpp:293: game:monmove: feral human can't move to its location!  (51:123:0), nannyberry tree
+02:44:04.594 ERROR GAME : src/do_turn.cpp:293: game:monmove: feral human can't move to its location!  (51:123:0), nannyberry tree
+02:44:13.042 ERROR : src/creature_tracker.cpp:124 [bool creature_tracker::update_pos(const monster&, const tripoint_abs_ms&, const tripoint_abs_ms&)] update_zombie_pos: wanted to move the zombie to (3684,2384,-1), but new location already has the swimmer zombie
