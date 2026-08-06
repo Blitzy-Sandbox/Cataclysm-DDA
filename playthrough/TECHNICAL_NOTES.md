@@ -16,6 +16,33 @@ Every value below was read out of this checkout at the stated location. Where
 a number is quoted, it is the shipped value in this tree and not a value
 remembered from another version.
 
+## Read this before any count on this page
+
+**Two blocks of this page describe capture sets that no longer exist, and each
+says so at its own heading — a long way below the content it retracts.** A
+runtime QA pass pointed out that a reader who starts at the top meets those
+numbers first and the disclaimer last, so the pointer belongs here:
+
+* **[The session was re-recorded, and this section supersedes every count
+  above](#the-session-was-re-recorded-and-this-section-supersedes-every-count-above).**
+  Everything ABOVE that heading is the **first, 560-frame session**, which was
+  rejected at code review and retired. Every "560" on this page, and the
+  frame-by-frame narrative of the abandoned first creation run at *The
+  interrupted capture at frame 177* — including its `real_ts` and luminance
+  figures, which do not match the frame 177 in the tree today — belongs to
+  that retired set.
+* **[Runtime QA remediation of the earlier 395-frame capture
+  set](#runtime-qa-remediation-of-the-earlier-395-frame-capture-set).**
+  Every frame number and every "out of 395" count in that section belongs to a
+  second retired set. It is kept because the engine behaviours it pins down and
+  the tooling it produced are still in force.
+
+`playthrough/frames/` holds **419 frames** — one per keystroke of the session
+that shipped — with 419 manifest rows and 419 telemetry rows. Any count on this
+page that is not 419 is describing a retired set; the sections that do describe
+the shipped record are *Post-capture verification of `playthrough/frames/`* and
+everything from *The session was re-recorded* onward.
+
 ---
 
 ## The pre-play character build
@@ -1544,6 +1571,199 @@ intent that was actually journalled before delivery, frame 398 is the first row
 whose action responds to the observed last-words screen, and the engine's
 graveyard and memorial artifacts establish that Delphine died at 08:30:48 on
 Thursday, May 20 in the game. No row was rewritten after the fact.
+
+---
+
+## Runtime QA remediation of the 419-frame record
+
+**Recorded on Thursday, August 6, 2026.** A runtime QA pass drove the shipped
+capture chain end to end — launch and configuration, the whole Custom Character
+chain, every one of the 419 key-to-frame-to-row transactions, the resume
+decision, and the fail-stop seams — and returned two defects and a set of
+observations. Neither defect was in the imagery: all 419 frames verified at true
+resolution and non-blank, every clock value in the record was independently
+reproduced with zero mismatches, and every one of the 204 null clocks was proven
+by a pixel template to be a genuine non-rendering of the clock row. What follows
+is what was changed and how each change was verified.
+
+### The resume guard released itself one frame too early
+
+`session.py` refuses the five main-menu entries that open a new survivor —
+`u`/`U`, `p`/`P`, `r`/`R`, `d`/`D`, `o`/`O` — for as long as a RESUMED session is
+still on a menu, because the save-set comparison that runs after a keystroke
+detects a second survivor only once the key that created one has already been
+delivered and photographed. The refusal is what makes "an existing save is
+CONTINUED, never replaced" a property of the module instead of a sentence in a
+docstring.
+
+The release condition it advertises, in four separate places including the
+advisory `launch_game.sh` prints at launch, is *once a captured frame shows the
+sidebar*. What it actually did was ask `<userdir>/config/lastworld.json` whether
+the pinned character was loaded, and require one recorded frame. Both are true at
+frame 1 of **every** resumed session: the engine writes that file when a
+character is loaded or saved, so a resumed session finds it already naming the
+survivor before the session has photographed anything at all. QA reproduced the
+consequence exactly — `u` refused at frame 0, two sidebar-free menu frames
+captured, then the same `u` accepted and delivered.
+
+The phase is now derived from the photograph and from nothing else.
+`_recorded_sidebar_frame()` reads the telemetry sidecar's own `ingame_clock`,
+`time_phrase` and `date` columns — the stored form of exactly the payload
+`_settle_ui_phase()` classifies live — and reports the earliest recorded frame
+that carried one. `step` is one process per keystroke, so the phase has to be
+recovered from the record between invocations; the sidecar is the record's
+statement about what was seen, and the engine's own file about a previous session
+is not. The read is tolerant in one direction only: an absent, torn or
+frame-mismatched sidecar is NO evidence, which leaves the phase at the menu,
+where the refusal holds. `session.py status` now prints `UI_PHASE` and
+`UI_PHASE_FRAME`, so the release condition can be inspected rather than inferred
+from stderr.
+
+Re-verified live, on a disposable clone whose userdir was reconstructed from the
+creation commit and which never touched the committed record:
+
+| step | result |
+| --- | --- |
+| `launch_game.sh probe` | `SESSION_MODE=resume`, world `Fern Creek`, 1 character save |
+| `step --key u` at frame 0 | refused, exit 5, X root byte-identical afterwards |
+| two menu frames captured | sidecar rows 1 and 2 carry no clock, no phrase, no date |
+| `step --key u` again | **refused, exit 5** — and so are all ten hotkeys; counts stay 2/2 |
+| `status` | `UI_PHASE=menu`, `UI_PHASE_FRAME=` empty |
+| the character loaded, loading art photographed | still `UI_PHASE=menu`: the load does not release the phase |
+| the next frame photographed the sidebar | `08:00:00`, `Thursday, May 20`; a separate process reports `UI_PHASE=in-world`, `UI_PHASE_FRAME=4` |
+| `step --key u` in the world | accepted, as an ordinary north-east step |
+
+One world and exactly one character save existed at every point of that
+exercise. `test_session.py` pins each half of it, including the case QA drove:
+resume mode, frames recorded, no captured frame carrying a sidebar, every one of
+the ten hotkeys still refused — in the session that took the frames and in the
+next process.
+
+### Three rows narrated an effect their own capture contradicts
+
+Frames 292, 293 and 364 record keystrokes that were genuinely pressed and
+genuinely photographed, with clock readings that are independently reproducible
+— and notes that say the wait was interrupted and that look mode was entered. It
+was not. In each case a `(Case Sensitive)` modal was already on the screen and
+swallowed the key: frame 292 is byte-identical to 291, 293 to 292, and 364 to
+363, and look mode demonstrably replaces the whole sidebar column, which those
+frames still show. The keys, the frames and the clocks are all sound; the
+human-authored *effect* clause on three rows out of 419 is not.
+
+This is the defect class the observed-effect guard exists for, and the guard
+already handles it: it compares each capture with the one before it, before the
+row is appended, and appends `; nothing on the screen changed` when not one
+pixel differs. It simply post-dates these captures. So the guard was run over
+the record retroactively, with the same measurement on the same evidence, by a
+new `session.py annotate` subcommand.
+
+**What the measurement found, over all 419 frames:** eight captures are
+byte-identical to their predecessor —
+
+| frame | key | why it changed nothing |
+| --- | --- | --- |
+| 9 | `space` | a space in a text field with no cursor block |
+| 41 | `@` | the key the creator does not bind there; admitted two rows later |
+| 104 | `space` | as frame 9 |
+| 121 | `space` | as frame 9 |
+| **292** | `period` | the "zombie is dangerously close" modal took it |
+| **293** | `5` | the same modal, still open |
+| **364** | `x` | the "into thin smoke?" modal took it |
+| 408 | `space` | a space inside Delphine's last words |
+
+All eight now carry the marker, not only the three QA named. The marker states
+what was **measured** and nothing else, it is true of all eight captures, and
+leaving five of them unmarked would have made its presence depend on a human
+judgement about which narration overstates itself — which is the very thing the
+guard replaces. The five were already honest (a space that types is not a key
+that was ignored, and frame 41 is admitted at frames 42 and 64); they are now
+also *complete*.
+
+**What was and was not touched.** The append is to the `action` field only. No
+commentary, no clock, no timestamp, no filename and no frame changed — verified
+field by field against the previous commit: exactly eight rows differ, and in
+every one of them the only differing key is `action`. The telemetry sidecar's
+`action` was extended in step, because every integrity check compares the two,
+and the counts stayed 419 / 419 / 419. The marker is appended, never
+substituted: `manifest.extend_action()` and `session.extend_observation_action()`
+both refuse text that does not begin with what was already recorded, refuse a
+change to any other field, re-validate the whole record through the writer's own
+gate afterwards, and write atomically.
+
+**The pass is deliberately limited to what it can honestly measure.** It
+classifies with no sidebar crop, so the only verdict it can reach is
+`unchanged` — the whole-screen one. The `outside-map` verdict needs the sidebar
+geometry of the session that took the frame, a measurement these captures never
+had, and a row whose narration is accurate must not be rewritten on a
+measurement taken long after the keystroke. Without `--apply` the command only
+reports, which is how this was read before anything was written.
+
+**One tooling defect surfaced by that pass, and fixed.** Ten of the 418 pairs
+came back UNMEASURABLE, all for the same reason: ImageMagick prints an FX result
+with six significant digits, so a count of 1,027,832 changed pixels arrived as
+`1.02783e+06`, which is not a count. Every pair differing by a million pixels or
+more was therefore unmeasurable — which is exactly what a scene transition is,
+so the verdict was silently unavailable for the most visually significant steps
+of any session. `measure_difference()` now passes `-precision 16`, and all 419
+frames measure: `EXAMINED=419, MARKED=8, UNMEASURED=` (empty).
+
+**The whole derived chain was regenerated**, because `timeline.json` embeds the
+manifest's digest and each frame's action text, and three further documents
+embed the timeline's digest. The film itself did not change and could not have:
+no frame, duration, clamp, transition flag or cue window differs. Measured
+after regeneration:
+
+| artifact | result |
+| --- | --- |
+| `playthrough/timeline.json` | only the manifest digest and the 8 action strings differ; 419 frames, 2 transitions, 204 reconciled, `231.000 + 2.000 = 233.000 s`, 215 date-confirmed |
+| `build/transitions/*.png` | 24 files, all **byte-identical** to before |
+| `build/concat.txt` | **byte-identical** (`5e7741e8c1…`) |
+| `playthrough/cata-play.mp4` | **byte-identical** (`5e1344bac9…`), 8,051,910 B |
+| `playthrough/transcript.srt` / `.md` | both **byte-identical** (`a67fcce909…`, `c924d91f1d…`) |
+| `playthrough/cata-play-cc.mp4` | **byte-identical** (`da957b72ee…`), h264 1920×1080 + `mov_text` `eng`, 419 cues in and out |
+| the three generation manifests | now name the current timeline `5fa42ff7b1…` |
+
+A byte-identical film from a corrected record is the strongest available
+statement that the correction was to the prose and to nothing else.
+
+### The diagnostic probe no longer writes into the date audit
+
+`launch_game.sh` reads the starting screen with a DIAGNOSTIC capture at the
+reserved index 99999 — withdrawn out of the working tree, no
+repository-relative path, exit 9 — so that a look at the screen can never be
+mistaken for a frame of the record. `capture.sh` resolved the date audit before
+it read the mode, though, so each of those probes still appended a row to
+`playthrough/build/frame_dates.jsonl`, keyed to 99999 and naming a
+`playthrough/frames/frame_99999.png` that does not exist. QA found three of them,
+at lines 1, 19 and 197.
+
+They were inert — every value in them was null, and `timeline.py` keys its date
+decisions off the manifest's own rows and ignores an orphan — but a committed
+audit sidecar holding records about files that never existed is a traceability
+claim nobody should have to explain away. Two changes, and one correction:
+
+* `capture.sh` now defaults the date audit **off** for a diagnostic capture that
+  has not nominated one. A withdrawn frame owes no row, the reading itself is in
+  the invocation's own payload, and `DATE_AUDIT=off` says plainly that nothing
+  was appended. An explicit `PLAYTHROUGH_CAPTURE_AUDIT=on` still records one, and
+  a production capture is untouched: for a frame that is KEPT the audit stays
+  mandatory and stays at the canonical destination.
+* `launch_game.sh` passes `PLAYTHROUGH_CAPTURE_AUDIT=off` at the probe call site
+  as well, so the probe cannot acquire a row through a change of default.
+* The three orphan rows were removed from the committed sidecar, which now holds
+  exactly 419 rows for the 419 frames. The removal is provably inert:
+  `timeline.py --verify` reports the same 419 frames, 2 transitions, 204
+  reconciled clocks and `231.000 + 2.000 = 233.000 s` as before, with the same
+  215 date-confirmed and 204 date-unverified counts, and `test_artifacts.py`
+  passes unchanged.
+
+### The retracted sections now say so at the top of the page
+
+Two blocks of this file describe retired capture sets and each carried its
+disclaimer at its own heading, hundreds of lines below the numbers it retracts.
+The page now opens with *Read this before any count on this page*, which names
+both and states the shipped record's own counts, so the retraction reaches a
+reader who starts at the beginning.
 
 ---
 

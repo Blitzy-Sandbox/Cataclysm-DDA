@@ -457,7 +457,10 @@ RECT_OVERRIDE="${PLAYTHROUGH_CAPTURE_RECT:-}"
 # the sidecar timeline.py reads, and where that sidecar lives.  The
 # path is nominated here but written by the delegate, and a production
 # capture accepts ONLY the canonical destination: see THE DATE AUDIT
-# GOES WHERE timeline.py LOOKS.
+# GOES WHERE timeline.py LOOKS.  A DIAGNOSTIC capture defaults this to
+# `off` further down -- the mode is not known yet here -- because a
+# withdrawn frame owes no row: see A DIAGNOSTIC CAPTURE OWES NO AUDIT
+# ROW beside the validation.
 AUDIT_MODE="${PLAYTHROUGH_CAPTURE_AUDIT:-on}"
 AUDIT_PATH="${PLAYTHROUGH_CAPTURE_AUDIT_PATH:-${PLAYTHROUGH_DATE_AUDIT}}"
 GRAB_TIMEOUT="${PLAYTHROUGH_CAPTURE_GRAB_TIMEOUT-${DEFAULT_GRAB_TIMEOUT}}"
@@ -903,6 +906,35 @@ range of 1 to 3600 seconds; 0 would mean no limit at all, which is the \
 unbounded wait these ceilings exist to prevent"
     fi
 }
+# A DIAGNOSTIC CAPTURE OWES NO AUDIT ROW, and must not leave one.
+#
+# THE DEFECT THIS CLOSES.  A diagnostic capture is withdrawn out of the
+# working tree and emits no repository-relative path precisely so that it
+# can never be mistaken for a frame of the record -- but the date audit
+# was resolved before the mode was even read, so the withdrawn frame
+# still appended a row to the sidecar timeline.py reads.  A runtime QA
+# pass found three of them in the committed playthrough/build/
+# frame_dates.jsonl, each keyed to the reserved index 99999 and each
+# naming playthrough/frames/frame_99999.png -- a file that does not exist
+# and never did.  They assert nothing (every value is null) and
+# timeline.py ignores them, keying its date decisions off the manifest's
+# own rows, so nothing downstream was wrong; a committed audit sidecar
+# holding records about files that do not exist is still a traceability
+# claim nobody should have to explain.
+#
+# So the audit defaults OFF for a diagnostic capture.  The row is not
+# lost information: the reading itself is in this invocation's own
+# payload, which is what a caller asked a diagnostic capture for, and
+# DATE_AUDIT=off says plainly that nothing was appended.  A caller that
+# genuinely wants a diagnostic row still asks for one with an explicit
+# PLAYTHROUGH_CAPTURE_AUDIT=on -- and a production capture is untouched,
+# where the audit stays mandatory and is held to the canonical
+# destination below.
+if [ "${CAPTURE_MODE}" = "diagnostic" ] &&
+   [ -z "${PLAYTHROUGH_CAPTURE_AUDIT:-}" ] &&
+   [ -z "${PLAYTHROUGH_CAPTURE_AUDIT_PATH:-}" ]; then
+    AUDIT_MODE="off"
+fi
 case "${AUDIT_MODE}" in
     on|off) ;;
     *) die "${EX_USAGE}" "PLAYTHROUGH_CAPTURE_AUDIT=\

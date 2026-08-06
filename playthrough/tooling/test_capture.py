@@ -1533,9 +1533,15 @@ class TestTheClockRead(CaptureFixture):
         self.assertEqual(payload["CLOCK"], "")
 
     def test_the_inline_chain_has_no_date_extraction_and_says_so(self):
+        # The audit is asked for EXPLICITLY here, because this assertion
+        # is about the inline chain rather than about the mode: a
+        # diagnostic capture now defaults the audit off (a withdrawn
+        # frame owes no row), and "off" would say nothing about whether
+        # the fallback records a date when one is wanted.  "no" does.
         payload, err = self.diagnostic(
             "1", STUB_PREFLIGHT_RC="2",
             PLAYTHROUGH_CAPTURE_STRICT_CLOCK=0,
+            PLAYTHROUGH_CAPTURE_AUDIT="on",
             STUB_TESSERACT=CLOCK)
         self.assertEqual(payload["DATE_STATUS"], "unavailable")
         self.assertEqual(
@@ -1816,6 +1822,56 @@ class TestTheTelemetryHandoff(CaptureFixture):
             msg=("a diagnostic capture may file it elsewhere, and its "
                  "frame is withdrawn out of the working tree in "
                  "exchange"))
+
+    def test_a_diagnostic_capture_leaves_no_row_in_the_audit(self):
+        """Runtime QA finding: three rows for a frame that never existed.
+
+        A diagnostic capture is withdrawn out of the working tree and
+        emits no repository-relative path so that it cannot be mistaken
+        for a frame of the record -- but the audit was resolved before
+        the mode was read, so a probe at the reserved index 99999 still
+        appended a row to the sidecar timeline.py reads, naming a
+        playthrough/frames/frame_99999.png that does not exist.  The
+        reading a probe wants is in its own payload; the audit is the
+        record, and a withdrawn frame owes it nothing.
+        """
+        payload, _ = self.diagnostic(
+            "99999", STUB_DATE=DATE_LINE, STUB_DATE_RC="0")
+        self.assertEqual(payload["DATE_AUDIT"], "off")
+        self.assertEqual(self.audit_rows(), [])
+        self.assertFalse(
+            any("--audit" in call for call in self.calls("python")),
+            msg="the delegate is not even asked for a destination")
+        # The reading itself is not withheld: it is in the payload, which
+        # is the whole point of looking at the screen this way.
+        self.assertEqual(payload["DATE"], DATE_LINE)
+
+    def test_a_diagnostic_capture_may_still_ask_for_the_audit(self):
+        """The relaxation is a default, not a prohibition.
+
+        An explicit PLAYTHROUGH_CAPTURE_AUDIT=on still records the row,
+        so a caller diagnosing the audit path itself keeps the one tool
+        that shows it working.
+        """
+        payload, _ = self.diagnostic(
+            "1", PLAYTHROUGH_CAPTURE_AUDIT="on",
+            STUB_DATE=DATE_LINE, STUB_DATE_RC="0")
+        self.assertEqual(payload["DATE_AUDIT"], "yes")
+        rows = self.audit_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["frame"], 1)
+
+    def test_a_production_capture_still_records_every_frame_s_date(self):
+        """The default change is confined to the diagnostic mode.
+
+        The audit is the evidence that tells a crossing of midnight from
+        a clock that read backwards, so for a frame that is KEPT it stays
+        mandatory and stays at the canonical destination.
+        """
+        payload, _ = self.capture(
+            "1", STUB_DATE=DATE_LINE, STUB_DATE_RC="0")
+        self.assertEqual(payload["DATE_AUDIT"], "yes")
+        self.assertEqual(len(self.audit_rows()), 1)
 
 
 class TestTheCommitPoint(CaptureFixture):

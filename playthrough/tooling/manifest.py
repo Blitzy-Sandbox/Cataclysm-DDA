@@ -97,6 +97,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 
 
 # The schema, in the order rows are written.  Exactly these six keys,
@@ -483,6 +484,25 @@ UNRECORDED_ACTION_PHRASES = (
 
 _SENTINEL_WORD_RE = re.compile(
     r"\b(?:%s)\b" % "|".join(PLACEHOLDER_WORDS), re.IGNORECASE)
+
+# The separator between the derived identity of a keystroke and the
+# operator's note about why it was pressed.  session.py owns the
+# derivation (session.build_action) and this is the same string, named
+# here because this module is the one that writes the field and
+# therefore the one that has to be able to recognise its shape.  A
+# module-level constant rather than an import: manifest.py is imported
+# BY session.py and deliberately imports nothing of it back.
+ACTION_SEPARATOR = " -- "
+
+# "press '<key>'", optionally followed by the separator and a reason.
+# The key itself is one or more non-quote characters -- which keysym
+# names may be SENT is session.py's vocabulary and is validated there
+# against the string that reaches xdotool; what is checked here is that
+# the row names a keystroke at all.  The note may say anything except
+# nothing, and may not carry the separator a second time, which is what
+# keeps the identity half unambiguous to session.assert_action_derived.
+_ACTION_SHAPE_RE = re.compile(
+    r"\Apress '[^'\n]+'(?: -- (?! )(?:(?! -- ).)+)?\Z")
 
 
 class ManifestError(Exception):
@@ -1716,6 +1736,45 @@ def find_unrecorded_action_phrases(text):
                    if phrase in lowered})
 
 
+def action_shape_problem(action, label):
+    """Report an `action` that does not name one keystroke, or None.
+
+    THE SHAPE THE RECORD IS WRITTEN IN, ENFORCED WHERE IT IS WRITTEN.
+    session.py derives the identity half of every action from the
+    validated string that reaches xdotool -- `press '<key>'`, optionally
+    followed by ' -- ' and the operator's reason -- precisely so that a
+    row cannot name a key that was not sent.  This writer accepted any
+    non-empty text, though, so the guarantee lived entirely in the
+    caller: a runtime QA pass recorded that as a defence-in-depth gap,
+    unreachable through `session.py step` and open to anything else that
+    imports this module.
+
+    The check is deliberately about SHAPE and not about vocabulary.  Which
+    keysym names may be sent is session.py's question, and duplicating its
+    table here would give the pipeline two answers to it; that a row names
+    a keystroke at all is this module's, because this module is what
+    writes the row.
+
+    Kept separate from :func:`sentinel_problems` and applied by
+    :func:`build_row` alone, not by the READER: the committed record is
+    419 rows of exactly this shape, and a reader that refused anything
+    else would turn a foreign row into an unreadable manifest rather than
+    a reported one.
+    """
+    if not isinstance(action, str):
+        return None
+    text = action.strip()
+    if _ACTION_SHAPE_RE.match(text):
+        return None
+    return (
+        "%s action is %r, which does not name a keystroke.  A row's "
+        "action is written as \"press '<key>'\", optionally followed by "
+        "%r and the reason it was pressed, because the identity half is "
+        "derived from the key that was actually delivered and is what "
+        "makes the row evidence rather than a description"
+        % (label, action, ACTION_SEPARATOR))
+
+
 def sentinel_problems(action, commentary, label):
     """Report every way these two fields fail to be a record.
 
@@ -1965,6 +2024,11 @@ def build_row(frame, file, real_ts, ingame_clock, action, commentary):
     # why.
     problems = sentinel_problems(
         row["action"], row["commentary"], "frame %d" % index)
+    # AND THE SHAPE OF THE ACTION, which only the writer checks: see
+    # action_shape_problem() for why the reader deliberately does not.
+    shape = action_shape_problem(row["action"], "frame %d" % index)
+    if shape is not None:
+        problems.append(shape)
     if problems:
         raise ManifestError("  ".join(problems))
     return _ordered_row(row)
@@ -2370,6 +2434,139 @@ def append_record(manifest_path, row, require_durable=True, root=None):
         require_durable=require_durable,
         root=root,
     )
+
+
+def extend_action(manifest_path, frame, action, root=None):
+    """Extend ONE recorded row's action, and change nothing else.
+
+    THE ONE WRITE IN THIS MODULE THAT IS NOT AN APPEND, AND THE NARROW
+    REASON IT EXISTS.  Every other write here appends a row and nothing
+    ever edits one, because the record of a captured session is evidence.
+    This function exists because a runtime QA pass found the one defect
+    that cannot be remedied by appending: rows whose keystroke and frame
+    and clock are all genuine, and whose human-authored note claims an
+    effect their own capture contradicts, because the observed-effect
+    guard that measures pixels and appends `; nothing on the screen
+    changed` was written AFTER those frames were captured.  A note
+    elsewhere cannot fix a row that overstates itself; the row has to
+    carry what was seen.
+
+    WHAT IS THEREFORE ENFORCED HERE RATHER THAN TRUSTED TO THE CALLER:
+
+    * `action` must START WITH the recorded action.  The operator's own
+      words stay exactly as written and the new text can only be
+      appended to them -- so a row says what was intended AND what was
+      observed, and a reader can see where the two part company.  A
+      substitution, a truncation or an unrelated rewrite is refused.
+    * every other field is compared and must be identical.  The frame,
+      its file, the timestamp, the clock reading and the survivor's own
+      commentary are not touched by this path at all.
+    * exactly one row may carry the index, and the whole file is
+      re-validated through :func:`row_problems` after the rewrite, so a
+      correction cannot leave the record in a state the writer would
+      never have produced.
+    * the rewrite is atomic: the whole file is written to a sibling
+      temporary, fsynced, and then os.replace()d, so a reader sees the
+      old file or the new one and never a partial one.
+
+    Returns the row as it now stands.  Raises ManifestError and leaves
+    the file byte-identical on any refusal.
+    """
+    path = _validated_manifest_path(manifest_path, root)
+    index = _validated_frame(frame)
+    rows = list(read_rows(path, root=root))
+    matches = [number for number, row in enumerate(rows)
+               if row.get("frame") == index]
+    if not matches:
+        raise ManifestError(
+            "%s records no frame %d, so there is no action to extend"
+            % (path, index))
+    if len(matches) > 1:
+        raise ManifestError(
+            "%s records frame %d on %d rows; an ambiguous index is "
+            "reported by verify_manifest() and resolved before any row "
+            "of it is corrected" % (path, index, len(matches)))
+    position = matches[0]
+    recorded = rows[position]
+    text = _validated_text(action, "action")
+    previous = recorded["action"]
+    if not text.startswith(previous):
+        raise ManifestError(
+            "the action for frame %d would become %r, which does not "
+            "begin with the recorded %r.  This path only EXTENDS what "
+            "was written -- an observation is appended to the note, "
+            "never substituted for it" % (index, text, previous))
+    if text == previous:
+        return dict(recorded)
+    replacement = build_row(
+        recorded["frame"], recorded["file"], recorded["real_ts"],
+        recorded["ingame_clock"], text, recorded["commentary"])
+    for name in FIELDS:
+        if name == "action":
+            continue
+        if replacement[name] != recorded[name]:
+            raise ManifestError(
+                "extending frame %d's action would change %s from %r "
+                "to %r; this path changes the action and nothing else"
+                % (index, name, recorded[name], replacement[name]))
+    rewritten = list(rows)
+    rewritten[position] = replacement
+    problems = row_problems(rewritten)
+    if problems:
+        raise ManifestError(
+            "extending frame %d's action would leave the record "
+            "invalid: %s" % (index, "  ".join(problems)))
+    _rewrite_rows(path, rewritten)
+    return dict(replacement)
+
+
+def _rewrite_rows(path, rows):
+    """Replace `path` with `rows`, atomically.  Internal.
+
+    The temporary is a SIBLING because os.replace() is only atomic
+    within one filesystem, and the directory itself is fsynced after the
+    rename so the new name survives a power loss rather than only the
+    new bytes.  The permissions are set explicitly because mkstemp
+    creates at 0600 and this file is committed evidence a reader must be
+    able to open.
+    """
+    directory = os.path.dirname(path) or os.curdir
+    descriptor, temporary = tempfile.mkstemp(
+        dir=directory, prefix=".manifest-", suffix=".jsonl")
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8",
+                       newline="\n") as handle:
+            for row in rows:
+                handle.write(encode_row(row))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, 0o644)
+        os.replace(temporary, path)
+    except OSError as err:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise ManifestError(
+            "the record %s could not be rewritten: %s.  The file is "
+            "unchanged" % (path, err)) from err
+    handle = None
+    try:
+        handle = os.open(directory, os.O_RDONLY)
+        os.fsync(handle)
+    except OSError as err:
+        _warn_once(
+            "rewrite-dir-fsync",
+            "the directory %s could not be fsynced after rewriting the "
+            "record (%s); the new content is on the device, but the "
+            "name change may not survive a power loss until the "
+            "filesystem flushes it" % (directory, err))
+    finally:
+        if handle is not None:
+            try:
+                os.close(handle)
+            except OSError:
+                pass
 
 
 def _decode_line(raw, number, path):

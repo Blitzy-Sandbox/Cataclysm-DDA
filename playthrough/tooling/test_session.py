@@ -61,6 +61,8 @@ replaced by a stub script, and a final test asserts the committed
 artifacts were untouched.  Standard library only.
 """
 
+import argparse
+import io
 import json
 import os
 import shutil
@@ -83,6 +85,14 @@ FIXED_REAL_TS = "2026-08-03T19:14:42.507Z"
 # commit and prints the same payload contract, so the transaction can be
 # exercised without an X server.  FRAME_INDEX is its only input, exactly
 # as the real one documents.
+#
+# STUB_NO_SIDEBAR reproduces the OTHER thing a real capture routinely
+# shows: a screen with no sidebar drawn on it.  The language prompt, the
+# main menu, the load dialog, the loading art and the whole character
+# creator have no sidebar, so a capture of any of them reads no clock, no
+# time phrase and no date -- which is the state the resumed-session
+# refusal has to hold in, and therefore a state the suite must be able
+# to photograph.
 STUB_CAPTURE = """#!/bin/sh
 set -eu
 index="${FRAME_INDEX}"
@@ -92,6 +102,17 @@ if [ -n "${STUB_FAIL:-}" ]; then
     exit 4
 fi
 printf 'stub' > "${path}"
+if [ -n "${STUB_NO_SIDEBAR:-}" ]; then
+    clock_status=unreadable
+    clock=
+    date_status=unreadable
+    date_text=
+else
+    clock_status=exact
+    clock=08:15:33
+    date_status=read
+    date_text="Spring, day 61"
+fi
 cat <<PAYLOAD
 CAPTURE_MODE=production
 FRAME_INDEX=${index}
@@ -106,11 +127,11 @@ LUMA_STDDEV=0.19
 CLOCK_RECT=288x1072+1632+4
 CLOCK_RECT_FROM=computed
 CLOCK_SOURCE=stub
-CLOCK_STATUS=exact
-CLOCK=08:15:33
+CLOCK_STATUS=${clock_status}
+CLOCK=${clock}
 TIME_PHRASE=
-DATE=Spring, day 61
-DATE_STATUS=read
+DATE=${date_text}
+DATE_STATUS=${date_status}
 OBSERVATIONS=${STUB_OBSERVATIONS}
 PAYLOAD
 """.replace("__REAL_TS__", FIXED_REAL_TS)
@@ -160,6 +181,7 @@ class SessionFixture(unittest.TestCase):
             (session.ENV_SESSION_MODE, ""),
             (session.ENV_RESUME_WORLD, ""),
             ("STUB_FAIL", ""),
+            ("STUB_NO_SIDEBAR", ""),
         ):
             previous = os.environ.get(name)
             if value:
@@ -1023,6 +1045,211 @@ class MandatoryAudits(SessionFixture):
         opened.step("r", commentary="Read the label on it.")
         self.assertEqual(self.sent, ["Return", "r"])
 
+    def test_the_refusal_holds_while_no_capture_has_shown_a_sidebar(
+            self):
+        """Runtime QA finding: the refusal used to lapse at frame 2.
+
+        The phase was recovered between processes from
+        <userdir>/config/lastworld.json, which the engine had already
+        written for the survivor this run continues -- so `_frame > 0`
+        was the whole release condition and the guard released itself on
+        the first captured frame, whatever that frame showed.  A QA pass
+        drove exactly this: `u` refused at frame 0, two sidebar-free menu
+        frames captured, then the same `u` ACCEPTED and delivered.
+
+        The release condition is, and is only, a captured frame carrying
+        a sidebar reading.  Here every capture is sidebar-free and
+        lastworld.json names the pinned survivor, which is the state the
+        defect passed and the fixed guard must refuse -- both inside the
+        session that took the frames and in the next process, which is
+        where a `step`-per-keystroke driver actually lives.
+        """
+        self.world()
+        self.lastworld()
+        os.environ["STUB_NO_SIDEBAR"] = "1"
+        opened = self.open_session()
+        self.stub_window(opened)
+        self.assertEqual(opened.pin.mode, session.SESSION_MODE_RESUME)
+        opened.step("1", commentary="English, like every form.")
+        opened.step("Escape", commentary="Back out of that.")
+        self.assertEqual(self.sent, ["1", "Escape"])
+        self.assertEqual(opened.ui_phase, session.UI_PHASE_MENU)
+        self.assertIsNone(opened.sidebar_frame)
+        for key in session.MENU_NEW_SURVIVOR_HOTKEYS:
+            with self.subTest(key=key, process="same"):
+                with self.assertRaises(session.CheatGuard):
+                    opened.step(key, commentary="No.")
+        opened.close()
+        again = self.open_session()
+        self.stub_window(again)
+        self.assertEqual(again.frame, 2)
+        self.assertEqual(again.ui_phase, session.UI_PHASE_MENU)
+        self.assertIsNone(again.sidebar_frame)
+        for key in session.MENU_NEW_SURVIVOR_HOTKEYS:
+            with self.subTest(key=key, process="next"):
+                with self.assertRaises(session.CheatGuard):
+                    again.step(key, commentary="Still no.")
+        self.assertEqual(self.sent, [])
+        self.assertEqual(len(self.rows()), 2)
+
+    def test_the_phase_is_recovered_from_the_photograph_not_the_file(
+            self):
+        """A sidebar-free record leaves the phase at the menu.
+
+        The two halves of the defect, asserted directly rather than
+        through the refusal: lastworld.json naming the pinned survivor
+        does not put a session in the world, and a captured frame whose
+        sidebar was photographed does -- across a process boundary, which
+        is the only place the recovery is used.
+        """
+        self.world()
+        self.lastworld()
+        os.environ["STUB_NO_SIDEBAR"] = "1"
+        first = self.open_session()
+        self.stub_window(first)
+        first.step("Return", commentary="Open the load list.")
+        first.close()
+        blind = self.open_session()
+        self.assertEqual(blind.ui_phase, session.UI_PHASE_MENU)
+        self.assertIsNone(blind.sidebar_frame)
+        blind.close()
+        # The load completes: this capture reads the sidebar the loaded
+        # character draws, and THAT is what releases the phase.
+        os.environ["STUB_NO_SIDEBAR"] = ""
+        loading = self.open_session()
+        self.stub_window(loading)
+        loading.step("Return", commentary="Load her.")
+        self.assertEqual(loading.ui_phase, session.UI_PHASE_IN_WORLD)
+        self.assertEqual(loading.sidebar_frame, 2)
+        loading.close()
+        resumed = self.open_session()
+        self.stub_window(resumed)
+        self.assertEqual(resumed.ui_phase, session.UI_PHASE_IN_WORLD)
+        self.assertEqual(resumed.sidebar_frame, 2)
+        # And the letters are ordinary in-world commands again.
+        resumed.step("r", commentary="Read the label on it.")
+        self.assertEqual(self.sent, ["r"])
+
+    def test_the_phase_release_survives_a_sidebar_free_frame_after_it(
+            self):
+        """Look mode and a mid-session relaunch do not re-lock the keys.
+
+        The examine panel replaces the whole sidebar column and the menus
+        a relaunch passes through have no sidebar at all, so the LAST
+        capture is regularly sidebar-free in an ordinary session.  The
+        transition is one-way: the earliest photographed sidebar is what
+        the phase rests on.
+        """
+        self.world()
+        self.lastworld()
+        opened = self.open_session()
+        self.stub_window(opened)
+        opened.step("Return", commentary="Load her.")
+        self.assertEqual(opened.ui_phase, session.UI_PHASE_IN_WORLD)
+        os.environ["STUB_NO_SIDEBAR"] = "1"
+        opened.step("x", commentary="Look at what is over there.")
+        opened.close()
+        later = self.open_session()
+        self.stub_window(later)
+        self.assertEqual(later.ui_phase, session.UI_PHASE_IN_WORLD)
+        self.assertEqual(later.sidebar_frame, 1)
+
+    def test_a_record_with_no_telemetry_leaves_the_phase_at_the_menu(
+            self):
+        """No attestation is no evidence, and refusing is the safe side.
+
+        A sidecar that is missing, torn or keyed to frames this record
+        does not hold cannot say what was photographed.  The phase stays
+        at the menu -- one refusal an operator can read, rather than a
+        keystroke that cannot be taken back -- and `status` reports the
+        shortfall rather than the phase hiding it.
+        """
+        self.world()
+        self.lastworld()
+        opened = self.open_session()
+        self.stub_window(opened)
+        opened.step("Return", commentary="Load her.")
+        self.assertEqual(opened.ui_phase, session.UI_PHASE_IN_WORLD)
+        opened.close()
+        os.remove(self.observations)
+        without = self.open_session()
+        self.stub_window(without)
+        self.assertEqual(without.ui_phase, session.UI_PHASE_MENU)
+        self.assertIsNone(without.sidebar_frame)
+        self.assertTrue(without.verify_record())
+        with self.assertRaises(session.CheatGuard):
+            without.step("u", commentary="No.")
+        without.close()
+        # A torn sidecar is the same answer, reached the same way.
+        with open(self.observations, "w", encoding="utf-8") as handle:
+            handle.write('{"frame": 1, "ingame_clock": "08:15:33"}\n')
+            handle.write('{"frame": 2, "ingame_cl\n')
+        torn = self.open_session()
+        self.stub_window(torn)
+        self.assertEqual(torn.ui_phase, session.UI_PHASE_MENU)
+        with self.assertRaises(session.CheatGuard):
+            torn.step("u", commentary="No.")
+
+    def test_a_telemetry_row_for_an_unrecorded_frame_is_not_evidence(
+            self):
+        """A reading about a frame the manifest does not hold proves
+        nothing about what this session photographed."""
+        self.world()
+        self.lastworld()
+        os.environ["STUB_NO_SIDEBAR"] = "1"
+        opened = self.open_session()
+        self.stub_window(opened)
+        opened.step("1", commentary="English.")
+        opened.close()
+        with open(self.observations, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps({
+                "frame": 99999,
+                "file": "playthrough/frames/frame_99999.png",
+                "ingame_clock": "08:15:33",
+                "time_phrase": "",
+                "date": "Spring, day 61"}) + "\n")
+        after = self.open_session()
+        self.stub_window(after)
+        self.assertEqual(after.frame, 1)
+        self.assertEqual(after.ui_phase, session.UI_PHASE_MENU)
+        self.assertIsNone(after.sidebar_frame)
+        with self.assertRaises(session.CheatGuard):
+            after.step("u", commentary="No.")
+
+    def test_a_coarse_time_phrase_alone_releases_the_phase(self):
+        """A survivor without a watch still draws a sidebar.
+
+        display::time_string() falls back to display::time_approx()'s
+        phrase without a timepiece, so a session that has not found one
+        photographs a sidebar carrying no clock at all.  Any one of the
+        three readings is the sidebar.
+        """
+        self.world()
+        self.lastworld()
+        opened = self.open_session()
+        self.stub_window(opened)
+        for name, payload in (
+            ("clock", {"CLOCK": "08:15:33", "TIME_PHRASE": "",
+                       "DATE": ""}),
+            ("phrase", {"CLOCK": "", "TIME_PHRASE": "Around dawn",
+                        "DATE": ""}),
+            ("date", {"CLOCK": "", "TIME_PHRASE": "",
+                      "DATE": "Spring, day 61"}),
+        ):
+            with self.subTest(reading=name):
+                opened._ui_phase = session.UI_PHASE_MENU
+                opened._sidebar_frame = None
+                opened._settle_ui_phase(7, payload)
+                self.assertEqual(opened.ui_phase,
+                                 session.UI_PHASE_IN_WORLD)
+                self.assertEqual(opened.sidebar_frame, 7)
+        opened._ui_phase = session.UI_PHASE_MENU
+        opened._sidebar_frame = None
+        opened._settle_ui_phase(
+            8, {"CLOCK": "", "TIME_PHRASE": "", "DATE": ""})
+        self.assertEqual(opened.ui_phase, session.UI_PHASE_MENU)
+        self.assertIsNone(opened.sidebar_frame)
+
     def test_a_resume_that_reaches_the_world_as_somebody_else_stops(
             self):
         """lastworld.json is the engine's own statement of WHO.
@@ -1782,6 +2009,42 @@ class ObservedEffectMeasurement(unittest.TestCase):
         self.assertEqual(pixels, 0)
         self.assertIsNone(box)
 
+    def test_a_million_changed_pixels_is_still_a_count(self):
+        """The scene-transition case, which used to be UNMEASURABLE.
+
+        An FX result is printed with six significant digits by default,
+        so a count of 1,027,832 came back as `1.02783e+06` -- not a
+        count -- and every pair differing by a million pixels or more was
+        reported as unmeasurable.  A whole-screen change is exactly what
+        a scene transition is, so the verdict was unavailable for the
+        most visually significant steps of a session.  Found while
+        running the retroactive pass over the committed record; the frame
+        here is deliberately larger than a megapixel for that reason.
+        """
+        def dark(x, y):
+            return (0, 0, 0)
+
+        def lit(x, y):
+            # Inset on every side, because -trim takes its border colour
+            # from the corner pixel: a difference reaching the corner has
+            # no border to remove and the box comes back degenerate.  The
+            # COUNT is what this test is about; the inset keeps the box
+            # meaningful alongside it.
+            inside = 50 <= x < 1150 and 10 <= y < 990
+            return (255, 255, 255) if inside else (0, 0, 0)
+
+        first = _png(os.path.join(self.directory, "wide-a.png"),
+                     1200, 1000, dark)
+        second = _png(os.path.join(self.directory, "wide-b.png"),
+                      1200, 1000, lit)
+        count, box = session.measure_difference(first, second)
+        self.assertEqual(count, 1100 * 980)
+        self.assertGreater(count, 1000000)
+        self.assertEqual(box, "1100x980+50+10")
+        effect = session.classify_effect(first, second)
+        self.assertEqual(effect.verdict, session.EFFECT_CHANGED)
+        self.assertEqual(effect.screen_pixels, 1100 * 980)
+
 
 class ObservedEffectInTheStep(SessionFixture):
     """A swallowed keystroke cannot be written up as though it landed."""
@@ -1907,6 +2170,245 @@ PAYLOAD
         self.assertEqual(second.action,
                          "press 'k' -- step north again")
         self.assertEqual(self.sidecar()[1]["map_diff_px"], 1)
+
+
+class TheRetroactiveEffectPass(SessionFixture):
+    """Runtime QA finding: rows written before the guard existed.
+
+    The observed-effect guard compares each capture with the one before
+    it and appends `; nothing on the screen changed` when they are
+    identical.  It was written AFTER a QA pass found rows narrating an
+    effect their own capture contradicts, so the frames taken before it
+    exists carry no marker even where the pixels call for one.  This is
+    the pass that closes that residue, with the same measurement on the
+    same evidence -- and these tests are what keep it from doing
+    anything else.
+    """
+
+    def setUp(self):
+        super(TheRetroactiveEffectPass, self).setUp()
+        try:
+            session._verified(session.CONVERT)
+        except session.ToolMissing as err:  # pragma: no cover
+            self.skipTest("convert is unavailable: %s" % err)
+
+    def paint(self, index, mark=None):
+        """Overwrite one recorded capture with a real 40x20 PNG."""
+        def pixels(x, y):
+            if mark is not None and (x, y) == mark:
+                return (255, 255, 255)
+            return (0, 0, 0)
+        return _png(
+            os.path.join(self.frames,
+                         manifest.FRAME_NAME_FORMAT % index),
+            40, 20, pixels)
+
+    def record(self, count):
+        """Record `count` steps, then give each one a real capture."""
+        opened = self.open_session()
+        self.stub_window(opened)
+        for index in range(1, count + 1):
+            opened.step("j", note="step south past the counter",
+                        commentary="South, along the aisle.")
+            self.assertEqual(len(self.rows()), index)
+        return opened
+
+    def test_a_swallowed_keystroke_is_marked_from_its_own_pixels(self):
+        opened = self.record(3)
+        self.paint(1)
+        self.paint(2, mark=(5, 5))
+        self.paint(3, mark=(5, 5))     # identical to frame 2
+        reported = opened.annotate_recorded_effects()
+        self.assertEqual([one.frame for one in reported], [1, 2, 3])
+        self.assertEqual(reported[0].verdict, session.EFFECT_FIRST)
+        self.assertEqual(reported[1].verdict, session.EFFECT_CHANGED)
+        self.assertEqual(reported[2].verdict, session.EFFECT_UNCHANGED)
+        self.assertEqual(reported[2].screen_pixels, 0)
+        self.assertTrue(reported[2].marked)
+        self.assertFalse(reported[2].applied)
+        # Reported only: the record is untouched until --apply.
+        self.assertNotIn(session.MARKER_UNCHANGED,
+                         self.rows()[2]["action"])
+
+    def test_applying_extends_the_row_and_its_attestation_together(self):
+        opened = self.record(2)
+        self.paint(1, mark=(5, 5))
+        self.paint(2, mark=(5, 5))
+        before = self.rows()[1]
+        applied = opened.annotate_recorded_effects(apply=True)
+        self.assertTrue(applied[1].applied)
+        row = self.rows()[1]
+        self.assertEqual(
+            row["action"],
+            before["action"] + session.MARKER_SEPARATOR +
+            session.MARKER_UNCHANGED)
+        self.assertEqual(self.sidecar()[1]["action"], row["action"])
+        for name in ("frame", "file", "real_ts", "ingame_clock",
+                     "commentary"):
+            with self.subTest(field=name):
+                self.assertEqual(row[name], before[name])
+        self.assertEqual(len(self.rows()), 2)
+        self.assertEqual(len(self.sidecar()), 2)
+        self.assertEqual(len(self.frame_names()), 2)
+
+    def test_the_marker_is_appended_once_however_often_it_runs(self):
+        opened = self.record(2)
+        self.paint(1, mark=(5, 5))
+        self.paint(2, mark=(5, 5))
+        opened.annotate_recorded_effects(apply=True)
+        once = self.rows()[1]["action"]
+        opened.annotate_recorded_effects(apply=True)
+        self.assertEqual(self.rows()[1]["action"], once)
+        self.assertEqual(once.count(session.MARKER_UNCHANGED), 1)
+
+    def test_a_changed_capture_is_never_marked(self):
+        opened = self.record(2)
+        self.paint(1)
+        self.paint(2, mark=(7, 7))
+        before = self.rows()[1]["action"]
+        reported = opened.annotate_recorded_effects(apply=True)
+        self.assertEqual(reported[1].verdict, session.EFFECT_CHANGED)
+        self.assertFalse(reported[1].marked)
+        self.assertEqual(self.rows()[1]["action"], before)
+
+    def test_the_map_column_verdict_is_out_of_reach_of_this_pass(self):
+        """A measurement the record never made cannot be applied now.
+
+        `outside-map` needs the sidebar crop of the session that took the
+        frame.  This pass measures the whole screen, so the only marker
+        it can produce is the one about the whole screen -- which is why
+        a row whose narration is accurate is never rewritten here on a
+        measurement taken long after the keystroke.
+        """
+        opened = self.record(2)
+        self.paint(1)
+        self.paint(2, mark=(35, 5))
+        reported = opened.annotate_recorded_effects(apply=True)
+        self.assertEqual(reported[1].verdict, session.EFFECT_CHANGED)
+        self.assertNotIn(session.MARKER_OUTSIDE_MAP,
+                         self.rows()[1]["action"])
+
+    def test_only_the_frames_asked_for_are_measured(self):
+        opened = self.record(3)
+        self.paint(1)
+        self.paint(2, mark=(5, 5))
+        self.paint(3, mark=(5, 5))
+        reported = opened.annotate_recorded_effects(frames=[3])
+        self.assertEqual([one.frame for one in reported], [3])
+        self.assertEqual(reported[0].verdict, session.EFFECT_UNCHANGED)
+
+    def test_a_frame_the_record_does_not_hold_is_refused(self):
+        opened = self.record(1)
+        self.paint(1)
+        with self.assertRaises(session.RecordError):
+            opened.annotate_recorded_effects(frames=[7])
+
+    def test_a_missing_capture_stops_the_pass_rather_than_guessing(self):
+        opened = self.record(2)
+        self.paint(1)
+        os.remove(os.path.join(self.frames,
+                               manifest.FRAME_NAME_FORMAT % 2))
+        with self.assertRaises(session.RecordError):
+            opened.annotate_recorded_effects(frames=[2])
+
+    def test_an_unmeasurable_pair_marks_nothing_and_says_so(self):
+        opened = self.record(2)
+        self.paint(1)
+        broken = os.path.join(
+            self.frames, manifest.FRAME_NAME_FORMAT % 2)
+        with open(broken, "w", encoding="utf-8") as handle:
+            handle.write("not a png")
+        before = self.rows()[1]["action"]
+        reported = opened.annotate_recorded_effects(apply=True)
+        self.assertEqual(reported[1].verdict, session.EFFECT_UNKNOWN)
+        self.assertFalse(reported[1].marked)
+        self.assertEqual(self.rows()[1]["action"], before)
+
+    def test_the_extension_refuses_to_substitute(self):
+        """The operator's own words are extended, never replaced."""
+        opened = self.record(1)
+        recorded = self.rows()[0]["action"]
+        with self.assertRaises(manifest.ManifestError):
+            manifest.extend_action(
+                self.manifest, 1, "press 'j' -- something else entirely",
+                root=self.root)
+        self.assertEqual(self.rows()[0]["action"], recorded)
+        with self.assertRaises(session.RecordError):
+            session.extend_observation_action(
+                self.observations, 1, "press 'j' -- something else",
+                self.root)
+        self.assertEqual(self.sidecar()[0]["action"], recorded)
+        opened.close()
+
+    def test_the_extension_refuses_a_frame_that_is_not_recorded(self):
+        self.record(1)
+        with self.assertRaises(manifest.ManifestError):
+            manifest.extend_action(
+                self.manifest, 2, "press 'j' -- x", root=self.root)
+        with self.assertRaises(session.RecordError):
+            session.extend_observation_action(
+                self.observations, 2, "press 'j' -- x", self.root)
+
+    def frame_names(self):
+        """Every capture on disk, sorted."""
+        return sorted(name for name in os.listdir(self.frames)
+                      if name.endswith(".png"))
+
+
+class TheStatusPayload(SessionFixture):
+    """`status` reports the guard's state and the evidence for it.
+
+    A refusal condition nobody can inspect is a refusal condition nobody
+    can check, and the runtime QA pass that found the resume guard
+    releasing early had to read the guard's own stderr to establish which
+    phase it believed it was in.  So the phase and the frame whose
+    photographed sidebar released it are part of the machine payload.
+    """
+
+    def _status(self):
+        """Run `status` against this fixture's tree, returning stdout."""
+        opened = self.open_session()
+        original = session._open_session
+        session._open_session = (
+            lambda args, *rest, **named: opened)
+        self.addCleanup(setattr, session, "_open_session", original)
+        arguments = argparse.Namespace(
+            manifest=self.manifest, frames_dir=self.frames,
+            observations=self.observations)
+        captured = io.StringIO()
+        stdout = sys.stdout
+        sys.stdout = captured
+        try:
+            status = session._command_status(arguments)
+        finally:
+            sys.stdout = stdout
+        payload = dict(
+            line.split("=", 1)
+            for line in captured.getvalue().splitlines() if "=" in line)
+        return status, payload
+
+    def test_a_record_with_no_photographed_sidebar_reports_the_menu(
+            self):
+        os.environ["STUB_NO_SIDEBAR"] = "1"
+        opened = self.open_session()
+        self.stub_window(opened)
+        opened.step("1", commentary="English.")
+        opened.close()
+        status, payload = self._status()
+        self.assertEqual(status, session.EXIT_OK)
+        self.assertEqual(payload["FRAME_LAST"], "1")
+        self.assertEqual(payload["UI_PHASE"], session.UI_PHASE_MENU)
+        self.assertEqual(payload["UI_PHASE_FRAME"], "")
+
+    def test_the_frame_that_released_the_phase_is_named(self):
+        opened = self.open_session()
+        self.stub_window(opened)
+        opened.step("Return", commentary="Load her.")
+        opened.close()
+        status, payload = self._status()
+        self.assertEqual(status, session.EXIT_OK)
+        self.assertEqual(payload["UI_PHASE"], session.UI_PHASE_IN_WORLD)
+        self.assertEqual(payload["UI_PHASE_FRAME"], "1")
 
 
 class CommittedArtifactsUntouched(unittest.TestCase):

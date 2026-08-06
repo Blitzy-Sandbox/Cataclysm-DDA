@@ -2,7 +2,7 @@
   "version": 1,
   "manifest": {
     "path": "playthrough/manifest.jsonl",
-    "sha256": "c50160309e8b91843fcb928a8a7ec079c7879ec669a6859dc763a493cf40ba3b",
+    "sha256": "87c4facdf54dec59deb8561a759d903c89d638617ef8868974117c38affecbf2",
     "rows": 419
   },
   "floor": 0.25,
@@ -197,7 +197,7 @@
       "transition_after": false,
       "cue_start": 2.0,
       "cue_end": 2.25,
-      "action": "press 'space' -- continue typing the name of the place",
+      "action": "press 'space' -- continue typing the name of the place; nothing on the screen changed",
       "commentary": "And then into the river a quarter mile below the mill."
     },
     {
@@ -837,7 +837,7 @@
       "transition_after": false,
       "cue_start": 10.0,
       "cue_end": 10.25,
-      "action": "press '@' -- correct the sex it assumed",
+      "action": "press '@' -- correct the sex it assumed; nothing on the screen changed",
       "commentary": "It has me down as a man. I am not, and the rest of this form is going to be accurate whether or not that matters to anybody but me."
     },
     {
@@ -2097,7 +2097,7 @@
       "transition_after": false,
       "cue_start": 25.75,
       "cue_end": 26.0,
-      "action": "press 'space' -- type the first liability",
+      "action": "press 'space' -- type the first liability; nothing on the screen changed",
       "commentary": "I felt it go and I finished the job anyway, which is the whole of my personality in one afternoon."
     },
     {
@@ -2437,7 +2437,7 @@
       "transition_after": false,
       "cue_start": 30.0,
       "cue_end": 30.25,
-      "action": "press 'space' -- type the third liability",
+      "action": "press 'space' -- type the third liability; nothing on the screen changed",
       "commentary": "That is not caution. That is arithmetic."
     },
     {
@@ -5857,7 +5857,7 @@
       "transition_after": false,
       "cue_start": 128.75,
       "cue_end": 129.0,
-      "action": "press 'period' -- interrupt the stalled thirty-minute wait because nearby moaning makes it unsafe",
+      "action": "press 'period' -- interrupt the stalled thirty-minute wait because nearby moaning makes it unsafe; nothing on the screen changed",
       "commentary": "The moaning is too close to sit still. Stop waiting."
     },
     {
@@ -5877,7 +5877,7 @@
       "transition_after": false,
       "cue_start": 129.0,
       "cue_end": 131.0,
-      "action": "press '5' -- interrupt the active wait with its alternate bound key",
+      "action": "press '5' -- interrupt the active wait with its alternate bound key; nothing on the screen changed",
       "commentary": "Stop waiting now. Move before that thing reaches me."
     },
     {
@@ -7297,7 +7297,7 @@
       "transition_after": false,
       "cue_start": 199.25,
       "cue_end": 200.25,
-      "action": "press 'x' -- enter look mode to identify what blocked the north move",
+      "action": "press 'x' -- enter look mode to identify what blocked the north move; nothing on the screen changed",
       "commentary": "North did not move me. Look at what blocks it."
     },
     {
@@ -8177,7 +8177,7 @@
       "transition_after": false,
       "cue_start": 230.0,
       "cue_end": 230.25,
-      "action": "press 'space' -- enter a space in Delphine's last words",
+      "action": "press 'space' -- enter a space in Delphine's last words; nothing on the screen changed",
       "commentary": "My last words should tell them they made me fight."
     },
     {

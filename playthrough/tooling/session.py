@@ -253,6 +253,7 @@ import re
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 
 from dataclasses import dataclass, field
@@ -572,8 +573,30 @@ MENU_NEW_SURVIVOR_HOTKEYS = (
 # the date line -- because the sidebar is drawn for a loaded character
 # and for nothing else.  The phase is therefore OBSERVED from the pixels
 # that were photographed, never asserted by the driver.
+#
+# AND IT IS RECOVERED FROM THE RECORD, not remembered.  `step` is one
+# process per keystroke, so the phase a later step is refused or
+# permitted by cannot live in memory: it is read back out of the
+# telemetry sidecar's own reading columns -- SIDEBAR_READING_FIELDS
+# below -- which is the stored form of exactly the payload
+# _settle_ui_phase() classifies live.  A QA pass found the earlier
+# recovery asking <userdir>/config/lastworld.json instead, which is the
+# engine's statement about the PREVIOUS session's survivor and therefore
+# already names the pinned character in any resumed session before this
+# one has photographed anything; the refusal that is supposed to make
+# "continue the existing save" impossible to violate consequently lapsed
+# from the second frame onward.  File state cannot testify to what was
+# photographed, and nothing but the photograph is accepted here.
 UI_PHASE_MENU = "menu"
 UI_PHASE_IN_WORLD = "in-world"
+
+# The three telemetry columns that ARE a sidebar reading, named once so
+# the live classification and the recovery ask the same question of the
+# same evidence.  append_observation() copies them off capture.sh's
+# payload (CLOCK, TIME_PHRASE, DATE -- see OBSERVATION_FIELDS), and
+# _settle_ui_phase() classifies that payload as it arrives, so a row
+# carrying any one of them is a photograph of a drawn sidebar.
+SIDEBAR_READING_FIELDS = ("ingame_clock", "time_phrase", "date")
 
 # <userdir>/config/lastworld.json, which main_menu::load_game() writes AT
 # THE MOMENT a character is loaded -- `world_name` and the decoded
@@ -3687,6 +3710,20 @@ CONVERT = "convert"
 # no image library beyond the tool capture.sh already requires.
 DIFFERENCE_COUNT_FORMAT = "%[fx:int(mean*w*h+0.5)]"
 DIFFERENCE_BOX_FORMAT = "%wx%h%O"
+
+# HOW MANY SIGNIFICANT DIGITS ImageMagick PRINTS AN FX RESULT WITH, and
+# why it has to be said.  The default is six, and an FX result is
+# formatted with %g -- so a count of 1,027,832 changed pixels came back
+# as `1.02783e+06`, which is not a count, and every pair differing by a
+# million pixels or more was therefore reported as UNMEASURABLE.  A
+# whole-screen change is exactly the case that happens at a scene
+# transition, so the verdict was silently unavailable for the most
+# visually significant steps in a session: found while running the
+# retroactive pass over the committed record, where ten of the 418 pairs
+# came back unknown for this reason and no other.  A 1920x1080 frame has
+# 2,073,600 pixels, seven digits; sixteen is comfortably inside a double
+# and leaves the integer exact.
+DIFFERENCE_PRECISION = "16"
 COUNT_RE = re.compile(r"\A\d+\Z")
 BOX_RE = re.compile(r"\A\d+x\d+[-+]\d+[-+]\d+\Z")
 
@@ -3782,6 +3819,11 @@ def measure_difference(previous: str, current: str,
         command += ["-crop", geometry, "+repage"]
     command += [
         "-compose", "difference", "-composite", "-threshold", "0",
+        # -precision BEFORE the format: the count is an integer of up to
+        # seven digits and the default six significant digits turn it
+        # into scientific notation, which is not a count.  See
+        # DIFFERENCE_PRECISION.
+        "-precision", DIFFERENCE_PRECISION,
         "-format", DIFFERENCE_COUNT_FORMAT + "\n", "-write", "info:-",
         "-trim", "-format", DIFFERENCE_BOX_FORMAT + "\n", "info:",
     ]
@@ -4130,6 +4172,120 @@ def _observation_recorded(path: str, frame: int) -> bool:
     return False
 
 
+def extend_observation_action(path: str, frame: int, action: str,
+                              root: Optional[str] = None,
+                              ) -> Dict[str, object]:
+    """Extend ONE recorded attestation's action.  Nothing else changes.
+
+    The counterpart of manifest.extend_action(), for the sidecar this
+    module owns, and it exists for the same one reason: a row whose note
+    claims an effect its own capture contradicts has to be able to
+    carry what was seen, and the guard that measures that was written
+    after those captures were taken.
+
+    THE TWO FILES MUST AGREE, which is why this is not optional.  Every
+    integrity check over this record compares the sidecar's `action`
+    with the manifest's for the same frame; correcting one and not the
+    other would trade a narration defect for a reconciliation defect.
+
+    The same three refusals as the manifest path apply: the new text
+    must START WITH the recorded one, so the operator's words are
+    extended and never replaced; every other column must come out
+    identical; and the rewrite is atomic, so a reader sees the whole old
+    file or the whole new one.  A single frame may carry more than one
+    attestation -- the sidecar is append-only and a re-captured frame
+    means what it obviously means -- so EVERY row for the index is
+    extended, and each is held to the same rules.
+
+    :raises RecordError: on any refusal, leaving the file untouched.
+    """
+    target = _confined(path, "the telemetry sidecar", root)
+    index = manifest._validated_frame(frame)
+    rows = list(read_observations(target, root))
+    matches = [number for number, row in enumerate(rows)
+               if row.get("frame") == index]
+    if not matches:
+        raise RecordError(
+            "%s holds no attestation for frame %d, so there is no "
+            "action to extend.  `session.py status` reports a recorded "
+            "frame whose telemetry row is missing; it is not "
+            "backfilled" % (target, index))
+    text = action.strip()
+    if not text:
+        raise RecordError("the extended action must not be empty")
+    changed = False
+    rewritten = [dict(row) for row in rows]
+    for number in matches:
+        previous = rewritten[number].get("action")
+        if not isinstance(previous, str):
+            raise RecordError(
+                "row %d of %s records action %r, which is not text"
+                % (number + 1, target, previous))
+        if not text.startswith(previous.strip()):
+            raise RecordError(
+                "the action for frame %d would become %r, which does "
+                "not begin with the attested %r.  This path only "
+                "EXTENDS what was written"
+                % (index, text, previous))
+        if previous.strip() != text:
+            rewritten[number]["action"] = text
+            changed = True
+    if not changed:
+        return dict(rewritten[matches[0]])
+    _rewrite_observations(target, rewritten)
+    return dict(rewritten[matches[0]])
+
+
+def _rewrite_observations(path: str,
+                          rows: Sequence[Mapping[str, object]]) -> None:
+    """Replace the sidecar with `rows`, atomically.  Internal.
+
+    A sibling temporary, because os.replace() is atomic only within one
+    filesystem, then the directory is fsynced so the new NAME survives a
+    power loss and not only the new bytes.  The mode is set explicitly:
+    mkstemp creates at 0600 and this file is committed evidence a reader
+    has to be able to open.
+    """
+    directory = os.path.dirname(path) or os.curdir
+    descriptor, temporary = tempfile.mkstemp(
+        dir=directory, prefix=".observations-", suffix=".jsonl")
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8",
+                       newline="\n") as handle:
+            for row in rows:
+                handle.write(
+                    json.dumps(dict(row), ensure_ascii=False) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, 0o644)
+        os.replace(temporary, path)
+    except OSError as err:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise RecordError(
+            "the telemetry sidecar %s could not be rewritten: %s.  The "
+            "file is unchanged" % (path, err)) from err
+    opened = None
+    try:
+        opened = os.open(directory, os.O_RDONLY)
+        os.fsync(opened)
+    except OSError as err:
+        _warn_once(
+            "sidecar-rewrite-dir-fsync",
+            "the directory %s could not be fsynced after rewriting the "
+            "telemetry sidecar (%s); the new content is on the device, "
+            "but the name change may not survive a power loss until the "
+            "filesystem flushes it" % (directory, err))
+    finally:
+        if opened is not None:
+            try:
+                os.close(opened)
+            except OSError:
+                pass
+
+
 def read_observations(path: Optional[str] = None,
                       root: Optional[str] = None,
                       ) -> Tuple[Dict[str, object], ...]:
@@ -4288,6 +4444,29 @@ def assert_payload_matches(frame: int, payload: Mapping[str, str],
 # loop is observe -> decide in character -> act -> capture -> log and
 # the caller cannot decide the next keystroke without them.
 # ---------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class EffectAnnotation:
+    """One frame's retroactive observed-effect measurement.
+
+    What the pixels said, what the row said, and what the row would say
+    (or now says) as a result -- reported per frame so the correction of
+    a captured record is a measurement an operator can read before it is
+    written, and an audit trail afterwards.
+    """
+
+    frame: int
+    verdict: str
+    screen_pixels: Optional[int]
+    action: str
+    extended: str
+    applied: bool
+
+    @property
+    def marked(self) -> bool:
+        """True when the measurement calls for a marker this row lacks."""
+        return self.extended != self.action
+
 
 @dataclass(frozen=True)
 class StepResult:
@@ -4528,7 +4707,11 @@ class Session:
             # is at the menu until its survivor exists too, but only a
             # RESUME run has anything refused while it is there -- see
             # MENU_NEW_SURVIVOR_HOTKEYS for why the refusal has to be
-            # scoped to the screen rather than to the letter.
+            # scoped to the screen rather than to the letter.  The phase
+            # is recovered from what this record PHOTOGRAPHED, because
+            # one process per keystroke means it cannot be remembered
+            # and no file the engine wrote can stand in for a capture.
+            self._sidebar_frame: Optional[int] = None
             self._ui_phase = self._observed_ui_phase()
         except BaseException:
             self._lock.release()
@@ -5200,6 +5383,95 @@ class Session:
         problems.extend(self._sidecar_problems(last))
         return tuple(problems)
 
+    # -- the retroactive observed-effect pass -----------------------
+
+    def annotate_recorded_effects(
+            self, frames: Optional[Sequence[int]] = None,
+            apply: bool = False) -> Tuple[EffectAnnotation, ...]:
+        """Measure recorded captures and report, or append, the marker.
+
+        WHY A RETROACTIVE PASS EXISTS AT ALL.  The observed-effect guard
+        compares each capture with the one before it and appends
+        `; nothing on the screen changed` to the row when they are
+        identical -- so that a row says what was intended AND what was
+        observed.  It was written after a QA pass found rows narrating an
+        effect their own capture contradicts, which means the frames
+        taken BEFORE it exist have no such marker even where the pixels
+        call for one.  This is how that residue is closed: with the same
+        measurement, on the same evidence, rather than by hand.
+
+        WHAT IT WILL AND WILL NOT DO.  The verdict comes from
+        :func:`classify_effect` with NO map geometry, so the only marker
+        it can ever produce is MARKER_UNCHANGED, for a capture that does
+        not differ from its predecessor by a single pixel.  The
+        map-column verdict is deliberately out of reach: that
+        measurement was never made for these frames, and a row whose
+        narration is accurate must not be rewritten on a measurement
+        taken years after the keystroke.  Nothing but the action text is
+        touched -- not the commentary, not the clock, not the frame --
+        and the marker is appended, never substituted, at most once.
+
+        Read-only unless `apply` is true, so the measurement can be
+        inspected before the record is corrected.
+
+        :param frames: the indices to measure; every recorded frame from
+            the second onward when None.  The first frame has no
+            predecessor and is therefore EFFECT_FIRST, which annotates
+            nothing.
+        :raises RecordError: for an index this record does not hold, or
+            when a correction cannot be written; the record is then left
+            exactly as it stands.
+        """
+        if self._frame < manifest.MIN_FRAME_INDEX:
+            return ()
+        rows = {row["frame"]: row for row in manifest.read_rows(
+            self._manifest, root=self._root)}
+        wanted = (list(_indices_through(self._frame)) if frames is None
+                  else [manifest._validated_frame(one) for one in frames])
+        results: List[EffectAnnotation] = []
+        for index in wanted:
+            if index not in rows:
+                raise RecordError(
+                    "%s records no frame %d, so there is nothing to "
+                    "measure for it"
+                    % (manifest.relative_to_repo(self._manifest), index))
+            current = os.path.join(
+                self._frames, manifest.FRAME_NAME_FORMAT % index)
+            previous = (
+                os.path.join(self._frames,
+                             manifest.FRAME_NAME_FORMAT % (index - 1))
+                if index - 1 >= manifest.MIN_FRAME_INDEX else None)
+            for path in (previous, current):
+                if path is not None and not os.path.isfile(path):
+                    raise RecordError(
+                        "%s is missing, so frame %d cannot be measured "
+                        "against the capture before it"
+                        % (manifest.relative_to_repo(path), index))
+            effect = classify_effect(previous, current)
+            recorded = rows[index]["action"]
+            extended = annotate_action(recorded, effect)
+            annotation = EffectAnnotation(
+                frame=index, verdict=effect.verdict,
+                screen_pixels=effect.screen_pixels,
+                action=recorded, extended=extended,
+                applied=False)
+            if apply and extended != recorded:
+                manifest.extend_action(
+                    self._manifest, index, extended, root=self._root)
+                extend_observation_action(
+                    self._observations, index, extended, self._root)
+                annotation = EffectAnnotation(
+                    frame=index, verdict=effect.verdict,
+                    screen_pixels=effect.screen_pixels,
+                    action=recorded, extended=extended,
+                    applied=True)
+                LOG.info(
+                    "frame %d: %s -- the record and its attestation now "
+                    "carry %r", index, effect.verdict,
+                    EFFECT_MARKERS.get(effect.verdict))
+            results.append(annotation)
+        return tuple(results)
+
     # -- the window -------------------------------------------------
 
     @property
@@ -5336,11 +5608,24 @@ class Session:
     def ui_phase(self) -> str:
         """Which screen the engine is believed to be on: menu|in-world.
 
-        OBSERVED, from the last captured frame's own sidebar reading and
-        from the engine's own lastworld.json -- never declared by the
-        driver.  See UI_PHASE_MENU for what counts as evidence.
+        OBSERVED, from the sidebar reading a captured frame of THIS
+        record carries -- never declared by the driver, and never
+        inferred from a file the engine wrote about an earlier session.
+        See UI_PHASE_MENU for what counts as evidence and
+        :meth:`_recorded_sidebar_frame` for where it is read back from.
         """
         return self._ui_phase
+
+    @property
+    def sidebar_frame(self) -> Optional[int]:
+        """The frame whose photographed sidebar put this session in the
+        world, or None while the record has not shown one.
+
+        Exposed so `status` can report the evidence the phase rests on
+        rather than only the conclusion: a guard whose release condition
+        cannot be inspected is a guard nobody can check.
+        """
+        return self._sidebar_frame
 
     def _loaded_survivor(self) -> Optional[Tuple[str, str]]:
         """Return the (world, character) the engine says it loaded."""
@@ -5366,11 +5651,85 @@ class Session:
         names.discard(None)
         return character in names
 
+    def _recorded_sidebar_frame(self) -> Optional[int]:
+        """Return the first recorded frame whose capture showed a sidebar.
+
+        THE PHASE HAS TO SURVIVE A PROCESS BOUNDARY, and this is the only
+        honest way it can.  `step` sends one keystroke per process, so
+        the phase that decides whether a new-survivor hotkey is refused
+        has to be recovered from the record between invocations -- and
+        the record's own statement about what was PHOTOGRAPHED is the
+        telemetry sidecar's reading columns (SIDEBAR_READING_FIELDS),
+        which append_observation() copies straight off the payload
+        _settle_ui_phase() classifies as each frame arrives.  So the
+        release condition read back here and the release condition
+        applied live are one condition, expressed once.
+
+        WHY lastworld.json IS NOT CONSULTED.  It is written by the engine
+        when a character is loaded or saved, which means a resumed
+        session finds it already naming the pinned world and character
+        before this session has taken a single frame.  Deriving the phase
+        from it released the refusal at frame 1 of every resumed session
+        -- exactly where the guard has to hold -- and no reading of that
+        file can say what any capture of this session showed.
+
+        The earliest such frame is returned rather than the latest,
+        because the transition is one-way: the sidebar is not drawn while
+        look mode's examine panel covers the column, nor on the menus a
+        relaunch mid-session passes through, and a survivor already in
+        the world does not leave it because a panel was opened.
+
+        TOLERANT IN ONE DIRECTION ONLY.  An absent sidecar, a torn or
+        unreadable one, a row keyed to a frame this record does not hold
+        and a row with no reading are each NO EVIDENCE, which leaves the
+        phase at the menu -- the refusing side, where a missing
+        photograph costs a refusal an operator can read rather than a
+        keystroke that cannot be taken back.  The shortfall itself is not
+        swallowed: :meth:`_sidecar_problems` reports a sidecar the record
+        needs and does not have, and `status` prints it.
+        """
+        try:
+            rows = read_observations(self._observations, self._root)
+        except RecordError as err:
+            _warn_once(
+                "phase-sidecar",
+                "the telemetry sidecar could not be read (%s), so no "
+                "captured frame can be shown to have carried a "
+                "sidebar; this session is treated as being on a menu, "
+                "where the new-survivor hotkeys of a resumed session "
+                "stay refused.  `session.py status` reports what is "
+                "wrong with the record" % err)
+            return None
+        showed: List[int] = []
+        for row in rows:
+            index = row.get("frame")
+            if isinstance(index, bool) or not isinstance(index, int):
+                continue
+            if index < manifest.MIN_FRAME_INDEX or index > self._frame:
+                continue
+            if any(_reading_or_none(row, name) is not None
+                   for name in SIDEBAR_READING_FIELDS):
+                showed.append(index)
+        return min(showed) if showed else None
+
     def _observed_ui_phase(self) -> str:
-        """Classify the current screen from committed evidence only."""
-        if self._pinned_character_is_loaded() and self._frame > 0:
-            return UI_PHASE_IN_WORLD
-        return UI_PHASE_MENU
+        """Classify the current screen from photographed evidence only.
+
+        Sets :attr:`_sidebar_frame` to the frame that carried the
+        evidence, so the conclusion and the evidence for it are reported
+        together.
+        """
+        self._sidebar_frame = None
+        if self._frame < manifest.MIN_FRAME_INDEX:
+            return UI_PHASE_MENU
+        frame = self._recorded_sidebar_frame()
+        if frame is None:
+            return UI_PHASE_MENU
+        self._sidebar_frame = frame
+        LOG.info(
+            "frame %d of this record carries a sidebar reading, so the "
+            "session is in the world from there", frame)
+        return UI_PHASE_IN_WORLD
 
     def _assert_key_allowed_in_phase(self, index: int,
                                      key: str) -> None:
@@ -5426,6 +5785,11 @@ class Session:
         has appeared and it does not, something other than the pinned
         character was loaded, and this session records exactly one
         survivor.
+
+        The row this frame's reading went into is what a LATER process
+        recovers the phase from (:meth:`_recorded_sidebar_frame`), so the
+        transition made here and the transition read back there rest on
+        the same capture rather than on two different sources.
         """
         if self._ui_phase == UI_PHASE_IN_WORLD:
             return
@@ -5448,6 +5812,7 @@ class Session:
                    else "'%s' in world '%s'" % (loaded[1], loaded[0]),
                    self._pin.world))
         self._ui_phase = UI_PHASE_IN_WORLD
+        self._sidebar_frame = index
         loaded = self._loaded_survivor()
         LOG.info(
             "frame %d shows the sidebar, so the session is in the world "
@@ -6518,6 +6883,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser(
         "status", help="report the counter and verify the record")
+    annotate = sub.add_parser(
+        "annotate",
+        help=("measure recorded captures and report -- or with "
+              "--apply append -- the observed-effect marker"))
+    annotate.add_argument(
+        "--frame", type=int, action="append", default=None,
+        metavar="N", dest="frames",
+        help=("the frame to measure against the capture before it; "
+              "repeatable, and every recorded frame when omitted"))
+    annotate.add_argument(
+        "--apply", action="store_true",
+        help=("append the marker the measurement calls for to the row "
+              "and to its telemetry attestation.  Without this the "
+              "measurement is only reported, which is how it is read "
+              "before a captured record is corrected"))
     return parser
 
 
@@ -6682,6 +7062,13 @@ def _command_status(args: argparse.Namespace) -> int:
         _emit("FRAME_LAST", session.frame)
         _emit("SESSION_MODE", session.pin.mode)
         _emit("SESSION_WORLD", session.pin.world)
+        # THE PHASE AND THE EVIDENCE FOR IT, together.  The phase decides
+        # whether a resumed session's new-survivor hotkeys are refused,
+        # so it is reported alongside the frame whose photographed
+        # sidebar released it -- empty while no captured frame has shown
+        # one, which is the state in which the refusal holds.
+        _emit("UI_PHASE", session.ui_phase)
+        _emit("UI_PHASE_FRAME", session.sidebar_frame)
         _emit("RECOVERED", len(session.recovered))
         _emit("MANIFEST",
               manifest.relative_to_repo(session.manifest_path))
@@ -6695,8 +7082,45 @@ def _command_status(args: argparse.Namespace) -> int:
     return EXIT_RECORD if problems else EXIT_OK
 
 
+def _command_annotate(args: argparse.Namespace) -> int:
+    """Measure recorded captures for the observed-effect marker.
+
+    The step lock is held for the whole pass, because the manifest and
+    its sidecar are rewritten in place and a concurrent `step` appending
+    to either of them would be racing the rewrite.
+    """
+    with _open_session(args) as session:
+        results = session.annotate_recorded_effects(
+            frames=args.frames, apply=args.apply)
+    marked = [one for one in results if one.marked]
+    for one in marked:
+        sys.stderr.write(
+            "playthrough: frame %d: %s (%s changed pixel(s)); the row "
+            "%s %r\n"
+            % (one.frame, one.verdict,
+               "unknown" if one.screen_pixels is None
+               else one.screen_pixels,
+               "now reads" if one.applied else "would read",
+               one.extended))
+    unknown = [one.frame for one in results
+               if one.verdict == EFFECT_UNKNOWN]
+    _emit("EXAMINED", len(results))
+    _emit("MARKED", len(marked))
+    _emit("FRAMES", ",".join(str(one.frame) for one in marked))
+    _emit("APPLIED", args.apply)
+    _emit("UNMEASURED", ",".join(str(index) for index in unknown))
+    if unknown:
+        sys.stderr.write(
+            "playthrough: %d capture(s) could not be compared (%s), so "
+            "no observation of what those keystrokes did was made; read "
+            "them yourself rather than treating silence as a verdict\n"
+            % (len(unknown), _summarised(unknown)))
+    return EXIT_OK
+
+
 _COMMANDS = {
     "step": _command_step,
+    "annotate": _command_annotate,
     "reconcile": _command_reconcile,
     "probe": _command_probe,
     "window": _command_window,

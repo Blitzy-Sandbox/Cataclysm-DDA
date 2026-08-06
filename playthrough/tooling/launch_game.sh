@@ -3214,8 +3214,15 @@ verify_resume_ui_state() {
     # The highest permitted index, deliberately: a diagnostic capture is
     # withdrawn out of the tree and owed no row, and no session will ever
     # reach 99999, so this probe cannot collide with a real frame.
+    # AND NO DATE-AUDIT ROW.  The reading this probe wants is in the
+    # payload below; the audit sidecar is the record timeline.py reads,
+    # and a row in it keyed to 99999 would name a frame that does not
+    # exist.  capture.sh defaults a diagnostic capture's audit off for
+    # exactly that reason -- it is stated here as well, at the call
+    # site, so the probe cannot acquire one by a change of default.
     payload="$(
         PLAYTHROUGH_CAPTURE_MODE=diagnostic \
+        PLAYTHROUGH_CAPTURE_AUDIT=off \
         FRAME_INDEX=99999 \
         "${PLAYTHROUGH_DIR}/tooling/capture.sh" 2>/dev/null
     )" && status=0 || status=$?

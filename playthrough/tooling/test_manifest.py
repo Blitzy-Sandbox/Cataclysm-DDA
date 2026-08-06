@@ -1111,6 +1111,113 @@ class TestSentinelsAreRefusedNotAdvised(ManifestFixture):
                  "pressed and why; these do not: %r" % offenders))
 
 
+class TestTheActionNamesAKeystroke(ManifestFixture):
+    """Runtime QA finding: the writer took any non-empty action text.
+
+    session.py derives the identity half of every action from the string
+    that reaches xdotool, so a row cannot name a key that was not sent --
+    but the guarantee lived entirely in that caller, and this writer
+    accepted `step`, `a` or any other prose.  A QA pass recorded it as a
+    defence-in-depth gap: unreachable through `session.py step`, open to
+    anything else importing this module.  The shape is now the writer's
+    rule too.
+    """
+
+    CONFORMING = (
+        "press '5'",
+        "press '5' -- wait thirty minutes in the wall-backed position",
+        "press 'period' -- interrupt; nothing on the screen changed",
+        "press 'shift+2' -- strike the at sign for the sex field",
+        "press 'Return'",
+    )
+
+    REFUSED = (
+        "step",
+        "a",
+        "pressed '5'",
+        "press 5",
+        "press '' -- the key that is not there",
+        "press '5' -- ",
+        "press '5' -- a -- b",
+    )
+
+    def test_the_shape_of_every_real_action_is_accepted(self):
+        for action in self.CONFORMING:
+            with self.subTest(action=action):
+                self.assertIsNone(
+                    manifest.action_shape_problem(action, "row 1"))
+                self.assertEqual(self.row(action=action)["action"],
+                                 action)
+
+    def test_prose_that_names_no_keystroke_is_refused(self):
+        for action in self.REFUSED:
+            with self.subTest(action=action):
+                self.assertIsNotNone(
+                    manifest.action_shape_problem(action, "row 1"))
+                with self.assertRaises(manifest.ManifestError) as caught:
+                    self.row(action=action)
+                self.assertIn("does not name a keystroke",
+                              str(caught.exception))
+
+    def test_a_refused_action_writes_nothing_at_all(self):
+        self.append(frame=1)
+        before = _read_bytes(self.manifest)
+        with self.assertRaises(manifest.ManifestError):
+            self.append(frame=2, action="step")
+        self.assertEqual(
+            _read_bytes(self.manifest), before,
+            msg="a refused row cannot disturb the rows already written")
+        self.assertEqual(len(self.lines()), 1)
+
+    def test_the_reader_still_reports_rather_than_refuses(self):
+        """A foreign row is a REPORTED problem, not an unreadable file.
+
+        The reader deliberately does not apply this rule: the committed
+        record is 419 rows of exactly this shape, and a reader that
+        refused anything else would turn one bad row into a manifest no
+        stage could count.
+        """
+        self.append(frame=1)
+        with open(self.manifest, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps({
+                "frame": 2, "file": manifest.frame_file(2),
+                "real_ts": FIXED_REAL_TS, "ingame_clock": "08:15:34",
+                "action": "step", "commentary": "I move."}) + "\n")
+        rows = manifest.read_rows(self.manifest, root=self.directory)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(
+            manifest.row_field_problems(rows[1], 2), [],
+            msg="the schema gate is unchanged; only the writer is new")
+
+    def test_the_shape_rule_names_no_keysym_vocabulary(self):
+        """Which keys may be SENT stays session.py's single answer.
+
+        Two tables would be two answers to one question, so this module
+        checks that a keystroke is named and not which one it is.
+        """
+        for key in ("q", "F12", "KP_7", "shift+plus", "semicolon"):
+            with self.subTest(key=key):
+                self.assertIsNone(manifest.action_shape_problem(
+                    "press '%s' -- reach for it" % key, "row 1"))
+
+    def test_the_real_record_names_a_keystroke_on_every_row(self):
+        real = os.path.join(
+            os.path.dirname(os.path.abspath(manifest.__file__)),
+            os.pardir, "manifest.jsonl")
+        if not os.path.exists(real):
+            self.skipTest("no captured record in this checkout")
+        offenders = []
+        with open(real, "r", encoding="utf-8") as handle:
+            for number, line in enumerate(handle, start=1):
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                if manifest.action_shape_problem(
+                        row.get("action"), "row %d" % number):
+                    offenders.append(number)
+        self.assertEqual(offenders, [], msg=repr(offenders))
+
+
 class TestReadingATimeOutOfProse(unittest.TestCase):
     """The parser under the clock-honesty gate.  Pure, read-only.
 
