@@ -116,3 +116,5 @@ Backtrace emission took 11 seconds.
 (continued from above) ERROR : src/do_turn.cpp:293: game:monmove: feral human can't move to its location!  (51:123:0), nannyberry tree
 02:44:04.594 ERROR GAME : src/do_turn.cpp:293: game:monmove: feral human can't move to its location!  (51:123:0), nannyberry tree
 02:44:13.042 ERROR : src/creature_tracker.cpp:124 [bool creature_tracker::update_pos(const monster&, const tripoint_abs_ms&, const tripoint_abs_ms&)] update_zombie_pos: wanted to move the zombie to (3684,2384,-1), but new location already has the swimmer zombie
+07:51:30.323 : Log shutdown.
+-----------------------------------------

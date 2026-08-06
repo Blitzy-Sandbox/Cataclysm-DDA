@@ -2893,7 +2893,7 @@ class TestALiveInstance(LaunchFixture):
             stderr=subprocess.DEVNULL,
             env={"FAKE_GAME_LIFETIME": "30", "PATH": self.bin,
                  "DISPLAY": DISPLAY})
-        self.addCleanup(second.kill)
+        self.addCleanup(self.reap, second)
         self.await_exec(second.pid)
         status, _, err = self.run_launch(
             "status",

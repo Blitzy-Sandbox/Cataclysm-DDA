@@ -1157,9 +1157,10 @@ class TestWritingBothArtifacts(unittest.TestCase):
             self.assertIsNone(timeline.read_generation_journal(
                 make_srt.LOCK_NAME, root))
             # And the manifest binds both digests to the timeline's.
-            record = json.loads(open(
-                make_srt.generation_manifest_path(root),
-                encoding="utf-8").read())
+            with open(
+                    make_srt.generation_manifest_path(root),
+                    encoding="utf-8") as handle:
+                record = json.load(handle)
             self.assertEqual(record["stage"], "transcripts")
             self.assertEqual(
                 record["timeline"]["sha256"],
@@ -1198,7 +1199,8 @@ class TestWritingBothArtifacts(unittest.TestCase):
             self.assertEqual(make_srt.main([], root=root), 0)
             self.assertIsNone(timeline.read_generation_journal(
                 make_srt.LOCK_NAME, root))
-            self.assertNotIn("stale", open(srt, encoding="utf-8").read())
+            with open(srt, encoding="utf-8") as handle:
+                self.assertNotIn("stale", handle.read())
 
     def test_a_refused_timeline_exits_non_zero_and_writes_nothing(self):
         with workspace() as root:

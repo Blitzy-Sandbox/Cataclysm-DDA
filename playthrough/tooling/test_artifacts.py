@@ -33,19 +33,21 @@ CROSS-ARTIFACT AGREEMENT and PROVENANCE:
   worth making: this file was computed from this manifest by this code.
   A mutation test proves that comparison is load-bearing rather than
   vacuous.
-* THE FRAMES.  A header-only scan of all 560 files: contiguous names,
-  nothing else in the directory, and 1920x1080 in every IHDR -- the
-  capture geometry read out of env.sh rather than written here as a
+* THE FRAMES.  A header-only scan of every captured file: contiguous
+  names, nothing else in the directory, and 1920x1080 in every IHDR --
+  the capture geometry read out of env.sh rather than written here as a
   literal.
 * THE TRANSCRIPTS.  Cue count equal to the frame count, cue windows
   equal to the timeline's windows, the final cue ending exactly at the
   declared total, and every cue carrying its commentary ENTIRE -- the
   property the caption producer was corrected to hold.
-* THE ENGINE-WRITTEN USERDIR.  One world, one character save, tracked
-  by git rather than swallowed by the `\\#*` ignore rule, the three
-  option values the pipeline depends on, and NO keybinding for any
-  debug action -- which is what turns "no cheating" from a claim into a
-  property a stranger can check.
+* THE ENGINE-WRITTEN USERDIR.  One world and one survivor persistence
+  generation -- either a resumable live save or the graveyard save,
+  log and matching memorial pair produced by an evidenced death --
+  tracked by git rather than swallowed by the `\\#*` ignore rule; the
+  option values the pipeline depends on; and NO keybinding for any
+  debug action.  That turns "no cheating" and the legitimate ending
+  from claims into properties a stranger can check.
 
 THIS SUITE MODIFIES NOTHING.  It opens no file for writing, invokes no
 producer that publishes, and takes a size-and-mtime fingerprint of every
@@ -149,8 +151,8 @@ def _fingerprint():
     """Size and mtime of every artifact this suite reads.
 
     The proof that a read-only suite stayed read-only.  Frames are
-    included individually: 560 stat calls cost under a millisecond, and
-    a suite that fingerprinted only the directory would miss a rewrite
+    included individually: one stat per captured frame is cheap, and a
+    suite that fingerprinted only the directory would miss a rewrite
     that kept the file count.
     """
     prints = {}
@@ -614,8 +616,8 @@ class TestTheFramesContract(ArtifactFixture):
                          list(range(1, len(self.frame_names) + 1)))
 
     def test_the_counts_agree_across_all_three_artifacts(self):
-        # 560 / 560 / 560: frames on disk, rows in the record, entries
-        # in the timeline.  One keystroke, one frame, one row.
+        # Frames on disk, rows in the record and timeline entries must
+        # agree exactly.  One keystroke, one frame, one row.
         self.assertEqual(len(self.frame_names), len(self.rows))
         self.assertEqual(len(self.frame_names), len(self.entries))
         self.assertEqual(len(self.frame_names),
@@ -929,8 +931,9 @@ class TestTheUserdirContract(ArtifactFixture):
     """The engine-written save, and the claims it makes checkable.
 
     This tree is not authored -- the game creates and owns it -- but it
-    is COMMITTED, which is what lets a stranger verify the save is real,
-    the character is one, and no debug action was ever bound.
+    is COMMITTED, which is what lets a stranger verify the persistence
+    is real, the survivor is one, the ending is legitimate, and no debug
+    action was ever bound.
     """
 
     @classmethod
@@ -940,6 +943,23 @@ class TestTheUserdirContract(ArtifactFixture):
             raise unittest.SkipTest(
                 "no engine-written userdir at %s yet" % USERDIR)
         cls.probe = session.probe_save_resume()
+        cls.death = None
+        loaded = session.read_lastworld(root=PLAYTHROUGH)
+        if not cls.probe.worlds and loaded is not None:
+            world, character = loaded
+            cls.death = session.assert_death_cleanup_evidence(
+                world,
+                character,
+                manifest_path=MANIFEST,
+                root=PLAYTHROUGH,
+            )
+        cls.world_paths = tuple(
+            os.path.join(cls.probe.save_dir, name)
+            for name in sorted(os.listdir(cls.probe.save_dir))
+            if os.path.isdir(os.path.join(cls.probe.save_dir, name)) and
+            not os.path.islink(
+                os.path.join(cls.probe.save_dir, name))
+        )
 
     def test_the_save_lives_inside_the_working_tree(self):
         # The whole point of --userdir ./playthrough/userdir/: the save
@@ -949,27 +969,50 @@ class TestTheUserdirContract(ArtifactFixture):
             os.path.realpath(PLAYTHROUGH) + os.sep))
 
     def test_there_is_exactly_one_world(self):
-        self.assertEqual(len(self.probe.worlds), 1)
+        self.assertEqual(len(self.world_paths), 1)
 
     def test_the_world_holds_exactly_one_character(self):
-        # One survivor, one continuous session: a second character save
-        # would mean the creator was run twice.
+        # One survivor, one continuous session.  A legitimate death
+        # moves that one save into the sole graveyard generation.
+        if self.death is not None:
+            self.assertEqual(
+                os.path.basename(self.death.grave_save),
+                self.death.save_stem + session.SAVE_EXTENSION)
+            return
+        self.assertEqual(len(self.probe.worlds), 1)
         self.assertEqual(len(self.probe.worlds[0].characters), 1)
 
     def test_the_world_carries_its_own_options(self):
-        self.assertTrue(self.probe.worlds[0].has_world_options)
+        self.assertEqual(len(self.world_paths), 1)
+        self.assertTrue(os.path.isfile(os.path.join(
+            self.world_paths[0], session.WORLD_OPTIONS_NAME)))
 
-    def test_the_save_is_resumable(self):
+    def test_the_persistence_matches_the_legitimate_ending(self):
         # The hard rule is that an existing save is CONTINUED rather
-        # than replaced, so the probe must report resume rather than
-        # offering a fresh character.
+        # than replaced.  The only valid non-resumable final shape is
+        # the engine-authored death generation proved against the
+        # append-only record and both memorials.
+        if self.death is not None:
+            self.assertGreater(self.death.death_frame, 0)
+            self.assertFalse(self.probe.resume)
+            return
+        self.assertEqual(len(self.probe.worlds), 1)
         self.assertTrue(self.probe.worlds[0].resumable)
         self.assertTrue(self.probe.resume)
 
-    def test_the_world_state_is_present(self):
-        world = self.probe.worlds[0].path
-        self.assertTrue(os.path.isfile(os.path.join(world,
-                                                    "master.gsav")))
+    def test_the_engine_state_for_the_ending_is_present(self):
+        if self.death is not None:
+            for path in (
+                    self.death.grave_save,
+                    self.death.grave_log,
+                    self.death.memorial_json,
+                    self.death.memorial_text):
+                with self.subTest(path=path):
+                    self.assertTrue(os.path.isfile(path))
+            return
+        self.assertEqual(len(self.probe.worlds), 1)
+        self.assertTrue(os.path.isfile(os.path.join(
+            self.probe.worlds[0].path, session.SAVE_MASTER_NAME)))
 
     def test_no_debug_action_is_bound(self):
         # The no-cheating guarantee, discharged against a committed
@@ -1047,6 +1090,17 @@ class TestTheArtifactsAreTracked(ArtifactFixture):
             raise unittest.SkipTest(
                 "not a readable git work tree, so tracking cannot be "
                 "checked here")
+        cls.probe = session.probe_save_resume()
+        cls.death = None
+        loaded = session.read_lastworld(root=PLAYTHROUGH)
+        if not cls.probe.worlds and loaded is not None:
+            world, character = loaded
+            cls.death = session.assert_death_cleanup_evidence(
+                world,
+                character,
+                manifest_path=MANIFEST,
+                root=PLAYTHROUGH,
+            )
 
     def assert_tracked(self, path):
         """Fail unless git has this exact path in the index."""
@@ -1078,8 +1132,16 @@ class TestTheArtifactsAreTracked(ArtifactFixture):
     def test_the_character_save_is_tracked(self):
         if not os.path.isdir(USERDIR):
             self.skipTest("no engine-written userdir yet")
-        probe = session.probe_save_resume()
-        for world in probe.worlds:
+        if self.death is not None:
+            for path in (
+                    self.death.grave_save,
+                    self.death.grave_log,
+                    self.death.memorial_json,
+                    self.death.memorial_text):
+                with self.subTest(path=path):
+                    self.assert_tracked(path)
+            return
+        for world in self.probe.worlds:
             for character in world.characters:
                 with self.subTest(character=character):
                     self.assert_tracked(
