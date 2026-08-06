@@ -1545,3 +1545,503 @@ whose action responds to the observed last-words screen, and the engine's
 graveyard and memorial artifacts establish that Delphine died at 08:30:48 on
 Thursday, May 20 in the game. No row was rewritten after the fact.
 
+---
+
+## Runtime QA remediation of the earlier 395-frame capture set
+
+**Which capture set this section is about.** Everything below was
+measured against the 395-frame capture set that was committed at the
+time of that QA pass. That set was later retired and the session was
+re-recorded; `playthrough/frames/` now holds the 419-frame record the
+sections above describe, so every frame number and every "out of 395"
+count here refers to the earlier set and not to the frames in the tree
+today. It is kept because the findings outlived the pixels they were
+taken from: the engine behaviours it pins down (the `Tutorial Game` /
+`Custom Character` hotkey collision at src/main_menu.cpp:466 against
+:476, the TERMX-centred inventory window at src/inventory_ui.cpp:3181,
+and the `debugmsg` at src/monmove.cpp:1779 against the logged error at
+src/do_turn.cpp:293) are properties of the engine rather than of one
+recording, and the tooling changes they produced -- the observed-effect
+guard and the menu-hotkey advisory in `session.py` -- are in force for
+every capture taken since.
+
+A QA pass drove the committed 395-frame set through a browser at 1920x1080
+and read every capture against the row that claims to describe it. The
+imagery came out of that pass intact — 395/395 at true resolution, none
+blank or uniform, the MSXotto+ tileset provably active, the sidebar clock
+fixed-width and correct on all 149 clocked frames — and the record did not:
+**29 rows narrated events their own capture contradicts**. Sweeping the same
+tests across the rest of the record from this side found **16 more** of
+exactly the same mistake, which is the honest total: 45 rows, plus 6 more
+touched for completeness, out of 395.
+
+The frames were **not** re-recorded. They are genuine, complete and correct,
+and re-recording would have thrown away a verified capture set while
+re-introducing every prompt that swallowed a keystroke the first time. What
+was wrong was the prose, and the prose is what was fixed — along with the
+part of the tooling that let it be written that way.
+
+### The defect had one cause, and it was structural
+
+Every one of the 45 rows was written from the keystroke that was
+**intended** rather than from what the capture afterwards **showed**. That
+is a distinction with no consequences at all until something eats the key,
+and three things in this game do:
+
+- a `(Case Sensitive)` distraction question standing in the middle of the
+  screen (frames 7–16, 296, 348, 349, 384–387),
+- a modal box already open and taking the keys for itself (frames 204–210
+  in the skills page, 254–258 in front of the mirror, 370 in the sewing
+  kit's own menu),
+- a movement the engine simply declines, which changes nothing but the move
+  counter (frames 248, 251, 263, 279, 280, 334, 337).
+
+The rows in each case read as though the letter had reached the field, the
+point had been bought or the survivor had stepped — and the pixels say
+otherwise. Nine of them narrate spelling `Fern Creek` into a Yes/No
+question while the world name on screen is still the engine's own
+`Independence`, which it remains until frame 32.
+
+### The measurement that makes it impossible to write that row again
+
+`session.py` now compares every capture with the one before it, **before**
+the row is appended, and writes the verdict into the row itself:
+
+| verdict | what was measured | what the row gains |
+| --- | --- | --- |
+| `unchanged` | not one pixel differs | `; nothing on the screen changed` |
+| `outside-map` | pixels differ, but none in the map column | `; nothing in the map column changed` |
+| `changed` | the map column itself differs | nothing; this is the ordinary case |
+| `first` | there is no earlier capture | nothing to observe |
+| `unknown` | the measurement itself failed | nothing, and it says so loudly |
+
+The measurement is one `convert` invocation — difference-compose, threshold
+every non-zero pixel, then take the count and the difference's own bounding
+box — so it answers a question about pixels rather than about PNG encoding,
+and it needs no library the capturer did not already require. Its numbers
+go into the telemetry sidecar as `screen_diff_px`, `map_diff_px` and
+`map_diff_box`, so a verdict can be re-checked later rather than taken on
+trust. Calibration from this record's own captures: a step that really
+moved the survivor changed 38,895, 49,590 and 55,801 px of the map column;
+a change confined to a panel drawn over the map changed 6,480, 14,709 and
+14,732; a swallowed key changed 0.
+
+Three properties of that design are deliberate.
+
+- **The marker is appended, never substituted.** The operator's own note
+  stays exactly as written, so a row says what was intended *and* what was
+  observed, and a reader can see where the two part company.
+- **Nothing is refused.** By the time a capture exists the keystroke has
+  been delivered and cannot be taken back; refusing the row would leave a
+  key with no frame and break the one-frame-per-keystroke identity the
+  whole record rests on. So the row is written, annotated, and warned
+  about.
+- **The verdict states what was seen, not what it means.** A trailing
+  `space` in a field with no cursor block changes nothing on screen and
+  still registers — frames 26 and 226, whose keystrokes are proven by the
+  names `Fern Creek` and `Delphine Ouellette` that came out of those
+  fields. "Nothing on the screen changed" is true of those captures; "the
+  key was ignored" would not be, and the guard does not say it.
+
+`test_session.py` holds the guard to all of that, including against real
+image files rather than only in the abstract.
+
+### The hotkey that takes the wrong door
+
+Two captures show a **forbidden** new-game entry carrying the selection
+bar. Frame 1 has it on `Preset Character` and frame 2 has it on the top
+row's `[Tutorial Game]`. Both were read directly off the pixels: the bar is
+`#3333FF`, and inverting the band under it and reading it back gives
+`» Preset Character` on frame 1, `Tutorial Game]` on frame 2 and
+`» Custom Character` on frame 5. Read again through a browser at 1920x1080,
+glyph by glyph over the blue fill, the same three readings came back, with
+the `»` chevron corroborating each: the bar is one 16-px row at y 736–751
+on frame 1 (list line **2**) and at y 720–735 on frame 5 (list line **1**),
+where line 1 is fixed by the box's own top-border scanline at y=711 with no
+ink above it. The two lists' text cells are pixel-identical between the two
+frames, so the bar's position is the only difference.
+
+That `Preset Character` is the AAP's "character-template picker" is not an
+assumption: its hint string in the engine is *"Select from one of
+previously created character templates."* (src/main_menu.cpp:487), and that
+sentence is what the hint area of frame 1 reads back.
+
+Neither was ever confirmed. Frame 5 has the bar back on `Custom Character`,
+frame 6 is the `Return` that takes it, and what frame 6 shows is the Create
+World screen — the custom path's own next step. Across all 395 captures no
+forbidden entry is activated, and the committed save independently proves
+the custom multi-pool creator was used (`Last Character.template` carries
+`limit: 2`, i.e. `MULTI_POOL`).
+
+The cause is in the engine's own menu declarations, and it is worth stating
+plainly because it will catch anybody who reads only the submenu:
+
+```
+src/main_menu.cpp:466   "T<u|U>torial Game"      <- top row
+src/main_menu.cpp:476   "C<u|U>stom Character"   <- new-game submenu
+```
+
+**The same two letters, and the top row wins.** A `u` sent to open the
+custom sheet folds the submenu away and lands the highlight on the
+tutorial, which is exactly what frame 2 is a picture of; three `Left`
+presses (rows 3–5) walk it back. The collision is visible in the captures
+themselves and not only in the source: the engine paints an entry's hotkey
+letter in yellow, and the yellow glyph of the top row's `[Tutorial Game]`
+is its **`u`** — the same letter that is yellow in the submenu's
+`Custom Character`. The tooling had documented `u`/`U` as the
+way to take that entry, in four places, and that guidance was the defect.
+It now says the opposite, names the collision with both source lines, and
+carries the route that was actually verified against the captures:
+
+1. walk the top row with `Left`/`Right` to `[New Game]`,
+2. **read the capture** — which submenu row carries the selection bar?
+3. move with `Up`/`Down` until it is on `Custom Character`,
+4. read the capture again, then press `Return`.
+
+Step 2 is the load-bearing one. The bar's opening position is not
+guaranteed: on the very first capture of this record it sat on `Preset
+Character`, not on `Custom Character`. A `Return` pressed on trust there
+would have opened the template picker.
+
+`session.py` also warns, before the key is sent, when one of those letters
+is being sent for a row that says it is meant for the custom sheet. It is
+an advisory and not a refusal on purpose — `u` is also the game's own
+north-east step, and refusing it would break ordinary play; frame 274 is a
+`u` that legitimately moved the survivor.
+
+**Accepted, with the reason stated.** The two captures stand as they are.
+The requirement is that character creation goes through the custom
+point-buy creator and that the forbidden entries are not taken, and the
+record satisfies it: the route taken was `Custom Character`, no forbidden
+entry was ever confirmed, and the save proves the multi-pool sheet. What
+the two frames show is a highlight passing over a shut door on the way to
+the open one, recorded rather than tidied away — and the tooling that
+caused the detour has been corrected so a later session does not repeat it.
+
+### The panel that does not know the sidebar is there
+
+Three captures show a gameplay pop-up reaching past the map and into the
+status column beside it: frames 272 and 286 (picking things up off the
+floor) and frame 341 (asking what there is to drink). The status column
+loses the left-hand part of several of its lines for as long as the
+pop-up is open.
+
+The cause is arithmetic, and it can be stated exactly rather than
+described. The pop-up is an `inventory_selector`, and the engine both
+sizes and places it against the **whole** character grid, with no
+knowledge that part of that grid belongs to the sidebar:
+
+```
+src/inventory_ui.cpp:2558   prepare_layout( TERMX - nc_width, TERMY - nc_height );
+src/inventory_ui.cpp:2561   snap( get_layout_width() + nc_width, TERMX )
+src/inventory_ui.cpp:3181   origin = { ( TERMX - width ) / 2, ( TERMY - height ) / 2 };
+```
+
+That last line is the whole finding. The window is centred on all 240
+columns, so where it lands is fixed by its width alone. Measuring the
+pop-up's own light-grey border columns in the captures and then asking
+the engine's formula where they *should* be gives the same answer to the
+cell, three times out of three:
+
+| capture | border columns | width | `(240-width)/2` | left border measured |
+| --- | --- | --- | --- | --- |
+| 272 | x147–148 and x1763–1764 | 203 cells | 18 | cell **18** |
+| 286 | x147–148 and x1763–1764 | 203 cells | 18 | cell **18** |
+| 341 | x243–244 and x1667–1668 | 179 cells | 30 | cell **30** |
+
+The boundary the pop-up crosses was measured independently of any
+configuration file, from the map's own background colour: `(17,9,21)`
+fills x0–1567 exactly and stops, so the map is columns 0–195 and the
+sidebar is columns 196–239 — 44 columns, 352 px, left edge x=1568,
+which is what `sidebar_geometry.py` computes at run time. The pop-up
+therefore covers 25 sidebar columns (200 px) on frames 272 and 286 and
+13 (104 px) on frame 341, in text rows 21–44 in every case.
+
+**Why there is no configuration that avoids this.** A window of `W`
+columns centred on 240 has its right edge at column `(240+W)/2 - 1`,
+which passes the map's last column, 195, as soon as `W > 152`. Both
+pop-ups are wider than that: 203 and 179. Choosing the narrower
+36-column sidebar would move the map's last column to 203 and lift the
+threshold only to `W > 168` — still exceeded by both. Putting the
+sidebar on the left does not help either, because the window is centred
+rather than right-aligned, so it would reach into a left-hand column by
+exactly the same amount. Every remaining lever is in the engine's own
+source, and this work does not modify the engine.
+
+**Accepted, because nothing the record depends on is lost.** The one
+thing in that column the timing model reads is the clock, and the clock
+is three text rows above the pop-up's top border: it sits in row 18 at
+y288, and the pop-up starts at row 21, y336. That is not an estimate —
+the 352x16 band at `+1568+288` is **byte-identical** to the capture
+taken immediately before the pop-up opened, on all three frames
+(272 against 271, 286 against 285, 341 against 340). Read back
+magnified in a browser at 1920x1080 the three rows give
+`Time:      08:00:09`, `Time:      08:00:20` and `Time:      17:05:57`,
+which is what the record claims for those frames.
+
+What is covered is worth listing, so that nobody later mistakes the
+gaps for capture damage. One capture earlier, frame 271 shows those rows
+complete:
+
+```
+row 21  Wield: fists
+row 22  Style: No style
+row 23  NW:            N:             NE:
+row 24  W:                            E:
+row 25  SW:            S:             SE:
+row 29  Weight :  5.9/75.9 lbs
+row 30  You see here 1 ++ ankle socks (pair) (poor
+row 31  fit).
+```
+
+On frame 272 rows 21, 22, 29 and 31 are hidden outright; rows 23–25 keep
+only `NE:`, `E:` and `SE:`; row 30 keeps only the tail
+`socks (pair) (poor`. The pop-up is not padded — its own content runs
+right up to its border, `Bulk Volume: 0.32/5.01 L Total Weight:
+6.0/76.0 lbs` on one line and `Largest Space Free: 1.25 L 7 in.` on the
+next — so the width it took is width it was using.
+
+### Every clock reading in the record, proven from the pixels
+
+The clock rows above raise a fair question: how is a reading known to be
+right, when OCR at this glyph size is unreliable? It is unreliable here,
+demonstrably — asked for frame 272's clock row, tesseract returns
+`Time: 48:68:89` where the row plainly reads `08:00:09`, because an 8x16
+bitmap `0` gives it very little to work with. It confuses `0` with `4`,
+`6` and `8` throughout.
+
+Which is why the pipeline does not ask it first. `ocr_clock.py` runs a
+glyph-grid pass ahead of any OCR: it slices the column on the measured
+cell grid and compares each cell against the game's own `Terminus.ttf`
+rendered at size 16, bit for bit, with the tesseract passes kept behind
+it for anything that pass cannot decode. Re-run now against the three
+overlay captures it reads `08:00:09`, `08:00:20` and `17:05:57`, each
+with `pass: glyph-grid` and `ocr_calls: 0` — no OCR was consulted at
+all — from the crop it computes for itself, `352x1072+1568+4`. Asked for
+frame 390 it returns nothing, which is the correct answer there.
+
+There is a way to settle the whole set at once without trusting the
+reader, and it costs nothing. Each clock character is one 8x16 cell.
+Hash every clock cell in the record and map each hash to the character
+the record claims for that position; if the record is truthful the
+result must be a **bijection** — one bitmap per character and one
+character per bitmap — because the game draws each glyph from one font.
+A single invented or misread digit anywhere breaks it, in both
+directions.
+
+Over all 149 clocked captures the result is 11 distinct bitmaps against
+11 distinct characters — `0`–`9` and `:` — with **zero** conflicts and
+no character drawn by two bitmaps. So every reading in the record is
+confirmed against the pixels simultaneously, including the three above,
+and the `1` / `7` / `0` distinctions that tesseract loses are settled by
+the glyphs themselves: Terminus draws `1` with an angled top flag and a
+base serif, `7` with a top bar and no serif, and `0` with a marked
+interior.
+
+Note what this test does *not* borrow from. It never asks what any
+character is; it only asks whether the record's own claims can all be
+true at once, and the answer is a property of 1,192 bitmaps rather than
+of anybody's reading of them. That is the strongest form the honesty
+rule can take here: the frame remains the authority, and the record is
+checked against it rather than against the tool that first transcribed
+it.
+
+### Where the grid really sits, and which sidebar it really is
+
+Two pieces of geometry described in the plan do not match what the
+captures show. Neither costs anything, and both are recorded here rather
+than silently corrected, because the arithmetic that produced them is
+right and it is the observation that had never been taken.
+
+**The letterbox is at the bottom, not split.** The crop's `y` is
+computed as `(1080 - 1072) // 2 = 4`, i.e. the grid centred in the root
+with a four-pixel band above and below. Measured across all 395
+captures: **387** carry ink in y0–3, **356** carry ink in y1068–1071,
+and **none at all** carry ink in y1072–1079. The grid therefore sits at
+`+0+0` and all eight leftover pixels are at the bottom — which is what
+`env.sh` itself says the engine does two sentences earlier, blitting the
+grid at the window's top-left
+(src/sdltiles.cpp:311-320, :1046-1050), before attributing the `+4` to
+centring. The captures settle the disagreement in favour of the first
+half of that sentence.
+
+The arithmetic is deliberately left alone, and that decision was tested
+rather than argued: run against the captures now, the pipeline reads
+`08:00:09`, `08:00:20` and `17:05:57` off frames 272, 286 and 341 using
+that very crop, `352x1072+1568+4`, four-pixel offset included. The crop
+still contains the clock row — y288 is well inside a band starting at
+y4 — and `ocr_clock.py` does not trust the offset in any case: it
+*measures*
+which vertical phase the engine's cell grid is really drawn on, by
+scoring every candidate phase against the game's own font and taking the
+winner (`ocr_clock.py`, `_measure_phase`; on one host the computed and
+the drawn phase differed by 14 pixels). A measured phase is immune to
+this class of drift, which is why it exists.
+
+**The sidebar is the 44-column one.** The plan derives the crop from
+`custom_sidebar`'s 36 columns, giving `288x1072+1632+4`. The engine's
+constructor default on a fresh userdir is `legacy_labels_sidebar`
+(src/panels.cpp:412-418), which is 44 columns, and `sidebar_geometry.py`
+resolves that at run time and prints `352x1072+1568+4`. The captures
+agree with the module and not with the prose: the map background stops
+dead at x1567. Nothing needs changing here — the module already
+documents the distinction and names its source — but the numbers quoted
+in the plan should be read as the `custom_sidebar` case, not as this
+record's.
+
+### The engine's own error report, captured
+
+The record contains one capture of Cataclysm-DDA's own crash reporter,
+frame 390, and it is the reason that frame has no clock reading. The
+committed `playthrough/userdir/config/debug.log` names two distinct
+engine faults, both in monster pathing:
+
+```
+10:23:57.410  src/do_turn.cpp:293   zombie can't move to its location!  (101:81:0), pavement
+11:24:56.378  src/monmove.cpp:1779  tough zombie cannot climb over dumpster.
+11:26:23.185  src/monmove.cpp:1779  (the same)
+11:26:35.290  src/monmove.cpp:1779  (the same)
+11:29:03.012  src/monmove.cpp:1779  (the same, then "[ Previous repeated 6 times ]")
+11:29:14.420  src/monmove.cpp:1779  (the same)
+```
+
+The two behave very differently, and the difference is the whole reason
+only one of them appears in the record. The `do_turn` one is
+`dbg( D_ERROR ) << …` (src/do_turn.cpp:293): it writes a line to the log
+and the turn carries on, so nothing interrupts and nothing is captured.
+The `monmove` one is a `debugmsg` (src/monmove.cpp:1779) — the branch a
+monster takes when it is asked to cost a move onto climbable furniture
+it cannot climb — and a `debugmsg` puts a full-screen report on the
+screen and waits for a key. Frame 390 is that report, and it is the only
+capture in the record that shows one:
+
+```
+An error has occurred!  Written below is the error report:
+DEBUG : tough zombie cannot climb over dumpster. monster::calc_movecost
+        expects to be called with valid destination.
+REPORTING FUNCTION : int monster::calc_movecost(const map&, ...) const
+C++ SOURCE FILE    : src/monmove.cpp
+LINE               : 1779
+```
+
+The report blanks everything else. Frame 390 holds exactly two colours,
+`(0,0,0)` and the report's pale red `(255,150,150)`, its ink confined to
+x9–958 y34–190, and the whole sidebar column is 380,160 pixels of pure
+black — so the clock is not merely hard to read there, it is not drawn.
+This is the one case where the layering behaviour of the previous
+section really does cost a reading, and it is worth the contrast: the
+pickup pop-up covers part of a column, the crash reporter covers the
+screen.
+
+The timing model absorbed it exactly as intended rather than inventing
+anything. Frame 390's entry carries `clock_kind: null`,
+`reconciled: true`, `reconciled_reason: clock-missing`, and its interval
+is bridged across the gap — 1,182 s from frame 389's `20:10:18` to
+frame 391's `20:30:00` — then clamped to the ten-second ceiling with a
+transition after it. An unreadable clock is reported as unreadable and
+reconciled against its neighbours; it is never guessed.
+
+**A risk this leaves for any future session, which is why it is written
+down.** A report that appears between a keystroke and its capture eats
+the *next* keystroke, since that key goes to dismissing the report
+instead. That is precisely the failure mode the observed-effect
+measurement now catches: the key that dismisses a report produces a
+capture that differs everywhere, and the key after it produces one that
+differs nowhere. Nothing in the pipeline can prevent an upstream engine
+fault; what it can do is refuse to let the record describe the swallowed
+key as though it had worked.
+
+**One row was re-examined here and deliberately left as written, which
+is worth recording because the reasoning is not obvious.** Row 391 says
+the key dismissed the same engine report a second time — and frame 391
+does not show a report; it shows the sleep question. Under the ordering
+every row in this record obeys, that is consistent rather than
+contradictory: row 391's key was pressed while **frame 390** was on the
+screen, and frame 390 is the report. Two `monmove` faults had already
+been logged before that key went out (11:24:56.378 and 11:26:23.185,
+against frame 390's own capture time of 11:26:24.430Z), and a third
+landed at 11:26:35.290 before frame 391 was taken at 11:27:01.376Z. So
+"the same report again" describes what the operator was looking at, and
+frame 391 is the aftermath of dismissing it. The row asserts nothing its
+own capture denies, so it stands. Recorded rather than quietly kept,
+because a reader checking frame 391 against row 391 would otherwise
+reach the opposite conclusion.
+
+### Small things seen and left alone
+
+Everything below was observed, measured and deliberately not changed.
+None of it touches the record's honesty, its timing or its resolution;
+all of it is the game drawing itself the way this build draws itself at
+240x67.
+
+- **One partial redraw, and it lasts thirty-one captures.** Taking
+  `Custom Character` opens the `< Create World >` dialog, which occupies
+  x484–1435 and repaints only itself. Everything the main menu had drawn
+  outside that span survives untouched, and it survives for the whole
+  world-configuration sequence — **frames 6 through 36**, every one of
+  them, at identical coordinates. Established rather than eyeballed: the
+  `[MOTD]` label's cells at x400–448, y832–848 are byte-identical to the
+  main menu's own on exactly frames 1–36 and 395, and frames 1–5 and 395
+  *are* the main menu, so 6–36 are the leftovers. What survives, read
+  magnified: the menu box's left portion with its white border intact
+  and each entry cut to three characters — `» Cus` (still sitting on its
+  solid blue highlight bar, `u` still yellow), then `Pre`, `Ran`, `Pla`,
+  `Pla`; both stubs of the white rule at y827 (x329–480 and x1440–1584);
+  the complete tab labels `[MOTD]` at x400–448 and `[Quit]` at
+  x1465–1510; and the yellow `All`, the first three letters of the help
+  line, at x456–479. The engine repaints by damage rather than
+  wholesale, which is ordinary; and re-capturing to tidy it would mean
+  discarding thirty-one genuine captures to improve their looks. There
+  is a small dividend in leaving it: that frozen blue bar on
+  `Custom Character` is an independent picture, held for thirty-one
+  frames, of which entry was actually taken.
+- **Everything else repaints cleanly, which was worth checking rather
+  than assuming.** Six further transitions were compared magnified, and
+  each is clean: modals appear and vanish leaving pure black (16→17,
+  20→21, 35→36); an over-long description line was cleared *including
+  its tail*, so `experience.` did not outlive the shorter line that
+  replaced it (19→20); and the world-name highlight block was correctly
+  shortened from twelve cells to ten when `Independence` became
+  `Fern Creek`, with the two vacated cells cleared to black (31→32).
+- **Frame 102 does not strand a highlight, contrary to first
+  impression.** Changing creator tabs was checked cell by cell: the
+  bright-blue block behind `PROFESSION` and the dark-navy bar behind
+  `Combat Mechanic` are both fully cleared on frame 102, and every
+  coloured background that remains is either chrome present in both
+  captures — the `General Info` header bar, the navy button blocks, the
+  right panel's grey header — or frame 102's own new bar on
+  `Mundane Survival`, drawn where frame 101 had black. The green cost
+  line's salmon `(-3)` is gone too. Recorded because the suspicion was
+  reasonable and the pixels dismissed it.
+- **Frame 95's green is text, not a marker.** The pure-green `(0,255,0)`
+  pixels at x305–430, y92–124 resolve at magnification into two ordinary
+  words: `strong`, the value in `Knowledge: strong`, and the `?` in
+  `Press ? to view and alter keybindings.` — six Terminus letterforms
+  with a proper `g` descender, and a question mark with bowl, stem and
+  dot. The ratings row colour-codes its values by quality, salmon for
+  `underpowered`, yellow for `average`, green for `strong`, with every
+  label in white; and pure green appears on 387 of the 395 captures, so
+  it is the commonest colour in the record rather than an anomaly in it.
+- **Frames 237–239, the age dialog clips its own title.** The dialog is
+  a 34-column ImGui window at x824–1094, y506–564, and its prompt is
+  longer than that. It renders `Enter age in years.  Minimum 1` and then
+  a single one-pixel column at x1070 before the close button takes over.
+  That sliver's inked rows are unique to Terminus's `6` among the whole
+  glyph set, so the sentence was almost certainly `Minimum 16` — but one
+  pixel column is not a character, so it is recorded as clipped and
+  illegible rather than read. The value below it reads `25`. Frames 238
+  and 239 clip identically. Nothing outside the dialog is affected: the
+  creation header on frame 237 reads in full, `Name: Delphine Ouellette
+  Scenario: Missed  Profession: Mechanical Engineer`.
+- **`Unbound locally!` in the pop-up's hint bar.** Frames 105, 272, 276,
+  286, 290, 344–346, 352, 353 and 366 carry the phrase where a hotkey
+  hint would normally print, the engine's way of saying that action has
+  no local binding — `Unbound keys are colored like this` is the legend
+  the keybinding screen on frame 105 gives for it. One detail worth
+  fixing in the record: it is drawn in **pure yellow** `#FFFF00`, the
+  same colour as the `w`, `W`, `>` and `e` hints beside it, and a scan
+  of that whole text row for reddish pixels returns none. The red text
+  on frame 286 is elsewhere and is the pop-up's own warnings — `Does not
+  fit in any pocket!` on row 27 and `There are no available choices` on
+  row 44. The phrase also sits at columns 47–62, inside the map's half
+  of the grid, so it is unrelated to the layering above.

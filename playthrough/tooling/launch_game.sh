@@ -2913,6 +2913,18 @@ stop_instance() {
 # the cursor is drawn highlighted and reads back empty, and that label's
 # two spaces collapse to one.
 #
+# AND THE PERMITTED ENTRY'S OWN HOTKEY TAKES THE WRONG DOOR.  The top row
+# declares "T<u|U>torial Game" (src/main_menu.cpp:466) with the same "u"
+# and "U" the submenu declares for "C<u|U>stom Character" (:476), and the
+# top row wins: the submenu folds away and the highlight lands on the
+# tutorial.  Runtime testing of the first recorded session caught exactly
+# that.  Take the entry by walking the top row with Left/Right to
+# [New Game], READING the capture to see which submenu row carries the
+# selection bar -- its opening position is not guaranteed -- moving with
+# Up/Down onto "Custom Character", and only then pressing Return.
+# session.py's MENU_CUSTOM_CHARACTER_ROUTE is that sequence, and it warns
+# when either letter is sent for that entry.
+#
 # FIRST LAUNCH MAY ALSO NOT BE FULL SIZE.
 # The requested window size derives from TERMINAL_WIDTH * fontwidth by
 # TERMINAL_HEIGHT * fontheight (src/sdltiles.cpp:595-596), and the

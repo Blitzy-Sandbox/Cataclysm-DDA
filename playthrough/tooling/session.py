@@ -48,6 +48,20 @@ what makes the two unable to differ.  The validated key itself is stored
 in the telemetry sidecar, because the manifest's schema is exactly six
 fields; see OBSERVATION_FIELDS and ATTESTED_FIELDS.
 
+THE ROW ALSO CARRIES AN OBSERVATION, not only an intent.  Every capture
+is compared with the one before it and the verdict is written into the
+row: `nothing on the screen changed` when the two are identical pixel
+for pixel, `nothing in the map column changed` when only a panel, a
+counter or the message log moved.  This exists because the first
+recorded session was found to contain 45 rows narrating events their own
+capture contradicts -- nine letters of a world name "typed" into a
+Yes/No question that had the screen, steps that never happened because
+the map never moved, a phone chosen that was a sewing kit.  A keystroke
+cannot be un-pressed, so the row is never REFUSED at that point; the
+marker is appended to the note the operator wrote, both are kept, and a
+warning goes to stderr so the NEXT row is written from the pixels.  See
+THE OBSERVED-EFFECT GUARD, classify_effect() and annotate_action().
+
 SHIFT IS THE ONLY MODIFIER THAT CAN BE SENT.  ctrl reaches the five
 DEBUG_DIALOGUE_* toggles the game ships already bound; alt, super and
 meta reach the window manager, alt+F4 included.  See MODIFIER_KEYS for
@@ -88,6 +102,24 @@ somebody who has looked at the game says which it was.  The earlier
 design wrote one phase before the send and treated it on recovery as
 delivered, which auto-committed a frame, a row and a first-person
 sentence for a key that had not been pressed.
+
+WHAT IS DECIDABLE BEFORE THE KEYSTROKE IS DECIDED BEFORE THE KEYSTROKE.
+Opening a session proves the manifest is the ONE record this pipeline
+writes -- the writer's own rule, applied at open through
+manifest.assert_appendable() instead of when a row is written -- and
+proves that both append targets, the manifest and the telemetry
+sidecar, will take an append.  Neither condition depends on anything
+the game does, so discovering either afterwards would spend the one
+irreversible act for nothing: a key delivered, a frame captured, and no
+row or no attestation to be written for it.
+
+THE ATTESTATION IS PART OF THE IDENTITY, AND IT IS CHECKED.  One
+keystroke is one frame, one manifest row AND one telemetry row, so
+:meth:`Session.verify_record` compares all three: a recorded frame
+whose sidecar row is missing is reported, because the sidecar is the
+only place the immutable key and the sidebar date line were ever
+written down, and a shortfall there cannot be repaired honestly
+afterwards -- the key is not recoverable from the pixels.
 
 THE COUNTER IS RECOVERED FROM THE MANIFEST, NEVER FROM A DIRECTORY.
 manifest.last_recorded_frame() is the append-only record of what was
@@ -147,12 +179,24 @@ captured post-death record all agree on the pinned survivor.  A bare
 deletion, or any incomplete imitation of that evidence, still stops the
 session.
 
-CHARACTER CREATION HAS EXACTLY ONE PERMITTED DOOR.  The new-game
-submenu strings are quoted verbatim from src/main_menu.cpp:475-483:
-"C<u|U>stom Character" is the only permitted entry, and "<P|p>reset
-Character", "<R|r>andom Character", "Play Now!  (<D|d>efault
-Scenario)" (two spaces after the "!") and "Play N<o|O>w!" are all
-forbidden.  The scenario is "missed" / "Missed"
+CHARACTER CREATION HAS EXACTLY ONE PERMITTED DOOR, AND ITS HOTKEY IS A
+TRAP.  The new-game submenu strings are quoted verbatim from
+src/main_menu.cpp:475-483: "C<u|U>stom Character" is the only permitted
+entry, and "<P|p>reset Character", "<R|r>andom Character", "Play Now!
+(<D|d>efault Scenario)" (two spaces after the "!") and "Play N<o|O>w!"
+are all forbidden.  BUT the top row of the same menu carries
+"T<u|U>torial Game" (src/main_menu.cpp:466), whose hotkeys are the SAME
+"u" and "U" -- and the top row wins.  Runtime testing caught this: the
+second capture of the first recorded session shows the submenu folded
+away and the top-row highlight sitting on [Tutorial Game] after a "u"
+was sent for Custom Character, which took three Left presses to walk
+back.  So the letter is never used for that entry.  The verified route
+is MENU_CUSTOM_CHARACTER_ROUTE: reach [New Game] along the top row with
+Left/Right, READ the capture to see which submenu row carries the
+selection bar, move with Up/Down until it is on "Custom Character",
+read again, and only then press Return.  The bar's opening position is
+not assumed: on the first capture of this record it was on "Preset
+Character", the template picker.  The scenario is "missed" / "Missed"
 (data/json/scenarios.json), which starts the survivor in a house
 inside a city.  Point-buy is a world option: CHARACTER_POINT_POOLS
 defaults to "story_teller", at which the pool tab is read-only
@@ -464,7 +508,33 @@ ENV_SESSION_MODE = seed_options.ENV_SESSION_MODE
 # ---------------------------------------------------------------------
 
 MENU_CUSTOM_CHARACTER = "C<u|U>stom Character"
+
+# The entry's OWN declared hotkeys (src/main_menu.cpp:476).  Kept
+# because the declaration is a fact -- and marked here as unusable,
+# because the top row of the same menu declares the same two letters for
+# the tutorial (src/main_menu.cpp:466) and the top row wins.  See
+# MENU_HOTKEY_COLLISION.
 MENU_CUSTOM_CHARACTER_HOTKEYS = ("u", "U")
+
+MENU_TUTORIAL_ENTRY = "T<u|U>torial Game"
+
+# THE COLLISION, and why no letter may be used to open the custom sheet.
+# "u"/"U" belong to the top row's tutorial entry as well as to the
+# submenu's Custom Character, and the observed winner is the top row:
+# the submenu folds away and the highlight lands on [Tutorial Game].
+MENU_HOTKEY_COLLISION = ("u", "U")
+
+# The route that was actually verified, key by key, against the
+# captures: Left/Right along the top row to [New Game], then Up/Down
+# inside the submenu with the capture READ between presses, then Return.
+# No letter, and no Return until the bar has been seen on the right row.
+MENU_CUSTOM_CHARACTER_ROUTE = (
+    "walk the top row with Left/Right to [New Game]",
+    "read the capture: which submenu row carries the selection bar?",
+    "move with Up/Down until the bar is on Custom Character",
+    "read the capture again, then press Return",
+)
+
 MENU_FORBIDDEN_ENTRIES = (
     "<P|p>reset Character",
     "<R|r>andom Character",
@@ -512,6 +582,13 @@ UI_PHASE_IN_WORLD = "in-world"
 # which survivor is being played, which is what makes "the pinned
 # character was loaded" checkable rather than assumed.
 LASTWORLD_NAME = "lastworld.json"
+
+# Wording that says a caller believes this keystroke opens the custom
+# sheet.  Used only to raise the collision advisory; it never refuses a
+# key, because "u" is also the game's own north-east step and refusing
+# it would break ordinary play.
+CUSTOM_CHARACTER_MENTION_RE = re.compile(
+    r"custom\s+(?:character|sheet|creator)", re.IGNORECASE)
 
 # data/json/scenarios.json: "id": "missed", "name": "Missed",
 # "points": 0, allowed_locs beginning sloc_house / sloc_house_boarded,
@@ -906,6 +983,129 @@ def default_observations_path(root: Optional[str] = None) -> str:
         ENV_OBSERVATIONS, fallback, "the telemetry sidecar", root)
 
 
+def manifest_target(candidate: Optional[str] = None,
+                    root: Optional[str] = None) -> str:
+    """Return the manifest to append to, held to the WRITER's own rule.
+
+    THE ORDERING MATTERS MORE THAN THE RULE.  _confined() proves a path
+    lies inside playthrough/ -- which EVERY artifact of this pipeline
+    does, so containment alone accepts build/observations.jsonl, a
+    frame, timeline.json or the movie as a "manifest".  The rule that
+    the record lives at exactly <approved root>/manifest.jsonl belongs
+    to manifest.py, and it used to be reached only when a row was
+    written: by then a keystroke had been delivered and a frame
+    captured for it, and a misconfiguration that is decidable from the
+    path ALONE had already cost the one act this pipeline cannot take
+    back.  So the writer's rule is applied HERE, at open, through
+    manifest.assert_appendable() -- one implementation of it, applied
+    earlier -- and $PLAYTHROUGH_MANIFEST goes through it too, because
+    the environment is exactly where such a value comes from.
+
+    :raises RecordError: naming what append_row() would have refused.
+        RecordError rather than ManifestError so the exit status stays
+        the one that already means "the record cannot be believed"; the
+        cause is chained, so the writer's own diagnostic is preserved.
+    """
+    resolved = (default_manifest_path(root) if candidate is None
+                else _confined(candidate, "the manifest", root))
+    try:
+        return manifest.assert_appendable(resolved, root)
+    except manifest.ManifestError as err:
+        raise RecordError(
+            "this session cannot append to that manifest: %s.  NOTHING "
+            "HAS BEEN SENT to the game: the name is decidable from the "
+            "path alone, so it is refused while the record is still "
+            "untouched rather than after a keystroke has bought a "
+            "frame no row can be written for" % err) from err
+
+
+def assert_append_target(target: str, label: str,
+                         create_parent: bool = False) -> str:
+    """Prove an append target will take an append.  Writes NOTHING.
+
+    A step appends to two files -- the manifest, which is the record,
+    and the telemetry sidecar, which carries the immutable key and the
+    sidebar DATE line -- and both appends happen AFTER the keystroke.
+    An unappendable target therefore used to be discovered at the worst
+    possible moment: the key delivered, the frame captured, and for the
+    sidecar the manifest row already stored, leaving the attestation
+    permanently missing for that frame.  This is the pre-flight that
+    moves that discovery to before the transaction, the same way the
+    capturer and the external tools are pre-flighted.
+
+    WHAT IS PROVED, exactly:
+
+    * an EXISTING target is opened for appending with O_NOFOLLOW and
+      closed again without a byte being written, which is the same
+      descriptor discipline the writers use -- so a permission, an
+      immutable flag (chattr +i), a read-only filesystem, a directory
+      in the file's place and a planted symlink are all reported here
+      rather than mid-step;
+    * an ABSENT target's directory exists, is a directory, and admits
+      creation as far as the kernel will say without writing to it
+      (os.access, which reports a read-only filesystem even for uid 0).
+
+    WHAT IS NOT PROVED, stated rather than implied: this is a check at
+    a moment, not a reservation.  A target that becomes unappendable
+    between this call and the append still fails at the append -- which
+    is why the writers keep every one of their own guards, and why the
+    step journal exists.  It removes the whole class of failures that
+    was already true at open, which is the class an operator can fix.
+
+    `create_parent` mirrors append_observation(), which creates the
+    sidecar's directory itself; the manifest's directory is never
+    created here, because manifest.py deliberately refuses to create it
+    (a mistyped path would grow a second record elsewhere in the tree).
+
+    :returns: `target`, so a caller can chain the call.
+    :raises RecordError: naming the target, the label and the cause.
+    """
+    directory = os.path.dirname(target)
+    if create_parent:
+        try:
+            os.makedirs(directory, exist_ok=True)
+        except OSError as err:
+            raise RecordError(
+                "cannot create %s for %s: %s" % (directory, label, err)
+            ) from err
+    # islink() as well as exists(), so a DANGLING symlink planted at the
+    # name is opened (and refused by O_NOFOLLOW) rather than treated as
+    # an absent file whose directory looks fine.
+    if os.path.exists(target) or os.path.islink(target):
+        try:
+            descriptor = os.open(
+                target, os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW)
+        except OSError as err:
+            raise RecordError(
+                "%s at %s exists but cannot be appended to: %s.  A "
+                "step appends to it after the keystroke, so this is "
+                "refused now, while nothing has been sent and the "
+                "record is exactly as it stands"
+                % (label, target, err)) from err
+        try:
+            os.close(descriptor)
+        except OSError as err:
+            _warn_once(
+                "append-preflight-close",
+                "could not close %s after checking that %s is "
+                "appendable (%s); nothing was written to it"
+                % (target, label, err))
+        return target
+    if not os.path.isdir(directory):
+        raise RecordError(
+            "%s at %s does not exist and its directory %s is not "
+            "there, so the first append of the session would fail "
+            "after a keystroke had already been delivered"
+            % (label, target, directory))
+    if not os.access(directory, os.W_OK | os.X_OK):
+        raise RecordError(
+            "%s at %s does not exist yet and %s does not admit "
+            "creating it, so the first append of the session would "
+            "fail after a keystroke had already been delivered"
+            % (label, target, directory))
+    return target
+
+
 def _executable(path: object) -> str:
     """Return `path` as a runnable absolute command, or raise.
 
@@ -1190,6 +1390,16 @@ def _secure_dir(path: str, label: str) -> str:
     because this module is documented as runnable with nothing sourced.
     A directory another account can write to is a directory another
     account can plant a lock or a journal in.
+
+    "MODE 0700" MEANS THE PERMISSION BITS, in both halves of that
+    contract.  A directory created inside a set-group-ID parent inherits
+    setgid -- /tmp is 2777 on some hosts -- and GNU chmod preserves that
+    bit on a directory, so `stat` reads 2700 for a directory that is
+    exactly as private as 0700.  The test below is therefore against the
+    group and other bits alone, and env.sh compares only the permission
+    digits for the same reason.  Neither side should be "tightened" to
+    the whole mode string: that made a host with a setgid temporary
+    directory able to run this module and not the shell contract.
     """
     try:
         os.makedirs(path, mode=0o700, exist_ok=True)
@@ -1514,6 +1724,21 @@ def _indices_through(last: int) -> Tuple[int, ...]:
         return ()
     counter = itertools.count(manifest.MIN_FRAME_INDEX)
     return tuple(itertools.islice(counter, last))
+
+
+def _summarised(indices: Sequence[int], limit: int = 10) -> str:
+    """Render indices for a diagnostic, bounded but never rounded.
+
+    A shortfall of three frames should name all three; a shortfall of
+    three hundred should not print three hundred numbers into a
+    terminal.  So the first `limit` are named and the remainder is
+    COUNTED rather than dropped, because "and 290 more" still tells the
+    reader the true size of what is missing.
+    """
+    shown = ", ".join(str(index) for index in indices[:limit])
+    if len(indices) > limit:
+        return "%s and %d more" % (shown, len(indices) - limit)
+    return shown
 
 
 def validated_frame(frame: object) -> int:
@@ -3403,12 +3628,319 @@ def clock_from_payload(payload: Mapping[str, str]) -> Optional[str]:
     return None
 
 
+# ---------------------------------------------------------------------
+# THE OBSERVED-EFFECT GUARD.
+#
+# A row used to be written entirely from the keystroke that was
+# INTENDED, and an intent is not an observation.  A "(Case Sensitive)"
+# question or an open modal box eats the key, the picture does not move,
+# and a row written from the intent still says the world name was typed
+# or that the survivor stepped north.  Runtime testing of the first
+# recorded session found 29 such rows, and the sweep that followed found
+# 16 more -- every one of them the same mistake, and every one of them a
+# fabrication inside an artifact whose whole purpose is to be truthful.
+# playthrough/TECHNICAL_NOTES.md carries the register.
+#
+# So the row now carries an OBSERVATION beside the intent.  After the
+# capture, and before the row is appended, the new frame is compared
+# with the one before it and the verdict is written into the row's own
+# action text:
+#
+#   changed      the map column itself changed
+#   outside-map  something changed, but nothing in the map column did:
+#                only a panel, a counter or the message log moved, so
+#                the survivor did not walk and the world did not turn.
+#                The "map column" is a REGION -- everything beside the
+#                sidebar -- and is named for what it holds in play; on a
+#                menu screen it is simply the rest of the window
+#   unchanged    the two captures are identical pixel for pixel, so
+#                whatever the key was for, the screen did not move
+#   first        there is no earlier capture to compare against
+#   unknown      the comparison could not be made, which is REPORTED
+#                rather than quietly recorded as "changed"
+#
+# The marker is APPENDED, never substituted: the note stays exactly as
+# written, so the row says what was intended AND what was observed and a
+# reader can see where the two part company.  Nothing is refused -- by
+# the time a frame exists the keystroke has already been delivered, and
+# refusing the row would break the one-frame-per-keystroke identity the
+# whole record rests on.  A warning goes to stderr as well, because an
+# operator who reads it writes the NEXT row from the pixels.
+#
+# The comparison is ImageMagick's own pixel signature rather than a
+# digest of the file, so it answers a question about pixels and not
+# about PNG encoding, and it needs no image library beyond the tool
+# capture.sh already requires.
+# ---------------------------------------------------------------------
+
+# ImageMagick's legacy entry point, resolved the same way as every other
+# tool: env.sh's $PLAYTHROUGH_BIN_CONVERT first.  capture.sh measures
+# luminance through the same binary, so requiring it here adds no
+# dependency the capture did not already have.
+CONVERT = "convert"
+
+# The measurement, in one invocation and in ImageMagick's own terms:
+# difference-compose the two captures, threshold every non-zero pixel to
+# white, and print how many there are and the box they fall in.  It
+# counts PIXELS rather than comparing files, so it answers a question
+# about what is on the screen and not about PNG encoding, and it needs
+# no image library beyond the tool capture.sh already requires.
+DIFFERENCE_COUNT_FORMAT = "%[fx:int(mean*w*h+0.5)]"
+DIFFERENCE_BOX_FORMAT = "%wx%h%O"
+COUNT_RE = re.compile(r"\A\d+\Z")
+BOX_RE = re.compile(r"\A\d+x\d+[-+]\d+[-+]\d+\Z")
+
+# An advisory floor, used ONLY to decide whether to warn a second time
+# and never to write anything into a row.  Measured from this session's
+# own captures: a step that actually moved the survivor changed 38,895,
+# 49,590 and 55,801 px of the map column, while a change confined to a
+# panel drawn over the map changed 6,480, 14,709 and 14,732 px.  A claim
+# of movement under this floor is worth a second look, and the number is
+# deliberately between the two populations rather than tight to either.
+MOVEMENT_ADVISORY_PIXELS = 20000
+
+EFFECT_FIRST = "first"
+EFFECT_UNCHANGED = "unchanged"
+EFFECT_OUTSIDE_MAP = "outside-map"
+EFFECT_CHANGED = "changed"
+EFFECT_UNKNOWN = "unknown"
+
+EFFECTS = (EFFECT_FIRST, EFFECT_UNCHANGED, EFFECT_OUTSIDE_MAP,
+           EFFECT_CHANGED, EFFECT_UNKNOWN)
+
+# The two sentences the guard is allowed to add to a row, and the only
+# two.  They state what was SEEN, never what it means: a trailing
+# `space` in a field with no cursor block changes nothing on screen and
+# still registers, so "nothing on the screen changed" is the honest
+# reading of that capture and "the key was ignored" would not be.
+MARKER_UNCHANGED = "nothing on the screen changed"
+MARKER_OUTSIDE_MAP = "nothing in the map column changed"
+
+EFFECT_MARKERS = {
+    EFFECT_UNCHANGED: MARKER_UNCHANGED,
+    EFFECT_OUTSIDE_MAP: MARKER_OUTSIDE_MAP,
+}
+
+# The marker joins the note with a semicolon, because ACTION_SEPARATOR
+# may appear exactly once in an action and it separates the derived
+# keystroke from the note.
+MARKER_SEPARATOR = "; "
+
+# Wording that asserts the survivor's own body went somewhere.  Used
+# only to decide whether a warning is worth raising a second time, more
+# loudly: a claim of movement over a map that did not change is the
+# defect class this guard exists for.
+MOVEMENT_CLAIM_RE = re.compile(
+    r"\b(step|steps|stepped|stepping|walk|walks|walked|walking|"
+    r"move|moves|moved|moving|go|goes|went|going|onto|"
+    r"north|south|east|west)\b",
+    re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class ObservedEffect:
+    """What comparing two captures actually measured.
+
+    `verdict` is one of :data:`EFFECTS` and is the only part that
+    reaches the row's prose.  The counts and the box are measurements,
+    recorded in the telemetry sidecar so that the verdict can be
+    audited per frame afterwards without re-measuring, and they are
+    None whenever the measurement was not made.
+    """
+
+    verdict: str
+    screen_pixels: Optional[int] = None
+    map_pixels: Optional[int] = None
+    map_box: Optional[str] = None
+
+
+def measure_difference(previous: str, current: str,
+                       geometry: Optional[str] = None,
+                       timeout: Optional[int] = None,
+                       ) -> Tuple[int, Optional[str]]:
+    """Return how many pixels differ between two captures, and where.
+
+    `geometry` is an ImageMagick crop -- "1568x1080+0+0" -- and when it
+    is given only that region is compared, which is how the map column
+    is measured independently of the sidebar beside it.  `+repage`
+    follows the crop so the measurement describes the cropped pixels
+    rather than a canvas carrying an offset.
+
+    The box is the difference's own bounding box in the compared
+    region's coordinates, or None when nothing differs (ImageMagick has
+    no box for an empty image and says so on stderr, which is expected
+    here rather than a fault).
+
+    :raises CaptureError: when the tool fails or prints something that
+        is not a count.  The measurement is evidence, so a value that
+        cannot be trusted is refused rather than returned.
+    """
+    if timeout is None:
+        timeout = _timeout(ENV_TOOL_TIMEOUT, DEFAULT_TOOL_TIMEOUT)
+    command = [_verified(CONVERT), previous, current]
+    if geometry is not None:
+        command += ["-crop", geometry, "+repage"]
+    command += [
+        "-compose", "difference", "-composite", "-threshold", "0",
+        "-format", DIFFERENCE_COUNT_FORMAT + "\n", "-write", "info:-",
+        "-trim", "-format", DIFFERENCE_BOX_FORMAT + "\n", "info:",
+    ]
+    completed = _run(
+        command, timeout,
+        "measuring %s against %s" % (os.path.basename(previous),
+                                     os.path.basename(current)))
+    lines = completed.stdout.decode("utf-8", "replace").split()
+    count = lines[0] if lines else ""
+    if completed.returncode != 0 or not COUNT_RE.match(count):
+        raise CaptureError(
+            "convert could not measure %s against %s%s: exit %d, %s"
+            % (previous, current,
+               "" if geometry is None else " over region %s" % geometry,
+               completed.returncode, _diagnostic(completed)))
+    pixels = int(count, 10)
+    box = lines[1] if len(lines) > 1 else ""
+    return pixels, (box if pixels and BOX_RE.match(box) else None)
+
+
+def map_column_geometry(rect: object, width: int, height: int,
+                        ) -> Optional[str]:
+    """Return the crop covering the map column beside the sidebar.
+
+    The sidebar is a column at one edge of the window -- right by
+    default (src/options.cpp:2132-2136) -- so the map column is
+    everything on the other side of it.  `rect` is the sidebar crop
+    sidebar_geometry.py computes at runtime, passed through
+    ocr_clock.resolve_rect(), and the full frame is `width` x `height`.
+
+    Returns None when the two cannot be reconciled -- a sidebar wider
+    than the frame, or one that covers it entirely -- because a crop
+    guessed from inconsistent numbers would compare the wrong pixels
+    and report the wrong verdict.
+    """
+    try:
+        left = int(getattr(rect, "x"))
+        span = int(getattr(rect, "width"))
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if width <= 0 or height <= 0 or span <= 0 or left < 0:
+        return None
+    if left >= width or left + span > width:
+        return None
+    if left * 2 >= width:
+        # A right-hand sidebar: the map is everything to its left.
+        return "%dx%d+0+0" % (left, height) if left else None
+    # A left-hand sidebar: the map is everything to its right.
+    beyond = width - (left + span)
+    return ("%dx%d+%d+0" % (beyond, height, left + span)
+            if beyond else None)
+
+
+def classify_effect(previous: Optional[str], current: str,
+                    map_geometry: Optional[str] = None,
+                    timeout: Optional[int] = None) -> ObservedEffect:
+    """Say what one keystroke visibly did, by comparing two captures.
+
+    `previous` is the capture the operator was looking at when the key
+    was chosen and `current` the one the key produced; a `previous` of
+    None -- the first frame of the record -- is EFFECT_FIRST, because
+    there is nothing to compare it against and a verdict would be
+    invented.  `map_geometry` is :func:`map_column_geometry`'s crop;
+    without it the map column cannot be isolated, so a frame that moved
+    is EFFECT_CHANGED rather than a finer verdict nothing measured.
+
+    Never raises: a measurement that cannot be made is EFFECT_UNKNOWN
+    and says so on stderr.  This runs AFTER the keystroke, where an
+    exception would abandon a frame that is already on disk.
+    """
+    if previous is None:
+        return ObservedEffect(EFFECT_FIRST)
+    try:
+        screen_pixels, _screen_box = measure_difference(
+            previous, current, timeout=timeout)
+    except SessionError as err:
+        _warn("the captures %s and %s could not be compared (%s), so "
+              "this row records no observation of what the keystroke "
+              "did; read the two captures yourself before writing the "
+              "next row"
+              % (os.path.basename(previous), os.path.basename(current),
+                 err))
+        return ObservedEffect(EFFECT_UNKNOWN)
+    if screen_pixels == 0:
+        return ObservedEffect(
+            EFFECT_UNCHANGED, screen_pixels=0, map_pixels=0)
+    if map_geometry is None:
+        return ObservedEffect(
+            EFFECT_CHANGED, screen_pixels=screen_pixels)
+    try:
+        map_pixels, map_box = measure_difference(
+            previous, current, geometry=map_geometry, timeout=timeout)
+    except SessionError as err:
+        _warn("the map column %s of %s and %s could not be measured "
+              "(%s), so this row records only that the screen changed"
+              % (map_geometry, os.path.basename(previous),
+                 os.path.basename(current), err))
+        return ObservedEffect(
+            EFFECT_CHANGED, screen_pixels=screen_pixels)
+    verdict = EFFECT_OUTSIDE_MAP if map_pixels == 0 else EFFECT_CHANGED
+    return ObservedEffect(
+        verdict, screen_pixels=screen_pixels, map_pixels=map_pixels,
+        map_box=map_box)
+
+
+def verdict_of(effect: object) -> str:
+    """Return the verdict from an :class:`ObservedEffect` or a string.
+
+    The guard's callers hold whichever is convenient, and every one of
+    them wants the same answer, so the coercion lives here instead of
+    at each site.  An unrecognised value yields EFFECT_UNKNOWN, which
+    annotates nothing -- the safe direction, because a marker is a claim
+    about the pixels.
+    """
+    verdict = getattr(effect, "verdict", effect)
+    return verdict if verdict in EFFECTS else EFFECT_UNKNOWN
+
+
+def annotate_action(action: str, effect: object) -> str:
+    """Return `action` with this frame's observed-effect marker.
+
+    Appended to the note, or made the note when there is none, and
+    added at most once: a row recovered from the journal already
+    carries the marker its first attempt earned, and a second copy
+    would say the same thing twice.  EFFECT_CHANGED, EFFECT_FIRST and
+    EFFECT_UNKNOWN add nothing -- the first because the ordinary case
+    needs no annotation, the other two because neither is an
+    observation of what the keystroke did.
+    """
+    marker = EFFECT_MARKERS.get(verdict_of(effect))
+    if marker is None:
+        return action
+    text = action.strip()
+    if marker in text:
+        return text
+    if ACTION_SEPARATOR in text:
+        return text + MARKER_SEPARATOR + marker
+    return text + ACTION_SEPARATOR + marker
+
+
+def movement_claim(text: object) -> bool:
+    """True when `text` asserts the survivor's own body went somewhere.
+
+    Deliberately blunt, and only ever used to decide how loudly to
+    warn: this never edits a row, and a false positive costs a warning
+    an operator can read past.
+    """
+    if not isinstance(text, str):
+        return False
+    return bool(MOVEMENT_CLAIM_RE.search(text))
+
+
 def observation_row(frame: int,
                     payload: Mapping[str, str],
                     key: Optional[str] = None,
                     action: Optional[str] = None,
                     capture_attempts: int = 1,
-                    recovered: bool = False) -> Dict[str, object]:
+                    recovered: bool = False,
+                    effect: object = None) -> Dict[str, object]:
     """Build this frame's telemetry row.  Pure -- nothing is written.
 
     capture.sh REPORTS the row and names its destination; this module
@@ -3421,6 +3953,16 @@ def observation_row(frame: int,
     and cross-checked against the payload's own FRAME_INDEX by
     :func:`assert_payload_matches`, so the sidecar and the manifest
     cannot key the same capture differently.
+
+    `effect` is :func:`classify_effect`'s result for this capture -- an
+    :class:`ObservedEffect` or a bare verdict -- and it is recorded here
+    as well as in the row's action text, so the observation can be
+    audited per frame without re-reading the prose.  Its measurements
+    are recorded beside it when it carries them, because a verdict whose
+    numbers are on record can be re-checked and one whose numbers are
+    not has to be taken on trust.  An unrecognised verdict is refused
+    rather than stored: a verdict is evidence and a spelling nothing
+    understands is not one.
     """
     row: Dict[str, object] = {}
     for name, payload_key in OBSERVATION_FIELDS:
@@ -3439,6 +3981,20 @@ def observation_row(frame: int,
             key, action if action is not None else describe_key(key))
         row["capture_attempts"] = int(capture_attempts)
         row["recovered"] = bool(recovered)
+    if effect is not None:
+        verdict = getattr(effect, "verdict", effect)
+        if verdict not in EFFECTS:
+            raise RecordError(
+                "%r is not one of the observed-effect verdicts (%s); a "
+                "verdict is evidence and a spelling nothing understands "
+                "is not one" % (verdict, ", ".join(EFFECTS)))
+        row["effect"] = verdict
+        for name, attribute in (("screen_diff_px", "screen_pixels"),
+                                ("map_diff_px", "map_pixels"),
+                                ("map_diff_box", "map_box")):
+            measured = getattr(effect, attribute, None)
+            if measured is not None:
+                row[name] = measured
     return row
 
 
@@ -3574,6 +4130,69 @@ def _observation_recorded(path: str, frame: int) -> bool:
     return False
 
 
+def read_observations(path: Optional[str] = None,
+                      root: Optional[str] = None,
+                      ) -> Tuple[Dict[str, object], ...]:
+    """Read the telemetry sidecar's rows, in the order written.
+
+    THE READER LIVES BESIDE THE WRITER, deliberately: this module owns
+    append_observation(), observation_row() and OBSERVATION_FIELDS, so
+    the code that reads the file back for an integrity check belongs
+    here too -- the discipline manifest.py states for its own schema.
+    timeline.py has its own reader for the RENDER, which keys rows by
+    frame and applies a last-row-wins rule so a re-captured frame means
+    what it obviously means; that collapses exactly the information an
+    integrity check needs, which is why this returns the rows as they
+    were written instead.
+
+    An ABSENT file is an empty result, not an error: a session that has
+    recorded nothing has nothing to attest.  A file that exists but
+    cannot be read, or that holds a line which is not a JSON object,
+    RAISES -- a sidecar that cannot be believed is not the same thing
+    as no sidecar, and the difference must not be silently flattened.
+
+    :raises RecordError: on an unreadable file, a torn or non-JSON
+        line, or a line holding something other than an object.
+    """
+    target = _confined(
+        default_observations_path(root) if path is None else path,
+        "the telemetry sidecar", root)
+    if not os.path.exists(target):
+        return ()
+    try:
+        descriptor = os.open(target, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError as err:
+        raise RecordError(
+            "cannot open the telemetry sidecar %s for reading: %s"
+            % (target, err)) from err
+    try:
+        with os.fdopen(descriptor, "r", encoding="utf-8") as handle:
+            lines = handle.readlines()
+    except (OSError, UnicodeDecodeError) as err:
+        raise RecordError(
+            "cannot read the telemetry sidecar %s: %s"
+            % (target, err)) from err
+    rows: List[Dict[str, object]] = []
+    for number, raw in enumerate(lines, start=1):
+        text = raw.strip()
+        if not text:
+            continue
+        try:
+            row = json.loads(text)
+        except ValueError as err:
+            raise RecordError(
+                "line %d of the telemetry sidecar %s is not JSON (%s); "
+                "one row is one JSON object on one line, and a fragment "
+                "is not repaired by guessing what it was"
+                % (number, target, err)) from err
+        if not isinstance(row, dict):
+            raise RecordError(
+                "line %d of the telemetry sidecar %s holds a %s, not an "
+                "object" % (number, target, type(row).__name__))
+        rows.append(row)
+    return tuple(rows)
+
+
 def _truncate_back(descriptor: int, offset: int, path: str) -> None:
     """Remove the bytes a failing append had begun to write.
 
@@ -3689,6 +4308,8 @@ class StepResult:
     geometry: str
     luma_mean: str
     luma_stddev: str
+    effect: str = EFFECT_UNKNOWN
+    effect_detail: Optional["ObservedEffect"] = None
     row: Dict[str, object] = field(default_factory=dict)
     observation: Dict[str, object] = field(default_factory=dict)
 
@@ -3696,6 +4317,16 @@ class StepResult:
     def clock_readable(self) -> bool:
         """True when the sidebar gave a reading of any kind."""
         return self.ingame_clock is not None
+
+    @property
+    def screen_moved(self) -> bool:
+        """True when this capture differs from the one before it.
+
+        False for EFFECT_UNCHANGED, and false for the verdicts that are
+        not an observation of movement -- so a caller that branches on
+        this never reads "we could not tell" as "something happened".
+        """
+        return self.effect in (EFFECT_CHANGED, EFFECT_OUTSIDE_MAP)
 
     def describe(self) -> str:
         """A human-readable account of the step, for stderr."""
@@ -3732,9 +4363,13 @@ class Session:
 
         session = Session()
         result = session.step(
-            "u", "press 'u' for Custom Character",
-            "I am not letting a dice roll decide who I am.")
-        # read result.path and result.ingame_clock, THEN choose again
+            "Left", note="walk the top row toward New Game",
+            commentary="Not the tutorial. Back along the row.")
+        # READ result.path -- which submenu row carries the bar? -- and
+        # only then choose the next key.  Never "u" for Custom
+        # Character: those hotkeys belong to the top row's tutorial
+        # entry too, and the top row wins.  MENU_CUSTOM_CHARACTER_ROUTE
+        # is the sequence that was verified against the captures.
     """
 
     def __init__(self, manifest_path: Optional[str] = None,
@@ -3751,10 +4386,19 @@ class Session:
                  settle_journal: bool = True) -> None:
         """Open a session against an existing or an empty record.
 
-        Opening takes the step lock, settles any journal a previous run
-        left behind, verifies the record, and pins the create-versus-
-        resume decision -- in that order, all of it before a keystroke is
-        possible.  A session that could not do all four does not open.
+        Opening proves the manifest is one this pipeline may write and
+        that BOTH append targets will take an append, then takes the
+        step lock, settles any journal a previous run left behind,
+        verifies the record, and pins the create-versus-resume decision
+        -- in that order, all of it before a keystroke is possible.  A
+        session that could not do all of it does not open.
+
+        The two checks that come first are there because of their
+        ORDERING rather than their difficulty: the manifest's name and
+        the appendability of the two targets are both decidable while
+        the game is untouched, and discovering either after the
+        keystroke costs an irreversible act for nothing.  See
+        manifest_target() and assert_append_target().
 
         :param manifest_path: the record to append to; the pipeline's
             own manifest by default.
@@ -3793,14 +4437,17 @@ class Session:
             would be lost.
         :raises SessionError: when the step lock cannot be taken, or the
             pinned mode contradicts $PLAYTHROUGH_SESSION_MODE.
-        :raises RecordError: when the manifest and the frames directory
+        :raises RecordError: when the manifest is not the one record
+            this pipeline writes, when either append target cannot be
+            appended to, or when the manifest and the frames directory
             do not agree, which must never be reconciled silently.
         """
         self._root = root
-        self._manifest = (default_manifest_path(root)
-                          if manifest_path is None
-                          else _confined(manifest_path,
-                                         "the manifest", root))
+        # Held to the WRITER's rule about where a record may live, not
+        # merely to containment, and held to it HERE: see
+        # manifest_target() for why a check that is decidable from the
+        # path must not wait until a row is written.
+        self._manifest = manifest_target(manifest_path, root)
         self._frames = (default_frames_dir(root)
                         if frames_dir is None
                         else _confined(frames_dir,
@@ -3832,6 +4479,27 @@ class Session:
         self._audit: Optional[Tuple[object, ...]] = None
         self._row: Dict[str, object] = {}
         self._observation: Dict[str, object] = {}
+        # The observed-effect guard's own state: the last verdict, and
+        # the map-column crop it was measured with.  The crop is
+        # resolved once per session because it comes from configuration
+        # that does not change while a session is open.
+        self._effect = ObservedEffect(EFFECT_UNKNOWN)
+        self._verdict: str = EFFECT_UNKNOWN
+        self._map_geometry: Optional[str] = None
+        self._map_geometry_resolved = False
+        # BOTH APPEND TARGETS ARE PRE-FLIGHTED BEFORE THE TRANSACTION
+        # OPENS.  A step appends twice after the keystroke -- the
+        # manifest row, then the attestation that carries the immutable
+        # key and the sidebar DATE line -- and journal settlement below
+        # appends as well, so a target that cannot be appended to must
+        # be reported now, while nothing has been sent.  The manifest is
+        # pre-flighted without creating anything (an empty
+        # manifest.jsonl is itself a problem the readers report); the
+        # sidecar's directory is created exactly as append_observation()
+        # would create it.
+        assert_append_target(self._manifest, "the manifest")
+        assert_append_target(self._observations, "the telemetry sidecar",
+                             create_parent=True)
         # THE TRANSACTION OPENS HERE.  The lock is taken before the
         # record is read, because "read the last index, then send a key
         # for the next one" is two operations and two processes that
@@ -4423,20 +5091,102 @@ class Session:
         payload["CLOCK_RECT"] = reading.rect or ""
         return payload
 
+    def _sidecar_problems(self, last: int) -> List[str]:
+        """Report a sidecar that does not cover the record.  Read-only.
+
+        THE THIRD LEG OF THE IDENTITY.  One keystroke is one frame, one
+        manifest row AND one attestation, and until this existed only
+        the first two were ever compared: a sidecar append that failed
+        after its manifest row was stored left that frame's immutable
+        key and its sidebar DATE line missing FOREVER -- the journal
+        entry for the step is stale by then, because the row it
+        describes is on the device, so nothing replays it -- while
+        `status` reported the record sound because it had never looked.
+        An integrity check that cannot see the gap it is meant to catch
+        is worse than no check, so the gap is reported here.
+
+        It is REPORTED rather than repaired.  The missing attestation
+        cannot be reconstructed honestly: `real_ts` and the clock could
+        be re-measured from the capture, but the KEY could not -- the
+        one place it was ever written down is the row that did not land
+        -- and a backfilled row with a guessed key would be exactly the
+        fabrication HR6 forbids.  A note in
+        playthrough/TECHNICAL_NOTES.md is the remedy for a shortfall,
+        the same way it is for every other correction to a captured
+        record.
+
+        A REPEATED index is deliberately NOT a problem.  The sidecar is
+        append-only and timeline.py reads it with a last-row-wins rule
+        precisely so that a re-captured frame means what it obviously
+        means; treating a second row for one frame as a defect here
+        would contradict the reader that consumes it.
+
+        :param last: the last index the manifest holds; 0 for a record
+            with no rows at all, which is the fresh-session case.
+        """
+        problems: List[str] = []
+        try:
+            rows = read_observations(self._observations, self._root)
+        except RecordError as err:
+            # Reported rather than raised, so one unreadable sidecar
+            # cannot stop the caller from hearing about the rest of the
+            # record -- the same treatment manifest.verify_manifest()
+            # gives a manifest it cannot read.
+            return [str(err)]
+        covered = set()
+        for number, row in enumerate(rows, start=1):
+            index = row.get("frame")
+            if isinstance(index, bool) or not isinstance(index, int):
+                problems.append(
+                    "row %d of %s records frame %r, which is not an "
+                    "index, so that attestation cannot be matched to a "
+                    "capture" % (number, self._observations, index))
+                continue
+            covered.add(index)
+        missing = sorted(set(_indices_through(last)) - covered)
+        if missing:
+            problems.append(
+                "%d recorded frame(s) have no telemetry row in %s (%s); "
+                "the attestation carrying the key that was pressed and "
+                "the sidebar date line is missing for each of them, so "
+                "the record is incomplete even though the frames and "
+                "the manifest agree"
+                % (len(missing), self._observations,
+                   _summarised(missing)))
+        stray = sorted(index for index in covered
+                       if index < manifest.MIN_FRAME_INDEX or
+                       index > last)
+        if stray:
+            problems.append(
+                "%s holds %d telemetry row(s) for frame(s) the manifest "
+                "does not record (%s); the record runs 1..%d, so those "
+                "attestations describe captures no row accounts for"
+                % (self._observations, len(stray), _summarised(stray),
+                   last))
+        return problems
+
     def verify_record(self) -> Tuple[str, ...]:
         """Re-check the record against the frames.  Read-only.
 
         Exposed so a caller can assert the invariant between steps
         without opening a new session.  An empty result means the
-        manifest satisfies its schema, every row's capture is on disk
-        and no capture is unaccounted for.
+        manifest satisfies its schema, every row's capture is on disk,
+        no capture is unaccounted for AND every recorded frame has its
+        telemetry attestation -- see :meth:`_sidecar_problems` for why
+        that third comparison belongs in the same answer as the first
+        two.
         """
         if not os.path.isfile(self._manifest):
+            problems = []
             on_disk = self._frames_on_disk()
             if on_disk:
-                return ("%d capture(s) in %s with no manifest at %s"
-                        % (len(on_disk), self._frames, self._manifest),)
-            return ()
+                problems.append(
+                    "%d capture(s) in %s with no manifest at %s"
+                    % (len(on_disk), self._frames, self._manifest))
+            # last=0: with no record at all, every telemetry row is a
+            # row for a capture nothing accounts for.
+            problems.extend(self._sidecar_problems(0))
+            return tuple(problems)
         problems = list(manifest.verify_manifest(
             self._manifest, self._frames, require_frames=True,
             root=self._root))
@@ -4447,6 +5197,7 @@ class Session:
             problems.append(
                 "%s is in %s but no row mentions it"
                 % (name, self._frames))
+        problems.extend(self._sidecar_problems(last))
         return tuple(problems)
 
     # -- the window -------------------------------------------------
@@ -4951,6 +5702,123 @@ class Session:
                 for name, value in payload.items()}
         return record
 
+    def _resolve_map_geometry(self, payload: Mapping[str, str],
+                              ) -> Optional[str]:
+        """Return the map column's crop, resolving it once per session.
+
+        The sidebar's own rectangle comes from configuration through
+        ocr_clock.resolve_rect(), which is the same runtime computation
+        the clock read uses, and the frame's extent comes from the
+        capture's own FRAME_GEOMETRY rather than from a constant -- so a
+        different sidebar preset or a different display moves this crop
+        with it instead of silently comparing the wrong pixels.
+
+        None means the column could not be resolved, and
+        :func:`classify_effect` then reports EFFECT_CHANGED for any
+        frame that moved rather than a finer verdict it did not measure.
+        """
+        if self._map_geometry_resolved:
+            return self._map_geometry
+        self._map_geometry_resolved = True
+        geometry = payload.get("FRAME_GEOMETRY", "").strip()
+        matched = re.match(r"\A(\d+)x(\d+)\Z", geometry)
+        if not matched:
+            _warn_once(
+                "map-geometry",
+                "capture.sh reported FRAME_GEOMETRY=%r, which is not "
+                "WxH, so the map column cannot be told apart from the "
+                "sidebar beside it; a keystroke that moved only a "
+                "panel or a counter will be recorded as having changed "
+                "the screen" % geometry)
+            return None
+        width, height = int(matched.group(1)), int(matched.group(2))
+        try:
+            rect, _row_height = ocr_clock.resolve_rect()
+        except Exception as err:  # ocr_clock raises its own family
+            _warn_once(
+                "map-geometry",
+                "the sidebar rectangle could not be computed (%s), so "
+                "the map column cannot be told apart from the sidebar "
+                "beside it" % err)
+            return None
+        self._map_geometry = map_column_geometry(rect, width, height)
+        if self._map_geometry is None:
+            _warn_once(
+                "map-geometry",
+                "the sidebar crop %s cannot be reconciled with a %dx%d "
+                "capture, so the map column is not compared separately"
+                % (rect, width, height))
+        return self._map_geometry
+
+    def _observe_effect(self, index: int,
+                        payload: Mapping[str, str]) -> ObservedEffect:
+        """Compare this capture with the one before it.  Never raises.
+
+        The observation half of the row, and the reason a swallowed
+        keystroke can no longer be written up as though it had landed.
+        The predecessor is the capture at `index - 1`; when there is
+        none -- the first frame of the very first session -- the verdict
+        is EFFECT_FIRST, and when the file is missing it is
+        EFFECT_UNKNOWN with a warning, because a resumed session whose
+        earlier frames were never captured has nothing to compare.
+        """
+        if index <= 1:
+            return ObservedEffect(EFFECT_FIRST)
+        previous = os.path.join(
+            self._frames, manifest.FRAME_NAME_FORMAT % (index - 1))
+        current = os.path.join(
+            self._frames, manifest.FRAME_NAME_FORMAT % index)
+        if not os.path.isfile(previous):
+            _warn("frame %d's predecessor is not at %s, so this row "
+                  "records no observation of what the keystroke did"
+                  % (index, previous))
+            return ObservedEffect(EFFECT_UNKNOWN)
+        if not os.path.isfile(current):
+            _warn("frame %d is not at %s, so this row records no "
+                  "observation of what the keystroke did"
+                  % (index, current))
+            return ObservedEffect(EFFECT_UNKNOWN)
+        return classify_effect(
+            previous, current,
+            map_geometry=self._resolve_map_geometry(payload),
+            timeout=self._tool_timeout)
+
+    def _report_effect(self, index: int, effect: ObservedEffect,
+                       action: str, commentary: str) -> None:
+        """Warn about a verdict the row's own prose may contradict.
+
+        Advisory by construction: the marker is already in the action
+        text by the time this runs, and this only makes sure the
+        operator READS it before choosing the next keystroke.  A claim
+        of movement the measurement does not support is said twice, and
+        more loudly, because that is the exact defect this guard was
+        added for.
+        """
+        claims_movement = (movement_claim(action) or
+                           movement_claim(commentary))
+        marker = EFFECT_MARKERS.get(effect.verdict)
+        if marker is not None:
+            _warn("frame %d: %s.  The row now says so and its note is "
+                  "unchanged; read the capture before writing the next "
+                  "row" % (index, marker))
+            if claims_movement:
+                _warn("frame %d claims the survivor moved (%r) but %s.  "
+                      "A row is the authoritative account of what ONE "
+                      "keystroke did: say what the capture shows, not "
+                      "what the key was aimed at"
+                      % (index, action, marker))
+            return
+        pixels = effect.map_pixels
+        if (claims_movement and pixels is not None and
+                0 < pixels < MOVEMENT_ADVISORY_PIXELS):
+            _warn("frame %d claims the survivor moved (%r), and the map "
+                  "column did change -- but by only %d px, inside %s.  "
+                  "A step in this record moves tens of thousands; a "
+                  "panel drawn over the map moves this many.  Read the "
+                  "capture and make sure the row describes the panel "
+                  "rather than a step that did not happen"
+                  % (index, action, pixels, effect.map_box or "no box"))
+
     def _commit(self, index: int, key: str, action: str,
                 commentary: str, payload: Mapping[str, str],
                 attempts: int, recovered: bool) -> Dict[str, object]:
@@ -4964,9 +5832,17 @@ class Session:
         journal is cleared last, so an interruption anywhere in here
         leaves a state the next open can finish rather than one it has to
         interpret.
+
+        THE OBSERVED-EFFECT GUARD RUNS HERE, before the row is written
+        and in the one place both an ordinary step and a recovered one
+        pass through, so a recovered frame carries the same observation
+        an ordinary one would.
         """
         self._lock.assert_held()
         clock = clock_from_payload(payload)
+        effect = self._observe_effect(index, payload)
+        action = annotate_action(action, effect.verdict)
+        self._report_effect(index, effect, action, commentary)
         try:
             row = manifest.append_row(
                 self._manifest,
@@ -4995,7 +5871,8 @@ class Session:
 
         observation = observation_row(
             index, payload, key=key, action=action,
-            capture_attempts=attempts, recovered=recovered)
+            capture_attempts=attempts, recovered=recovered,
+            effect=effect)
         try:
             append_observation(
                 self._observations, observation,
@@ -5017,6 +5894,8 @@ class Session:
         clear_journal(self._journal)
         self._row = dict(row)
         self._observation = dict(observation)
+        self._effect = effect
+        self._verdict = effect.verdict
         return row
 
     def step(self, key: str, action: Optional[str] = None,
@@ -5113,6 +5992,7 @@ class Session:
         # evidence and evidence is not corrected afterwards.
         self._assert_voice(voice)
         self._assert_clock_honesty(voice)
+        self._advise_on_menu_hotkey(validated, text, voice)
 
         # THE INTEGRITY PRE-FLIGHTS, on every step and before anything
         # irreversible.  All three are cheap, all three read committed
@@ -5188,7 +6068,17 @@ class Session:
                 "session captures this index rather than leaving the "
                 "keystroke undocumented"
                 % (index, validated, err, self._journal))
-            raise
+            # The ABORT REASON is what is raised, not the bare cause:
+            # it names the journal and the same-index recovery, which is
+            # the one thing the operator needs to know and is what the
+            # RecordError branch in _commit() already surfaces.  Only
+            # the message is replaced -- the CLASS is preserved, because
+            # this branch also sees a capture timeout (plain
+            # SessionError) and a capturer that has gone missing
+            # (ToolMissing), and forcing every one of them to
+            # CaptureError would quietly change the exit status that
+            # tells those failures apart.
+            raise err.__class__(self._aborted) from err
 
         # The capture is committed to playthrough/frames/, so the
         # journal is advanced with the payload it reported.  From here a
@@ -5219,10 +6109,14 @@ class Session:
                 "of the save tree refused the step: %s" % (index, err))
             raise
 
+        # `action` is taken from the ROW rather than from `text`,
+        # because the observed-effect guard may have appended its
+        # marker while the row was being written and the caller must
+        # see the text that was actually recorded.
         result = StepResult(
             frame=index,
             key=validated,
-            action=text,
+            action=str(row["action"]),
             commentary=voice,
             file=row["file"],
             path=path,
@@ -5235,11 +6129,45 @@ class Session:
             geometry=payload.get("FRAME_GEOMETRY", ""),
             luma_mean=payload.get("LUMA_MEAN", ""),
             luma_stddev=payload.get("LUMA_STDDEV", ""),
+            effect=self._verdict,
+            effect_detail=self._effect,
             row=dict(row),
             observation=dict(self._observation),
         )
         LOG.info("%s", result.describe())
         return result
+
+    def _advise_on_menu_hotkey(self, key: str, action: str,
+                               commentary: str) -> None:
+        """Warn when a letter is being sent for Custom Character.
+
+        The exact mistake runtime testing found in the first recorded
+        session: "u" was sent to open the custom sheet, and because the
+        top row of the same menu declares "T<u|U>torial Game" with those
+        very letters (src/main_menu.cpp:466) the top row took it -- the
+        submenu folded away and the highlight came to rest on a
+        forbidden entry, which then needed three Left presses to undo.
+
+        ADVISORY, NEVER A REFUSAL, and deliberately so: "u" is also the
+        game's own north-east step, so refusing it would break ordinary
+        play.  It fires only when the row itself says the key is meant
+        for the custom sheet, which is exactly the case that was wrong.
+        """
+        if key not in MENU_HOTKEY_COLLISION:
+            return
+        if not (CUSTOM_CHARACTER_MENTION_RE.search(action) or
+                CUSTOM_CHARACTER_MENTION_RE.search(commentary)):
+            return
+        _warn_once(
+            "menu-hotkey-collision",
+            "'%s' is declared for %r (src/main_menu.cpp:476) AND for "
+            "%r on the top row of the same menu "
+            "(src/main_menu.cpp:466), and the top row wins: the submenu "
+            "folds away and the highlight lands on the tutorial, a "
+            "forbidden entry.  Take the permitted door the verified "
+            "way instead -- %s"
+            % (key, MENU_CUSTOM_CHARACTER, MENU_TUTORIAL_ENTRY,
+               "; ".join(MENU_CUSTOM_CHARACTER_ROUTE)))
 
     def reconcile(self, outcome: str) -> Tuple[str, ...]:
         """Resolve an ambiguous `sending` journal.  Returns what it did.
@@ -5438,13 +6366,23 @@ EXIT_CHEAT = 5
 
 _EPILOG = """\
 the permitted door, and the four that are shut
-  Custom Character (hotkey u/U)   THE ONLY permitted new-game entry
+  Custom Character                THE ONLY permitted new-game entry
   Preset Character                FORBIDDEN -- the template picker
   Random Character                FORBIDDEN
   Play Now!  (Default Scenario)   FORBIDDEN (two spaces after the !)
   Play Now!                       FORBIDDEN
   scenario                        missed / "Missed"
   first screen of a fresh userdir "Select your language", NOT the menu
+
+  DO NOT press u or U for Custom Character.  The top row declares
+  "T<u|U>torial Game" with the same two letters (src/main_menu.cpp:466)
+  and the top row wins: the submenu folds away and the highlight lands
+  on [Tutorial Game].  Take the entry the verified way instead --
+  Left/Right along the top row to [New Game], READ the capture to see
+  which submenu row carries the selection bar, Up/Down until it is on
+  Custom Character, read again, then Return.  The opening position of
+  that bar is not assumed: on the first capture of this record it sat
+  on Preset Character.
 
 no cheating, ever
   debug, debug_mode and debug_hour_timer ship UNBOUND in

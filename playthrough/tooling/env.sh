@@ -475,6 +475,14 @@ playthrough_validate_int() {
 #   briefly world-readable, and the mode is CONFIRMED after the chmod
 #   rather than assumed from its exit status.
 #
+#   What is confirmed is the PERMISSION BITS, not the whole `stat %a`
+#   string: a directory created inside a set-group-ID parent inherits
+#   setgid, GNU chmod preserves that bit on directories, and 2700 is
+#   exactly as private as 700.  session.py's _secure_dir() applies the
+#   same rule (`st_mode & 0o077`), and the two must not drift apart --
+#   see the comment beside the comparison for what happened when they
+#   did.
+#
 #   LABEL is what the diagnostics call the directory; it defaults to the
 #   path itself.  This is the ONLY way anything in this tree brings a
 #   scratch directory into existence.
@@ -553,12 +561,44 @@ playthrough_secure_dir() {
     fi
     actual="$("${PLAYTHROUGH_UTIL_STAT}" -Lc '%a' -- "${path}" \
         2>/dev/null || true)"
-    if [ "${actual}" != "${mode}" ]; then
+    # THE PERMISSION BITS ARE THE CHECK, and the leading special-bits
+    # digit is not part of it.  Two facts make the whole-string compare
+    # wrong rather than merely strict:
+    #
+    #   * a directory created inside a set-group-ID parent INHERITS the
+    #     setgid bit, and /tmp is mode 2777 on some hosts -- including
+    #     the one this pipeline was provisioned on;
+    #   * GNU chmod DELIBERATELY preserves a directory's set-user-ID and
+    #     set-group-ID bits when it is given a three-digit octal mode,
+    #     so `chmod 700` on such a directory leaves `stat %a` reading
+    #     2700 and no number of retries changes that.
+    #
+    # So a directory whose access bits are exactly 0700 -- private, by
+    # every definition that matters here -- was being refused, and the
+    # refusal was unconditional: sourcing this file died, and with it
+    # every stage that sources it.  session.py's own _secure_dir()
+    # tests `st_mode & 0o077` and therefore always accepted the same
+    # directory, so the two halves of one contract disagreed and a host
+    # with a setgid temporary directory could run one and not the
+    # other.  They agree now: no group or other bit, and the setgid bit
+    # is left to the filesystem that put it there.
+    local actual_bits="${actual}"
+    if [ "${#actual}" -gt 3 ]; then
+        actual_bits="${actual#"${actual%???}"}"
+    fi
+    if [ "${actual_bits}" != "${mode}" ]; then
         playthrough_die "${label} '${path}' is mode" \
-            "'${actual:-unknown}' after chmod ${mode}, not ${mode}"
+            "'${actual:-unknown}' after chmod ${mode}, i.e." \
+            "permission bits '${actual_bits:-unknown}' rather than" \
+            "${mode}"
         return 1
     fi
-    if [ -n "${previous}" ] && [ "${previous}" != "${mode}" ]; then
+    local previous_bits="${previous}"
+    if [ "${#previous}" -gt 3 ]; then
+        previous_bits="${previous#"${previous%???}"}"
+    fi
+    if [ -n "${previous_bits}" ] && [ "${previous_bits}" != "${mode}" ]
+    then
         playthrough_warn "${label} '${path}' was mode" \
             "${previous}, not ${mode}; it has been repaired to" \
             "${mode}, but something outside this pipeline widened it," \
@@ -1349,6 +1389,21 @@ fi
 #                      the contracted placement of that 1072-px grid in
 #                      the 1080-px root leaves a four-pixel band, which
 #                      is where the sidebar crop's +4 comes from.
+#
+# WHERE THE GRID REALLY SAT, MEASURED.  Those two sentences pull in
+# different directions -- a grid blitted at the top-left leaves ONE
+# eight-pixel band at the bottom, while a centred one leaves two of four
+# -- and the committed captures settle it in favour of the first.  Over
+# all 395 frames of the recorded session, 387 carry ink in y0-3, 356
+# carry ink in y1068-1071, and NOT ONE carries ink in y1072-1079: the
+# grid sat at +0+0 with all eight leftover pixels at the bottom, because
+# openbox gave the borderless window the whole 1920x1080 root and the
+# engine blitted from its top-left corner.  The +4 in the crop is
+# therefore the CONTRACTED centred placement, not an observation, and it
+# is kept because it costs nothing: the crop is 1072 rows tall and the
+# clock row it exists to capture is at y288, far inside it either way,
+# and ocr_clock.py measures the grid's true vertical phase against the
+# game's own font rather than trusting any computed offset.
 #
 # Capture therefore targets the ROOT: it yields a true-resolution PNG
 # whose only non-game pixels are that thin band, and it needs no

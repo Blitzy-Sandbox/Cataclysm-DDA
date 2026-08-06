@@ -589,6 +589,107 @@ class TestTheTimestampColumn(ManifestFixture):
                 with self.assertRaises(manifest.ManifestError):
                     manifest.canonical_real_ts(value)
 
+    def test_what_is_written_is_always_the_canonical_form(self):
+        # The writer is lenient at the door and strict on the file: each
+        # of these is a real instant in another ISO-8601 spelling, and
+        # each lands in the column's one form.
+        self.write_frames([1, 2, 3])
+        for index, supplied, stored in (
+            (1, "2026-05-14T09:12:03Z", "2026-05-14T09:12:03.000Z"),
+            (2, "2026-05-14 09:12:03.481Z", FIXED_REAL_TS),
+            (3, "2026-05-14T11:12:03.481+02:00", FIXED_REAL_TS),
+        ):
+            with self.subTest(supplied=supplied):
+                row = manifest.append_row(
+                    self.manifest, index, manifest.frame_file(index),
+                    supplied, None, "press 'j'", "South.",
+                    root=self.directory)
+                self.assertEqual(row["real_ts"], stored)
+        written = manifest.read_rows(self.manifest, root=self.directory)
+        self.assertEqual(
+            [row["real_ts"] for row in written],
+            ["2026-05-14T09:12:03.000Z", FIXED_REAL_TS,
+             FIXED_REAL_TS])
+        self.assertEqual(
+            manifest.verify_manifest(
+                self.manifest, self.frames, require_frames=True,
+                root=self.directory),
+            [],
+            msg="normalised on the way in, so the record is clean")
+
+    def test_a_normalisation_is_disclosed_once(self):
+        self.write_frames([1])
+        _, first = self.capture_stderr(
+            manifest.append_row, self.manifest, 1,
+            manifest.frame_file(1), "2026-05-14T09:12:03Z", None,
+            "press 'j'", "South.", root=self.directory)
+        self.assertIn("was rewritten to", first)
+        self.assertIn("the instant is unchanged", first)
+        self.assertIn("capture.sh", first)
+        # Standing conditions are reported once per process, as
+        # everything else advisory in this module is.
+        self.write_frames([2])
+        _, second = self.capture_stderr(
+            manifest.append_row, self.manifest, 2,
+            manifest.frame_file(2), "2026-05-14T09:12:04Z", None,
+            "press 'k'", "North.", root=self.directory)
+        self.assertEqual(second, "")
+
+    def test_the_canonical_form_is_written_without_a_word(self):
+        self.write_frames([1])
+        _, said = self.capture_stderr(
+            manifest.append_row, self.manifest, 1,
+            manifest.frame_file(1), FIXED_REAL_TS, None, "press 'j'",
+            "South.", root=self.directory)
+        self.assertEqual(
+            said, "",
+            msg="the ordinary case is the whole session; it is silent")
+
+    def test_a_stored_value_in_another_form_is_reported(self):
+        # The only way one can arrive: a hand edit or a foreign tool.
+        # Every spelling below is the same instant as FIXED_REAL_TS and
+        # parses perfectly, which is exactly why row-by-row parsing
+        # cannot catch it.
+        for other in ("2026-05-14T09:12:03Z",
+                      "2026-05-14 09:12:03.481Z",
+                      "2026-05-14T11:12:03.481+02:00",
+                      "2026-05-14T09:12:03.481000Z"):
+            with self.subTest(other=other):
+                row = dict(self.row())
+                row["real_ts"] = other
+                problems = manifest.row_field_problems(row, 1)
+                self.assertTrue(
+                    any("not the one form" in problem
+                        for problem in problems),
+                    msg=problems)
+
+    def test_a_mixed_column_fails_verification(self):
+        # The end-to-end shape of it: a record whose rows are each
+        # valid, whose lexical order is no longer chronological.
+        self.write_frames([1, 2])
+        self.append(frame=1)
+        self.append(frame=2)
+        rows = manifest.read_rows(self.manifest, root=self.directory)
+        # A LATER instant, spelled with a space instead of the 'T'.  The
+        # space sorts before 'T', so this row is chronologically after
+        # its neighbour and lexically before it.
+        rows[1]["real_ts"] = "2026-05-14 09:12:04.000Z"
+        with open(self.manifest, "w", encoding="utf-8") as handle:
+            for row in rows:
+                handle.write(manifest.encode_row(row))
+        stored = [row["real_ts"] for row in
+                  manifest.read_rows(self.manifest,
+                                     root=self.directory)]
+        self.assertNotEqual(
+            stored, sorted(stored),
+            msg="the defect being caught: the column no longer sorts")
+        problems = manifest.verify_manifest(
+            self.manifest, self.frames, require_frames=True,
+            root=self.directory)
+        self.assertTrue(
+            any("not the one form" in problem for problem in problems),
+            msg=problems)
+
     def test_a_stamp_taken_now_is_in_the_canonical_form(self):
         stamped = manifest.utc_timestamp()
         self.assertEqual(
@@ -1909,6 +2010,77 @@ class TestAppendingIsAppendOnly(ManifestFixture):
             any("not JSON" in problem for problem in problems),
             msg=("verify names the line to repair rather than the "
                  "writer hiding it: %r" % problems))
+
+
+class TestTheAppendTargetIsCheckableInAdvance(ManifestFixture):
+    """The writer's rule can be applied before anything is written.
+
+    session.py delivers a keystroke it cannot take back and only then
+    appends the row.  Every condition this module can decide from the
+    PATH -- the name, the containment, the symlink-freedom, the
+    existence of the directory -- must therefore be available to it at
+    open, and it must be the SAME rule, not a kinder restatement of it:
+    a path that passes the early check and fails the append would be
+    the ordering defect all over again.
+    """
+
+    def test_the_record_s_own_path_is_accepted(self):
+        self.assertEqual(
+            manifest.assert_appendable(self.manifest, self.directory),
+            os.path.realpath(self.manifest))
+
+    def test_an_absent_record_is_accepted_and_not_created(self):
+        self.assertFalse(os.path.exists(self.manifest))
+        manifest.assert_appendable(self.manifest, self.directory)
+        self.assertFalse(
+            os.path.exists(self.manifest),
+            msg=("checking must not manufacture an empty manifest: an "
+                 "empty file is a problem every reader reports"))
+
+    def test_another_name_inside_the_tree_is_refused(self):
+        for name in ("other.jsonl", "timeline.json",
+                     "manifest.jsonl.bak", "cata-play.mp4"):
+            with self.subTest(name=name):
+                with self.assertRaises(manifest.ManifestError) as bad:
+                    manifest.assert_appendable(
+                        os.path.join(self.directory, name),
+                        self.directory)
+                self.assertIn("and nothing else", str(bad.exception))
+
+    def test_a_subdirectory_of_the_tree_is_refused(self):
+        build = os.path.join(self.directory, "build")
+        os.mkdir(build)
+        with self.assertRaises(manifest.ManifestError):
+            manifest.assert_appendable(
+                os.path.join(build, "manifest.jsonl"), self.directory)
+
+    def test_a_path_outside_the_tree_is_refused(self):
+        with self.assertRaises(manifest.ManifestError) as bad:
+            manifest.assert_appendable(
+                "/tmp/manifest.jsonl", self.directory)
+        self.assertIn("must stay inside", str(bad.exception))
+
+    def test_the_early_check_and_the_append_agree(self):
+        # The property that matters: whatever this accepts, append_row
+        # accepts, and whatever it refuses, append_row refuses.  Both
+        # go through the same private validator, and this is the test
+        # that would fail if a second copy of the rule appeared.
+        self.write_frames([1])
+        accepted = os.path.join(self.directory, "manifest.jsonl")
+        refused = os.path.join(self.directory, "not-the-record.jsonl")
+        manifest.assert_appendable(accepted, self.directory)
+        self.append(frame=1)
+        self.assertEqual(
+            manifest.count_rows(self.manifest, root=self.directory), 1)
+        for call in (
+            lambda: manifest.assert_appendable(refused, self.directory),
+            lambda: manifest.append_row(
+                refused, 2, manifest.frame_file(2), FIXED_REAL_TS,
+                None, "press 'k'", "North.", root=self.directory),
+        ):
+            with self.assertRaises(manifest.ManifestError):
+                call()
+        self.assertFalse(os.path.exists(refused))
 
 
 class TestReadingTheRecord(ManifestFixture):

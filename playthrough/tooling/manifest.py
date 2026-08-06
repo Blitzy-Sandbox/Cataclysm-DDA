@@ -138,6 +138,16 @@ MANIFEST_NAME = "manifest.jsonl"
 # millisecond, in one fixed form on every row so that the column sorts
 # lexically as well as chronologically.  Production metadata only --
 # video pacing comes from the in-game clock, never from here.
+#
+# "ONE FIXED FORM" IS A RULE ABOUT THE FILE, AND IT IS CHECKED.  Any
+# timezone-aware ISO-8601 spelling is accepted at the door and rewritten
+# to this form by canonical_real_ts(), so nothing this module writes can
+# break the property; row_field_problems() then reports a STORED value
+# that is not in it, which is the only way one could arrive -- a hand
+# edit or a foreign tool.  Both halves are needed: without the rewrite a
+# legitimate timestamp would be refused, and without the check a
+# mixed-format column would sort wrongly while every row in it read
+# perfectly well on its own.
 REAL_TS_FORMAT = "%Y-%m-%dT%H:%M:%S"
 REAL_TS_SUFFIX = "Z"
 REAL_TS_EXAMPLE = "2026-05-14T09:12:03.481Z"
@@ -812,6 +822,36 @@ def _validated_manifest_path(value, root=None):
             "the directory for the manifest does not exist: %s"
             % parent)
     return resolved
+
+
+def assert_appendable(manifest_path=None, root=None):
+    """Apply the append-time manifest rules WITHOUT writing anything.
+
+    PUBLIC, and it exists for one caller with one need: session.py has
+    to hold itself to this module's rule about WHERE the manifest lives
+    BEFORE it does something irreversible, not when it comes to append.
+    A keystroke cannot be un-pressed, so a condition that is one
+    hundred per cent decidable from the path alone -- the name, the
+    containment, the symlink-freedom, the existence of the directory --
+    must be decided while the game is still untouched.
+
+    Returns the resolved path, so the caller can keep the same value it
+    was checked against rather than deriving it a second time.  Raises
+    ManifestError with exactly the diagnostic append_row() would have
+    raised later, because this delegates to the same private validator
+    rather than restating it: a second, kinder copy of the rule here
+    would let a path pass this check and fail that one, which is the
+    very ordering defect this function was added to remove.
+
+    Nothing is created, opened, truncated or written.  Whether the file
+    can actually be APPENDED to -- a permission, an immutable flag, a
+    read-only filesystem -- is a property of the file and the device
+    rather than of the path, and session.py pre-flights that separately
+    for both of its append targets.
+    """
+    if manifest_path is None:
+        manifest_path = default_manifest_path()
+    return _validated_manifest_path(manifest_path, root)
 
 
 def _validated_directory(value, label, root=None):
@@ -1796,6 +1836,17 @@ def canonical_real_ts(value):
     assumed to be UTC, because a timestamp with no zone is not
     sortable across hosts and guessing one would be an invention.
 
+    WHAT IS ACCEPTED IS WIDER THAN WHAT IS STORED, deliberately, and the
+    difference is worth being precise about.  This is lenient on the way
+    IN -- another spelling of the same instant is a real timestamp and
+    rewriting it into the column's form is the right thing to do with it
+    -- so every value this module WRITES is the canonical form, and the
+    normalisation is disclosed once by build_row().  The record itself
+    is held to the narrow rule: row_field_problems() reports a stored
+    real_ts that is not byte-identical to its canonical rendering,
+    because a mixed-format column parses perfectly row by row while a
+    lexical sort of it silently stops being a chronological one.
+
     None IS REFUSED.  `ingame_clock` is the only nullable field in this
     schema, and it is nullable precisely so that an unreadable clock
     can be reported as unread.  real_ts is the opposite kind of value:
@@ -1884,10 +1935,26 @@ def build_row(frame, file, real_ts, ingame_clock, action, commentary):
     would be fabricated evidence rather than a convenience.
     """
     index = _validated_frame(frame)
+    stamped = canonical_real_ts(real_ts)
+    # A NORMALISATION IS DISCLOSED, not performed quietly.  capture.sh
+    # stamps the canonical form and hands it straight through, so this
+    # is silent for every row of a real session; a value that had to be
+    # rewritten means the timestamp came from somewhere else, and the
+    # operator should hear that once rather than discover it by finding
+    # a column that sorts wrongly.  Advisory rather than a refusal,
+    # because the value itself is a real instant and rewriting it into
+    # the column's one form is exactly the right thing to do with it.
+    if isinstance(real_ts, str) and real_ts.strip() != stamped:
+        _warn_once(
+            "real-ts-normalised",
+            "real_ts %r was rewritten to %r, the one form this column "
+            "is written in; the instant is unchanged.  capture.sh "
+            "already stamps that form, so a value needing this came "
+            "from somewhere else" % (real_ts, stamped))
     row = {
         "frame": index,
         "file": _validated_file(file, index),
-        "real_ts": canonical_real_ts(real_ts),
+        "real_ts": stamped,
         "ingame_clock": _validated_ingame_clock(ingame_clock),
         "action": _validated_text(action, "action"),
         "commentary": _validated_commentary(commentary),
@@ -2474,10 +2541,35 @@ def row_field_problems(row, number):
     real_ts = row["real_ts"]
     if isinstance(real_ts, str) and real_ts.strip():
         try:
-            canonical_real_ts(real_ts)
+            canonical = canonical_real_ts(real_ts)
         except ManifestError as err:
             problems.append(
                 "row %d real_ts is malformed: %s" % (number, err))
+        else:
+            # THE STORED FORM, not merely a parsable one.  The writer
+            # normalises whatever it is handed (see canonical_real_ts),
+            # so every row THIS module wrote is already canonical and
+            # this costs a well-formed record nothing.  What it catches
+            # is a row that reached the file another way -- a hand
+            # edit, a foreign tool -- in one of the other ISO-8601
+            # spellings of the same instant: '...T06:53:55Z' without
+            # the milliseconds, a space instead of the 'T', an offset
+            # other than 'Z'.  Each of those parses perfectly and each
+            # of them destroys the one property the column is FOR: with
+            # a single form, a lexical sort of real_ts is a
+            # chronological sort, which is what makes "the timestamps
+            # never go backwards" a one-line check over the record
+            # rather than a parse of every row.  Mixed forms sort
+            # wrongly while every value in them is individually
+            # correct, so the defect is invisible in any single row and
+            # has to be caught here.
+            if canonical != real_ts:
+                problems.append(
+                    "row %d real_ts is %r, which is not the one form "
+                    "this column is written in (%r is the same instant "
+                    "in it); a lexical sort of the column is only a "
+                    "chronological sort while every row shares one "
+                    "form" % (number, real_ts, canonical))
     clock = row["ingame_clock"]
     if clock is not None:
         if not isinstance(clock, str) or not clock.strip():

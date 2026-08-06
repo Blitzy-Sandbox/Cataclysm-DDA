@@ -74,6 +74,7 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import manifest  # noqa: E402  (path set above, as the siblings do)
+import ocr_clock  # noqa: E402
 import session  # noqa: E402
 
 FIXED_REAL_TS = "2026-08-03T19:14:42.507Z"
@@ -1191,6 +1192,285 @@ class SaveTreeConfinement(SessionFixture):
         self.assertEqual(probe.character_count, 1)
 
 
+class OpenTimePreflights(SessionFixture):
+    """What is decidable before the keystroke is decided at open.
+
+    Two QA findings, one shape.  A manifest by another name and an
+    append target that cannot be appended to are both settled by the
+    filesystem alone, and both used to be discovered only when a row
+    was written -- after a key had been delivered and a frame captured
+    for it.  The keystroke is the one act this pipeline cannot take
+    back, so spending one on a condition that was already true is a
+    defect in ORDERING, and these tests hold the order.
+    """
+
+    def unopenable(self, **extra):
+        """Assert opening refuses, and report the diagnostic."""
+        arguments = {
+            "manifest_path": self.manifest,
+            "frames_dir": self.frames,
+            "observations_path": self.observations,
+            "capture_script": self.capture,
+            "window_id": None,
+            "root": self.root,
+        }
+        arguments.update(extra)
+        with self.assertRaises(session.RecordError) as refused:
+            session.Session(**arguments)
+        return str(refused.exception)
+
+    def test_a_manifest_by_another_name_is_refused_at_open(self):
+        # The exact reproduction: a path INSIDE the tree, which
+        # containment alone accepts, that is not the record.
+        other = os.path.join(self.build, "other.jsonl")
+        reason = self.unopenable(manifest_path=other)
+        self.assertIn("manifest.jsonl", reason)
+        self.assertIn("NOTHING HAS BEEN SENT", reason)
+        self.assertEqual(os.listdir(self.frames), [])
+        self.assertEqual(self.rows(), [])
+        self.assertFalse(os.path.exists(other))
+
+    def test_the_environment_cannot_smuggle_another_name_in(self):
+        # $PLAYTHROUGH_MANIFEST is where such a value really comes from,
+        # so the default branch must be held to the same rule.
+        other = os.path.join(self.build, "other.jsonl")
+        os.environ["PLAYTHROUGH_MANIFEST"] = other
+        self.addCleanup(os.environ.pop, "PLAYTHROUGH_MANIFEST", None)
+        with self.assertRaises(session.RecordError) as refused:
+            session.Session(
+                frames_dir=self.frames,
+                observations_path=self.observations,
+                capture_script=self.capture,
+                window_id=None,
+                root=self.root)
+        self.assertIn("manifest.jsonl", str(refused.exception))
+
+    def test_an_unappendable_sidecar_is_refused_before_the_key(self):
+        # A directory in the sidecar's place is the portable stand-in
+        # for the reported fault (chattr +i): the append fails at the
+        # open, which is the only thing this module can act on.
+        os.rmdir(self.build)
+        os.makedirs(self.observations)
+        sent = []
+        original = session.send_key
+        session.send_key = lambda window, key, timeout=None: sent.append(
+            key)
+        self.addCleanup(setattr, session, "send_key", original)
+        reason = self.unopenable()
+        self.assertIn("the telemetry sidecar", reason)
+        self.assertIn("nothing has been sent", reason)
+        self.assertEqual(sent, [])
+        self.assertEqual(os.listdir(self.frames), [])
+        self.assertEqual(self.rows(), [])
+
+    def test_the_preflight_creates_no_record(self):
+        # It must not manufacture the very file it is checking: an empty
+        # manifest.jsonl is itself a problem every reader reports.
+        opened = self.open_session()
+        self.assertFalse(os.path.isfile(self.manifest))
+        self.assertFalse(os.path.isfile(self.observations))
+        self.assertEqual(opened.frame, 0)
+
+    def test_an_existing_target_is_left_byte_for_byte(self):
+        with open(self.observations, "w", encoding="utf-8") as handle:
+            handle.write('{"frame": 1}\n')
+        before = os.stat(self.observations)
+        session.assert_append_target(
+            self.observations, "the telemetry sidecar")
+        after = os.stat(self.observations)
+        self.assertEqual(before.st_size, after.st_size)
+        with open(self.observations, "r", encoding="utf-8") as handle:
+            self.assertEqual(handle.read(), '{"frame": 1}\n')
+
+    def test_a_directory_in_the_file_s_place_is_refused(self):
+        target = os.path.join(self.build, "as_a_directory.jsonl")
+        os.makedirs(target)
+        with self.assertRaises(session.RecordError) as refused:
+            session.assert_append_target(target, "the sidecar")
+        self.assertIn("cannot be appended to", str(refused.exception))
+
+    def test_an_absent_target_needs_a_directory_that_exists(self):
+        missing = os.path.join(self.build, "gone", "sidecar.jsonl")
+        with self.assertRaises(session.RecordError) as refused:
+            session.assert_append_target(missing, "the sidecar")
+        self.assertIn("is not", str(refused.exception))
+        self.assertFalse(os.path.exists(os.path.dirname(missing)))
+        # ... unless the caller is the one that creates it, which is
+        # what append_observation() itself does for the sidecar.
+        self.assertEqual(
+            session.assert_append_target(
+                missing, "the sidecar", create_parent=True),
+            missing)
+        self.assertTrue(os.path.isdir(os.path.dirname(missing)))
+        self.assertFalse(os.path.exists(missing))
+
+
+class TheAttestationIsPartOfTheRecord(SessionFixture):
+    """A sidecar that falls behind the manifest is REPORTED.
+
+    The reported failure: three steps whose telemetry append failed
+    after their manifest rows were durable left the record eleven rows
+    long and the sidecar eight, and `status` still said the record was
+    sound -- because verify_record() had only ever compared the
+    manifest with the frames.  The attestation is the only place the
+    key that was pressed and the sidebar date line were written down,
+    so a gap there is evidence lost and has to be visible.
+    """
+
+    def three_steps(self):
+        """Record three ordinary steps and return the session."""
+        opened = self.open_session()
+        self.stub_window(opened)
+        for key, reason in (("j", "south"), ("k", "north"),
+                            ("h", "west")):
+            opened.step(key, note=reason, commentary="Moving on.")
+        return opened
+
+    def keep_first_sidecar_row(self):
+        """Leave one attestation, as a failed append would have."""
+        with open(self.observations, "r", encoding="utf-8") as handle:
+            first = handle.readlines()[0]
+        with open(self.observations, "w", encoding="utf-8") as handle:
+            handle.write(first)
+
+    def test_a_complete_record_reports_nothing(self):
+        opened = self.three_steps()
+        self.assertEqual(len(self.rows()), 3)
+        self.assertEqual(len(self.sidecar()), 3)
+        self.assertEqual(opened.verify_record(), ())
+
+    def test_a_shortfall_names_every_frame_it_lost(self):
+        opened = self.three_steps()
+        self.keep_first_sidecar_row()
+        problems = opened.verify_record()
+        self.assertEqual(len(problems), 1, msg=problems)
+        self.assertIn("2 recorded frame(s) have no telemetry row",
+                      problems[0])
+        self.assertIn("2, 3", problems[0])
+        self.assertIn("observations.jsonl", problems[0])
+
+    def test_the_frames_and_the_manifest_still_agree(self):
+        # The primary record is intact in this state, which is exactly
+        # why the old check reported nothing: the shortfall is a THIRD
+        # comparison, not a restatement of the first two.
+        self.three_steps()
+        self.keep_first_sidecar_row()
+        self.assertEqual(
+            manifest.verify_manifest(
+                self.manifest, self.frames, require_frames=True,
+                root=self.root),
+            [])
+
+    def test_an_attestation_for_an_unrecorded_frame_is_reported(self):
+        opened = self.three_steps()
+        session.append_observation(
+            self.observations, {"frame": 9, "key": "j"},
+            require_durable=False, root=self.root)
+        problems = opened.verify_record()
+        self.assertEqual(len(problems), 1, msg=problems)
+        self.assertIn("the manifest does not record", problems[0])
+        self.assertIn("9", problems[0])
+
+    def test_a_repeated_index_is_not_a_problem(self):
+        # Deliberate: the sidecar is append-only and timeline.py reads
+        # it with a last-row-wins rule so that a re-captured frame means
+        # what it obviously means.  Calling that a defect here would
+        # contradict the reader that consumes the file.
+        opened = self.three_steps()
+        row = dict(self.sidecar()[0])
+        session.append_observation(
+            self.observations, row, require_durable=False,
+            root=self.root)
+        self.assertEqual(opened.verify_record(), ())
+
+    def test_a_torn_line_is_reported_rather_than_skipped(self):
+        opened = self.three_steps()
+        with open(self.observations, "a", encoding="utf-8") as handle:
+            handle.write('{"frame": 4, "key": "j"')
+        problems = opened.verify_record()
+        self.assertTrue(
+            any("is not JSON" in problem for problem in problems),
+            msg=problems)
+        self.assertTrue(any("line 4" in problem for problem in problems),
+                        msg=problems)
+
+    def test_a_row_without_an_index_is_reported(self):
+        opened = self.three_steps()
+        session.append_observation(
+            self.observations, {"file": "playthrough/frames/x.png"},
+            require_durable=False, root=self.root)
+        problems = opened.verify_record()
+        self.assertTrue(
+            any("which is not an index" in problem
+                for problem in problems), msg=problems)
+
+    def test_telemetry_with_no_manifest_at_all_is_reported(self):
+        opened = self.open_session()
+        session.append_observation(
+            self.observations, {"frame": 1, "key": "j"},
+            require_durable=False, root=self.root)
+        problems = opened.verify_record()
+        self.assertTrue(
+            any("the manifest does not record" in problem
+                for problem in problems), msg=problems)
+
+    def test_the_reader_returns_the_rows_as_written(self):
+        self.three_steps()
+        rows = session.read_observations(self.observations, self.root)
+        self.assertEqual([row["frame"] for row in rows], [1, 2, 3])
+        self.assertEqual([row["key"] for row in rows], ["j", "k", "h"])
+
+    def test_an_absent_sidecar_reads_as_no_rows(self):
+        self.assertEqual(
+            session.read_observations(self.observations, self.root), ())
+
+
+class TheCaptureFailureDiagnostic(SessionFixture):
+    """A failure after the keystroke says how it is recovered.
+
+    The abort reason names the journal and the same-index recovery.  It
+    used to be stored and never printed, because the step re-raised the
+    capturer's own message instead -- so the operator was told the frame
+    was lost and not told it would be captured at the same index on the
+    next invocation.
+    """
+
+    def test_the_capture_failure_names_the_journal(self):
+        opened = self.open_session()
+        self.stub_window(opened)
+        os.environ["STUB_FAIL"] = "1"
+        with self.assertRaises(session.CaptureError) as failed:
+            opened.step("j", note="west along the fence",
+                        commentary="West.")
+        reason = str(failed.exception)
+        self.assertIn(session.journal_path(self.root), reason)
+        self.assertIn("captures this index", reason)
+        self.assertEqual(reason, opened.aborted)
+        # The capturer's own diagnostic is not lost: it is the chained
+        # cause, so nothing about why the frame failed is thrown away.
+        self.assertIn("capture.sh exited 4",
+                      str(failed.exception.__cause__))
+
+    def test_the_exception_class_is_preserved(self):
+        # The branch also sees a capture that timed out (plain
+        # SessionError) and a capturer that has gone missing
+        # (ToolMissing), and the exit status tells those apart -- so the
+        # message is replaced and the class is not.
+        opened = self.open_session()
+        self.stub_window(opened)
+
+        def missing(index):
+            """Stand in for a capturer that cannot be run."""
+            raise session.ToolMissing("the capturer is gone")
+
+        opened._capture_frame = missing
+        with self.assertRaises(session.ToolMissing) as failed:
+            opened.step("j", note="west", commentary="West.")
+        self.assertIn("captures this index", str(failed.exception))
+        self.assertEqual(
+            session._status_for(failed.exception), session.EXIT_USAGE)
+
+
 class RelativeReporting(unittest.TestCase):
     """Finding 18: a summary discloses no host path."""
 
@@ -1219,6 +1499,414 @@ class RelativeReporting(unittest.TestCase):
             self.assertNotEqual(start, -1, msg=emitted)
             window = text[start:start + 160]
             self.assertIn("relative_to_repo", window, msg=emitted)
+
+
+class MenuHotkeyCollision(SessionFixture):
+    """The permitted door may not be taken by its own letter.
+
+    src/main_menu.cpp declares "C<u|U>stom Character" in the new-game
+    submenu (:476) and "T<u|U>torial Game" on the top row (:466) -- the
+    same two letters -- and runtime testing showed the top row wins: the
+    submenu folds away and the highlight comes to rest on the tutorial.
+    """
+
+    def warnings(self):
+        """Capture stderr while a step runs, and return it."""
+        import io
+        import contextlib
+        stream = io.StringIO()
+        return stream, contextlib.redirect_stderr(stream)
+
+    def test_the_collision_is_reported_when_the_row_says_so(self):
+        opened = self.open_session()
+        self.stub_window(opened)
+        stream, capture = self.warnings()
+        with capture:
+            opened.step("u", commentary="The custom sheet, not a dice "
+                                        "roll.",
+                        note="open the custom character entry")
+        emitted = stream.getvalue()
+        self.assertIn("main_menu.cpp:466", emitted)
+        self.assertIn("T<u|U>torial Game", emitted)
+        self.assertIn("walk the top row", emitted)
+        # Advisory only: the key was still sent and the row recorded.
+        self.assertEqual(self.sent, ["u"])
+        self.assertEqual(len(self.rows()), 1)
+
+    def test_ordinary_play_with_the_same_letter_is_silent(self):
+        opened = self.open_session()
+        self.stub_window(opened)
+        stream, capture = self.warnings()
+        with capture:
+            opened.step("u", commentary="Past the chair, north-east.",
+                        note="step north-east into the next room")
+        self.assertNotIn("main_menu.cpp:466", stream.getvalue())
+        self.assertEqual(self.sent, ["u"])
+
+    def test_the_verified_route_is_stated_and_letter_free(self):
+        route = " ".join(session.MENU_CUSTOM_CHARACTER_ROUTE).lower()
+        for expected in ("left/right", "up/down", "read the capture",
+                         "return"):
+            self.assertIn(expected, route)
+        self.assertEqual(session.MENU_HOTKEY_COLLISION, ("u", "U"))
+        self.assertEqual(session.MENU_TUTORIAL_ENTRY,
+                         "T<u|U>torial Game")
+
+
+class ObservedEffectHelpers(unittest.TestCase):
+    """The guard's pure parts, which decide what a row may claim.
+
+    Runtime testing of the first recorded session found rows written
+    from the keystroke that was INTENDED rather than from what the
+    capture afterwards showed -- typing that never reached the field
+    because a Yes/No question had the screen, steps that never happened
+    because the map did not move.  These assertions hold the marker
+    convention that makes such a row say so.
+    """
+
+    def test_the_marker_is_appended_and_the_note_survives(self):
+        self.assertEqual(
+            session.annotate_action(
+                "press 'e' -- aimed at the world name",
+                session.EFFECT_UNCHANGED),
+            "press 'e' -- aimed at the world name; "
+            "nothing on the screen changed")
+        self.assertEqual(
+            session.annotate_action(
+                "press 'k' -- try to step north",
+                session.EFFECT_OUTSIDE_MAP),
+            "press 'k' -- try to step north; "
+            "nothing in the map column changed")
+
+    def test_a_bare_identity_gains_a_note_rather_than_a_semicolon(self):
+        annotated = session.annotate_action(
+            "press 'k'", session.EFFECT_UNCHANGED)
+        self.assertEqual(
+            annotated,
+            "press 'k' -- nothing on the screen changed")
+        # It must still be a derived action for the key it names.
+        self.assertEqual(
+            session.assert_action_derived("k", annotated), annotated)
+
+    def test_the_marker_is_added_at_most_once(self):
+        once = session.annotate_action(
+            "press 'e' -- x", session.EFFECT_UNCHANGED)
+        twice = session.annotate_action(once, session.EFFECT_UNCHANGED)
+        self.assertEqual(once, twice)
+
+    def test_the_verdicts_that_annotate_nothing(self):
+        for verdict in (session.EFFECT_CHANGED, session.EFFECT_FIRST,
+                        session.EFFECT_UNKNOWN, "nonsense", None):
+            with self.subTest(verdict=verdict):
+                self.assertEqual(
+                    session.annotate_action("press 'j' -- south",
+                                            verdict),
+                    "press 'j' -- south")
+
+    def test_a_verdict_is_read_from_an_effect_or_a_string(self):
+        self.assertEqual(
+            session.verdict_of(session.ObservedEffect(
+                session.EFFECT_OUTSIDE_MAP)),
+            session.EFFECT_OUTSIDE_MAP)
+        self.assertEqual(
+            session.verdict_of(session.EFFECT_UNCHANGED),
+            session.EFFECT_UNCHANGED)
+        self.assertEqual(session.verdict_of("typo"),
+                         session.EFFECT_UNKNOWN)
+
+    def test_the_map_column_is_the_side_the_sidebar_is_not_on(self):
+        # The measured layout of this record: a 352 px sidebar at
+        # x=1568 inside a 1920x1080 root.
+        self.assertEqual(
+            session.map_column_geometry(_FakeRect(1568, 352),
+                                        1920, 1080),
+            "1568x1080+0+0")
+        # A left-hand sidebar leaves the map on the right.
+        self.assertEqual(
+            session.map_column_geometry(_FakeRect(0, 352), 1920, 1080),
+            "1568x1080+352+0")
+        # Nonsense is refused rather than guessed.
+        for rect in (_FakeRect(1568, 500), _FakeRect(-1, 352),
+                     _FakeRect(0, 1920)):
+            with self.subTest(rect=(rect.x, rect.width)):
+                self.assertIsNone(
+                    session.map_column_geometry(rect, 1920, 1080))
+        self.assertIsNone(
+            session.map_column_geometry(object(), 1920, 1080))
+
+    def test_movement_wording_is_recognised(self):
+        for text in ("press 'k' -- step north again",
+                     "press 'h' -- keep going west",
+                     "I walked one, onto a chair"):
+            with self.subTest(text=text):
+                self.assertTrue(session.movement_claim(text))
+        for text in ("press 'Return' -- open the box", None, 42):
+            with self.subTest(text=text):
+                self.assertFalse(session.movement_claim(text))
+
+    def test_the_sidecar_records_the_verdict_and_its_numbers(self):
+        payload = {
+            "FRAME_INDEX": "7",
+            "FRAME_FILE": "playthrough/frames/frame_00007.png",
+            "REAL_TS": FIXED_REAL_TS,
+        }
+        row = session.observation_row(
+            7, payload, key="e", action="press 'e' -- x",
+            effect=session.ObservedEffect(
+                session.EFFECT_OUTSIDE_MAP, screen_pixels=138,
+                map_pixels=0, map_box=None))
+        self.assertEqual(row["effect"], session.EFFECT_OUTSIDE_MAP)
+        self.assertEqual(row["screen_diff_px"], 138)
+        self.assertEqual(row["map_diff_px"], 0)
+        self.assertNotIn("map_diff_box", row)
+        plain = session.observation_row(
+            7, payload, key="e", action="press 'e' -- x",
+            effect=session.EFFECT_FIRST)
+        self.assertEqual(plain["effect"], session.EFFECT_FIRST)
+        with self.assertRaises(session.RecordError):
+            session.observation_row(
+                7, payload, key="e", action="press 'e' -- x",
+                effect="whatever")
+
+
+class _FakeRect(object):
+    """The two fields the map-column computation reads off a rect."""
+
+    def __init__(self, x, width):
+        self.x = x
+        self.width = width
+
+    def __str__(self):
+        return "%dx?+%d+?" % (self.width, self.x)
+
+
+def _png(path, width, height, pixels):
+    """Write a minimal 8-bit RGB PNG.  Standard library only.
+
+    `pixels` is called with (x, y) and returns an (r, g, b) triple, so a
+    test can draw exactly the region it wants to differ.
+    """
+    import struct
+    import zlib
+
+    raw = bytearray()
+    for y in range(height):
+        raw.append(0)  # filter type 0
+        for x in range(width):
+            raw.extend(pixels(x, y))
+
+    def chunk(kind, payload):
+        body = kind + payload
+        crc = struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF)
+        return struct.pack(">I", len(payload)) + body + crc
+
+    with open(path, "wb") as handle:
+        handle.write(b"\x89PNG\r\n\x1a\n")
+        handle.write(chunk(b"IHDR", struct.pack(
+            ">IIBBBBB", width, height, 8, 2, 0, 0, 0)))
+        handle.write(chunk(b"IDAT", zlib.compress(bytes(raw), 9)))
+        handle.write(chunk(b"IEND", b""))
+    return path
+
+
+class ObservedEffectMeasurement(unittest.TestCase):
+    """The guard against real image files, through the real tool.
+
+    Nothing here runs the engine or opens a display: the captures are
+    written by the helper above, and `convert` -- which capture.sh
+    already requires -- does the measuring.
+    """
+
+    def setUp(self):
+        self.directory = tempfile.mkdtemp(prefix="cata_effect_")
+        self.addCleanup(shutil.rmtree, self.directory, True)
+        session.reset_advisories()
+        try:
+            session._verified(session.CONVERT)
+        except session.ToolMissing as err:  # pragma: no cover
+            self.skipTest("convert is unavailable: %s" % err)
+
+    def frame(self, name, mark=None):
+        """Write a 40x20 capture, optionally marking one pixel."""
+        def pixels(x, y):
+            if mark is not None and (x, y) == mark:
+                return (255, 255, 255)
+            return (0, 0, 0)
+        return _png(os.path.join(self.directory, name), 40, 20, pixels)
+
+    def test_identical_captures_are_unchanged(self):
+        first = self.frame("a.png")
+        second = self.frame("b.png")
+        effect = session.classify_effect(
+            first, second, map_geometry="20x20+0+0")
+        self.assertEqual(effect.verdict, session.EFFECT_UNCHANGED)
+        self.assertEqual(effect.screen_pixels, 0)
+
+    def test_a_change_outside_the_map_column_is_named_as_such(self):
+        first = self.frame("a.png")
+        second = self.frame("b.png", mark=(30, 5))
+        effect = session.classify_effect(
+            first, second, map_geometry="20x20+0+0")
+        self.assertEqual(effect.verdict, session.EFFECT_OUTSIDE_MAP)
+        self.assertEqual(effect.screen_pixels, 1)
+        self.assertEqual(effect.map_pixels, 0)
+
+    def test_a_change_inside_the_map_column_is_a_change(self):
+        first = self.frame("a.png")
+        second = self.frame("b.png", mark=(4, 6))
+        effect = session.classify_effect(
+            first, second, map_geometry="20x20+0+0")
+        self.assertEqual(effect.verdict, session.EFFECT_CHANGED)
+        self.assertEqual(effect.map_pixels, 1)
+        self.assertEqual(effect.map_box, "1x1+4+6")
+
+    def test_no_predecessor_is_reported_rather_than_judged(self):
+        effect = session.classify_effect(None, self.frame("a.png"))
+        self.assertEqual(effect.verdict, session.EFFECT_FIRST)
+        self.assertIsNone(effect.screen_pixels)
+
+    def test_an_unmeasurable_pair_is_unknown_not_changed(self):
+        broken = os.path.join(self.directory, "broken.png")
+        with open(broken, "w", encoding="utf-8") as handle:
+            handle.write("not a png")
+        effect = session.classify_effect(broken, self.frame("a.png"))
+        self.assertEqual(effect.verdict, session.EFFECT_UNKNOWN)
+
+    def test_a_measurement_counts_pixels_not_bytes(self):
+        first = self.frame("a.png")
+        second = self.frame("b.png", mark=(1, 1))
+        pixels, box = session.measure_difference(first, second)
+        self.assertEqual(pixels, 1)
+        self.assertEqual(box, "1x1+1+1")
+        pixels, box = session.measure_difference(first, first)
+        self.assertEqual(pixels, 0)
+        self.assertIsNone(box)
+
+
+class ObservedEffectInTheStep(SessionFixture):
+    """A swallowed keystroke cannot be written up as though it landed."""
+
+    STUB = """#!/bin/sh
+set -eu
+index="${FRAME_INDEX}"
+name="$(printf 'frame_%05d.png' "${index}")"
+path="${STUB_FRAMES}/${name}"
+source="${STUB_PNG_DEFAULT}"
+eval "override=\\${STUB_PNG_${index}:-}"
+if [ -n "${override}" ]; then
+    source="${override}"
+fi
+cp "${source}" "${path}"
+cat <<PAYLOAD
+CAPTURE_MODE=production
+FRAME_INDEX=${index}
+FRAME_NAME=${name}
+FRAME_FILE=playthrough/frames/${name}
+FRAME_PATH=${path}
+FRAME_GEOMETRY=40x20
+REAL_TS=__REAL_TS__
+CAPTURE_TOOL=stub
+LUMA_MEAN=0.27
+LUMA_STDDEV=0.19
+CLOCK_RECT=8x20+32+0
+CLOCK_RECT_FROM=given
+CLOCK_SOURCE=stub
+CLOCK_STATUS=exact
+CLOCK=08:15:33
+TIME_PHRASE=
+DATE=Spring, day 61
+DATE_STATUS=read
+OBSERVATIONS=${STUB_OBSERVATIONS}
+PAYLOAD
+""".replace("__REAL_TS__", FIXED_REAL_TS)
+
+    def setUp(self):
+        super(ObservedEffectInTheStep, self).setUp()
+        try:
+            session._verified(session.CONVERT)
+        except session.ToolMissing as err:  # pragma: no cover
+            self.skipTest("convert is unavailable: %s" % err)
+        with open(self.capture, "w", encoding="utf-8") as handle:
+            handle.write(self.STUB)
+        os.chmod(self.capture, 0o755)
+        self.blank = self.png("blank.png")
+        self.set_env("STUB_PNG_DEFAULT", self.blank)
+        # The sidebar crop the guard resolves the map column from.  It
+        # is substituted rather than computed because the real
+        # computation resolves the COMMITTED layout -- 44 cells, 352 px
+        # at x=1568 in a 1920x1080 root -- which cannot be reconciled
+        # with a 40x20 stand-in capture, and writing 1920x1080 captures
+        # here would test PNG compression rather than the guard.  The
+        # substitution keeps the same shape: a narrow column at the
+        # right-hand edge, so the map column is everything left of it.
+        original = ocr_clock.resolve_rect
+        self.addCleanup(
+            setattr, ocr_clock, "resolve_rect", original)
+        ocr_clock.resolve_rect = lambda *args, **kwargs: (
+            _FakeRect(32, 8), 16)
+
+    def set_env(self, name, value):
+        previous = os.environ.get(name)
+        os.environ[name] = value
+        self.addCleanup(self._restore, name, previous)
+
+    def png(self, name, mark=None):
+        path = os.path.join(self.directory, name)
+
+        def pixels(x, y):
+            if mark is not None and (x, y) == mark:
+                return (255, 255, 255)
+            return (0, 0, 0)
+        return _png(path, 40, 20, pixels)
+
+    def test_an_identical_capture_makes_the_row_say_so(self):
+        opened = self.open_session()
+        self.stub_window(opened)
+        first = opened.step("F", commentary="Fern Creek.",
+                            note="the first letter of the name")
+        self.assertEqual(first.effect, session.EFFECT_FIRST)
+        self.assertNotIn(session.MARKER_UNCHANGED, first.action)
+        second = opened.step(
+            "e", commentary="Keep spelling.",
+            note="aimed at the world name")
+        self.assertEqual(second.effect, session.EFFECT_UNCHANGED)
+        self.assertTrue(
+            second.action.endswith("; " + session.MARKER_UNCHANGED),
+            second.action)
+        rows = self.rows()
+        self.assertEqual(rows[1]["action"], second.action)
+        self.assertEqual(self.sidecar()[1]["effect"],
+                         session.EFFECT_UNCHANGED)
+        self.assertEqual(self.sidecar()[1]["screen_diff_px"], 0)
+        self.assertFalse(second.screen_moved)
+
+    def test_a_change_beside_the_map_makes_the_row_say_so(self):
+        opened = self.open_session()
+        self.stub_window(opened)
+        opened.step("k", commentary="North.", note="step north")
+        self.set_env("STUB_PNG_2", self.png("counter.png", mark=(36, 3)))
+        second = opened.step(
+            "k", commentary="Two steps.", note="step north again")
+        self.assertEqual(second.effect, session.EFFECT_OUTSIDE_MAP)
+        self.assertTrue(
+            second.action.endswith("; " + session.MARKER_OUTSIDE_MAP),
+            second.action)
+        sidecar = self.sidecar()[1]
+        self.assertEqual(sidecar["map_diff_px"], 0)
+        self.assertEqual(sidecar["screen_diff_px"], 1)
+        self.assertTrue(second.screen_moved)
+
+    def test_a_real_change_leaves_the_row_alone(self):
+        opened = self.open_session()
+        self.stub_window(opened)
+        opened.step("k", commentary="North.", note="step north")
+        self.set_env("STUB_PNG_2", self.png("moved.png", mark=(5, 9)))
+        second = opened.step(
+            "k", commentary="And again.", note="step north again")
+        self.assertEqual(second.effect, session.EFFECT_CHANGED)
+        self.assertEqual(second.action,
+                         "press 'k' -- step north again")
+        self.assertEqual(self.sidecar()[1]["map_diff_px"], 1)
 
 
 class CommittedArtifactsUntouched(unittest.TestCase):

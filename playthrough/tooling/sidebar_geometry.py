@@ -33,6 +33,25 @@ measures 1920x1072 at ``+0+4`` inside a 1920x1080 root, so ``y`` is 4 --
 COMPUTED as ``(1080 - 1072) // 2``, not a constant anywhere in this
 file.
 
+That centred ``y`` is the CONTRACT, and on the surface that produced the
+committed session it started four pixels short of where the grid
+actually began -- so the crop misses the grid's first four pixel rows
+and takes four rows of bottom border in their place.  Measured over all
+395 captures of that record: 387 carry ink in
+y0-3, 356 carry ink in y1068-1071, and NOT ONE carries ink in
+y1072-1079 -- so the grid sat at ``+0+0`` with all eight leftover
+pixels in a single band at the BOTTOM, because the engine blits the
+grid at the window's top-left and leaves the remainder as border
+[src/sdltiles.cpp:311-320, :1046-1050] and openbox had given the
+borderless window the whole root.  The arithmetic here is deliberately
+left as the centred form: a four-pixel error costs nothing, since the
+crop is 1072 rows tall and the clock row it exists to capture is at
+y288, far inside it either way; and ``ocr_clock.py`` does not trust
+this ``y`` for glyph slicing at all -- it MEASURES which vertical phase
+the engine's cell grid is really on by scoring candidates against the
+game's own font.  Read this ``y`` as "where a centred window would put
+the grid", never as "where the grid was".
+
 WHICH SIDEBAR, AND ON WHOSE AUTHORITY
 The width in cells belongs to the layout the engine is CURRENTLY
 drawing, which is not necessarily ``custom_sidebar``:

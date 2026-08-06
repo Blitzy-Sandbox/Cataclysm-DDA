@@ -63,6 +63,7 @@ suite created it.
 
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -77,6 +78,21 @@ TOOLING = os.path.dirname(os.path.abspath(__file__))
 PLAYTHROUGH = os.path.dirname(TOOLING)
 REPO_ROOT = os.path.dirname(PLAYTHROUGH)
 ENV_SH = os.path.join(TOOLING, "env.sh")
+
+# The one line in playthrough_secure_dir that READS the mode back after
+# the chmod.  Two tests below replace it wholesale to stand in for a
+# filesystem that accepted the chmod and did nothing, so the anchor has
+# to be the file's exact text -- including the line continuation, since
+# the reading goes through the verified `stat` resolved into
+# PLAYTHROUGH_UTIL_STAT rather than through whatever `stat` PATH offers.
+# Kept here as one constant so the two tests cannot drift apart from
+# each other, and so a future edit to env.sh fails loudly in
+# sabotaged_copy()'s uniqueness assertion instead of silently sabotaging
+# nothing.
+READ_ACTUAL_MODE = (
+    '    actual="$("${PLAYTHROUGH_UTIL_STAT}" -Lc \'%a\' '
+    '-- "${path}" \\\n'
+    '        2>/dev/null || true)"')
 
 # A deliberately ordinary PATH: nothing from the test runner's own
 # environment is inherited, so every command the file uses has to be
@@ -637,6 +653,129 @@ class TestTheRuntimeDirectory(EnvFixture):
         result = self.source(script=copy, cwd=root)
         self.assertNotEqual(result.status, 0)
         self.assertIn("cannot create", result.stderr)
+
+    def setgid_parent(self, name="setgid"):
+        """A directory carrying the set-group-ID bit, as /tmp does here.
+
+        A child created inside it inherits setgid, which is the whole
+        point: this reproduces the real host condition rather than
+        describing it.
+        """
+        path = os.path.join(self.root, name)
+        os.makedirs(path, exist_ok=True)
+        os.chmod(path, 0o2777)
+        self.assertTrue(os.stat(path).st_mode & stat.S_ISGID)
+        return path
+
+    def test_an_inherited_setgid_bit_is_not_a_refusal(self):
+        # THE REPORTED DEFECT.  /tmp is mode 2777 on this class of host;
+        # a runtime directory created under it comes out 2700, GNU chmod
+        # preserves that bit on a directory, and the old whole-string
+        # compare therefore refused a directory whose access bits were
+        # exactly the 0700 it asked for -- killing the source, and with
+        # it every stage that sources this file.
+        nominated = os.path.join(self.setgid_parent(), "runtime")
+        os.makedirs(nominated, mode=0o700)
+        self.assertTrue(os.stat(nominated).st_mode & stat.S_ISGID)
+        result = self.source(
+            preset={"PLAYTHROUGH_RUNTIME_DIR": nominated})
+        self.assertEqual(
+            result.status, 0,
+            msg="sourcing must survive a setgid temporary directory: %s"
+                % result.stderr)
+        self.assertEqual(result["PLAYTHROUGH_RUNTIME_DIR"], nominated)
+        self.assertEqual(os.stat(nominated).st_mode & 0o077, 0)
+        for name in ("log", "run", "lock", "rejected"):
+            child = os.path.join(nominated, name)
+            with self.subTest(child=name):
+                self.assertTrue(os.path.isdir(child))
+                self.assertEqual(os.stat(child).st_mode & 0o077, 0)
+
+    def test_the_setgid_case_says_nothing_about_being_widened(self):
+        # 2700 is not "wider than 0700", so announcing a repair would be
+        # a false alarm on every load on such a host -- and a false
+        # alarm about somebody having opened the runtime state to other
+        # accounts is the worst kind.
+        nominated = os.path.join(self.setgid_parent(), "quiet")
+        os.makedirs(nominated, mode=0o700)
+        result = self.source(
+            preset={"PLAYTHROUGH_RUNTIME_DIR": nominated})
+        self.assertEqual(result.status, 0, msg=result.stderr)
+        self.assertNotIn("was mode", result.stderr)
+
+    def test_a_group_or_other_bit_is_still_repaired_and_announced(self):
+        # The control itself is unchanged: what is tolerated is the
+        # special-bits digit, never a group or other permission.
+        nominated = os.path.join(self.setgid_parent(), "open")
+        os.makedirs(nominated, mode=0o700)
+        os.chmod(nominated, 0o2755)
+        result = self.source(
+            preset={"PLAYTHROUGH_RUNTIME_DIR": nominated})
+        self.assertEqual(result.status, 0, msg=result.stderr)
+        self.assertEqual(os.stat(nominated).st_mode & 0o077, 0)
+        self.assertIn("was mode", result.stderr)
+        self.assertIn("readable by other accounts", result.stderr)
+
+    def test_a_mode_that_stays_wide_is_still_fatal(self):
+        # The mode is CONFIRMED, not assumed from chmod's exit status.
+        # Sabotaging the reading to a world-writable one stands in for a
+        # filesystem that accepted the chmod and did nothing: the source
+        # must die rather than proceed on a promise.
+        nominated = os.path.join(self.root, "unrepairable")
+        os.makedirs(nominated, exist_ok=True)
+        root, copy = self.sabotaged_copy(
+            READ_ACTUAL_MODE,
+            '    actual="777"',
+            name="wide-mode")
+        result = self.source(
+            script=copy, cwd=root,
+            preset={"PLAYTHROUGH_RUNTIME_DIR": nominated})
+        self.assertNotEqual(result.status, 0)
+        self.assertIn("permission bits", result.stderr)
+
+    def test_a_special_bit_cannot_disguise_a_wide_mode(self):
+        # The tolerated digit is the special-bits one and nothing else:
+        # 2777 carries the same setgid bit as the accepted 2700 and must
+        # still be refused when it cannot be tightened.
+        nominated = os.path.join(self.root, "disguised")
+        os.makedirs(nominated, exist_ok=True)
+        root, copy = self.sabotaged_copy(
+            READ_ACTUAL_MODE,
+            '    actual="2777"',
+            name="wide-setgid")
+        result = self.source(
+            script=copy, cwd=root,
+            preset={"PLAYTHROUGH_RUNTIME_DIR": nominated})
+        self.assertNotEqual(result.status, 0)
+        self.assertIn("permission bits '777'", result.stderr)
+
+    def test_the_shell_and_the_python_agree_on_what_0700_means(self):
+        # The two halves of one contract.  session.py is documented as
+        # runnable with nothing sourced, so it restates this rule -- and
+        # a restatement that disagrees is how a host ends up able to run
+        # one and not the other.
+        nominated = os.path.join(self.setgid_parent("agree"), "both")
+        session_py = os.path.join(PLAYTHROUGH, "tooling", "session.py")
+        program = (
+            "import sys\n"
+            "sys.dont_write_bytecode = True\n"
+            "sys.path.insert(0, %r)\n"
+            "import session\n"
+            "print(session._secure_dir(%r, 'the runtime directory'))\n"
+            % (os.path.dirname(session_py), nominated))
+        completed = subprocess.run(
+            [sys.executable, "-B", "-c", program],
+            capture_output=True, timeout=120)
+        self.assertEqual(
+            completed.returncode, 0,
+            msg=completed.stderr.decode("utf-8", "replace"))
+        self.assertTrue(os.stat(nominated).st_mode & stat.S_ISGID)
+        result = self.source(
+            preset={"PLAYTHROUGH_RUNTIME_DIR": nominated})
+        self.assertEqual(
+            result.status, 0,
+            msg=("what session.py creates and accepts, env.sh must "
+                 "accept: %s" % result.stderr))
 
 
 class TestTheArtifactLayout(EnvFixture):
