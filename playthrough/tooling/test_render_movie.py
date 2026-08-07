@@ -322,6 +322,24 @@ class RenderFixture(unittest.TestCase):
             self.tools[name] = path
         self.processes = FakeProcesses()
         self.enter(_patched(rm, _run=self.processes))
+        # THE FRAMES AND TRANSITIONS DIRECTORIES HAVE TO BE CLEARED
+        # HERE TOO, and leaving them out was a real failure rather than
+        # an oversight worth tidying.  plan_render() resolves both
+        # through make_transitions.frames_dir() and
+        # make_transitions.default_transitions_dir(), and BOTH let
+        # $PLAYTHROUGH_FRAMES_DIR / $PLAYTHROUGH_TRANSITIONS_DIR win
+        # over the sibling-of-root derivation so that a clone-indexed
+        # run and the modules agree.  env.sh exports all of them
+        # pointing at the real checkout -- so after `source
+        # playthrough/tooling/env.sh`, which is how every other script
+        # in this pipeline is invoked, those variables outranked this
+        # fixture's temporary root and the containment guard correctly
+        # refused a capture directory outside it.  Fifty-four tests
+        # failed for a reason that had nothing to do with what they
+        # assert.  Cleared, the suite is hermetic: it passes whether or
+        # not the caller sourced env.sh first, which is the only way its
+        # verdict means anything.  Matches test_make_transitions.py,
+        # which clears the same set for the same reason.
         self.enter(_environment(
             PLAYTHROUGH_BIN_FFMPEG=self.tools[rm.FFMPEG],
             PLAYTHROUGH_BIN_FFPROBE=self.tools[rm.FFPROBE],
@@ -331,7 +349,11 @@ class RenderFixture(unittest.TestCase):
             PLAYTHROUGH_SCREEN_WIDTH=None,
             PLAYTHROUGH_SCREEN_HEIGHT=None,
             PLAYTHROUGH_ENCODE_TIMEOUT=None,
-            PLAYTHROUGH_PROBE_TIMEOUT=None))
+            PLAYTHROUGH_PROBE_TIMEOUT=None,
+            PLAYTHROUGH_FRAMES_DIR=None,
+            PLAYTHROUGH_TRANSITIONS_DIR=None,
+            PLAYTHROUGH_TRANSITION_FORMAT=None,
+            PLAYTHROUGH_REPO_ROOT=None))
 
     def enter(self, manager):
         """Enter a context manager for the length of one test."""

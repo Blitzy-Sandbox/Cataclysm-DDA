@@ -16,6 +16,29 @@ Every value below was read out of this checkout at the stated location. Where
 a number is quoted, it is the shipped value in this tree and not a value
 remembered from another version.
 
+`playthrough/README.md` would be the user-facing counterpart to this page —
+artifact inventory, how to re-run, the environment contract. It does not
+exist in this tree; see "Three artifacts the plan names that do not exist
+here" below, which records that as an outstanding gap rather than leaving it
+to be discovered.
+
+**How this page is arranged.** It grew in the order the work happened, which
+is the right order for a log and the wrong one for looking something up, so:
+
+* **The pre-play character build** and **Session log** are the record of the
+  session as it was played, written while it was being played.
+* **Post-capture verification**, **The session was re-recorded**, **The
+  commit identity**, **The two checkpoints** and **Runtime QA remediation**
+  are the successive review passes, each one dated and each one saying which
+  capture set it measured. Later sections supersede earlier counts and say
+  so explicitly; nothing earlier is edited away.
+* **The pipeline as built** — the last part of this page — is the
+  subject-ordered reference: the build, the headless contract, the seeded
+  options, the tileset, the save layout, the render path, the lint and CI
+  gates, the blast radius, and the meta observations that had no other home.
+  Every measurement in it was re-taken on the host that produced this file,
+  and each one says whether it confirms, supersedes or contradicts the plan.
+
 ## Read this before any count on this page
 
 **Two blocks of this page describe capture sets that no longer exist, and each
@@ -698,7 +721,9 @@ log says so, twice, at the launch that recorded this session:
 
 [playthrough/userdir/config/debug.log], matching `"name": "TILES", "value":
 "MshockXottoplus"` in [playthrough/userdir/config/options.json] and the id
-`NAME: MshockXottoplus` in [gfx/MShockXotto+/tileset.txt]. The close-range
+`NAME: MshockXottoplus` in `gfx/MShockXotto+/tileset.txt` — a path that
+exists only once the pack has been installed, since `gfx/` is untracked; see
+"The tileset" below for the current state of this clone. The close-range
 art in the gameplay frames is MSXotto+; `Larwick Overmap` is the *overmap*
 tileset the engine loaded alongside it, and no frame in this session shows the
 overmap screen, so it appears in the log and not in the film.
@@ -2265,3 +2290,1746 @@ all of it is the game drawing itself the way this build draws itself at
   fit in any pocket!` on row 27 and `There are no available choices` on
   row 44. The phrase also sits at columns 47–62, inside the map's half
   of the grid, so it is unrelated to the layering above.
+
+---
+
+## The pipeline as built
+
+Everything above is chronological. This part is the subject-ordered
+reference: build, environment, options, tileset, save layout, render, lint
+and CI, blast radius, and the leftovers that are meta by nature. It exists
+because a log is a poor place to look something up, and because several of
+the facts below cost an hour each to discover and would cost another hour
+each to rediscover.
+
+**Provenance convention, applied without exception below.** A value stated
+plainly was measured on the host that produced this file, during the pass
+that wrote it, with the command shown. A value marked *(plan)* comes from
+the Agent Action Plan or from the machine the plan was written on and was
+**not** reproduced here. Where a plan figure and a measurement disagree, both
+appear and the disagreement is stated: that is the point of keeping an
+engineering log rather than a summary. Nothing here is inferred from a
+figure someone else recorded.
+
+### The host this file was written on, measured rather than assumed
+
+The plan describes its provisioning host as Ubuntu 24.04 "noble". This is not
+that machine, and six of the plan's environment facts do not hold here. They
+are set out together because each one, taken on trust, sends you somewhere
+wrong.
+
+| Fact | Plan *(plan)* | Measured here | Consequence |
+| --- | --- | --- | --- |
+| Distribution | Ubuntu 24.04 noble | `Ubuntu 25.10` questing, `VERSION_ID="25.10"`, `uname -srm` → `Linux 6.12.85+ x86_64` | questing is past end of life, so every stage runs under an explicit logged waiver — see "Every stage ran under an explicit, logged platform waiver" above |
+| SDL3 availability | "packages no SDL3 at all"; `apt-cache policy libsdl3-dev` returns nothing | `libsdl3-dev` **is** packaged: `Candidate: 3.2.20+ds-2`, `Installed: (none)`; `pkg-config --exists sdl3` exits `1` | `SDL3=0` is still mandatory, but because 3.2.20 is **below** the Makefile's `--atleast-version=3.4.0` gate, not because the package is missing |
+| ImageMagick | 6.9.12-98 legacy branch; "the v7 unified `magick` entry point does **not** exist" | `ImageMagick 7.1.2-3 Q16 x86_64` (apt `8:7.1.2.3+dfsg1-1ubuntu0.1`); `/usr/bin/magick` **exists**, and so do `convert`, `identify`, `import`, all four as `/etc/alternatives` symlinks | the opposite of the warning: IM7 is installed *and* keeps the legacy names, so the pipeline's `convert`/`import`/`identify` calls work unchanged. `magick` and `convert` were checked to agree to the last digit on the same frame |
+| Memory and swap | ~3.85 GiB RAM, zero swap | `MemTotal: 4029526764 kB` = 3.75 **TiB**; `SwapTotal: 8388604 kB` on `/swapfile` | the memory ceiling that forced `-j3` does not exist here; the parallelism limit is CPU, not RAM |
+| CPU count | 128 CPUs | `nproc` → `4`, `nproc --all` → `128`, `getconf _NPROCESSORS_ONLN` → `128` | the pod's cgroup gives four usable CPUs out of 128 present. Size a build from `nproc`, never from `nproc --all` |
+| tesseract / ffmpeg | 5.3.4 / 6.1.1 | `tesseract 5.5.0` with `leptonica-1.84.1`; `ffmpeg`/`ffprobe` `7.1.1-1ubuntu4.2` | newer on both counts; the OCR figures in the plan were taken against 5.3.4 and are not reproduced here (see the render-path section) |
+
+The rest of the inventory, measured the same way: `make` 4.4.1,
+`pkg-config` 1.8.1, `ccache` 4.11.2, `msgfmt` (GNU gettext-tools) 0.23.1,
+`xdotool version 3.20160805.1`, `xvfb` `2:21.1.18-1ubuntu1.1`,
+`x11-utils` `7.7+7`, `openbox` `3.6.1-12ubuntu2`, `scrot` `1.12.1-1`,
+`shellcheck` 0.10.0. SDL2 by `pkg-config --modversion`: `sdl2` 2.32.4,
+`SDL2_ttf` 2.24.0, `SDL2_image` 2.8.8, `SDL2_mixer` 2.8.1, and
+`freetype2` 26.2.20 — that last is FreeType's ABI version, not its release
+version, and the plan's 26.1.20 is a different ABI generation, so do not
+treat either number as a release.
+
+Two interpreters, and the distinction is load-bearing: the system `python3`
+is **3.13.7** and carries the PEP 668 marker at
+`/usr/lib/python3.13/EXTERNALLY-MANAGED`, so nothing may be installed into
+it; the pipeline's own is `/opt/playthrough-venv/bin/python`, **CPython
+3.12.13**, which is the interpreter `playthrough/tooling/requirements.txt`
+contracts for and the third candidate `env.sh` resolves.
+
+### Building the tiles binary
+
+#### It is not in a fresh checkout, and that is the first thing to know
+
+`ls -la cataclysm-tiles` → *No such file or directory*. The binary is
+git-ignored:
+
+```console
+$ git check-ignore -v cataclysm-tiles
+.gitignore:75:*cataclysm-tiles   cataclysm-tiles
+```
+
+`.gitignore:75` sits in the block alongside `cataclysm`, `cata_test`,
+`cata_test-tiles` and `chkjson*`, so **no** checkout of this repository has
+a binary and the pipeline must build one. The plan's statement that
+`./cataclysm-tiles` "exists at the repository root" was true of its
+provisioning host and is true of no clone. `launch_game.sh build` (and
+`launch_game.sh all`, which calls it) exists precisely for this.
+
+#### The command, and why every part of it is the way it is
+
+```bash
+CXX=g++-14 CCACHE=1 make -j4 RELEASE=1 TILES=1 SOUND=1 SDL3=0 \
+    ASTYLE=0 LINTJSON=0
+```
+
+Every switch above is one the Makefile documents for itself: `CCACHE=1`
+[Makefile:32], `RELEASE=1` [Makefile:34], `TILES=1` [Makefile:36],
+`SOUND=1` [Makefile:38], `ASTYLE=0` [Makefile:88], `LINTJSON=0`
+[Makefile:90]. The target name comes out as `./cataclysm-tiles` from
+`TARGET_NAME = cataclysm` [Makefile:153],
+`TILES_TARGET_NAME = $(TARGET_NAME)-tiles` [Makefile:154] and
+`TILESTARGET = $(BUILD_PREFIX)$(TILES_TARGET_NAME)` [Makefile:160].
+
+**`SDL3=0` is mandatory on every invocation**, and the reason here is not
+the reason the plan gives. `SDL3` defaults to `1` whenever `TILES=1`
+[Makefile:791-793], which adds `-DUSE_SDL3` [Makefile:800] and then runs a
+hard version gate:
+
+```make
+SDL3_VERSION_OK := $(shell $(PKG_CONFIG) --atleast-version=3.4.0 sdl3 && echo ok)
+ifneq ($(SDL3_VERSION_OK),ok)
+  $(error SDL3 >= 3.4.0 required for the GPU shader path; ...)
+endif
+```
+
+[Makefile:812-816, the `$(error)` at :814]. On this host SDL3 is *packaged*
+— `apt-cache policy libsdl3-dev` reports `Candidate: 3.2.20+ds-2` — so
+reasoning "there is no SDL3 here, therefore SDL2" reaches the right answer by
+a route that is false, and would stop being right the moment someone installs
+the package. What actually binds is the version: 3.2.20 is below 3.4.0, and
+the package is not installed either, so `pkg-config --exists sdl3` exits `1`
+and the gate fires. Installing `libsdl3-dev` on this distribution would not
+change the conclusion, which is the useful part to know.
+The SDL2 route is the project's own documented fallback:
+`SDL3=0` is listed as "use the SDL2 fallback for tiles builds"
+[doc/c++/COMPILING.md:83], given as a worked example
+[doc/c++/COMPILING.md:174-176], and named for exactly this distribution case
+at [doc/c++/COMPILING.md:232].
+
+**`-j` is sized from `nproc`, which is 4 here, not from `nproc --all`,
+which is 128.** The plan caps parallelism at `-j3` for memory reasons that do
+not apply on this machine — it has 3.75 TiB of RAM and 8 GiB of swap — but
+the cap survives for a different reason: four usable CPUs. `make -j128` on
+four CPUs is slower than `make -j4`, not faster.
+
+**Four `make` variables must never be passed.** The first two are stated by
+the plan; the second two are the ones that would break this feature
+silently, and their proof is worth having in one place.
+
+* **`TESTS=0` must never be passed.** `TESTS` defaults to `1`
+  [Makefile:213], so the Catch2 binary is built as a matter of course and
+  the switch [Makefile:92] exists only to skip it.
+* **`NATIVE=linux64` must not be passed on ARM64.** Not binding on this
+  x86_64 host; recorded because it is invisible until the wrong machine.
+* **`USE_XDG_DIR=1` and `USE_HOME_DIR=1` must never be passed**, and this
+  is the one with teeth. Both are opt-in [Makefile:1211-1223] — and the
+  Makefile refuses both together, `$(error "USE_HOME_DIR=1 does not work
+  with USE_XDG_DIR=1")`. Either one alone compiles fine and then moves the
+  configuration directory out of the userdir entirely:
+
+  ```cpp
+  #if defined(USE_XDG_DIR)
+      ...
+      config_dir_value = dir;                              // an XDG path
+  #else
+      config_dir_value = user_dir_value + "config/";
+  #endif
+  ```
+
+  [src/path_info.cpp:152-166, the two assignments at :161 and :164]. With
+  either flag, `options.json` [src/path_info.cpp:167] and
+  `keybindings.json` [src/path_info.cpp:400-403] land outside
+  `playthrough/userdir/config/`, so `seed_options.py` would patch a file the
+  game never reads and the committed no-cheating evidence would not exist.
+  Nothing warns; the run just produces a differently-configured film and an
+  unfalsifiable integrity claim.
+
+**The compiler is `g++-14`, and the plan's stated reason is a
+mis-citation.** `doc/c++/COMPILER_SUPPORT.md` is a table of the **oldest**
+supported versions — GCC 9.3, clang 13.0 — and says the goal is to support
+"up to the newest stable versions"; GCC 14 appears in it only as the
+compiler Fedora 40 ships [doc/c++/COMPILER_SUPPORT.md:31-33]. So it does not
+designate GCC 14 as a maximum, and quoting it that way would be wrong. The
+real reason, measured: the default compiler here is `g++ (Ubuntu
+15.2.0-4ubuntu4) 15.2.0`, `g++-14` is `14.3.0`, and the project compiles
+with `-Werror -Wall -Wextra` [Makefile:104] against `-std=c++17`
+[Makefile:533]. A newer GCC's additional diagnostics therefore fail the
+build rather than warn, which is why the older, verified compiler is named
+explicitly instead of taking whatever `g++` resolves to.
+
+**Long builds must be fully detached.** `setsid nohup … >log 2>&1
+< /dev/null & disown`, then poll the log. A `make` run recorded earlier on
+this page was killed by `Interrupt` — not OOM, not a compile error — when an
+outer shell call timed out and signalled the whole process group. The same
+mechanism destroyed a creation run at frame 177, and the same remedy is why
+the game is now held by a supervised process rather than by a shell.
+
+#### The build leaves the tree pristine, and the C++ edit is retired
+
+Every path a tiles build writes is matched by an ignore rule, and each rule
+was named rather than assumed:
+
+```console
+$ for p in cataclysm-tiles obj/tiles/main.o src/version.h \
+>          lang/mo_built.stamp zzip cataclysm.a tests/cata_test; do
+>     git check-ignore -v -- "$p"
+> done
+.gitignore:75:*cataclysm-tiles          cataclysm-tiles
+.gitignore:60:/obj/                     obj/tiles/main.o
+.gitignore:63:/src/version.h            src/version.h
+.gitignore:148:/lang/mo_built.stamp     lang/mo_built.stamp
+.gitignore:83:zzip                      zzip
+.gitignore:200:cataclysm.a              cataclysm.a
+.gitignore:185:/tests/cata_test         tests/cata_test
+```
+
+Seven paths, seven rules, no gaps — including the three the plan does not
+list (`zzip`, `cataclysm.a`, `tests/cata_test`), which a build with the
+default `TESTS=1` produces. `git status --porcelain` at the head of this pass
+printed **nothing at all**, zero lines. Said precisely, because the
+distinction is exactly the kind this page exists to keep straight: this pass
+did not itself run a build, so what is measured is that the tree is clean
+beforehand and that every build output is provably untrackable. The
+consequence is the same either way — the only changes a build can leave
+behind are the intended ones — but it is an argument from ignore rules, not
+an observation of an after state.
+
+The binary's own `--version` is the sole accepted proof that it is the tiles
+build: a tiles build reports `+tiles` (and `+sound` with `SOUND=1`), and
+`launch_game.sh`'s `assert_tiles_binary` trusts nothing else — "not the file
+name, not the presence of `gfx/`, not the flags we think we passed"
+[playthrough/tooling/launch_game.sh:1415-1418].
+
+**And `SDL3=0` is confirmed by the engine rather than by the build command**,
+which is the strongest form the evidence can take given that no binary
+survives in the checkout. The committed
+[playthrough/userdir/config/debug.log] carries, on each of its three session
+banners:
+
+```
+INFO : Cataclysm DDA version e50300eeb0
+INFO : SDL version used during compile is 2.32.4
+INFO : SDL version used during linking and in runtime is 2.32.4
+INFO : SDL render devices: software, opengl, opengles2
+```
+
+`2.32.4` at both compile and run time is exactly what
+`pkg-config --modversion sdl2` reports on this host, so the binary that drew
+every committed frame was compiled and linked against **SDL 2**, not SDL 3 —
+the `SDL3=0` route, self-reported. The version string `e50300eeb0` in the same
+banner independently agrees with the `Version: e50300eeb0` read off the
+frames' own pixels later on this page: two unrelated sources, the engine's log
+and the photographed screen, naming the same commit.
+
+Three mods were loaded, and the log's display names resolve to ids the world
+records for itself. `save/Fern Creek/mods.json` reads
+`["dda", "no_npc_food", "personal_portal_storms"]`, and all three ship in this
+checkout — [data/mods/dda/modinfo.json],
+[data/mods/No_NPC_Food/modinfo.json] and
+[data/mods/Personal_Portal_Storms/modinfo.json]. None is a content addition by
+this feature, and `data/` is untouched, as the blast-radius proof shows.
+
+**The one C++ edit the plan anticipates is already applied, at both sites.**
+
+```console
+$ grep -n 'get_shared_variant_pass\|SDL_MAJOR_VERSION' src/pixel_minimap.cpp
+284:#if SDL_MAJOR_VERSION >= 3
+285:                                          , get_shared_variant_pass()
+476:#if SDL_MAJOR_VERSION >= 3
+477:                                     , get_shared_variant_pass()
+```
+
+So the SDL2 guard is present at both construction sites and the conditional
+edit is **retired, not pending**. Nothing under `src/` is modified by this
+feature; the blast-radius proof further down is the evidence.
+
+### The headless contract, and the ways it fails quietly
+
+The contract is defined once, in `playthrough/tooling/env.sh`, and sourced by
+every other script so that it cannot drift. The values were read out of that
+file rather than out of the plan — all line numbers below are in
+`playthrough/tooling/env.sh`:
+
+| Export | Line |
+| --- | --- |
+| `SDL_VIDEODRIVER=x11` | 1140 |
+| `SDL_AUDIODRIVER=dummy` | 1141 |
+| `LIBGL_ALWAYS_SOFTWARE=1` | 1146 |
+| `DISPLAY`, derived from the clone index | 1014-1017 |
+| `XDG_RUNTIME_DIR`, at mode 0700 | 1045 |
+| `PYTHONDONTWRITEBYTECODE=1` | 1169 |
+| `PYTHONUNBUFFERED=1` | 1173 |
+
+An `Xvfb` at `1920x1080x24` and `openbox` as a minimal window manager
+complete it — the window manager because focus and keyboard delivery do not
+behave without one.
+
+#### `SDL_VIDEODRIVER=dummy` is banned, and the luminance gate is why
+
+`dummy` renders zero pixels. The game runs, the captures succeed, the encode
+succeeds, every count tallies, and the only symptom is that the film is
+black — which is the definition of a failure that has to be made loud. The
+gate is a two-term assertion on grayscale statistics, and both terms are
+needed. Measured, with the controls first:
+
+```console
+$ convert -size 64x64 xc:black png:- \
+    | convert - -colorspace Gray -format "%[fx:mean] %[fx:standard_deviation]\n" info:
+0 0
+$ convert -size 64x64 xc:'#3a3a3a' png:- \
+    | convert - -colorspace Gray -format "%[fx:mean] %[fx:standard_deviation]\n" info:
+0.227451 0
+```
+
+The first line is what a `dummy`-driver frame measures: `mean=0`, `std=0`.
+The second is a uniform solid-colour frame — a perfectly healthy-looking mean
+with `std=0`. Take the two terms one at a time. **`mean > 0` alone lets the
+uniform frame through**, and a flat grey rectangle is not a screenshot of a
+game. **`std > 0` alone rejects both controls**, so on these two cases it
+would do — but it is a *contrast* test, and it passes any frame with variation
+in it whatever the brightness, which is precisely the thing a mean measures.
+Requiring both means a frame has to be non-black *and* have structure, and
+that pair is what the capture step asserts on every image it writes.
+
+Calibration against the committed capture set, by the pipeline's own method
+— `convert <png> -colorspace Gray -format
+'%[fx:mean] %[fx:standard_deviation]' info:` — which is literally what
+`capture.sh` runs [playthrough/tooling/capture.sh:1492-1493]:
+
+| Frame | mean | std | What it is |
+| --- | --- | --- | --- |
+| `frame_00195.png` | 0.00350987 | 0.0512185 | the darkest frame in the whole set, and it passes |
+| `frame_00419.png` | 0.00392848 | 0.0546159 | the last frame |
+| `frame_00250.png` | 0.148222 | 0.208645 | an ordinary lit gameplay screen |
+| `frame_00221.png` | 0.194235 | 0.214209 | the brightest in the set |
+
+All 419 committed frames were measured; **zero** fail `mean > 0 && std > 0`.
+The plan's calibration figure of `mean=0.270018 std=0.198145` *(plan)* is not
+reproduced by any frame here — the brightest is 0.194 — which is a scene
+difference, not a defect, and is recorded so nobody treats 0.27 as a
+threshold. A dark frame is not an empty one: the darkest frame above is 0.35%
+mean luminance and still carries 5% standard deviation, because a mostly
+black screen with text on it is exactly that.
+
+**One methodological trap, measured on the same frame.** These two commands
+do not return the same numbers:
+
+```console
+$ identify -format '%[fx:mean] %[fx:standard_deviation]\n' frame_00195.png
+0.00383317 0.0578542
+$ convert frame_00195.png -colorspace Gray \
+    -format '%[fx:mean] %[fx:standard_deviation]\n' info:
+0.00350987 0.0512185
+```
+
+The difference is the grayscale conversion: `identify` reports statistics for
+the image as stored, while the `convert` form collapses it to a single
+luminance channel first. They disagree by **9.2% on the mean** and **13.0% on
+the standard deviation** for the same file, which is far more than any
+threshold margin, so a gate has to fix its method and a number produced by one
+method must never be compared against a threshold calibrated with the other.
+The pipeline's method is the second. `magick` substituted for `convert`
+returns `0.00350987 0.0512185` — identical to the last digit — which is the
+direct evidence that IM7's legacy name is a true alias here rather than a
+different code path.
+
+#### Window targeting is by class, and the id is never scraped
+
+`xdotool search --name 'Cataclysm'` returns **empty** for this window, even
+though `xwininfo -root -children` lists it with the title
+`Cataclysm: Dark Days Ahead - <hash>`. `xdotool search --class
+cataclysm-tiles` works, and the class route is the only one the tooling uses
+[playthrough/tooling/launch_game.sh:2355-2371, where the same three facts are
+recorded beside the code that depends on them]. The id must also not be
+pulled out of `xwininfo` output with a loose hexadecimal pattern: the
+geometry substring on the same line mis-matches such patterns and hands a
+plausible-looking wrong number to `xdotool key --window`.
+
+Stated honestly about provenance: no game was running during this pass, so
+these three are the session's own observations (see "The capture path was
+proved without touching the committed userdir" above, where the window was
+found by class) plus the tooling's recorded rationale — not something
+re-measured here. `xdotool --version` was re-measured: `xdotool version
+3.20160805.1`. One further property of that tool, from the same comment
+block, is worth carrying: **`xdotool` has no `--display` option** and takes
+the display from the environment, which is why `env.sh` exports `DISPLAY` and
+every call inherits it.
+
+#### Capture targets the X root window
+
+The game window is 1920×1072 at `+0+4` — 240 columns × 8 px by 67 rows ×
+16 px, per `WindowWidth = TERMINAL_WIDTH * fontwidth * scaling_factor`
+[src/sdltiles.cpp:595-596] with `FULLSCREEN` defaulting to `"windowedbl"` on
+non-MSVC builds [src/options.cpp:2715-2725] — inside a root that is exactly
+1920×1080. Photographing the root therefore yields a true-resolution frame
+with a 4-pixel letterbox top and bottom and needs no rescaling step, which
+matters because rescaling softens the 8×16 glyphs the clock reader depends
+on. Measured on a freshly started server:
+
+```console
+$ Xvfb :77 -screen 0 1920x1080x24 &
+$ DISPLAY=:77 xdpyinfo | grep -E 'dimensions|depth of root|number of screens'
+  number of screens:    1
+  dimensions:    1920x1080 pixels (488x274 millimeters)
+  depth of root window:    24 planes
+$ DISPLAY=:77 xwininfo -root | grep -E 'Width|Height|Depth'
+  Width: 1920
+  Height: 1080
+  Depth: 24
+```
+
+All 419 committed frames are `1920x1080`; `identify -format '%wx%h\n'` over
+the set returns that geometry 419 times and nothing else.
+
+**The pipeline's own server is hardened beyond the plan's example.** The plan
+gives `Xvfb :99 -screen 0 1920x1080x24 >/tmp/xvfb.log 2>&1 &` *(plan)*.
+`launch_game.sh headless` actually starts:
+
+```
+Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp -auth /tmp/xdg/playthrough/Xauthority
+```
+
+`-nolisten tcp` removes the network listener and `-auth` requires a cookie,
+which is right and has one consequence worth knowing before it costs an
+hour: a client that does **not** source `env.sh` gets
+`Authorization required, but no authorization protocol specified` followed by
+`Error: Can't open display: (null)`. That is the auth file doing its job, not
+a broken display. Set `XAUTHORITY` to the path above, or source `env.sh`.
+
+#### First launch does not open on the main menu
+
+A fresh userdir opens on a **`Select your language`** prompt. On this host it
+is a small dialog on an otherwise black root — measured earlier on this page
+at 4 635 non-black pixels in a 176 × 60 box — and the geometry is wrong too:
+the window is **640×384** on launch one, because the compiled defaults are
+`TERMINAL_X` 80 and `TERMINAL_Y` 24 [src/options.cpp:2408-2416, ranges
+80–960 and 24–270], and 1920×1072 on launch two once the game has written
+screen-derived values. The strategy used here is to **seed the options file**
+rather than to treat launch one as throwaway calibration: `seed_options.py`
+writes `TERMINAL_X=240` and `TERMINAL_Y=67` in place, so the second launch
+opens at the size every committed frame was photographed at.
+
+#### `PYTHONDONTWRITEBYTECODE=1` is mandatory, and here is the proof
+
+`__pycache__` [.gitignore:161] and `*.pyc` [.gitignore:162] are unanchored
+patterns, so they would normally cover the tooling directory. The terminal
+`!/playthrough/**` negation [.gitignore:275] **re-includes them**, because
+git applies the last matching pattern and that negation is deliberately last.
+Measured in a disposable scratch repository, with the real `.gitignore`
+copied in and a bytecode file planted:
+
+```console
+$ git add --dry-run -A playthrough/
+add 'playthrough/frames/frame_00001.png'
+add 'playthrough/tooling/__pycache__/manifest.cpython-312.pyc'
+add 'playthrough/userdir/config/debug.log'
+add 'playthrough/userdir/save/Fern Creek/#RGVscGhpbmUgT3VlbGxldHRl.log'
+add 'playthrough/userdir/save/Fern Creek/#RGVscGhpbmUgT3VlbGxldHRl.sav'
+```
+
+The `.pyc` is right there in the list. The negation block must **end** the
+file, so bytecode cannot be re-excluded after it without breaking the save
+tracking; it therefore has to be prevented at source instead, which is what
+the environment variable does. `commit_artifacts.sh` additionally stages
+explicitly rather than blanket-adding, so the two controls are independent.
+
+**And the hazard is not hypothetical — it fired during the pass that wrote
+this page.** Running the tooling's own suite with the venv interpreter
+directly, without sourcing `env.sh`, produced real bytecode in the real
+working tree:
+
+```console
+$ python -m unittest discover -s playthrough/tooling -p 'test_*.py'   # no env.sh
+$ git status --porcelain
+ M playthrough/TECHNICAL_NOTES.md
+?? playthrough/tooling/__pycache__/
+$ ls playthrough/tooling/__pycache__/ | wc -l
+16
+$ git add --dry-run -A playthrough/tooling/ | head -3
+add 'playthrough/tooling/__pycache__/make_srt.cpython-312.pyc'
+add 'playthrough/tooling/__pycache__/test_artifacts.cpython-312.pyc'
+add 'playthrough/tooling/__pycache__/test_capture.cpython-312.pyc'
+$ git check-ignore -v --no-index -- playthrough/tooling/__pycache__/make_srt.cpython-312.pyc
+.gitignore:275:!/playthrough/**    playthrough/tooling/__pycache__/make_srt.cpython-312.pyc
+```
+
+Sixteen files, every one of them offered for staging, with the negation named
+as the rule that re-included them. And the control, run immediately
+afterwards in both directions:
+
+```console
+$ rm -rf playthrough/tooling/__pycache__
+$ PYTHONDONTWRITEBYTECODE=1 python -m unittest playthrough.tooling.test_make_srt
+  -> __pycache__ present? NO
+$ python -m unittest playthrough.tooling.test_make_srt
+  -> __pycache__ present? YES
+```
+
+So the variable is the whole mechanism, and the lesson is operational: **run
+the tooling through `env.sh`, or set the variable by hand.** The bytecode was
+deleted before committing rather than being committed and reverted, and the
+episode is recorded here because a hazard someone has actually tripped over
+is worth more in a log than one that was only reasoned about.
+
+#### A host defect that costs an hour if you meet it cold
+
+`python3 -m venv` fails on this host:
+
+```console
+$ python3 -m venv /tmp/probe; echo "exit=$?"
+Error: Command '['/tmp/probe/bin/python3', '-m', 'ensurepip', '--upgrade',
+'--default-pip']' returned non-zero exit status 1.
+exit=1
+```
+
+The plan's remedy *(plan)* is `python3 -m venv --without-pip` followed by
+bootstrapping pip from `get-pip.py`. **That remedy is not used here, and
+should not be.** `requirements.txt` states the reason at the file level:
+piping `get-pip.py` from the network into an interpreter executes an
+unverified script with the caller's privileges, which is precisely the trust
+property `requirements.lock` exists to establish for everything downstream.
+The environment at `/opt/playthrough-venv` was instead created with a pinned
+installer whose own artifact is verified, and it is CPython **3.12.13** —
+which also matters independently, because the lock names `cp312` manylinux
+wheels and the system 3.13.7 can install none of them.
+
+### The options that are seeded, and the two that fail silently
+
+`seed_options.py` patches `playthrough/userdir/config/options.json` **in
+place, key by key, never wholesale** — the engine writes 175 entries into
+that file on this configuration and all of them must survive. Its
+`SEEDED_OPTIONS` list is exactly eight keys, and every one of them was read
+back out of the committed file:
+
+| Key | Written | Shipped default | Why |
+| --- | --- | --- | --- |
+| `24_HOUR` | `24h` | `12h` [src/options.cpp:1868-1877] | only the `24h` branch emits fixed-width text — see below |
+| `SOUND_ENABLED` | `false` | `true` [src/options.cpp:1774-1777] | matches `SDL_AUDIODRIVER=dummy`; no contention for an absent device |
+| `USE_TILES` | `true` | `true` [src/options.cpp:2500-2503] | `TILES` is gated on it; see below |
+| `TILES` | `MshockXottoplus` | `UltimateCataclysm` [src/options.cpp:2505-2508] | the compiled default is not installed anywhere; see the tileset section |
+| `TERMINAL_X` | `240` | `80`, range 80–960 [src/options.cpp:2408-2411] | 240 × 8 px = 1920, the values the game derives for itself on this display |
+| `TERMINAL_Y` | `67` | `24`, range 24–270 [src/options.cpp:2413-2416] | 67 × 16 px = 1072, the window inside the 1080-pixel root |
+| `CHARACTER_POINT_POOLS` | `any` | `story_teller` [src/options.cpp:2893-2897] | at the default there is no point-buy at all; see below |
+| `WORLD_COMPRESSION2` | `false` | `true` [src/options.cpp:1816-1819] | decides whether the character save is `.sav` or `.sav.zzip`; see the save-layout section |
+
+The engine also derives, and the run keeps: `FONT_WIDTH=8`,
+`FONT_HEIGHT=16`, `FONT_SIZE=16`, `SIDEBAR_POSITION=right`,
+`SHOW_MONTHS=true`, `FULLSCREEN=windowedbl`, `RENDERER=software`,
+`USE_DISTANT_TILES=false`, `DISTANT_TILES=ASCIITiles`,
+`USE_OVERMAP_TILES=true`, `OVERMAP_TILES=Larwick Overmap` — the last four
+matter more than they look and are unpicked in the tileset section.
+
+#### `24_HOUR` has three values, not two, and `military` would look right
+
+```cpp
+if( format_type == "military" ) {
+    return string_format( "%02d%02d.%02d", hour, minute, second );
+} else if( format_type == "24h" ) {
+    return string_format( _( "%02d:%02d:%02d" ), hour, minute, second );
+} else {
+    ...
+    return string_format( _( "%d:%02d:%02d%sAM" ), hour_param, minute, second, padding );
+```
+
+[src/calendar.cpp:638-663, the three branches at :646, :649 and :658/:660].
+Only the middle branch is fixed-width. `military` emits `0731.42` — no
+colons — and would defeat the clock regex silently while looking like a
+perfectly sensible 24-hour setting to anyone reading the options menu. The
+`12h` default is worse still: variable-width hour, plus a padding space that
+appears only below ten o'clock [src/calendar.cpp:656]. The committed value
+was read back as exactly `24h`, and `ocr_clock.py` additionally asserts it
+from the options file at read time rather than trusting that it was set.
+
+#### `USE_TILES` is a prerequisite, so the tileset value is inert without it
+
+```console
+$ grep -n 'get_option( "TILES" ).setPrerequisite' src/options.cpp
+2530:        get_option( "TILES" ).setPrerequisite( "USE_TILES" );
+```
+
+Its shipped default is already `true` [src/options.cpp:2500-2503], so the
+failure mode is not forgetting to enable it — it is *disabling* it, or
+patching a file where some earlier state left it false, and then wondering
+why a correctly-written `TILES` value changed nothing. It is seeded
+explicitly for that reason.
+
+#### `CHARACTER_POINT_POOLS` defaults away from point-buy entirely
+
+It is a **`world_default`** option with three values
+[src/options.cpp:2893-2897], and the creator reads it like this:
+
+```cpp
+if( option == "multi_pool" )   { return { pool_type::MULTI_POOL }; }
+else if( option == "story_teller" ) { return { pool_type::FREEFORM }; }
+return { pool_type::FREEFORM, pool_type::MULTI_POOL, pool_type::ONE_POOL };
+```
+
+[src/newcharacter.cpp:438-446], with `pool_selection_is_fixed()` true for the
+first two and the in-source comment stating the pool tab is then
+"informational and read-only" [src/newcharacter.cpp:462-468]. **At the
+shipped `story_teller` default there is no point accounting at all**, so a
+requirement to use the point-buy creator is unsatisfiable until the option is
+changed. `any` is what was used, and being a world-default option it appears
+in two places: the world-default section of `config/options.json` and the
+world's own `save/Fern Creek/worldoptions.json` [src/path_info.cpp:416-419].
+Both were read back as `any`.
+
+### The tileset: a conflict in the plan, and what actually rendered
+
+The plan contradicts itself here, and the contradiction has to be recorded
+rather than quietly resolved, because a reader who follows only one half of it
+will conclude the wrong thing about the film. One part of it directs
+installing the CDDA-Tilesets pack and configuring **MSXotto+**; three other
+parts specify **`ASCIITiles`** on the grounds that it is the only close-range
+tileset present in the checkout.
+
+**What actually rendered: MSXotto+, and `ASCIITiles` was not used at all.**
+Read out of the committed options file, which is the artifact the engine
+itself wrote — five of its 175 entries, and the last four are the reason the
+answer is not the obvious one:
+
+```json
+{ "name": "TILES",             "value": "MshockXottoplus" }
+{ "name": "USE_DISTANT_TILES", "value": "false"           }
+{ "name": "DISTANT_TILES",     "value": "ASCIITiles"      }
+{ "name": "USE_OVERMAP_TILES", "value": "true"            }
+{ "name": "OVERMAP_TILES",     "value": "Larwick Overmap" }
+```
+
+`DISTANT_TILES = ASCIITiles` looks like ASCII art in the film until the
+prerequisite chain is read: `get_option( "DISTANT_TILES" ).setPrerequisite(
+"USE_DISTANT_TILES" )` [src/options.cpp:2532], and `USE_DISTANT_TILES` is
+`false`, so that value is **inert** — the same gating trap as `USE_TILES`
+above, one level down. `ASCIITiles` is installed and was never drawn. The one
+other tileset that *was* loaded is `Larwick Overmap`, at its shipped default
+[src/options.cpp:2552-2555] behind `USE_OVERMAP_TILES` [src/options.cpp:2557],
+and it draws the overmap screen — which no frame in this session shows, so it
+appears in the engine's log and not in the film. Every pixel of terrain,
+furniture, item and creature art in the finished film is MSXotto+.
+
+`MshockXottoplus` is the tileset *id*, and the distinction between id,
+menu label and directory name is the trap. `src/options.cpp:1213-1227` reads
+the `NAME:` field of a `tileset.txt` as the option value and `VIEW:` only as
+the label shown in the menu, so one pack carries three different spellings:
+
+| Spelling | Where it comes from |
+| --- | --- |
+| `MshockXottoplus` | `NAME:` in `tileset.txt` — this is the `TILES` option value |
+| `MSXotto+` | `VIEW:` in the same file — the label in the options menu |
+| `MShockXotto+` | the directory name under `gfx/` |
+
+Confirmed against the pack itself: the `tileset.txt` under
+`/opt/cdda-gfx-cache/MShockXotto+/` declares `NAME: MshockXottoplus` and
+`VIEW: MSXotto+`. This is why `launch_game.sh` scans both fields, accepts a
+match on either, additionally tries the alias spellings `env.sh` lists, and
+never guesses from a directory name.
+
+**The resolution is "required and fails closed", not "preference with
+fallback".** This differs from how the folder specification for this file
+describes the resolution, and the code is the authority:
+
+> ASCIITiles IS NOT A FALLBACK. `PLAYTHROUGH_TILESET_FALLBACK` only NAMES
+> which tileset a substitution would use; nothing consults it unless
+> `PLAYTHROUGH_ALLOW_TILESET_FALLBACK=1` authorises one, which is announced
+> and recorded as `origin=fallback`. That authorisation is one of `env.sh`'s
+> trust bypasses, so `assert_capture_preconditions` refuses a capture launch
+> while it is set.
+
+[playthrough/tooling/launch_game.sh:1426-1431], with the reasoning at
+[:1553-1562]: "A fallback would be worse than a failure: the checkout ships
+ASCIITiles, so a run that quietly fell back to it would still produce a
+full-length movie of a genuine SDL tiles session with every count tallying,
+and the only symptom would be ASCII art in the finished film." That is the
+same shape of failure as the black-movie one, and it gets the same treatment
+— refuse rather than degrade.
+
+**What is installed in this clone right now, measured.** `gfx/` holds only
+the four entries the ignore rules negate:
+
+```console
+$ ls gfx/
+ASCIITileset  Larwick_Overmap  loading_screens  tile_config_template.json
+$ grep '^NAME:' gfx/ASCIITileset/tileset.txt gfx/Larwick_Overmap/tileset.txt
+gfx/ASCIITileset/tileset.txt:NAME: ASCIITiles
+gfx/Larwick_Overmap/tileset.txt:NAME: Larwick Overmap
+```
+
+MSXotto+ is **not** in this clone's `gfx/`; the composed pack is on the host
+at `/opt/cdda-gfx-cache/MShockXotto+`, and `launch_game.sh tileset` installs
+it. Anyone re-running a capture from a fresh clone must do that step, and the
+absence is expected rather than a defect — which is the whole point of the
+next paragraph.
+
+**Installing a tileset produces zero tracked change, and `.gitignore` must
+not be edited to change that.** `/gfx/*` is excluded at [.gitignore:52] with
+exactly four negations at [.gitignore:53-56] — `ASCIITileset`,
+`loading_screens`, `Larwick_Overmap`, `tile_config_template.json`.
+Measured on a path that does not even exist here yet:
+
+```console
+$ git check-ignore -v gfx/MShockXotto+/tileset.txt
+.gitignore:52:/gfx/*    gfx/MShockXotto+/tileset.txt
+```
+
+So the artwork is a runtime prerequisite, not a committed artifact, and the
+film is the evidence that it was used. The compiled default
+`UltimateCataclysm` [src/options.cpp:2505-2508] is absent from this checkout
+too, which is why `TILES` has to be seeded at all rather than left alone.
+
+**Either outcome would have satisfied the tiles-versus-curses rule, and that
+is a separate matter.** That rule is about the **binary** — a build rendering
+through the SDL tiles path, self-reporting `+tiles` — not about the artwork
+pack, and `launch_game.sh` says so where it enforces it: "THIS CHECK IS ABOUT
+THE BINARY. THE TILESET IS A SEPARATE, EQUALLY MANDATORY REQUIREMENT"
+[playthrough/tooling/launch_game.sh:1420-1424]. Conflating the two is how a
+run ends up believing an ASCII film satisfies an artwork requirement.
+
+### The save layout, and three things about it the plan does not say
+
+#### The session ended in death, so `save/` is not where the character is
+
+This is the single most surprising thing in the tree and it follows from a
+shipped default. `WORLD_END` is a world-default option with values
+`{reset, delete, query, keep}` and a default of **`reset`**
+[src/options.cpp:2836-2841]. The survivor died, the world was reset, and the
+result is:
+
+```console
+$ find playthrough/userdir/save -type f
+playthrough/userdir/save/Fern Creek/mods.json
+playthrough/userdir/save/Fern Creek/world_timestamp.json
+playthrough/userdir/save/Fern Creek/worldoptions.json
+```
+
+No `master.gsav`. No `maps.zzip`. No `overmaps/`. The character is in the
+graveyard instead:
+
+```console
+$ find playthrough/userdir/graveyard -type f | sed 's/.*graveyard/graveyard/'
+graveyard/2026-08-06T06-53-53/#RGVscGhpbmUgT3VlbGxldHRl.ano.json
+graveyard/2026-08-06T06-53-53/#RGVscGhpbmUgT3VlbGxldHRl.log
+graveyard/2026-08-06T06-53-53/#RGVscGhpbmUgT3VlbGxldHRl.mm1/37.24.0.mmr
+graveyard/2026-08-06T06-53-53/#RGVscGhpbmUgT3VlbGxldHRl.mm1/37.25.0.mmr
+graveyard/2026-08-06T06-53-53/#RGVscGhpbmUgT3VlbGxldHRl.mm1/38.24.-1.mmr
+graveyard/2026-08-06T06-53-53/#RGVscGhpbmUgT3VlbGxldHRl.mm1/38.24.0.mmr
+graveyard/2026-08-06T06-53-53/#RGVscGhpbmUgT3VlbGxldHRl.mm1/38.25.0.mmr
+graveyard/2026-08-06T06-53-53/#RGVscGhpbmUgT3VlbGxldHRl.mm1/39.24.0.mmr
+graveyard/2026-08-06T06-53-53/#RGVscGhpbmUgT3VlbGxldHRl.pt
+graveyard/2026-08-06T06-53-53/#RGVscGhpbmUgT3VlbGxldHRl.sav
+graveyard/2026-08-06T06-53-53/#RGVscGhpbmUgT3VlbGxldHRl.seen.0.0
+graveyard/2026-08-06T06-53-53/#RGVscGhpbmUgT3VlbGxldHRl.seen.1.0
+graveyard/2026-08-06T06-53-53/#RGVscGhpbmUgT3VlbGxldHRl.zones.json
+$ printf '%s' RGVscGhpbmUgT3VlbGxldHRl | base64 -d
+Delphine Ouellette
+```
+
+Alongside it: `memorial/Fern Creek/` with a `.json` and a `.txt` dated
+`2026-08-06-06-53-53`, `memorial/Delphine Ouellettes_diary.txt`,
+`achievements/*.json`, `cache/**/*.fb` flatbuffer caches, and
+`templates/Last Character.template`. **A gate that requires `master.gsav`
+under `save/<World>/` therefore fails on a legitimately-ended run**, and any
+gate written against the plan's expected layout has to accept the graveyard
+tree as the save evidence for a death ending. The plan's layout table is
+correct for a sleep ending and incomplete for this one.
+
+#### The character save is plain `.sav` here — but `.sav.zzip` by default
+
+The plan says `#<b64>.sav`; a strict reading of the engine says
+`#<b64>.sav.zzip`; this tree contains `#<b64>.sav`. All three are consistent
+once the branch is read:
+
+```cpp
+if( world_generator->active_world->has_compression_enabled() ) {
+    ...
+    std::filesystem::path save_path = ( playerfile + SAVE_EXTENSION +
+                                        zzip_suffix ).get_unrelative_path();
+    ...
+} else {
+    saved_data = write_to_file( playerfile + SAVE_EXTENSION, ...
+```
+
+[src/game_io.cpp:606-621], with `zzip_suffix = ".zzip"`
+[src/worldfactory.h:25] and `WORLD_COMPRESSION2` defaulting to **`true`**
+[src/options.cpp:1816-1819]. So the compressed form is the default and the
+plain form is what this run produced — because `WORLD_COMPRESSION2` was
+deliberately seeded `false`, which is exactly why that key is in the seeded
+list. A gate must accept `*.sav` **or** `*.sav.zzip`; requiring either one
+alone breaks on the other configuration.
+
+#### `.shortcuts` is Android-only and will never exist here
+
+```console
+$ grep -n '__ANDROID__' src/game_io.cpp | tail -2
+630:#if defined(__ANDROID__)
+631:    const bool saved_shortcuts = write_to_file( playerfile + SAVE_EXTENSION_SHORTCUTS, [&](
+```
+
+`SAVE_EXTENSION_SHORTCUTS` is declared unconditionally
+[src/path_info.h:17] but written only inside that guard, so **no gate may
+require it** on Linux. Two more constants in the same header are declared and
+never used at all — `grep -rn SAVE_EXTENSION_WEATHER src/` and
+`grep -rn SAVE_ARTIFACTS src/` each return exactly one line, the declaration
+itself — so `.weather` and `artifacts.gsav` are names in a header rather than
+files any run produces. `SAVE_DIMENSION_DATA` by contrast is used, at
+[src/game_io.cpp:289] and [src/game_io.cpp:581] among others. The full
+authoritative set, with the used/unused distinction marked because a gate
+built from the header alone would demand three files that cannot exist:
+
+| Constant | Value | Line | Produced on this platform? |
+| --- | --- | --- | --- |
+| `SAVE_MASTER` | `master.gsav` | [src/path_info.h:11] | yes, for a live world |
+| `SAVE_ARTIFACTS` | `artifacts.gsav` | [src/path_info.h:12] | **no — declared, referenced nowhere** |
+| `SAVE_DIMENSION_DATA` | `dimension_data.gsav` | [src/path_info.h:13] | yes |
+| `SAVE_EXTENSION` | `.sav` | [src/path_info.h:14] | yes |
+| `SAVE_EXTENSION_LOG` | `.log` | [src/path_info.h:15] | yes |
+| `SAVE_EXTENSION_WEATHER` | `.weather` | [src/path_info.h:16] | **no — declared, referenced nowhere** |
+| `SAVE_EXTENSION_SHORTCUTS` | `.shortcuts` | [src/path_info.h:17] | **no — Android-only [src/game_io.cpp:630]** |
+
+Overmap archives live under `overmaps/` with suffix `.zzip`
+[src/worldfactory.h:24-25]. The tree also carries sidecars no list in the
+plan mentions — `.ano.json`, `.pt`, `.seen.N.0`, `.zones.json` and a `.mm1/`
+directory of `.mmr` tiles — all of which the negation covers because it
+covers the whole subtree rather than an enumerated set of extensions.
+
+#### Why `.gitignore` had to change, proved both ways
+
+Three patterns swallow this feature's own artifacts: `\#*` [.gitignore:131],
+which matches any path component beginning with `#` and is exactly how CDDA
+names per-character files; unanchored `*.log` [.gitignore:31]; and
+`debug.log` [.gitignore:79]. The remedy is a single negation at the **end**
+of the file [.gitignore:275], because git applies the last matching pattern.
+
+Measured in a disposable scratch repository — a real `git init`, the real
+files planted, the real `.gitignore` in one case and its first 256 lines
+(everything before the negation block) in the other:
+
+```console
+=== WITHOUT the terminal negation block ===
+IGNORED   .gitignore:131:\#*         .../save/Fern Creek/#RGVscGhpbmUgT3VlbGxldHRl.sav
+IGNORED   .gitignore:131:\#*         .../save/Fern Creek/#RGVscGhpbmUgT3VlbGxldHRl.log
+IGNORED   .gitignore:79:debug.log    playthrough/userdir/config/debug.log
+IGNORED   .gitignore:161:__pycache__ playthrough/tooling/__pycache__/manifest.cpython-312.pyc
+tracked                              playthrough/frames/frame_00001.png
+$ git add --dry-run -A playthrough/
+add 'playthrough/frames/frame_00001.png'
+
+=== WITH it (the real 275-line file) ===
+$ git add --dry-run -A playthrough/
+add 'playthrough/frames/frame_00001.png'
+add 'playthrough/tooling/__pycache__/manifest.cpython-312.pyc'
+add 'playthrough/userdir/config/debug.log'
+add 'playthrough/userdir/save/Fern Creek/#RGVscGhpbmUgT3VlbGxldHRl.log'
+add 'playthrough/userdir/save/Fern Creek/#RGVscGhpbmUgT3VlbGxldHRl.sav'
+```
+
+That first `git add` **exits 0**. It reports nothing wrong, stages the
+frames, and silently omits the save — which is the failure this whole
+paragraph exists to make impossible to miss. Note also which rule caught the
+`.log`: `\#*` at :131, not `*.log` at :31, because :131 is later and the last
+match wins. Either one alone would have been enough.
+
+And the corresponding proof for the tree as it stands, on the real save file:
+
+```console
+$ git check-ignore -v -- 'playthrough/userdir/graveyard/2026-08-06T06-53-53/#RGVscGhpbmUgT3VlbGxldHRl.sav'
+$ echo $?
+1
+$ git ls-files -- 'playthrough/userdir/graveyard/2026-08-06T06-53-53/#RGVscGhpbmUgT3VlbGxldHRl.sav'
+playthrough/userdir/graveyard/2026-08-06T06-53-53/#RGVscGhpbmUgT3VlbGxldHRl.sav
+```
+
+Exit 1 from `check-ignore` means not ignored; `ls-files` means tracked. Both,
+together, are what "the save is committed" means.
+
+**The git subtlety that must not be lost.** A negation cannot re-include a
+file whose *parent directory* was excluded by a directory pattern — git does
+not descend into an excluded directory to evaluate negations inside it. This
+block works **only** because every conflicting pattern is a file pattern
+(`\#*`, `*.log`, `debug.log`) and nothing excludes `playthrough/` as a
+directory. Anyone who later adds a directory-level ignore covering this tree
+breaks the save tracking invisibly, with `git add` still exiting 0. The
+warning is in `.gitignore` itself [.gitignore:272-274] so that it is read at
+the point of temptation rather than only here.
+
+### The render path: six pitfalls, each one measured
+
+#### `-r` must never accompany `-fps_mode vfr`
+
+Adding an output frame-rate flag to a variable-frame-rate encode makes ffmpeg
+abort outright, calling the two settings contradictory. The argv the encoder
+is actually handed, read out of `render_movie.py` rather than reconstructed
+[playthrough/tooling/render_movie.py:1911-1926, constants at :215-258]:
+
+```
+ffmpeg -y -v error -f concat -safe 0 -i <list> -fps_mode vfr \
+       -pix_fmt yuv420p -c:v libx264 -crf 20 -bf 0 -s 1920x1080 \
+       -movflags +faststart <output>
+```
+
+No `-r`, and the module says why in its own words: "there is no output
+frame-rate argument, which is not an omission but a requirement: ffmpeg
+refuses one alongside a non-constant `-fps_mode` outright"
+[playthrough/tooling/render_movie.py:1907-1909].
+
+Two of those flags are less obvious and both are load-bearing.
+`-pix_fmt yuv420p` is what every hardware decoder accepts; without it a
+still-image source produces a container many players refuse. And **`-bf 0`**
+— zero B-frames — is there because libx264's default B-frame reorder delay
+leaves the final DTS behind the last PTS, and zero B-frames is the only way
+the mov muxer writes a track duration that matches the timeline
+[playthrough/tooling/render_movie.py:231-234]. A duration comparison against
+`timeline.json` is one of the acceptance gates, so a flag that shifts the
+container's own duration is not cosmetic.
+
+#### The concat list must repeat its final `file` entry
+
+Without the repeat the last `duration` does not take effect and the container
+truncates. Measured on the committed list, which is 887 lines:
+
+```console
+$ grep -c '^file '     playthrough/build/concat.txt   # 444
+$ grep -c '^duration ' playthrough/build/concat.txt   # 443
+$ grep '^file ' playthrough/build/concat.txt | sort -u | wc -l   # 443
+$ tail -3 playthrough/build/concat.txt
+file '../frames/frame_00419.png'
+duration 0.250
+file '../frames/frame_00419.png'
+```
+
+444 `file` lines against 443 distinct files and 443 `duration` lines: the last
+frame appears twice, the second time with no duration after it. The arithmetic
+closes end to end — 419 keystroke captures plus 24 materialised transition
+frames = 443 distinct images, plus the one repeat = 444 — and the container
+agrees:
+
+```console
+$ ffprobe -v error -select_streams v:0 -count_packets \
+      -show_entries stream=nb_read_packets -of csv=p=0 playthrough/cata-play.mp4
+444
+```
+
+The symptom the repeat prevents, recorded from the earlier probe *(plan, and
+independently reproduced during this feature's development)*: a 10.52 s
+container against an 11.75 s subtitle stream for the same timeline — which is
+also what motivated a single shared `timeline.json` rather than two
+independent walks of the same durations.
+
+One refinement to an earlier claim on this page. It says that under
+`-fps_mode vfr` the header's `nb_frames` is "routinely absent — the real
+container reports `N/A`". On the container as it stands now, it is **present
+and correct**:
+
+```console
+$ ffprobe -v error -show_entries stream=nb_frames -of default=nw=1 playthrough/cata-play.mp4
+nb_frames=444
+```
+
+Both routes agree at 444. Packet counting remains the right check because it
+cannot be fooled by an absent header *or* by one entry's duration absorbing a
+dropped image, but the flat statement that the header is absent is not true
+of this file and is corrected here rather than left standing.
+
+#### `concatenate_videoclips`, not `CompositeVideoClip`
+
+A documented MoviePy 2.x defect makes cross-fades silently fail to render
+under composition — they compose, they encode, and the fade is simply not
+there. The transition unit is therefore assembled by concatenation:
+
+```python
+seg = concatenate_videoclips([
+    ImageClip(cur).with_duration(0.4).with_effects([vfx.FadeOut(0.4)]),
+    card.with_duration(0.2),
+    ImageClip(nxt).with_duration(0.4).with_effects([vfx.FadeIn(0.4)]),
+])
+```
+
+and then **materialised to PNG** via `iter_frames(fps=12)`, twelve images for
+a 1.0 s segment. Materialising is the decision that keeps the whole film a
+single encoder pass over image entries: no segment cutting, no mixed
+demuxers, no codec-parameter mismatch, and a transition is simply more image
+entries carrying their own `duration` lines. MoviePy stays genuinely
+load-bearing — it does the fade arithmetic and the text composition — while
+ffmpeg remains the only encoder.
+
+Measured in the committed tree: two transition groups,
+`build/transitions/trans_00315_*.png` and `trans_00316_*.png`, twelve images
+each, 24 in total, and 24 references in the concat list. That count is not a
+coincidence — see the timeline paragraph below.
+
+#### MoviePy 2's API invalidates essentially every v1 example
+
+`moviepy.editor` no longer exists, so imports come from `moviepy` directly;
+every `.set_*` became `.with_*`; effects are classes applied through
+`with_effects([...])`; and MoviePy 2 replaced ImageMagick with Pillow, so
+`TextClip` needs no ImageMagick at all. One further trap, measured here:
+
+```console
+$ python -c "import moviepy, importlib.metadata as m; \
+    print(moviepy.__version__, m.version('moviepy'))"
+2.1.2 2.2.1
+```
+
+**`moviepy.__version__` misreports.** The installed distribution genuinely is
+2.2.1 — which is what `requirements.txt` pins and what the lock hashes — and
+the attribute says 2.1.2. Any check written against the attribute will
+conclude the wrong thing; use `importlib.metadata.version`.
+
+#### Frame-directory purity is an integrity constraint, not tidiness
+
+Transition PNGs go to `playthrough/build/transitions/`, never to
+`playthrough/frames/`. The reason is that the acceptance gate is an identity:
+
+```console
+$ ls playthrough/frames/*.png | wc -l      # 419
+$ wc -l < playthrough/manifest.jsonl       # 419
+$ git ls-files playthrough/frames | wc -l  # 419
+```
+
+`frames/*.png count == manifest.jsonl line count`, with indices contiguous
+`1..419` and every row carrying exactly the six prescribed fields
+(`frame`, `file`, `real_ts`, `ingame_clock`, `action`, `commentary`) and a
+non-empty `action` and `commentary` — all four properties re-checked in this
+pass. Mixing one derived image into `frames/` destroys that identity and with
+it the only structural proof that there was exactly one capture per keystroke.
+
+#### The OCR chain the plan prescribes does not work on this build
+
+This is the measurement most worth having, because the plan states a specific
+success and it does not reproduce. The prescribed chain, run against a real
+committed gameplay frame at the correctly computed crop:
+
+```console
+$ convert playthrough/frames/frame_00250.png -crop 352x1072+1568+4 +repage \
+      -colorspace Gray -resize 200% -normalize png:- \
+  | tesseract stdin stdout | grep -E 'Time|[0-9]{2}:[0-9]{2}:[0-9]{2}'
+Time:
+```
+
+The label reads. **Not one digit does.** The plan's figure of `08:15:32`
+*(plan)* was taken against tesseract 5.3.4 on another host; here, under
+tesseract 5.5.0, the same chain returns the row's label and nothing else. The
+cause is recorded earlier on this page — `data/font/Terminus.ttf` draws a
+slashed zero, and nine preprocessing variants were tried and measured, none
+of which recovers it.
+
+What does work is the exact reader, which compares each 8×16 cell against
+the very font that drew it:
+
+```console
+$ python playthrough/tooling/ocr_clock.py --json playthrough/frames/frame_00250.png
+  clock      = '08:00:44'
+  date       = 'Thursday, May 20'
+  pass       = 'glyph-grid'
+  ocr_calls  = 0
+  rect       = '352x1072+1568+4'
+  candidates = 1     declined = 0
+```
+
+380 ms, zero OCR calls. With `--cross-check`, which forces every pass to run
+anyway:
+
+```console
+  passes_run = ['glyph-grid', 'deslash-rows', 'reference-rows',
+                'reference-column', 'deslash-negate-rows']
+  ocr_calls  = 157      agreement = true      declined = 0
+```
+
+19.757 s for the same answer — a 52× cost — and all five passes agree, which
+is the useful part: the module's *own* tesseract passes do read this frame
+correctly. It is the bare chain, without the deslash and reference
+preprocessing, that fails. So the honest statement is not "tesseract cannot
+read this" but "tesseract cannot read this from the plan's recipe", and the
+exact reader is there to make an OCR failure a non-event rather than to
+replace OCR.
+
+#### The crop is computed, and the number is not the plan's
+
+```console
+$ python playthrough/tooling/sidebar_geometry.py
+sidebar_geometry: WARNING: .../userdir/config/panel_options.json does not exist
+  yet, so the sidebar layout is the engine's own default
+  'legacy_labels_sidebar' [src/panels.cpp:412-418]; it is written once the game
+  saves its panel options
+sidebar_geometry: WARNING: screen width is not set ...; using 1920
+sidebar_geometry: WARNING: screen height is not set ...; using 1080
+352x1072+1568+4
+```
+
+**`352x1072+1568+4`, not the plan's `288x1072+1632+4`** *(plan)*. The plan
+computes from `custom_sidebar`'s `"width": 36`
+[data/json/ui/sidebar.json:3,7] × `FONT_WIDTH` 8. But `panel_options.json`
+does not exist until the game saves its panel settings, so the live layout is
+the engine's own default `legacy_labels_sidebar`
+[src/panels.cpp:413-419, assigned at :418] at **44** cells
+[data/json/ui/sidebar-legacy-labels.json:203,209]: 44 × 8 = 352, right-aligned
+at 1920 − 352 = 1568 because `SIDEBAR_POSITION` defaults to `"right"`
+[src/options.cpp:2132-2136]. This is precisely why the rectangle is derived at
+run time instead of written down — and it is also why the clock row must be
+located **by regex within that column, never at a fixed `y`**. The clock text
+itself is the `time_desc_label` widget, `"label": "Time"` bound to
+`"var": "time_text"` [data/json/ui/time.json:3-7].
+
+**The preset count, measured rather than estimated.** The plan says "ten
+alternative sidebar presets" *(plan)*; the folder specification for this file
+says nine top-level files plus themed bundles under `zenfs/` and
+`structured/`. Counted:
+
+```console
+$ ls -1 data/json/ui/sidebar*.json | wc -l              # 9
+$ find data/json/ui -name 'sidebar*.json' | wc -l       # 12
+$ find data/json/ui -mindepth 1 -maxdepth 1 -type d
+data/json/ui/spacebar
+data/json/ui/structured
+data/json/ui/zenfs
+```
+
+**Nine** at the top level (`sidebar.json` plus eight alternates:
+`-legacy-classic`, `-legacy-compact`, `-legacy-labels`,
+`-legacy-labels-narrow`, `-legacy-one-padding`, `-mobile`, `-thick`,
+`-thick-cleaner`) and **twelve** across the whole tree, because there are
+**three** themed subdirectories, not two — `spacebar/` as well as
+`structured/` and `zenfs/`. 57 top-level `*.json` files in
+`data/json/ui/` altogether. Any of the twelve could be the live layout, which
+is the whole argument for computing.
+
+#### The timeline is the single source of truth, and its invariant closes
+
+Re-measured over `playthrough/timeline.json`:
+
+| Property | Measured |
+| --- | --- |
+| `floor` / `ceil` / `transition` | 0.25 / 10.0 / 1.0 |
+| `frame_count` | 419 |
+| duration min / max | 0.25 / 10.0 |
+| entries outside `[0.25, 10.0]` | **0** |
+| entries at the 0.25 floor | 312 |
+| entries at the 10.0 ceiling | 2 |
+| `transition_after` true | 2 — frames 315 and 316 |
+| `raw_delta > 10.0` | 2, max `raw_delta` 1417.0 s |
+| `sum(durations)` | 231.000 |
+| `total_transition` | 2.0 |
+| `total` / `final_cue_end` | 233.0 / 233.0 |
+
+`231.000 + 2.0 = 233.0 = total = final_cue_end`: the invariant holds exactly,
+not to a tolerance. Two `transition_after` flags, two materialised groups, 24
+transition PNGs, 24 concat references — the chain from flag to encoder input
+is countable at every link.
+
+**And the inserted second really is charged to video time**, which is the
+thing a caption generator gets wrong if it walks frame durations naively:
+
+```
+frame 315: raw_delta 1417.0  duration 10.0  transition_after true
+           cue_start 146.75  cue_end 156.75
+frame 316: raw_delta  298.0  duration 10.0  transition_after true
+           cue_start 157.75  cue_end 167.75
+```
+
+316's cue starts at 157.75, which is 156.75 **plus the transition's 1.0 s**,
+not at 156.75. That single number is the difference between captions that
+stay in sync to the end and captions that drift by exactly the total
+transition time.
+
+Downstream, the caption track:
+
+```console
+$ ffprobe -v error -select_streams s \
+      -show_entries stream=index,codec_name:stream_tags=language \
+      -of default=nw=1 playthrough/cata-play-cc.mp4
+index=1
+codec_name=mov_text
+TAG:language=eng
+```
+
+Two streams, `h264` 1920×1080 plus `mov_text` tagged `eng`; both containers
+report `duration=233.040000` against a computed 233.0, which is 0.04 s of
+encoder tolerance; 8 051 910 bytes for the base render and 8 088 117 for the
+captioned one. `transcript.srt` carries **419** cues and its last one closes
+at `00:03:52,750 --> 00:03:53,000` — 233.000 s exactly — and
+`transcript.md` carries 419 cumulative-time entries. Cue count equals frame
+count equals row count equals capture count.
+
+### Python, lint and CI
+
+#### flake8-clean at the default 79 columns, and not by exemption
+
+`.flake8` excludes only four unrelated paths —
+`.git,__pycache__,lang/json,tools/clang-tidy-plugin/test/check_clang_tidy.py`
+[.flake8:2] — and ignores only `E265` [.flake8:8] and `W504` [.flake8:11], so
+the default 79-column limit is in force. `pyproject.toml` sets black's
+`line-length = 79` [pyproject.toml:1-2]. `make python-check` runs bare
+`flake8` [Makefile:1648-1649], and the workflow fires on any `**.py` change
+[.github/workflows/flake8.yml:7-8,12-13] and then runs that target
+[.github/workflows/flake8.yml:31].
+
+**`.flake8` was not given a `playthrough` exclude.** Relaxing shared
+repository configuration to accommodate new code is the easier path and the
+wrong one; the new code satisfies the existing gate instead. The blast-radius
+proof below is the evidence that the file is untouched.
+
+#### The scoped criterion, and why the plan's F824 claim does not reproduce
+
+The plan states that a global `flake8` exit code of 0 is unachievable at HEAD
+because of three pre-existing `F824` findings *(plan)* —
+`tools/generate_changelog.py:550`, `:689` and `tools/json_tools/util.py:378`
+— under flake8 7.3.0, and that acceptance must therefore be measured as
+`flake8 playthrough/` reporting nothing. Measured here:
+
+```console
+$ flake8 --version
+7.1.1 (mccabe: 0.7.0, pycodestyle: 2.12.1, pyflakes: 3.2.0) CPython 3.13.7 on Linux
+$ flake8 playthrough/ ; echo "exit=$?"
+exit=0
+$ flake8 > /tmp/f8.txt 2>&1 ; echo "exit=$?" ; wc -l < /tmp/f8.txt
+exit=0
+0
+$ make python-check
+flake8
+```
+
+**Zero findings scoped, and zero findings globally.** The three cited sites
+are real constructs — `tools/generate_changelog.py:550` is
+`nonlocal results_queue`, `:689` is `nonlocal results_queue, min_dttm`, and
+`tools/json_tools/util.py:378` is `global indent_multiplier` — but this
+flake8 does not report them, and the reason is checkable:
+
+```console
+$ python3 -c "import pyflakes.messages as m; \
+    print([n for n in dir(m) if 'Unused' in n or 'Dead' in n])"
+['RedefinedWhileUnused', 'UnusedAnnotation', 'UnusedVariable', 'UnusedImport']
+```
+
+pyflakes 3.2.0 has no message class for a dead `global`/`nonlocal`
+declaration; that check arrived later. And the version installed here is not
+an accident: the workflow does `sudo apt-get install flake8`
+[.github/workflows/flake8.yml:27], so **the apt version is the version that
+gates**, which on this distribution is 7.1.1.
+
+The practical upshot, stated so it is not mis-applied in either direction:
+the scoped measurement `flake8 playthrough/` is the *right* criterion,
+because it is the one that cannot produce a false failure when a newer
+pyflakes reaches the archive — but the plan's justification for it does not
+hold on this host, and a global zero is achievable here and was achieved.
+Both numbers are recorded so a future reader can tell which situation they
+are in.
+
+#### CodeQL-safe by construction
+
+The `python` leg of `.github/workflows/codeql-analysis.yml` scans this tree —
+`language: [ 'cpp', 'javascript', 'python' ]`
+[.github/workflows/codeql-analysis.yml:35] — under a no-new-alerts gate. The
+tooling is written to it: `subprocess.run([...])` with argument **lists**
+rather than `shell=True` string interpolation, no `eval`, no unvalidated path
+joins, and **no network surface of any kind** — the pipeline opens no
+connection, which is also what makes the image-decoding exposure argument in
+`requirements.txt` an enforced property rather than a hope.
+
+#### stdlib `unittest` only, and the survey that justifies it
+
+```console
+$ find tools build-scripts -name '*.py' -type f | wc -l    # 65
+$ grep -rlE '^\s*(import unittest|from unittest)' --include='*.py' tools build-scripts | wc -l   # 0
+$ grep -rl 'import pytest' --include='*.py' tools build-scripts | wc -l                          # 0
+$ grep -rl 'def test_'     --include='*.py' tools build-scripts | wc -l                          # 0
+$ find tests -name '*.py' | wc -l    # 0
+$ find tests -name '*.cpp' | wc -l   # 248
+```
+
+Sixty-five Python files in this repository and **not one** test among them;
+the entire `tests/` tree is 248 Catch2 `.cpp` files swept up by
+`file(GLOB CATACLYSM_DDA_TEST_SOURCES` [tests/CMakeLists.txt:4]. Adding
+pytest would therefore introduce a test framework to a repository that has
+none, for one feature's benefit. The tooling uses the standard library
+instead, and **nothing is added to `tests/`**, because anything placed there
+is compiled into the C++ binary.
+
+Measured today, over the whole suite:
+
+```console
+$ python -m unittest discover -s playthrough/tooling -p 'test_*.py'
+Ran 1991 tests in 542.582s
+OK (skipped=1)
+```
+
+| Module | Tests | | Module | Tests |
+| --- | ---: | --- | --- | ---: |
+| `test_artifacts` | 114 | | `test_manifest` | 184 |
+| `test_capture` | 98 | | `test_ocr_clock` | 187 |
+| `test_commit_artifacts` | 79 | | `test_render_movie` | 108 |
+| `test_embed_captions` | 99 | | `test_seed_options` | 118 |
+| `test_env` | 118 | | `test_session` | 122 |
+| `test_launch_game` | 154 | | `test_sidebar_geometry` | 78 |
+| `test_make_srt` | 113 | | `test_timeline` | 325 (1 skip) |
+| `test_make_transitions` | 94 | | **total** | **1991** |
+
+The per-module figures sum to 1991 exactly, which is the check that the
+discovery run collected every module. This supersedes the 1377 recorded
+earlier on this page and the 152 recorded earlier still; both were correct
+when written. Shell side, measured the same pass: `shellcheck` 0.10.0 at
+`-S style` over all five `.sh` files reports **0** findings, and `bash -n`
+is clean on all five.
+
+#### The declared versions, exactly as installed
+
+```console
+$ /opt/playthrough-venv/bin/python -m pip list --format=freeze
+decorator==5.3.1
+ImageIO==2.37.4
+imageio-ffmpeg==0.6.0
+moviepy==2.2.1
+numpy==2.5.1
+packaging==26.2
+pillow==11.3.0
+pip==26.2
+proglog==0.1.12
+pytesseract==0.3.13
+python-dotenv==1.2.2
+tqdm==4.70.0
+```
+
+The six declared pins in `playthrough/tooling/requirements.txt` — `moviepy`,
+`pillow`, `pytesseract`, `numpy`, `imageio`, `imageio-ffmpeg` — all match
+their declarations exactly.
+
+**`ImageIO` with that casing is correct and must not be "corrected".**
+`pip list --format=freeze` prints it that way because that casing is the
+distribution's declared `Name` metadata, while the canonical install and
+import name is lowercase. `requirements.txt` therefore says
+`imageio==2.37.4`, and the file carries the same warning at the point of use
+so the next reader does not helpfully fix it.
+
+**Five packages resolved into the environment are deliberately not
+declared** — `decorator`, `proglog`, `tqdm`, `python-dotenv`, `packaging` —
+because they are transitive dependencies of the six, and declaring a
+transitive as a direct requirement asserts a relationship that does not
+exist. Their exact versions are not left to chance either. Counted in
+`playthrough/tooling/requirements.lock`: **11** pinned distributions — the six
+declared plus those five — and **11** `sha256:` entries, one per
+distribution, with `--only-binary :all:`
+[playthrough/tooling/requirements.lock:74] and `--require-hashes`
+[playthrough/tooling/requirements.lock:75] set inside the file itself. Exact
+versions stop drift, hashes stop substitution, and binary-only means no
+unreviewed `setup.py` ever executes. The declaration file, by contrast, names
+no index, no hashes and no pip options at all — it keeps the shape of the
+repository's own precedent [tools/json_tools/requirements.txt], and the
+install contract lives in the lock.
+
+**`flake8` is likewise absent from `requirements.txt` on purpose.** It gates
+this tooling during development but is not a runtime dependency of the
+pipeline, and here it is deliberately the apt build (7.1.1) rather than a
+venv one, so that what runs locally is what CI runs.
+
+### Blast radius, honesty and integrity
+
+#### Exactly two pre-existing tracked files changed, and here is the proof
+
+Not summarised — pasted. The base is `f38c2fbae3`, the merge from upstream
+that this feature branched from.
+
+```console
+$ git diff --name-status f38c2fbae3..HEAD | grep -v $'\tplaythrough/'
+M       .gitattributes
+M       .gitignore
+
+$ git diff --name-only f38c2fbae3..HEAD | awk -F/ '{print $1}' | sort | uniq -c | sort -rn
+    522 playthrough
+      1 .gitignore
+      1 .gitattributes
+
+$ git diff --name-status f38c2fbae3..HEAD | awk '{print $1}' | sort | uniq -c
+    522 A
+      2 M
+
+$ git diff --stat f38c2fbae3..HEAD -- .gitignore .gitattributes
+ .gitattributes |  6 ++++++
+ .gitignore     | 20 ++++++++++++++++++++
+ 2 files changed, 26 insertions(+)
+```
+
+524 changed paths: 522 additions, all under `playthrough/`, and two
+modifications. **Zero deletions** — no `D` in the status tally. Nothing under
+`src/`, `tests/`, `data/`, `gfx/`, `lang/`, `doc/`, `tools/`,
+`build-scripts/`, `Makefile`, `CMakeLists.txt`, `CMakePresets.json`,
+`.flake8`, `pyproject.toml`, `.astylerc` or `.github/`. And both
+modifications are pure appends — 26 insertions, 0 deletions — so neither
+existing line was rewritten.
+
+The `.gitattributes` change in full, which is the six entries the plan
+prescribes and nothing else:
+
+```diff
+@@ -15,6 +15,8 @@
+  *.sh      text
+  *.txt     text
+  *.yml     text
++*.jsonl   text
++*.srt     text
+@@ -36,4 +38,8 @@
+  *.ico     binary
+  *.png     binary
+  *.ttf     binary
++*.gsav    binary
++*.mp4     binary
++*.sav     binary
++*.zzip    binary
+```
+
+`*.md text` was already declared at [.gitattributes:12], so this page needed
+no attribute of its own; `*.png binary` — now [.gitattributes:39], and
+`:37` before the two text-block lines above it shifted it — already covered
+the frames. Note the line drift, since the plan cites the pre-change number:
+after this append the file is 45 lines and `*.png` sits at 39. The file's own
+comment says its intent is to normalise explicitly rather than rely on
+detection [.gitattributes:33-34, "binary is a macro for -text -diff"], which
+is exactly what extending it for new artifact types does.
+
+The consequence for CI is that almost every gate sees nothing it can act on:
+with no C++, JSON or CMake change, the astyle, json, cmake-format,
+clang-tidy, iwyu, matrix and MSVC workflows receive no eligible input. Two
+gates are newly exercised — flake8 and the `python` leg of CodeQL — and both
+are satisfied by construction rather than by exemption, as the previous
+section measures.
+
+**And nothing at all gates a Markdown change, which is worth knowing before
+someone looks for the check that approved this page.** Measured across all 35
+workflow files: no workflow lists a `.md` path in its `paths:` filter, and
+there is no `markdownlint`, `mdl` or `remark-lint` anywhere in the tree. Two
+that might be assumed to apply do not — `linter.yml` (Code Style Reviewer)
+filters on `Makefile`, `.astylerc`, `**.json`, `**.cpp`, `**.h` and `**.c`
+[.github/workflows/linter.yml:6-14], and the spell check runs inside
+`text-changes-analyzer.yml`, whose filter is its own file plus
+`tools/pot_diff.py`, `lang/extract_json_strings.py`, `lang/string_extractor/**`,
+`src/*.h`, `src/*.cpp` and `**.json`
+[.github/workflows/text-changes-analyzer.yml:8-15]. `toc.yml` is scoped to
+`doc/` and, additionally, to the upstream repository by an `if:` guard
+[.github/workflows/toc.yml:5-13]. Locally there is nothing either: zero
+non-sample hooks in `.git/hooks`, `core.hooksPath` unset, and no
+`.pre-commit-config.yaml`, `.husky`, `.lintstagedrc` or `package.json`. This
+page's correctness therefore rests entirely on the checks recorded in it —
+citations that resolve, numbers that were measured, and the transcript-clean
+grep — and not on any automation, which is the reason those checks are
+written down as commands rather than described.
+
+#### The root `README.md` was deliberately not modified
+
+A generic feature template would have the top-level readme updated. It was
+not, and the deviation is recorded with its reason rather than left to look
+like an oversight: the base commit is literally
+`f38c2fbae3 Merge branch 'CleverRaven:master' into master`, so this is a fork
+whose player-facing readme is upstream-synced. Editing it creates a permanent
+merge-conflict surface that every future upstream merge has to resolve, in
+exchange for documentation that has a better home. `playthrough/README.md` is
+that better home — and it does not exist yet, which is recorded below as an
+open gap rather than glossed.
+
+#### The commit identity was not configured by this pass
+
+```console
+$ git config --local user.name  ;  git config --local user.email
+<unset>                            <unset>
+$ git config user.name          ;  git config user.email
+Blitzy Agent                       agent@blitzy.com
+$ git log f38c2fbae3..HEAD --format='%an <%ae>' | sort -u
+Blitzy Agent <agent@blitzy.com>
+```
+
+Repository-local `user.name` and `user.email` are both empty and were left
+empty. The effective identity comes from a higher-scope configuration and is
+`Blitzy Agent <agent@blitzy.com>`; every one of the commits on this branch
+since the base carries exactly that author and committer. The plan asks for a
+repository-local identity to be set; on this host that would overwrite a
+correct effective identity with a duplicate of itself, and the platform
+forbids running those two commands at all. The section "The commit identity,
+and why nothing here configures it" above works through the difference. What
+matters for the requirement — that commits are attributable — is measured
+above and satisfied.
+
+#### The no-cheating claim is auditable, and the audit result is recorded
+
+Three debug actions exist and all three are declared **without** a `bindings`
+array, which is what makes them unreachable by any keystroke:
+
+```console
+$ python3 - <<'EOF'
+... for each of debug_mode, debug, debug_hour_timer in data/raw/keybindings.json
+EOF
+id=debug_mode         name='Toggle debug mode'          bindings=ABSENT
+id=debug              name='Debug menu'                 bindings=ABSENT
+id=debug_hour_timer   name='Debug Toggle hour timer'    bindings=ABSENT
+```
+
+Their declarations sit at `data/raw/keybindings.json:3402`, `:3408` and
+`:3470`. Because that file is **not modified** by this feature — the
+blast-radius diff above is the proof — they remain unbound.
+
+User overrides would live at `<userdir>/config/keybindings.json`
+[src/path_info.cpp:400-403], and that file is a committed artifact, so its
+contents are independent evidence rather than an assertion. The audit:
+
+```console
+$ ls playthrough/userdir/config/keybindings.json
+ls: cannot access '...': No such file or directory
+$ grep -rniE 'debug_mode|debug_hour_timer|"debug"' playthrough/userdir/config/
+(no matches)
+```
+
+**The file does not exist**, so the gate resolves on its "absent" branch: the
+engine never wrote a user keybinding override, therefore no debug action could
+have been bound during the session, and nothing anywhere in the committed
+configuration tree mentions one. That is the strongest form the evidence can
+take — the claim is discharged against the absence of a file rather than
+against a promise.
+
+#### Clock readings: OCR is an assist, and the null count is stated
+
+Every clock value in the record is accounted for, because "48.7% of rows have
+no clock" is the kind of number that looks alarming until it is broken down:
+
+| Category | Rows | Which |
+| --- | ---: | --- |
+| exact clock read | 215 | frames 192–194, 198–243, and 166 of the 176 frames from 244 on |
+| no clock (`null`) | 204 | frames 1–191 and 195–197 — the creator draws its own full-screen form and there is no sidebar to read — plus ten gameplay frames |
+| **total** | **419** | |
+
+The ten gameplay frames with no readable clock are **281, 282, 318, 319, 320,
+321, 322, 323, 417 and 419** — ten out of 176 — and the reason for each was
+read out of the record rather than assumed:
+
+| Frames | What the row says | Why there is no clock |
+| --- | --- | --- |
+| 281–282 | `press 'x' -- enter look mode`, then `press 'Left'` | look mode replaces the status column with its own panel |
+| 318–323 | `press 'x'`, then four `Right` and one `Down` cursor move | the same, for six consecutive frames |
+| 417 | `press 'N' -- decline opening the diary after death` | post-death screen; the survivor is dead and there is no sidebar |
+| 419 | `press 'Escape' -- exit the follower epilogue` | the same |
+
+Eight of the ten are one mechanic — the look cursor — and the other two are
+the two end screens after death. Not one is an OCR failure. The
+timeline's own tally agrees: `clock_kind` is 215 `exact` and 204 `null` with
+**zero** `approx`, `reconciled_count` is 204 and every one of them carries
+`reconciled_reason: "clock-missing"` — not one row was reconciled because a
+reading was *wrong*, only because there was none. `date_kind` is 215 `month`
+and 204 `absent`; `date_agreement` is 215 `confirmed` and 204 `unverified`,
+with `date_corrected_count` **0** and `date_conflict_count` **0**.
+
+A missing reading is recorded as missing. It is never guessed, and where a
+frame's clock had to be reconciled the row says so and the reason says which
+kind of failure it was. The exact reader described earlier declines a cell
+that is not within four pixels of a glyph of the font that drew it, rather
+than returning the nearest thing — deliberately below the six pixels that
+separate this face's `0` from its `8`.
+
+#### What could not be verified in this pass, stated rather than smoothed over
+
+* **No build was run.** The `SDL3=0`, `-j`, compiler and detachment findings
+  are argued from the Makefile, `pkg-config`, `apt-cache` and the installed
+  compilers — all measured — but the assertion "this command produces a
+  working binary" is not re-measured here. The binary is absent from this
+  clone; the frames are the evidence that one existed when the session ran,
+  and they carry its version string in the picture.
+* **No game was launched.** Window targeting, the language prompt and the
+  first-launch geometry are the session's own observations plus the tooling's
+  recorded rationale, not this pass's measurements, and each is labelled that
+  way where it appears.
+* **The 10.52 s-against-11.75 s truncation symptom** is quoted from the
+  earlier development record, not re-measured; the current container is
+  correct, so the failing state no longer exists to measure.
+* **The plan's `mean=0.270018 std=0.198145` and `08:15:32`** are plan figures
+  from another host. Neither reproduces here, and both are labelled *(plan)*
+  wherever they appear rather than being quietly replaced.
+
+#### Three artifacts the plan names that do not exist here
+
+`playthrough/README.md`, `playthrough/tooling/run_pipeline.sh` and
+`playthrough/tooling/verify_artifacts.sh` are named as items to create and are
+absent:
+
+```console
+$ for p in playthrough/README.md playthrough/tooling/run_pipeline.sh \
+>          playthrough/tooling/verify_artifacts.sh \
+>          playthrough/tooling/commit_artifacts.sh; do
+>     printf '%-46s %s\n' "$p" "$([ -e "$p" ] && echo PRESENT || echo ABSENT)"
+> done
+playthrough/README.md                          ABSENT
+playthrough/tooling/run_pipeline.sh            ABSENT
+playthrough/tooling/verify_artifacts.sh        ABSENT
+playthrough/tooling/commit_artifacts.sh        PRESENT
+```
+
+This **corrects** the earlier section on this page titled "Four AAP artifacts
+that do not exist in this tree": `commit_artifacts.sh` now exists, with 79
+passing tests of its own, so the list is three rather than four. The
+functional gap left by the two missing scripts is not total — the render
+stages are individually runnable and the acceptance checks live in
+`test_artifacts.py`, which has 114 passing tests — but there is no single
+orchestrator and no single shell-level gate, and that is the honest state.
+`playthrough/README.md`'s absence is the more visible one, because this page
+defers user-facing material to it in two places.
+
+### Meta observations that had no other home
+
+This section exists so that `playthrough/transcript.md`,
+`playthrough/transcript.srt` and `playthrough/dossier.md` can be *verifiably*
+clean rather than merely intended to be. Anything below was tempting to write
+into the record and belongs here instead.
+
+#### The transcript-clean contract, measured
+
+The check is a deliberately blunt vocabulary scan with no word sense and no
+word boundaries:
+
+```console
+$ grep -niE 'frame|screenshot|capture|ocr|ffmpeg|moviepy|manifest|timeline|keystroke|xdotool|pipeline|tileset|sidebar|commit|option' playthrough/transcript.md
+467:**00:01:18,000** The glass is gone. Step into the frame.
+471:**00:01:18,500** Now step into the smashed frame.
+475:**00:01:22,750** Something is close to the northeast. Out through the frame, then away.
+```
+
+Three hits, all the ordinary English noun — a smashed window frame she is
+climbing through — corresponding to manifest rows 233, 235 and 237. Remove
+`frame` from the pattern and the result is what actually matters:
+
+```console
+$ grep -niE 'screenshot|capture|\bocr\b|ffmpeg|moviepy|manifest|timeline|keystroke|xdotool|pipeline|tileset|sidebar|commit|option' playthrough/transcript.md
+(nothing)
+$ ... same pattern against playthrough/transcript.srt
+(nothing)
+$ ... same pattern against every commentary field in playthrough/manifest.jsonl
+0 hits
+$ ... the FULL pattern, including 'frame', against playthrough/dossier.md
+(nothing)
+```
+
+**Zero** apparatus vocabulary anywhere in the in-character record, and the
+dossier is clean even on the blunt pattern. The three rows are **not** edited:
+the substantive rule is satisfied, and editing an append-only record to
+satisfy a substring match would be exactly the after-the-fact tidying that
+makes such a record worthless. This supersedes the earlier counts on this page
+(two hits at rows 509/523, and six wording advisories) — those measured the
+retired capture sets.
+
+#### The dossier's voice register, as a production note
+
+Recorded here rather than in `dossier.md`, because a note about how a voice is
+to be maintained is production metadata and would be the one out-of-character
+sentence on an otherwise in-character page. The register is: a
+forty-seven-year-old maintenance engineer, plain declaratives, short
+sentences, concrete nouns, mechanical vocabulary used correctly and without
+explanation, no irony, no self-dramatisation, and no vocabulary she would not
+have. She says "work shirt" for the garment the game calls a dress shirt
+because that is what a woman on shift calls the shirt she works in. She does
+not name the interface she is looking at, does not describe her own statistics
+as numbers, and does not comment on the fact that any of this is being
+recorded. Anyone extending the transcript matches that; anyone tempted to
+have her explain a mechanic puts the explanation here instead.
+
+#### Small mechanical facts that are meta by nature
+
+Consolidated from the sections above so that they are findable, since each one
+cost time to learn:
+
+* **`}` opens the in-game sidebar manager**, should a layout ever need
+  adjusting mid-session. It was not needed: the engine's default
+  `legacy_labels_sidebar` was left exactly as it came up, which is also why
+  the crop is 352 px wide rather than the plan's 288.
+* **`query_yn` is case sensitive on this build** — a lower-case `y` was
+  ignored where `Y` was accepted.
+* **Shifted punctuation must be sent as an explicit chord.** A bare `!`
+  arrives as `1`, i.e. a keypad move. `xdotool` also rejects a bare `.` with
+  `Invalid key sequence '.'`, which must be spelled `period` — and that
+  failure happens before anything is sent, so it costs no frame.
+* **Movement is vikeys**, `h j k l y u b n`; the arrow keys are ambiguous in
+  `DEFAULTMODE`, where `UP` is *eat* and `DOWN` is *drop*.
+* **`c` (close) auto-selects when exactly one closable door is adjacent** and
+  does not prompt for a direction, which is how a correction ended up needing
+  a correction of its own.
+* **The sidebar message log is oldest-first**, newest at the bottom.
+* **A stale comment worth knowing about, not fixed here.**
+  `playthrough/tooling/render_movie.py:271` describes "this session's film" as
+  "337 s of 1920x1080 libx264 over 692 concat entries", which was true of a
+  retired capture set; the current film is 233.04 s over 444 concat entries.
+  It sits inside the justification for `ENCODE_TIMEOUT = 3600.0`, so the
+  timeout it argues for is still amply correct and the figure is descriptive
+  rather than load-bearing. It is recorded rather than edited because editing
+  a docstring in a module with 108 passing tests, in a pass whose subject is
+  this page, is a change with more risk than value — and because an
+  engineering log is the right place to note a documentation drift.
+
+### Corrections that supersede earlier sections of this page
+
+Collected in one place, because this page grew by accretion and a reader
+should not have to reconcile four capture sets by hand. Every figure below was
+re-measured in the pass that wrote this part; every superseded figure was
+correct when it was written.
+
+| Earlier statement | Where | Current measurement |
+| --- | --- | --- |
+| 560 frames / 560 rows | the first session log | **419** frames, **419** manifest rows, **419** tracked PNGs, **419** SRT cues, **419** transcript entries |
+| 395 frames, then a 397-frame correction | the re-record sections | 419; the 395-frame set was retired and re-recorded |
+| "frames 1–243 have no clock; frame 244 is the first frame with an exact clock" | the reconciliation section | the first exact clock in this set is **frame 192** (`08:00:00`); 49 frames below 244 carry one |
+| "246 of 395 clock readings were reconciled" | same | **204 of 419**, all with `reconciled_reason: clock-missing` |
+| the date line's weekday disagreement | its own section | this set reports `date_corrected_count` **0** and `date_conflict_count` **0**; 215 `confirmed`, 204 `unverified` |
+| two advisory hits on "frame" at rows 509/523; six wording advisories | two sections | **three** hits, at manifest rows 233/235/237, all the ordinary noun |
+| 1377 tests across eleven test modules (and 152 earlier still) | the suite sections | **1991** tests across **fifteen** modules, `OK (skipped=1)` |
+| "four AAP artifacts do not exist" | its own section | **three**: `commit_artifacts.sh` now exists |
+| under `-fps_mode vfr` the header's `nb_frames` is "routinely absent" | the packet-counting section | `nb_frames=444` is present and agrees with the packet count |
+
+**The binary that drew the current frames is named in the frames**, and it is
+neither of the two commits previously written down. Read off the pixels of the
+first and last capture in the committed set, at a whole-screen crop:
+
+```console
+$ python playthrough/tooling/ocr_clock.py --rect 1920x1080+0+0 --field text \
+      --no-check-options playthrough/frames/frame_00001.png | grep -i version
+Version: e50300eeb0
+$ ... the same for playthrough/frames/frame_00419.png
+Version: e50300eeb0
+```
+
+So the 419-frame set was captured with a binary built at `e50300eeb0`, a
+commit on this branch. `f38c2fbae3` is the **pre-feature base** and was never
+the HEAD any session was captured at; `6dea631409-dirty`, recorded earlier on
+this page, was the binary of the retired 560-frame session. All three numbers
+are true of different things, which is exactly why the version string is
+photographed into the record rather than asserted about it — the frames tie
+themselves to their own binary and nobody has to trust a note.
+
+One last reconciliation: the film's total is 233.0 s computed against a
+container of 233.040000 s. That is 0.04 s of encoder tolerance, not a
+discrepancy.
+
+### No user-specified rules exist for this project
+
+`review_rules` returns "No user rules provided", and that was read in full
+rather than skimmed. Nothing has been invented to fill the gap and the bar is
+not lowered; enterprise-standard practice governs instead. For this page in
+particular, that resolves to five concrete obligations, each of which is
+discharged somewhere specific above rather than asserted here:
+
+* **Evidence over assertion.** Every claim carries a `[path:locator]` at the
+  point of use and every number states the command that produced it. Figures
+  that came from the plan rather than from this host are marked *(plan)*, and
+  each one that does not reproduce is named where it appears — six in the host
+  table, plus the luminance calibration, the OCR reading, the sidebar crop and
+  the lint findings in their own sections.
+* **Make integrity claims auditable.** The no-cheating guarantee is
+  discharged against a committed artifact — the absence of
+  `userdir/config/keybindings.json` and the unbound declarations in
+  `data/raw/keybindings.json` — rather than against anyone's word.
+* **Minimise the blast radius.** Two modified files, 26 inserted lines, zero
+  deletions, proof pasted rather than summarised.
+* **Do not create merge-conflict surfaces in upstream-synced files.** The
+  root `README.md` is untouched and the reason is recorded with the decision.
+* **Fail loudly, never silently.** Six silent failure modes are documented
+  above, each with the measurement that makes it loud: a save committed in
+  appearance only (the before/after `git add --dry-run`), a film that is
+  entirely black (the two-term luminance gate with both its controls),
+  captions that drift (the frame 315/316 cue arithmetic), a film in the wrong
+  artwork (`resolve_tileset` failing closed rather than falling back), an
+  option that is present but inert behind an unmet prerequisite
+  (`USE_TILES`, and `USE_DISTANT_TILES` one level down), and bytecode
+  committed by accident (`PYTHONDONTWRITEBYTECODE`, with the two-arm control
+  run after the hazard actually fired). Where a guard exists, its *controls*
+  are measured too — a gate nobody has watched fail is a gate nobody has
+  tested.
+
+One thing this page cannot do is stand in for the missing
+`playthrough/README.md`. It is the engineer-facing document by design; the
+user-facing one is still owed.

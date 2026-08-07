@@ -944,12 +944,21 @@ def render_srt(cues: Sequence[Cue]) -> str:
     """Return the exact text playthrough/transcript.srt holds.
 
     SubRip, to the letter: a sequence number from 1, a timecode line
-    measured against TIMECODE_LINE_RE before it is accepted, one or two
-    lines of plain text, a blank line between cues, and a single
-    trailing newline after the last cue's text with no empty block
-    behind it.  UTF-8 without a byte-order mark, which
+    measured against TIMECODE_LINE_RE before it is accepted, however
+    many lines of plain text the sentence needs, a blank line between
+    cues, and a single trailing newline after the last cue's text with
+    no empty block behind it.  UTF-8 without a byte-order mark, which
     :func:`write_text` guarantees -- a mark would sit in front of cue
     one's sequence number and stop it being read as one.
+
+    THERE IS NO LINE CAP, deliberately, and this sentence used to say
+    "one or two lines" -- which contradicted the rest of the module and
+    is exactly how the truncation defect would be reinvented by someone
+    reading only this function.  See :func:`wrap_cue_text` and the
+    CUE_LINE_WIDTH commentary: capping a cue and marking the cut left
+    168 of 395 captions carrying less than the survivor said, and the
+    requirement is that the timestamped transcript IS the caption
+    track.  Forty-two columns wraps; it does not shorten.
     """
     if not cues:
         raise TranscriptError(
