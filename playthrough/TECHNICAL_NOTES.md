@@ -3441,7 +3441,7 @@ TAG:language=eng
 
 Two streams, `h264` 1920×1080 plus `mov_text` tagged `eng`; both containers
 report `duration=233.040000` against a computed 233.0, which is 0.04 s of
-encoder tolerance; 8 051 910 bytes for the base render and 8 088 117 for the
+encoder tolerance; 8 051 910 bytes for the base render and 8 088 657 for the
 captioned one. `transcript.srt` carries **419** cues and its last one closes
 at `00:03:52,750 --> 00:03:53,000` — 233.000 s exactly — and
 `transcript.md` carries 419 cumulative-time entries. Cue count equals frame
@@ -3545,7 +3545,7 @@ Measured today, over the whole suite:
 
 ```console
 $ python -m unittest discover -s playthrough/tooling -p 'test_*.py'
-Ran 1991 tests in 542.582s
+Ran 1992 tests in 545.262s
 OK (skipped=1)
 ```
 
@@ -3557,10 +3557,10 @@ OK (skipped=1)
 | `test_embed_captions` | 99 | | `test_seed_options` | 118 |
 | `test_env` | 118 | | `test_session` | 122 |
 | `test_launch_game` | 154 | | `test_sidebar_geometry` | 78 |
-| `test_make_srt` | 113 | | `test_timeline` | 325 (1 skip) |
-| `test_make_transitions` | 94 | | **total** | **1991** |
+| `test_make_srt` | 114 | | `test_timeline` | 325 (1 skip) |
+| `test_make_transitions` | 94 | | **total** | **1992** |
 
-The per-module figures sum to 1991 exactly, which is the check that the
+The per-module figures sum to 1992 exactly, which is the check that the
 discovery run collected every module. This supersedes the 1377 recorded
 earlier on this page and the 152 recorded earlier still; both were correct
 when written. Shell side, measured the same pass: `shellcheck` 0.10.0 at
@@ -3877,16 +3877,7 @@ word boundaries:
 
 ```console
 $ grep -niE 'frame|screenshot|capture|ocr|ffmpeg|moviepy|manifest|timeline|keystroke|xdotool|pipeline|tileset|sidebar|commit|option' playthrough/transcript.md
-467:**00:01:18,000** The glass is gone. Step into the frame.
-471:**00:01:18,500** Now step into the smashed frame.
-475:**00:01:22,750** Something is close to the northeast. Out through the frame, then away.
-```
-
-Three hits, all the ordinary English noun — a smashed window frame she is
-climbing through — corresponding to manifest rows 233, 235 and 237. Remove
-`frame` from the pattern and the result is what actually matters:
-
-```console
+(nothing)
 $ grep -niE 'screenshot|capture|\bocr\b|ffmpeg|moviepy|manifest|timeline|keystroke|xdotool|pipeline|tileset|sidebar|commit|option' playthrough/transcript.md
 (nothing)
 $ ... same pattern against playthrough/transcript.srt
@@ -3897,13 +3888,27 @@ $ ... the FULL pattern, including 'frame', against playthrough/dossier.md
 (nothing)
 ```
 
-**Zero** apparatus vocabulary anywhere in the in-character record, and the
-dossier is clean even on the blunt pattern. The three rows are **not** edited:
-the substantive rule is satisfied, and editing an append-only record to
-satisfy a substring match would be exactly the after-the-fact tidying that
-makes such a record worthless. This supersedes the earlier counts on this page
-(two hits at rows 509/523, and six wording advisories) — those measured the
-retired capture sets.
+**Zero** apparatus vocabulary anywhere in the in-character record, on the
+blunt pattern as well as the substantive one, and the dossier is clean on
+both too.
+
+That top line used to return three hits — `The glass is gone. Step into the
+frame.` and two like it, at manifest rows 233, 235 and 237 — and they were
+the ordinary English noun, a smashed shop window she was climbing through.
+The collision with the apparatus word is now gone rather than argued with,
+and it was closed the only way that keeps the record trustworthy: at
+SOURCE, in the commentary those three rows carry, followed by a regeneration
+of `transcript.md` and `transcript.srt` from `timeline.json` in one pass.
+Neither artifact was hand-edited, and the substitution is not a euphemism —
+the game's own message on that capture names the thing she went through as a
+window, and the five neighbouring lines about the same opening already said
+`window`; these three were the outliers. Every duration, cue, clock reading,
+date, action and frame index is byte-identical across the regeneration, so
+the pacing and the timing evidence did not move a millisecond.
+
+This supersedes the earlier counts on this page — three hits at rows
+233/235/237, and before that two hits at rows 509/523 with six wording
+advisories, which measured the retired capture sets.
 
 #### The dossier's voice register, as a production note
 
@@ -3966,10 +3971,14 @@ correct when it was written.
 | "frames 1–243 have no clock; frame 244 is the first frame with an exact clock" | the reconciliation section | the first exact clock in this set is **frame 192** (`08:00:00`); 49 frames below 244 carry one |
 | "246 of 395 clock readings were reconciled" | same | **204 of 419**, all with `reconciled_reason: clock-missing` |
 | the date line's weekday disagreement | its own section | this set reports `date_corrected_count` **0** and `date_conflict_count` **0**; 215 `confirmed`, 204 `unverified` |
-| two advisory hits on "frame" at rows 509/523; six wording advisories | two sections | **three** hits, at manifest rows 233/235/237, all the ordinary noun |
-| 1377 tests across eleven test modules (and 152 earlier still) | the suite sections | **1991** tests across **fifteen** modules, `OK (skipped=1)` |
+| two advisory hits on "frame" at rows 509/523; then **three** at rows 233/235/237 | the transcript-clean section | **none**: the blunt pattern, `frame` included, now returns nothing against `transcript.md`, `transcript.srt` or `dossier.md` — those three rows say `window`, fixed at source and regenerated, which is the noun the game's own message used |
+| 1377 tests across eleven test modules (and 152 earlier still) | the suite sections | **1992** tests across **fifteen** modules, `OK (skipped=1)` |
 | "four AAP artifacts do not exist" | its own section | **three**: `commit_artifacts.sh` now exists |
 | under `-fps_mode vfr` the header's `nb_frames` is "routinely absent" | the packet-counting section | `nb_frames=444` is present and agrees with the packet count |
+| "the committed list sums to `301.000000` s" | the transition-remainder section | **`233.000000` s** — 419 capture durations summing to `231.000000` plus 24 transition shares summing to `2.000000`, which is the timeline's declared `total` |
+| "`nb_read_packets=540` against 539 planned entries" | the packet-counting section | **444** against **443** planned entries (419 captures + 24 transition frames), the extra packet being the repeated final `file` line |
+| `transcript.srt` / `.md` byte-identical at `a67fcce909…` / `c924d91f1d…`, and `cata-play-cc.mp4` at `da957b72ee…` | the regenerated-chain table of the 419-frame QA pass | those digests were correct for that pass. The transcript has since gained its title line and had its closing sixteen entries and three `frame`/`window` sentences rewritten at source, so it now stands at `6267922b48…` / `fd2f204dd9…`, and the re-muxed captioned film at `3d3a41daf5…`, **8 088 657** B. `cata-play.mp4` is still `5e1344bac9…`, 8 051 910 B, and `build/concat.txt` still `5e7741e8c1…` — the picture and its timing did not move |
+| `transcript.md` opens straight onto "Timestamps are cumulative video time." | the transcript sections | it opens `# Delphine Ouellette — what I did, and why`, then that same line. The title is deliberately the heading `dossier.md` already uses, so a reader arriving at either meets the same person; it carries no timestamp-shaped string and no apparatus word, because exactly one stamp may appear per entry and none anywhere else |
 
 **The binary that drew the current frames is named in the frames**, and it is
 neither of the two commits previously written down. Read off the pixels of the
@@ -3994,6 +4003,155 @@ themselves to their own binary and nobody has to trust a note.
 One last reconciliation: the film's total is 233.0 s computed against a
 container of 233.040000 s. That is 0.04 s of encoder tolerance, not a
 discrepancy.
+
+### The concat demuxer's base directory, probed rather than argued about
+
+Two documents disagreed about how `playthrough/build/concat.txt` should spell
+its entries. The plan's note for the list itself says list-relative; the note
+for `render_movie.py` says "repository-root-relative with ffmpeg run from the
+repo root". Prose cannot settle that, so it was settled against the encoder
+that actually reads the file. Both forms were written into
+`playthrough/build/` — so that the base directory under test was the real one
+— handed to ffmpeg exactly as the render stage hands it the committed list,
+and pointed at an output under `/tmp` so nothing derived landed in the tree.
+
+Transcribed as it ran, from the repository root, with `$OUT=/tmp/cc001` — a
+per-clone scratch directory outside the checkout:
+
+```console
+$ ffmpeg -version | head -1
+ffmpeg version 7.1.1-1ubuntu4.2 Copyright (c) 2000-2025 the FFmpeg developers
+
+$ printf "file '../frames/frame_00001.png'\nduration 0.250\nfile '../frames/frame_00001.png'\n" \
+      > playthrough/build/_probe_concat.txt
+$ ffmpeg -v error -y -f concat -safe 0 -i playthrough/build/_probe_concat.txt \
+      -frames:v 1 $OUT/ccprobe_a.png 2>$OUT/probe_a.err ; echo "exit=$?"
+exit=0
+$ cat $OUT/probe_a.err          # empty: not one diagnostic
+$ identify -format "%f %wx%h\n" $OUT/ccprobe_a.png
+ccprobe_a.png 1920x1080
+$ rm -f playthrough/build/_probe_concat.txt
+
+$ printf "file 'playthrough/frames/frame_00001.png'\nduration 0.250\nfile 'playthrough/frames/frame_00001.png'\n" \
+      > playthrough/build/_probe_concat.txt
+$ ffmpeg -v error -y -f concat -safe 0 -i playthrough/build/_probe_concat.txt \
+      -frames:v 1 $OUT/ccprobe_b.png 2>$OUT/probe_b.err ; echo "exit=$?"
+exit=254
+$ cat $OUT/probe_b.err
+[concat @ 0x5baf2f240ec0] Impossible to open 'playthrough/build/playthrough/frames/frame_00001.png'
+[in#0 @ 0x5baf2f240cc0] Error opening input: No such file or directory
+Error opening input file playthrough/build/_probe_concat.txt.
+Error opening input files: No such file or directory
+$ rm -f playthrough/build/_probe_concat.txt
+```
+
+**List-relative is the form, and the repository-root-relative spelling is not
+a stylistic preference but a hard failure.** The diagnostic names the base
+directory out loud: ffmpeg looked for
+`playthrough/build/playthrough/frames/frame_00001.png`, which is the list's
+own directory with the entry appended, from a working directory that was the
+repository root in both runs. So the committed list carries
+`../frames/frame_00001.png` for a capture and `transitions/trans_00315_00.png`
+for a transition frame, one form throughout, no absolute path anywhere, and
+the committed artifact is itself runnable — which is the property that makes
+"the encoder was handed this file" checkable rather than claimed. The probe
+list was removed from `playthrough/build/` in the same breath it was written,
+and both probe images were written to `/tmp`; `playthrough/build/` still holds
+only what its stages publish.
+
+The whole-list form was then proven at scale, because a two-entry probe
+establishes the base directory and nothing about the other 442 entries. The
+plan's own fixed command was run verbatim against the committed list, to an
+output under `/tmp`:
+
+```console
+$ ffmpeg -y -f concat -safe 0 -i playthrough/build/concat.txt -fps_mode vfr \
+      -pix_fmt yuv420p -c:v libx264 -crf 20 -s 1920x1080 -movflags +faststart \
+      $OUT/aap_form_check.mp4 > $OUT/aap_encode.log 2>&1 ; echo "exit=$?"
+exit=0
+$ grep -c "No such file or directory" $OUT/aap_encode.log ; \
+  grep -c "Impossible to open" $OUT/aap_encode.log
+0
+0
+$ ffprobe -v error -select_streams v:0 -count_packets \
+      -show_entries stream=codec_name,width,height,nb_read_packets \
+      -of default=nw=1 $OUT/aap_form_check.mp4
+codec_name=h264
+width=1920
+height=1080
+nb_read_packets=444
+$ ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 \
+      $OUT/aap_form_check.mp4
+233.040000
+```
+
+All 444 entries resolved and neither fatal symptom appeared once.
+
+One incidental result came out of that run and is recorded here so nobody
+later reads it as a defect. The plan's command omits `-bf 0`, which the render
+stage does pass, so the two containers differ in exactly that one argument —
+and their timing is identical:
+
+| | plan's command (B-frames on) | render stage (`-bf 0`) |
+| --- | --- | --- |
+| `has_b_frames` | 2 | 0 |
+| stream `duration` / `duration_ts` | 233.040000 / 2982912 | 233.040000 / 2982912 |
+| `format=duration` | 233.040000 | 233.040000 |
+| `nb_frames` | 444 | 444 |
+| size | 7 670 058 B | 8 051 910 B |
+
+So on ffmpeg 7.1.1 the reorder delay does **not** shift the track duration,
+and the earlier claim on this page that zero B-frames is "the only way the mov
+muxer writes a track duration that matches the timeline" is not reproducible
+here — the only measurable difference is 382 KB of bitrate. The argument is
+kept regardless: it costs nothing, the hazard it closes is real on builds where
+the muxer does trail the last PTS, and a still-image film gains nothing from
+B-frames. What is corrected is the reason given for it, not the flag.
+
+### The committed concat list is the emitter's output, re-derived to prove it
+
+The list is not hand-authored and the claim is worth more than an assertion,
+so it was re-derived from `playthrough/timeline.json` three independent ways
+and compared on the bytes each time.
+
+| Route | Result |
+| --- | --- |
+| `plan_render` + `format_concat_list` called in process against the committed timeline | 21 491 B, `sha256:5e7741e8c1b38e1176866dba40e6b6cce276e98730785cd201859e463740770b` |
+| `render_movie.py --concat-only`, publishing over the committed path | byte-identical; `git status --porcelain` stayed **empty** |
+| the same command against a hardlinked copy of the tree under `/tmp`, so a different absolute location produced the list | byte-identical, same digest |
+
+The third route also ran the encode to completion in that temporary tree, and
+the film it produced is byte-identical to the committed one:
+`sha256:5e1344bac9f1dbf04501ec028d654e210f6bfdc5dd6a4eff296fb2db4d59db9d`,
+8 051 910 B, reported by the stage itself as "419 capture(s), 2 transition
+group(s), 443 concat entries, expected 233.000 s, container 233.040 s
+(+0.040 s)". A list that reproduces its own film from a different directory is
+the strongest available statement that nothing in it depends on this
+checkout's location and nothing in it was authored by hand.
+
+The list's own arithmetic, re-measured on the committed bytes rather than
+recomputed from the timeline:
+
+| Property | Measured |
+| --- | --- |
+| `file` lines / `duration` lines | 444 / 443 — the identity `file == duration + 1` |
+| distinct images referenced | 443 — 419 captures + 24 transition frames |
+| repeated terminal entry | `../frames/frame_00419.png`, duplicating the preceding `file` line, with no `duration` after it |
+| capture durations | all at three decimals, every one equal as a **string** to the timeline's own value; all within `[0.250, 10.000]` |
+| transition shares | eleven at `0.083333` and one at `0.083337` per group; each group sums to exactly `1.000000` by integer-microsecond arithmetic |
+| grand total | `231.000000 + 2.000000 = 233.000000` s = the timeline's `total` = its `final_cue_end` |
+| coverage | the emitted capture set equals `playthrough/frames/frame_*.png` exactly — symmetric difference empty |
+| transition placement | group 315 sits between `frame_00315.png` and `frame_00316.png`, group 316 between `frame_00316.png` and `frame_00317.png`; no transition frame follows any unflagged entry |
+| bytes | LF throughout, one trailing newline, no BOM, no tab, no `#` comment, no `ffconcat` header, no absolute path, no directive other than `file` and `duration` |
+
+Every row above was produced by one instrument — a 22-check gate run over the
+committed bytes, which printed each measured value rather than a pass word and
+finished `22 checks, 0 failure(s)`. It is deliberately not a committed file:
+the properties it checks are already asserted by `render_movie.py` itself and
+covered by `test_render_movie.py`'s 108 tests, so a second copy in the tree
+would be a third place for the same rules to drift. Alongside it, the whole
+tooling suite reports **1992 tests across fifteen modules, all OK**, and both
+`flake8 playthrough/` and `make python-check` report **zero findings**.
 
 ### No user-specified rules exist for this project
 

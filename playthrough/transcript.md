@@ -1,3 +1,5 @@
+# Delphine Ouellette — what I did, and why
+
 Timestamps are cumulative video time.
 
 **00:00:00,000** English, the same as every form I ever filled in at the plant. Nothing here to think about.
@@ -464,15 +466,15 @@ Timestamps are cumulative video time.
 
 **00:01:17,750** Drive a knee through the glass. Make the opening.
 
-**00:01:18,000** The glass is gone. Step into the frame.
+**00:01:18,000** The glass is gone. Step into the window.
 
 **00:01:18,250** I see them. Keep safe mode on, but let me use the opening.
 
-**00:01:18,500** Now step into the smashed frame.
+**00:01:18,500** Now step into the smashed window.
 
 **00:01:22,500** Yes. Through before they close the distance.
 
-**00:01:22,750** Something is close to the northeast. Out through the frame, then away.
+**00:01:22,750** Something is close to the northeast. Out through the window, then away.
 
 **00:01:27,750** Keep the step. The warning is west, not in front of me.
 
@@ -794,37 +796,37 @@ Timestamps are cumulative video time.
 
 **00:03:47,250** My body is breaking. The torso and right leg are still held. Pull.
 
-**00:03:47,500** My last words should tell them they made me fight.
+**00:03:47,500** The yes I meant for the pull is sitting there as the start of a word. All right. I will finish it.
 
-**00:03:47,750** My last words should tell them they made me fight.
+**00:03:47,750** You. I am not going to name anything down here, so let whoever reads it decide who I meant.
 
-**00:03:48,000** My last words should tell them they made me fight.
+**00:03:48,000** A space, because twenty-two years of writing up repairs did not teach me to run words together at the end.
 
-**00:03:48,250** My last words should tell them they made me fight.
+**00:03:48,250** My hands are still steady. That was always the best thing about them and this is the last of it.
 
-**00:03:48,500** My last words should tell them they made me fight.
+**00:03:48,500** Slower than I would like. I was never quick and I am not going to be quick now.
 
-**00:03:48,750** My last words should tell them they made me fight.
+**00:03:48,750** Nearly a word. Keep going; a line you stop halfway through is worse than no line at all.
 
-**00:03:49,000** My last words should tell them they made me fight.
+**00:03:49,000** Made. Not asked, not chose — made. That is the whole of my complaint and I want the right word on it.
 
-**00:03:49,250** My last words should tell them they made me fight.
+**00:03:49,250** Another space. Say it plainly or do not say it at all.
 
-**00:03:49,500** My last words should tell them they made me fight.
+**00:03:49,500** Two words left. I can still count, so I will count them down.
 
-**00:03:49,750** My last words should tell them they made me fight.
+**00:03:49,750** Me. Not somebody braver or quicker. Me, with this back and nothing in my shirt pocket but the pocket.
 
-**00:03:50,000** My last words should tell them they made me fight.
+**00:03:50,000** A space before the last word. My grandmother did not cry in kitchens and I am not going to start in a basement.
 
-**00:03:50,250** My last words should tell them they made me fight.
+**00:03:50,250** Now the word. Five days of deciding what I would not do, and this is the one thing I did.
 
-**00:03:50,500** My last words should tell them they made me fight.
+**00:03:50,500** I did not go looking for any of it. That matters to me, so it goes in.
 
-**00:03:50,750** My last words should tell them they made me fight.
+**00:03:50,750** Three letters. My father wrote the time in the log and so did I, every repair, twenty-two years of them.
 
-**00:03:51,000** My last words should tell them they made me fight.
+**00:03:51,000** Two. Steady.
 
-**00:03:51,250** My last words should tell them they made me fight.
+**00:03:51,250** Fight. There it is, and it is the true part — I did not lie down for it.
 
 **00:03:51,500** Leave it there: you made me fight.
 

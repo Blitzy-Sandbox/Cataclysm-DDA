@@ -2,7 +2,7 @@
   "version": 1,
   "manifest": {
     "path": "playthrough/manifest.jsonl",
-    "sha256": "87c4facdf54dec59deb8561a759d903c89d638617ef8868974117c38affecbf2",
+    "sha256": "78b38ea038ee16cf38dc995d6371543ffcc480011c67614d66fead4180f750ca",
     "rows": 419
   },
   "floor": 0.25,
@@ -4678,7 +4678,7 @@
       "cue_start": 78.0,
       "cue_end": 78.25,
       "action": "press 'Right' -- step toward the now-empty east window frame",
-      "commentary": "The glass is gone. Step into the frame."
+      "commentary": "The glass is gone. Step into the window."
     },
     {
       "frame": 234,
@@ -4718,7 +4718,7 @@
       "cue_start": 78.5,
       "cue_end": 82.5,
       "action": "press 'Right' -- retry stepping east into the smashed window after acknowledging safe mode",
-      "commentary": "Now step into the smashed frame."
+      "commentary": "Now step into the smashed window."
     },
     {
       "frame": 236,
@@ -4758,7 +4758,7 @@
       "cue_start": 82.75,
       "cue_end": 87.75,
       "action": "press 'Right' -- move east out of the window frame while the nearest threat is northeast",
-      "commentary": "Something is close to the northeast. Out through the frame, then away."
+      "commentary": "Something is close to the northeast. Out through the window, then away."
     },
     {
       "frame": 238,
@@ -7978,7 +7978,7 @@
       "cue_start": 227.5,
       "cue_end": 227.75,
       "action": "press 'o' -- enter 'o' in Delphine's last words",
-      "commentary": "My last words should tell them they made me fight."
+      "commentary": "The yes I meant for the pull is sitting there as the start of a word. All right. I will finish it."
     },
     {
       "frame": 399,
@@ -7998,7 +7998,7 @@
       "cue_start": 227.75,
       "cue_end": 228.0,
       "action": "press 'u' -- enter 'u' in Delphine's last words",
-      "commentary": "My last words should tell them they made me fight."
+      "commentary": "You. I am not going to name anything down here, so let whoever reads it decide who I meant."
     },
     {
       "frame": 400,
@@ -8018,7 +8018,7 @@
       "cue_start": 228.0,
       "cue_end": 228.25,
       "action": "press 'space' -- enter a space in Delphine's last words",
-      "commentary": "My last words should tell them they made me fight."
+      "commentary": "A space, because twenty-two years of writing up repairs did not teach me to run words together at the end."
     },
     {
       "frame": 401,
@@ -8038,7 +8038,7 @@
       "cue_start": 228.25,
       "cue_end": 228.5,
       "action": "press 'm' -- enter 'm' in Delphine's last words",
-      "commentary": "My last words should tell them they made me fight."
+      "commentary": "My hands are still steady. That was always the best thing about them and this is the last of it."
     },
     {
       "frame": 402,
@@ -8058,7 +8058,7 @@
       "cue_start": 228.5,
       "cue_end": 228.75,
       "action": "press 'a' -- enter 'a' in Delphine's last words",
-      "commentary": "My last words should tell them they made me fight."
+      "commentary": "Slower than I would like. I was never quick and I am not going to be quick now."
     },
     {
       "frame": 403,
@@ -8078,7 +8078,7 @@
       "cue_start": 228.75,
       "cue_end": 229.0,
       "action": "press 'd' -- enter 'd' in Delphine's last words",
-      "commentary": "My last words should tell them they made me fight."
+      "commentary": "Nearly a word. Keep going; a line you stop halfway through is worse than no line at all."
     },
     {
       "frame": 404,
@@ -8098,7 +8098,7 @@
       "cue_start": 229.0,
       "cue_end": 229.25,
       "action": "press 'e' -- enter 'e' in Delphine's last words",
-      "commentary": "My last words should tell them they made me fight."
+      "commentary": "Made. Not asked, not chose — made. That is the whole of my complaint and I want the right word on it."
     },
     {
       "frame": 405,
@@ -8118,7 +8118,7 @@
       "cue_start": 229.25,
       "cue_end": 229.5,
       "action": "press 'space' -- enter a space in Delphine's last words",
-      "commentary": "My last words should tell them they made me fight."
+      "commentary": "Another space. Say it plainly or do not say it at all."
     },
     {
       "frame": 406,
@@ -8138,7 +8138,7 @@
       "cue_start": 229.5,
       "cue_end": 229.75,
       "action": "press 'm' -- enter 'm' in Delphine's last words",
-      "commentary": "My last words should tell them they made me fight."
+      "commentary": "Two words left. I can still count, so I will count them down."
     },
     {
       "frame": 407,
@@ -8158,7 +8158,7 @@
       "cue_start": 229.75,
       "cue_end": 230.0,
       "action": "press 'e' -- enter 'e' in Delphine's last words",
-      "commentary": "My last words should tell them they made me fight."
+      "commentary": "Me. Not somebody braver or quicker. Me, with this back and nothing in my shirt pocket but the pocket."
     },
     {
       "frame": 408,
@@ -8178,7 +8178,7 @@
       "cue_start": 230.0,
       "cue_end": 230.25,
       "action": "press 'space' -- enter a space in Delphine's last words; nothing on the screen changed",
-      "commentary": "My last words should tell them they made me fight."
+      "commentary": "A space before the last word. My grandmother did not cry in kitchens and I am not going to start in a basement."
     },
     {
       "frame": 409,
@@ -8198,7 +8198,7 @@
       "cue_start": 230.25,
       "cue_end": 230.5,
       "action": "press 'f' -- enter 'f' in Delphine's last words",
-      "commentary": "My last words should tell them they made me fight."
+      "commentary": "Now the word. Five days of deciding what I would not do, and this is the one thing I did."
     },
     {
       "frame": 410,
@@ -8218,7 +8218,7 @@
       "cue_start": 230.5,
       "cue_end": 230.75,
       "action": "press 'i' -- enter 'i' in Delphine's last words",
-      "commentary": "My last words should tell them they made me fight."
+      "commentary": "I did not go looking for any of it. That matters to me, so it goes in."
     },
     {
       "frame": 411,
@@ -8238,7 +8238,7 @@
       "cue_start": 230.75,
       "cue_end": 231.0,
       "action": "press 'g' -- enter 'g' in Delphine's last words",
-      "commentary": "My last words should tell them they made me fight."
+      "commentary": "Three letters. My father wrote the time in the log and so did I, every repair, twenty-two years of them."
     },
     {
       "frame": 412,
@@ -8258,7 +8258,7 @@
       "cue_start": 231.0,
       "cue_end": 231.25,
       "action": "press 'h' -- enter 'h' in Delphine's last words",
-      "commentary": "My last words should tell them they made me fight."
+      "commentary": "Two. Steady."
     },
     {
       "frame": 413,
@@ -8278,7 +8278,7 @@
       "cue_start": 231.25,
       "cue_end": 231.5,
       "action": "press 't' -- enter 't' in Delphine's last words",
-      "commentary": "My last words should tell them they made me fight."
+      "commentary": "Fight. There it is, and it is the true part — I did not lie down for it."
     },
     {
       "frame": 414,

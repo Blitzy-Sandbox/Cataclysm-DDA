@@ -680,10 +680,24 @@ class TestTheMarkdownContract(unittest.TestCase):
                          len(MARKDOWN_ENTRY_RE.findall(self.markdown)))
 
     def test_the_header_carries_no_stamp_and_no_meta_word(self):
-        header = self.markdown.split("\n")[0]
-        self.assertEqual(header, "Timestamps are cumulative video time.")
+        # The header is now the two sanctioned lines rather than one:
+        # a title carrying the survivor's name, then the statement of
+        # what the stamps measure.  It is taken as everything BEFORE
+        # the first entry so that the assertion keeps holding the whole
+        # of whatever the header becomes, instead of only its first
+        # line -- a second header line that nothing looked at is
+        # exactly how a meta word would get in.
+        header = self.markdown.split("\n\n**")[0]
+        self.assertEqual(
+            header,
+            "# Delphine Ouellette \u2014 what I did, and why\n"
+            "\n"
+            "Timestamps are cumulative video time.")
         self.assertEqual(MARKDOWN_STAMP_RE.findall(header), [])
         self.assertIsNone(META_GATE_RE.search(header))
+        # The name in the title is the name in the entries.  A header
+        # that introduced somebody else would still pass every count.
+        self.assertIn("Delphine", header)
 
     def test_no_cue_range_is_emitted(self):
         self.assertNotIn(" --> ", self.markdown)
@@ -697,8 +711,26 @@ class TestTheMarkdownContract(unittest.TestCase):
     def test_nothing_machine_readable_is_appended(self):
         self.assertTrue(
             self.markdown.rstrip("\n").split("\n")[-1].startswith("**"))
-        for token in ("{", "}", "[", "|", "```", "#"):
+        for token in ("{", "}", "[", "|", "```"):
             self.assertNotIn(token, self.markdown)
+
+    def test_the_only_heading_is_the_title_on_the_first_line(self):
+        """`#` is sanctioned for the title and nowhere else.
+
+        This used to be one more token in the blanket assertion above,
+        which was a PROXY for "no invented structure" and became too
+        blunt the moment the header grew a real title.  The thing that
+        actually matters is unchanged and is now stated directly: the
+        transcript is a record, not an essay, so no heading may be
+        interleaved between entries or appended after them.  One title
+        at the very top is the whole of the structure.
+        """
+        lines = self.markdown.split("\n")
+        self.assertTrue(lines[0].startswith("# "))
+        self.assertEqual(self.markdown.count("#"), 1)
+        for line in lines[1:]:
+            self.assertFalse(line.lstrip().startswith("#"),
+                             msg="no heading between or after entries")
 
     def test_the_survivors_sentences_come_through_verbatim(self):
         for word in REFERENCE_WORDS:

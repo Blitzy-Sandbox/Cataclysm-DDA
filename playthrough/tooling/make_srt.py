@@ -236,13 +236,28 @@ CUE_COMFORTABLE_LINES = 4
 # wolf teaches an operator to ignore the one that matters.
 CUE_ADVISORY_SAMPLE = 3
 
-# The Markdown's only generated line, and it is deliberately the plain
-# sanctioned sentence.  It carries no timestamp-shaped string, because
-# the gate counts every one of those and requires exactly one per
-# entry; it carries no out-of-character word, because the gate greps
-# the whole file for them; and it is not embellished, because every
-# word added here is another word that has to pass both.
-MARKDOWN_HEADER = "Timestamps are cumulative video time."
+# The Markdown's only generated lines: a title carrying the survivor's
+# name, then the sanctioned sentence about what the stamps measure.
+# The title is deliberately the same `# Delphine Ouellette` opening
+# playthrough/dossier.md uses, so a reader arriving at either artifact
+# meets the same person under the same heading and the two read as one
+# set rather than as two unrelated documents.
+#
+# Every word here is held to BOTH gates before a byte is written.  It
+# carries no timestamp-shaped string, because the gate counts every one
+# of those and requires exactly one per entry -- a stamp here would be
+# counted as an entry that does not exist.  It carries no
+# out-of-character word: not just none of the concepts
+# assert_in_character() refuses, but none of the bare substrings the
+# blunter documented grep looks for either, which is why the title says
+# what she did rather than naming anything about how the record was
+# made.  And it is not embellished beyond the title, the name and the
+# one line, because every word added here is another word that has to
+# keep passing both gates forever.
+MARKDOWN_HEADER = (
+    "# Delphine Ouellette \u2014 what I did, and why\n"
+    "\n"
+    "Timestamps are cumulative video time.")
 
 # The SubRip cue separator, spelled once.  It is also what the
 # cue-count gate greps for, which is why a commentary containing it is
