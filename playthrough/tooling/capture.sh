@@ -922,17 +922,45 @@ unbounded wait these ceilings exist to prevent"
 # holding records about files that do not exist is still a traceability
 # claim nobody should have to explain.
 #
-# So the audit defaults OFF for a diagnostic capture.  The row is not
-# lost information: the reading itself is in this invocation's own
-# payload, which is what a caller asked a diagnostic capture for, and
-# DATE_AUDIT=off says plainly that nothing was appended.  A caller that
-# genuinely wants a diagnostic row still asks for one with an explicit
-# PLAYTHROUGH_CAPTURE_AUDIT=on -- and a production capture is untouched,
-# where the audit stays mandatory and is held to the canonical
-# destination below.
-if [ "${CAPTURE_MODE}" = "diagnostic" ] &&
-   [ -z "${PLAYTHROUGH_CAPTURE_AUDIT:-}" ] &&
-   [ -z "${PLAYTHROUGH_CAPTURE_AUDIT_PATH:-}" ]; then
+# So the audit is FORCED off for a diagnostic capture, and asking for
+# one is refused rather than honoured.
+#
+# THE SECOND DEFECT, AND THE REASON THE DEFAULT WAS NOT ENOUGH.  A
+# later security review found that this only DEFAULTED the audit off:
+# PLAYTHROUGH_CAPTURE_AUDIT=on was still permitted in diagnostic mode,
+# and the canonical-destination check below sat inside the
+# production-only block.  So a diagnostic capture could append
+# audit-shaped JSON to any regular file under playthrough/ -- the
+# manifest, a transcript, a save, a PNG, an MP4 -- while its own frame
+# was withdrawn out of the working tree, leaving a written line and no
+# photograph to account for it.  The report's own reproduction was
+#
+#     PLAYTHROUGH_CAPTURE_MODE=diagnostic \
+#     PLAYTHROUGH_CAPTURE_AUDIT=on \
+#     PLAYTHROUGH_CAPTURE_AUDIT_PATH=playthrough/manifest.jsonl \
+#     FRAME_INDEX=99999 playthrough/tooling/capture.sh
+#
+# The row was never lost information anyway: the reading is in this
+# invocation's own payload, which is what a caller asks a diagnostic
+# capture for, and DATE_AUDIT=off says plainly that nothing was
+# appended.  A diagnostic capture that could write evidence is a
+# contradiction in terms, so both overrides are refused here and the
+# canonical-destination check has moved OUT of the production-only
+# block, where it applies whenever the audit is on at all.
+if [ "${CAPTURE_MODE}" = "diagnostic" ]; then
+    if [ -n "${PLAYTHROUGH_CAPTURE_AUDIT:-}" ] ||
+       [ -n "${PLAYTHROUGH_CAPTURE_AUDIT_PATH:-}" ]; then
+        die "${EX_USAGE}" "PLAYTHROUGH_CAPTURE_AUDIT\
+${PLAYTHROUGH_CAPTURE_AUDIT:+=\"${PLAYTHROUGH_CAPTURE_AUDIT}\"}\
+${PLAYTHROUGH_CAPTURE_AUDIT_PATH:+ / PLAYTHROUGH_CAPTURE_AUDIT_PATH=\"\
+${PLAYTHROUGH_CAPTURE_AUDIT_PATH}\"} cannot be used with \
+PLAYTHROUGH_CAPTURE_MODE=diagnostic.  A diagnostic frame is withdrawn \
+out of the working tree precisely so that it is not evidence, and a \
+capture that writes an audit row while its own photograph is withdrawn \
+leaves a record with nothing to account for it.  The reading is in this \
+invocation's payload; the sidecar is written only by a capture that \
+keeps its frame."
+    fi
     AUDIT_MODE="off"
 fi
 case "${AUDIT_MODE}" in
@@ -940,10 +968,35 @@ case "${AUDIT_MODE}" in
     *) die "${EX_USAGE}" "PLAYTHROUGH_CAPTURE_AUDIT=\
 '${AUDIT_MODE}' is neither on nor off" ;;
 esac
-if [ "${AUDIT_MODE}" = "on" ] && [ -z "${AUDIT_PATH}" ]; then
-    die "${EX_USAGE}" "the date-audit sidecar path is empty; env.sh \
+if [ "${AUDIT_MODE}" = "on" ]; then
+    if [ -z "${AUDIT_PATH}" ]; then
+        die "${EX_USAGE}" "the date-audit sidecar path is empty; env.sh \
 exports PLAYTHROUGH_DATE_AUDIT and PLAYTHROUGH_CAPTURE_AUDIT_PATH \
 overrides it"
+    fi
+    # THE DATE AUDIT GOES WHERE timeline.py LOOKS, IN EVERY MODE.
+    #
+    # This check used to live in the production-only block below, which
+    # made "which file does this append to" a question only a production
+    # capture had to answer -- and the audit is the one destination a
+    # capture nominates, so that was the whole gap.  Every artifact of
+    # this pipeline lives under playthrough/, so a merely CONTAINED path
+    # is not a safe one: the manifest, both transcripts, a save file, a
+    # frame and both MP4s are all contained.  ocr_clock.py refuses
+    # anything but the canonical sidecar too, and this refusal is the
+    # earlier of the two -- before the display is touched and before any
+    # file exists.
+    if [ "${AUDIT_PATH}" != "${PLAYTHROUGH_DATE_AUDIT}" ]; then
+        die "${EX_USAGE}" "PLAYTHROUGH_CAPTURE_AUDIT_PATH=\
+'${AUDIT_PATH}' is not the sidecar timeline.py reads \
+(${PLAYTHROUGH_DATE_AUDIT}), and no other destination is accepted.  \
+Every artifact of this pipeline is inside playthrough/, so a contained \
+path is not a safe one: a line of audit-shaped JSON appended to the \
+manifest, a transcript, a save or a frame would be evidence nobody \
+wrote.  A frame's date evidence recorded anywhere else is also evidence \
+nothing consults -- the rollover guard then treats this frame's date as \
+UNKNOWN while every count still tallies."
+    fi
 fi
 
 _cap_check_timeout PLAYTHROUGH_CAPTURE_GRAB_TIMEOUT "${GRAB_TIMEOUT}"
@@ -984,6 +1037,12 @@ fi
 # Assembled once, expanded as an array so an empty audit configuration
 # contributes no argument at all rather than an empty string that
 # ocr_clock.py would have to reject.
+#
+# --audit-sha256 is appended LATER, beside the digest itself, because the
+# frame does not exist yet at this point: see BINDING THE DATE ROW TO THE
+# PIXELS below.  A row that named no digest would leave the consumer
+# unable to tell a reading of this frame from a reading of whatever file
+# later occupied the index.
 AUDIT_ARGS=()
 if [ "${AUDIT_MODE}" = "on" ]; then
     AUDIT_ARGS=(--audit "${AUDIT_PATH}" --audit-frame "${FRAME_INDEX}")
@@ -1044,24 +1103,22 @@ would silently lose its frame while the counts still matched.  Take \
 the next index, or investigate with \
 PLAYTHROUGH_CAPTURE_MODE=diagnostic."
     fi
-    # THE DATE AUDIT GOES WHERE timeline.py LOOKS, and nowhere else.
-    #
-    # This is the one destination a capture still nominates: ocr_clock.py
-    # appends the frame's date evidence to it through a hardened
-    # descriptor.  The PATH, though, was settable from the environment to
-    # any regular file under the tree, which is a way to write real
-    # evidence where nothing downstream reads it -- and every count would
-    # still tally, because the audit's absence is recorded as
-    # DATE_AUDIT=no rather than as an error.  A production capture
-    # therefore accepts only the canonical path; nominating another is a
-    # diagnostic action, like every other relaxation here.
-    if [ "${AUDIT_PATH}" != "${PLAYTHROUGH_DATE_AUDIT}" ]; then
-        die "${EX_USAGE}" "PLAYTHROUGH_CAPTURE_AUDIT_PATH=\
-'${AUDIT_PATH}' is not the sidecar timeline.py reads \
-(${PLAYTHROUGH_DATE_AUDIT}).  A frame's date evidence recorded \
-elsewhere is evidence nothing consults: the rollover guard then treats \
-this frame's date as UNKNOWN while every count still tallies.  Use \
-PLAYTHROUGH_CAPTURE_MODE=diagnostic to write an audit somewhere else."
+    # THE DATE AUDIT IS MANDATORY for a frame that is kept.  WHERE it
+    # goes is settled unconditionally further up -- see THE DATE AUDIT
+    # GOES WHERE timeline.py LOOKS, IN EVERY MODE -- because that was the
+    # gap: the destination check used to live here, so only a production
+    # capture had to answer for the one path a capture nominates.  What
+    # remains here is the other half of the same property: a frame that
+    # joins the record must actually HAVE date evidence recorded for it,
+    # or the rollover guard has nothing to reconcile a backwards clock
+    # against and would have to infer a day it never observed.
+    if [ "${AUDIT_MODE}" != "on" ]; then
+        die "${EX_USAGE}" "PLAYTHROUGH_CAPTURE_AUDIT=off cannot be used \
+for a frame that is kept.  The sidebar DATE line is what tells a clock \
+that went backwards apart from a genuine crossing of midnight, and it \
+is recorded nowhere else -- so a frame with no audit row leaves \
+timeline.py to infer a day it never observed.  Look at a frame without \
+recording one with PLAYTHROUGH_CAPTURE_MODE=diagnostic."
     fi
     # AND THE TRUST STATE, which is the fifth thing that decides whether
     # this frame is evidence.  env.sh's diagnostic escape hatches -- an
@@ -1136,8 +1193,14 @@ fi
 #   date, awk, grep    the real_ts stamp, the luminance comparison and
 #                      the pattern match respectively.
 #   mkdir, mv, rm      the frames directory and the withdrawal path.
+#   sha256sum          the capture digest, taken the instant the frame is
+#                      published.  It is required rather than optional
+#                      because an unattested frame is precisely the
+#                      state the digest exists to close: every later
+#                      stage would have to assume that the pixels on
+#                      disk are the pixels this capture took.
 playthrough_require_tools \
-    convert identify xdpyinfo date awk grep mkdir mv rm ||
+    convert identify xdpyinfo date awk grep mkdir mv rm sha256sum ||
     exit "${EX_PREREQ}"
 
 # tesseract is needed by BOTH clock-read paths, so its absence is a
@@ -1542,6 +1605,63 @@ fi
 CAPTURE_TMP=""
 if ! chmod 600 -- "${FRAME_PATH}"; then
     die "${EX_CAPTURE}" "cannot set the mode of ${FRAME_FILE}"
+fi
+
+# ---------------------------------------------------------------------
+# THE CAPTURE DIGEST, taken here and nowhere else.
+#
+# WHAT WAS MISSING AND WHY IT MATTERED.  This invocation reported the
+# path, the byte count, the geometry, the luminance and the clock -- and
+# no digest of the bytes it had just published.  A security review named
+# the consequence: every later stage, the timeline that paces the film
+# and the movie that shows it, assumed that the pixels sitting at
+# frame_NNNNN.png were the pixels this capture took, and nothing in the
+# record could establish it.  A same-sized, non-blank replacement passed
+# the whole chain, and the recovery path went further still -- it
+# re-measured an on-disk frame and took its MODIFICATION TIME for the
+# capture instant.
+#
+# So the digest is taken IMMEDIATELY after the atomic rename, before the
+# OCR read and before anything else touches the file, and it travels on
+# the payload as FRAME_SHA256.  session.py copies it into the telemetry
+# sidecar row and into the append-only digest ledger, and every stage
+# that consumes a frame -- timing, transitions, render, commit, recovery
+# -- verifies the bytes against it first.
+#
+# A DIGEST THAT CANNOT BE TAKEN IS A FAILED CAPTURE, not a blank column.
+# An unattested frame is exactly the state this closes, so the frame is
+# withdrawn rather than published without one.
+# ---------------------------------------------------------------------
+FRAME_SHA256=""
+_cap_rc=0
+_cap_digest="$(
+    timeout "${IDENTIFY_TIMEOUT}" \
+        "${PLAYTHROUGH_BIN_SHA256SUM}" -- "${FRAME_PATH}" 2>&1
+)" || _cap_rc=$?
+if [ "${_cap_rc}" -ne 0 ]; then
+    die "${EX_CAPTURE}" "cannot hash ${FRAME_FILE} (exit ${_cap_rc}): \
+$(printf '%s' "${_cap_digest}" | head -c 200 | tr '\n' '|').  A frame \
+whose bytes are not attested at the moment they are published is not \
+evidence of anything later, so it is withdrawn rather than recorded."
+fi
+FRAME_SHA256="${_cap_digest%% *}"
+if ! [[ "${FRAME_SHA256}" =~ ^[0-9a-f]{64}$ ]]; then
+    die "${EX_CAPTURE}" "the digest of ${FRAME_FILE} came back as \
+'${FRAME_SHA256}', which is not 64 lowercase hex digits"
+fi
+
+# BINDING THE DATE ROW TO THE PIXELS.
+#
+# The audit row records what the sidebar's DATE line said, and that is
+# the evidence timeline.py reconciles a backwards clock against -- so a
+# row attributed to the wrong pixels can move a whole day of game time.
+# Until the digest existed nothing connected the two: a row keyed on
+# frame 42 was a claim about "whatever frame 42 is", and a withdrawn
+# capture or a re-photographed index left a reading of one screen
+# describing another.  The digest taken two lines above is passed to the
+# delegate so the row it writes names the frame it actually read.
+if [ "${AUDIT_MODE}" = "on" ]; then
+    AUDIT_ARGS+=(--audit-sha256 "${FRAME_SHA256}")
 fi
 
 # ---------------------------------------------------------------------
@@ -2225,6 +2345,17 @@ else
     line DIAGNOSTIC_PATH "${REJECT_DIR}/${FRAME_NAME}"
 fi
 line FRAME_BYTES "${FRAME_BYTES}"
+# The sha256 of the bytes that were published, taken immediately after
+# the atomic rename.  EMPTY IN DIAGNOSTIC MODE, exactly as FRAME_FILE is
+# and for the same reason: that frame is about to leave the working tree,
+# so a digest of it would attest a file no record may mention.  The key
+# is always present, because a key that sometimes disappears is a key a
+# consumer papers over with a default.
+if [ "${CAPTURE_MODE}" = "production" ]; then
+    line FRAME_SHA256 "${FRAME_SHA256}"
+else
+    line FRAME_SHA256 ""
+fi
 line FRAME_FORMAT "${FRAME_FORMAT}"
 line FRAME_GEOMETRY "${FRAME_GEOMETRY}"
 line REAL_TS "${REAL_TS}"

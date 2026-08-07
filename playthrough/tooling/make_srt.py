@@ -75,11 +75,12 @@ THE SURVIVOR'S VOICE IS COPIED, NEVER EDITED
 `commentary` is the in-character record.  It is written to the
 Markdown verbatim -- not summarised, not rephrased, not annotated, and
 never wrapped in engineering language.  The caption is the same
-sentence fitted to two short lines, which is a presentational
-constraint of the caption format and the only transformation this
-module performs; where a sentence genuinely will not fit, the CAPTION
-is shortened at a word boundary with an ellipsis and the Markdown
-keeps the whole of it.
+sentence wrapped at word boundaries to the cue geometry, which is a
+presentational constraint of the caption format and the only
+transformation this module performs.  Where a sentence genuinely will
+not fit in CUE_MAX_LINES lines the transcript is REFUSED rather than
+abridged: nothing here is shortened, elided or truncated, and the
+remedy is a shorter sentence in the source commentary.
 
 THE STAMPS ARE VIDEO TIME, AND ONLY VIDEO TIME
 Neither artifact carries an in-game clock reading.  That is deliberate
@@ -93,20 +94,23 @@ frame's cue is invented, merged or dropped because its clock was
 unreadable -- it still gets exactly one cue, at the floor if that is
 what its window came to.
 
-Out-of-character wording inside a commentary is REPORTED and left
-alone, exactly as manifest.py reports it at write time: the sentence
-belongs to whoever wrote it.  Two things are refused rather than
-reported, because both would break a downstream count while looking
-fine locally -- a commentary carrying a timestamp-shaped string, which
-would add a match the Markdown gate counts, and one carrying " --> ",
-which would add a line the cue-count gate counts.
+Out-of-character wording inside a commentary is REFUSED, using
+manifest.py's own vocabulary and message so the gate cannot be
+stricter at write time than at publication time.  A commentary
+carrying a timestamp-shaped string or " --> " is refused too, because
+either would add a match to a downstream count while looking fine
+locally.  So is a commentary that will not wrap into CUE_MAX_LINES
+lines of the cue geometry: the caption is never shortened to fit, and
+the remedy for all three is a shorter or cleaner sentence in the
+source commentary, amended there and regenerated through the chain.
 
 WHAT IS REFUSED OUTRIGHT
 An empty frames array, a frame index that is not the position it sits
 in, a cue that does not end after it starts, a cue that starts before
 its predecessor ended, a first cue that does not start at zero, a
 final cue that does not end where the timeline's own total says the
-film ends, and an empty commentary.  Nothing is repaired and nothing
+film ends, an empty commentary, and a cue that needs more than
+CUE_MAX_LINES lines.  Nothing is repaired and nothing
 is invented: one captured frame makes exactly one cue and one entry,
 so a missing sentence is a hole in the record and is reported as one.
 For the document form the sibling's own validate_timeline() is run as
@@ -205,36 +209,36 @@ except ImportError:
 
 # The caption geometry.  Forty-two columns is the SubRip convention and
 # roughly what a reader takes in at a glance, so it is where each cue's
-# text is WRAPPED -- and wrapping is the only thing it decides.
-#
-# THERE IS NO LINE CAP, AND THAT IS THE FIX FOR A REAL DEFECT.  This
-# module used to cap a caption at two lines and shorten anything longer
-# at a word boundary with a bracketed elision mark: 168 of the 395 cues
-# in the first re-recorded session ended in "[...]", and many of them
-# lost the survivor's actual reason for acting.  The requirement is that
-# the timestamped transcript is EMBEDDED as a selectable caption track,
-# so a track carrying two-fifths of it abridged is not that transcript,
-# however honestly the abridgement was marked.  Nothing about the format
-# forced it either: mov_text carries multi-line cues, and a two-line
-# convention is a readability preference, not a limit.
-#
-# So every cue now carries the whole sentence, wrapped, and the
-# READABILITY concern is answered where it belongs -- CUE_COMFORTABLE_LINES
-# reports a cue that will be a mouthful, so the sentence can be written
-# shorter BEFORE it is captured rather than cut afterwards.
+# text is WRAPPED -- and wrapping is the only thing the width decides.
 CUE_LINE_WIDTH = 42
 
-# How many wrapped lines a cue can carry before the advisory mentions it.
-# Four lines of 42 columns is about 170 characters, which is comfortably
-# readable inside even a short window; past that the note says so, and
-# the answer is a shorter sentence at capture time.
-CUE_COMFORTABLE_LINES = 4
-
-# How many long captions the single advisory names before it stops
-# listing and reports the remainder as a count.  An advisory per cue
-# would bury the out-of-character notes beside it; a check that cries
-# wolf teaches an operator to ignore the one that matters.
-CUE_ADVISORY_SAMPLE = 3
+# HOW MANY LINES A CUE MAY CARRY, AND WHY THIS IS A REFUSAL RATHER THAN
+# A CUT OR AN ADVISORY.  The caption contract is at most two lines of
+# about forty-two columns; a cue is displayed for as little as the 0.25 s
+# floor, and six lines in a quarter of a second is not a transcript
+# anybody reads.  Two defects have to be avoided at once here, and only
+# one gate avoids both:
+#
+#   * SHORTENING THE CAPTION IS NOT THE ANSWER.  This module once capped
+#     a cue at two lines and marked the cut with a bracketed elision:
+#     168 of the 395 cues in the first re-recorded session ended in
+#     "[...]", and many lost the survivor's actual reason for acting.
+#     The requirement is that the timestamped transcript IS the embedded
+#     caption track, so a track carrying two fifths of it abridged is not
+#     that transcript, however honestly the abridgement was marked.
+#   * AN ADVISORY IS NOT THE ANSWER EITHER.  Removing the cap and merely
+#     REPORTING a long cue is what the review found in the shipped
+#     artifact: 88 of 419 cues over two lines, one of them six lines
+#     inside a 250 ms window, with a stderr note nobody had to act on.
+#     A warning beside a written file is not a contract.
+#
+# So the geometry is enforced as a PUBLICATION-BLOCKING REFUSAL that
+# names every offending entry, its frame and its line count, and nothing
+# is ever shortened: the remedy is a shorter sentence in the source
+# commentary -- amended at playthrough/manifest.jsonl with the amendment
+# recorded in playthrough/TECHNICAL_NOTES.md, and every derived artifact
+# regenerated in one pass -- never a cut in the caption.
+CUE_MAX_LINES = 2
 
 # The Markdown's only generated lines: a title carrying the survivor's
 # name, then the sanctioned sentence about what the stamps measure.
@@ -871,16 +875,20 @@ def wrap_cue_text(
     which is the right trade for a format whose width is a readability
     convention and not a hard limit.
 
-    THE SENTENCE IS NEVER SHORTENED.  This used to cap the result at two
-    lines and mark the cut with a bracketed elision, which left two
+    THE SENTENCE IS NEVER SHORTENED HERE.  This used to cap the result at
+    two lines and mark the cut with a bracketed elision, which left two
     fifths of the first re-recorded session's captions carrying less than
     the survivor said -- and the requirement is that the timestamped
-    transcript IS the caption track.  So the number of lines is whatever
-    the sentence needs, the words are the survivor's own, in order, and
-    every one of them is in the cue.  A sentence long enough to be a
-    mouthful is REPORTED (see :func:`length_advisories`) so it can be
-    written shorter before the frame is captured; it is not cut
-    afterwards.
+    transcript IS the caption track.  So this function returns whatever
+    lines the sentence needs, the words are the survivor's own, in order,
+    and every one of them is in the result.
+
+    The geometry is still a contract, and it is held one level up: a
+    sentence that needs more than CUE_MAX_LINES lines is REFUSED by
+    :func:`caption_length_problems`, which names the entry, its frame and
+    its line count so the source commentary can be written shorter.  A
+    refusal upstream and no truncation downstream is the only combination
+    that satisfies both halves of the requirement.
     """
     if not isinstance(text, str):
         raise TranscriptError(
@@ -959,21 +967,23 @@ def render_srt(cues: Sequence[Cue]) -> str:
     """Return the exact text playthrough/transcript.srt holds.
 
     SubRip, to the letter: a sequence number from 1, a timecode line
-    measured against TIMECODE_LINE_RE before it is accepted, however
-    many lines of plain text the sentence needs, a blank line between
-    cues, and a single trailing newline after the last cue's text with
-    no empty block behind it.  UTF-8 without a byte-order mark, which
+    measured against TIMECODE_LINE_RE before it is accepted, one or two
+    lines of plain text, a blank line between cues, and a single
+    trailing newline after the last cue's text with no empty block
+    behind it.  UTF-8 without a byte-order mark, which
     :func:`write_text` guarantees -- a mark would sit in front of cue
     one's sequence number and stop it being read as one.
 
-    THERE IS NO LINE CAP, deliberately, and this sentence used to say
-    "one or two lines" -- which contradicted the rest of the module and
-    is exactly how the truncation defect would be reinvented by someone
-    reading only this function.  See :func:`wrap_cue_text` and the
-    CUE_LINE_WIDTH commentary: capping a cue and marking the cut left
-    168 of 395 captions carrying less than the survivor said, and the
-    requirement is that the timestamped transcript IS the caption
-    track.  Forty-two columns wraps; it does not shorten.
+    THE LINE COUNT IS REFUSED HERE, NOT REPAIRED HERE, and the
+    distinction is the whole of the caption contract.  A cue of more
+    than CUE_MAX_LINES lines raises, so no code path -- not
+    :func:`build_transcripts`, not a caller assembling cues itself --
+    can put an unreadable caption into the file; and nothing in this
+    function shortens, elides or truncates a sentence to make it fit,
+    because capping a cue and marking the cut left 168 of 395 captions
+    carrying less than the survivor said.  The remedy for a refusal is
+    a shorter sentence in the source commentary, regenerated through the
+    whole chain in one pass.
     """
     if not cues:
         raise TranscriptError(
@@ -989,6 +999,13 @@ def render_srt(cues: Sequence[Cue]) -> str:
             raise TranscriptError(
                 "cue %d has no text; every captured frame records why "
                 "the survivor acted" % position)
+        if len(cue.lines) > CUE_MAX_LINES:
+            raise TranscriptError(
+                "cue %d wraps to %d lines of %d columns; a cue carries "
+                "at most %d.  The sentence is not cut to fit: shorten "
+                "it in the source commentary and regenerate"
+                % (position, len(cue.lines), CUE_LINE_WIDTH,
+                   CUE_MAX_LINES))
 
         timing = cue.start + SRT_ARROW + cue.end
         if not TIMECODE_LINE_RE.match(timing):
@@ -1077,6 +1094,15 @@ def build_transcripts(document: Any) -> Tuple[str, str, List[Cue]]:
             "refusing to write a transcript from a timeline that "
             "fails its own checks: %s" % "; ".join(problems))
     cues = build_cues(entries, transition_gap(document))
+    # THE CAPTION GEOMETRY, held before either body is rendered so that
+    # EVERY offending entry is named in one message rather than the
+    # first one aborting the pass.  render_srt() refuses the same cue
+    # on its own account; this is the report an operator fixes from.
+    overlong = caption_length_problems(cues)
+    if overlong:
+        raise TranscriptError(
+            "refusing to write a transcript whose captions do not fit "
+            "the cue geometry: %s" % "; ".join(overlong))
     return render_srt(cues), render_markdown(cues), cues
 
 
@@ -1163,9 +1189,21 @@ def voice_problems(cues: Sequence[Cue]) -> List[str]:
 
     The vocabulary and the message come from manifest.py, which is the
     module that also refuses the sentence at write time.  One
-    implementation, so the two cannot disagree; and a hit here means the
-    session has to be RE-RECORDED rather than the transcript edited,
-    because the sentence is already in the append-only record.
+    implementation, so the two cannot disagree.
+
+    WHAT A HIT MEANS, stated exactly, because the wrong answer was
+    written here once.  It used to say the session had to be RE-RECORDED,
+    on the grounds that the sentence was already in an append-only
+    record.  That is not the remedy and cannot be: `commentary` is
+    AUTHORED prose, not an observation, and the observations -- the frame,
+    its file, its capture time, its clock reading and the keystroke that
+    produced it -- are what the append-only rule protects.  So the
+    sentence is corrected AT SOURCE in playthrough/manifest.jsonl, with
+    the amendment and the unchanged observational digest recorded in
+    playthrough/TECHNICAL_NOTES.md, and every derived artifact is
+    regenerated in one pass.  What is never done is editing this file's
+    output by hand, which would put the caption track out of step with
+    the record it is supposed to be.
     """
     problems = []
     for cue in cues:
@@ -1173,10 +1211,11 @@ def voice_problems(cues: Sequence[Cue]) -> List[str]:
             cue.commentary, "entry %d commentary" % cue.index)
         if problem is not None:
             problems.append(
-                "%s  The sentence is already in "
-                "playthrough/manifest.jsonl, which is append-only, so "
-                "the session is re-recorded rather than this file "
-                "edited." % problem)
+                "%s  Correct it at source in "
+                "playthrough/manifest.jsonl, record the amendment in "
+                "playthrough/TECHNICAL_NOTES.md, and regenerate the "
+                "whole chain; this file is never edited by hand."
+                % problem)
     return problems
 
 
@@ -1228,49 +1267,43 @@ def honesty_problems(cues: Sequence[Cue],
     return problems
 
 
-def commentary_advisories(cues: Sequence[Cue]) -> List[str]:
-    """Report what is worth saying but is not a refusal.
-
-    Only the caption-length note remains here: the out-of-character
-    vocabulary became :func:`voice_problems`, which blocks publication,
-    and nothing else about a sentence is this module's business.
-    """
-    return length_advisories(cues)
-
-
-def long_entries(cues: Sequence[Cue]) -> List[int]:
-    """Return the entries whose caption is longer than comfortable."""
+def overlong_entries(cues: Sequence[Cue]) -> List[int]:
+    """Return the entries whose caption exceeds the cue geometry."""
     return [cue.index for cue in cues
-            if len(cue.lines) > CUE_COMFORTABLE_LINES]
+            if len(cue.lines) > CUE_MAX_LINES]
 
 
-def length_advisories(cues: Sequence[Cue]) -> List[str]:
-    """Report, ONCE, which captions are a mouthful to read.
+def caption_length_problems(cues: Sequence[Cue]) -> List[str]:
+    """Refuse a caption that does not fit the cue geometry.
 
-    NOT A FAILURE AND NOT A CUT.  Every cue carries the whole sentence --
-    that is the point of the change this replaces -- so the only thing
-    left to say about a long one is that a viewer may not finish it
-    inside its window, and the remedy is a shorter sentence at capture
-    time.  It is stated once, with a count and a bounded sample, because
-    one advisory per cue would bury the out-of-character refusals beside
-    it.
+    A PUBLICATION-BLOCKING GATE, and it used to be an advisory that
+    printed one summary line and wrote the files anyway.  That is how 88
+    of 419 shipped cues came to carry three, four, five and six lines,
+    one of them inside a 250 ms window: the contract says at most
+    CUE_MAX_LINES lines of about CUE_LINE_WIDTH columns, and a contract
+    reported on stderr is not enforced.
+
+    ONE PROBLEM PER OFFENDING CUE, naming the entry, the frame it
+    describes and how many lines it needs, because the operator has to
+    rewrite that sentence and a bounded sample would hide most of the
+    work.  Nothing is shortened to satisfy this: the remedy is a shorter
+    sentence in the source commentary, amended at
+    playthrough/manifest.jsonl and regenerated through every derived
+    artifact in one pass.
     """
-    marked = long_entries(cues)
-    if not marked:
-        return []
-    shown = marked[:CUE_ADVISORY_SAMPLE]
-    remainder = len(marked) - len(shown)
-    listed = ", ".join(str(index) for index in shown)
-    sample = (listed if remainder <= 0 else
-              "%s and %d more" % (listed, remainder))
-    return [
-        "%d of %d caption(s) wrap to more than %d lines of %d columns "
-        "(entries %s).  Every word is in the cue -- nothing is "
-        "shortened -- but a viewer may not finish reading one inside its "
-        "window, and the answer to that is a shorter sentence when the "
-        "frame is captured, never a cut afterwards"
-        % (len(marked), len(cues), CUE_COMFORTABLE_LINES,
-           CUE_LINE_WIDTH, sample)]
+    problems = []
+    for cue in cues:
+        if len(cue.lines) <= CUE_MAX_LINES:
+            continue
+        problems.append(
+            "entry %d (frame %d) needs %d lines of %d columns; a cue "
+            "carries at most %d, and this one is on screen for its "
+            "frame's own window.  Shorten the sentence in the source "
+            "commentary and regenerate -- the caption is never cut to "
+            "fit.  The text was: %r"
+            % (cue.index, cue.frame, len(cue.lines), CUE_LINE_WIDTH,
+               CUE_MAX_LINES, cue.commentary))
+    return problems
 
 
 # ---------------------------------------------------------------------
@@ -1899,20 +1932,23 @@ def main(
         summary = summarise(document, entries, cues, markdown_text)
 
         problems = summary_problems(summary)
-        # THE TWO HONESTY GATES, held BEFORE anything is written and
-        # counted among the problems rather than warned about beside
-        # them: a transcript that carries an engineering observation or a
-        # statement the frames contradict is not publishable, and the
-        # remedy for either is upstream of this file.
+        # THE THREE GATES, held BEFORE anything is written and counted
+        # among the problems rather than warned about beside them: a
+        # transcript that carries an engineering observation, that states
+        # something the frames contradict, or whose captions do not fit
+        # the cue geometry is not publishable, and the remedy for all
+        # three is upstream of this file.  The geometry gate is repeated
+        # here rather than left to build_transcripts() alone so that a
+        # caller reading main() sees every condition publication depends
+        # on in one list.
         problems.extend(voice_problems(cues))
         problems.extend(honesty_problems(cues, entries))
+        problems.extend(caption_length_problems(cues))
         if problems:
             _report(problems)
             print("make_srt.py: %d problem(s) found" % len(problems),
                   file=sys.stderr)
             return 1
-        for advisory in commentary_advisories(cues):
-            _warn(advisory)
         if args.dry_run:
             destination = "nothing written"
         else:

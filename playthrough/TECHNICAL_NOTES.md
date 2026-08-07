@@ -41,30 +41,75 @@ is the right order for a log and the wrong one for looking something up, so:
 
 ## Read this before any count on this page
 
-**Two blocks of this page describe capture sets that no longer exist, and each
-says so at its own heading — a long way below the content it retracts.** A
-runtime QA pass pointed out that a reader who starts at the top meets those
-numbers first and the disclaimer last, so the pointer belongs here:
-
-* **[The session was re-recorded, and this section supersedes every count
-  above](#the-session-was-re-recorded-and-this-section-supersedes-every-count-above).**
-  Everything ABOVE that heading is the **first, 560-frame session**, which was
-  rejected at code review and retired. Every "560" on this page, and the
-  frame-by-frame narrative of the abandoned first creation run at *The
-  interrupted capture at frame 177* — including its `real_ts` and luminance
-  figures, which do not match the frame 177 in the tree today — belongs to
-  that retired set.
-* **[Runtime QA remediation of the earlier 395-frame capture
-  set](#runtime-qa-remediation-of-the-earlier-395-frame-capture-set).**
-  Every frame number and every "out of 395" count in that section belongs to a
-  second retired set. It is kept because the engine behaviours it pins down and
-  the tooling it produced are still in force.
+**Three sessions were recorded. Only the third shipped, and most of this page
+was written about the first two.** A reader who starts at the top meets the
+retired numbers first and the disclaimers last, so the map belongs here.
 
 `playthrough/frames/` holds **419 frames** — one per keystroke of the session
-that shipped — with 419 manifest rows and 419 telemetry rows. Any count on this
-page that is not 419 is describing a retired set; the sections that do describe
-the shipped record are *Post-capture verification of `playthrough/frames/`* and
-everything from *The session was re-recorded* onward.
+that shipped — with 419 manifest rows and 419 telemetry rows. **Any count on
+this page that is not 419 is describing a retired set.**
+
+| Block | Describes | Status |
+| --- | --- | --- |
+| *The pre-play character build* | the survivor herself | current — she is the same person in all three |
+| *Session log — engineering observations…* and *Post-capture verification of `playthrough/frames/`* | the **first, 560-frame session** | **RETIRED.** Rejected at code review. Every "560" belongs here, as does the frame-by-frame narrative of the abandoned first creation run at *The interrupted capture at frame 177*, whose `real_ts` and luminance figures do not match the frame 177 in the tree today |
+| *The session was re-recorded…* | the **second, 395-frame session** | **RETIRED.** Its own heading says it "supersedes every count above", which was true when written — but it was itself superseded by the 419-frame record. Every "out of 395" in it belongs to that dead set |
+| *The commit identity…*, *The two checkpoints…* | requirements and design, set-independent | current |
+| *Frame 397 correction after the death ending*, *AAP R11: the ending is legitimate…*, *Runtime QA remediation of the 419-frame record* | the **shipped 419-frame record** | **CURRENT** |
+| *Runtime QA remediation of the earlier 395-frame capture set* | the second, 395-frame session again | **RETIRED**, kept because the engine behaviours it pins down and the tooling it produced are still in force |
+| *The pipeline as built* and everything after it | the pipeline, the host and the engine | current except where it names a retired count |
+
+**One difference between the sets matters more than any count, because an
+earlier version of this map obscured it.** The first two sessions ended in
+**sleep, waking and an in-game Save & Quit**; the shipped third session ended in
+**legitimate death**, which the engine makes incompatible with Save & Quit. Both
+retired blocks describe a Save & Quit that is *not* part of the shipped record —
+the 560-frame block at "the in-game Save & Quit at frames 558-560" and the
+395-frame block's artifact table at "written by the in-game Save & Quit path".
+Neither is a statement about what shipped. The shipped ending, and the R11
+element it leaves unmet, are in *AAP R11: the ending is legitimate, and the Save
+& Quit element is UNMET*.
+
+**Where the 419-frame record is actually documented**, since an earlier version
+of this pointer sent readers to two sections that describe retired sets
+(*Post-capture verification of `playthrough/frames/`* measures the 560-frame
+set, and the block opening at *The session was re-recorded* measures the
+395-frame one):
+
+* **[Frame 397 correction after the death
+  ending](#frame-397-correction-after-the-death-ending)** — the one row-level
+  correction the shipped set needed.
+* **[Runtime QA remediation of the 419-frame
+  record](#runtime-qa-remediation-of-the-419-frame-record)** — the pass that
+  drove the shipped chain end to end, with the two defects it found and how
+  each was verified.
+* **[The pipeline as built](#the-pipeline-as-built)** — the subject-ordered
+  current reference: build, environment, options, tileset, save layout,
+  render, lint and CI. Its
+  [Corrections that supersede earlier sections of this
+  page](#corrections-that-supersede-earlier-sections-of-this-page) table is
+  the single place every superseded figure is reconciled against a current
+  measurement, and it is the right place to start if a number anywhere above
+  looks wrong.
+
+**And one more thing to read before any digest on this page.** Two passes
+described below originally corrected the record by editing it — eight `action`
+markers and nineteen `commentary` sentences, written into `manifest.jsonl` (and
+eight into `build/observations.jsonl`) after the session had recorded them. A
+Boundary-3 security review rejected that as CWE-345, and correctly: once
+captured evidence can be rewritten, every artifact derived from it is deniable.
+Both files have therefore been **restored byte for byte** to the state the
+session wrote them in, the two functions that could rewrite them have been
+deleted from `manifest.py` and `session.py`, and the corrections now live in
+**`playthrough/amendments.jsonl`** — 27 append-only amendments, each bound to the
+sha256 of the manifest line it concerns and each stating its basis and its
+reason. `manifest.resolve_rows()` applies them to a derivative and to nothing
+else, and refuses rather than skips when a digest no longer matches. The
+mechanism, the schema and the fail-closed rules are at *Three rows narrated an
+effect their own capture contradicts*; the artifact digests that resulted are at
+*The derivative chain, regenerated on a supported platform*. Any digest quoted
+elsewhere on this page for `manifest.jsonl`, `build/observations.jsonl`,
+`timeline.json`, either transcript or either MP4 predates that restoration.
 
 ---
 
@@ -559,6 +604,13 @@ than the contracted 0.3 s, so raising it is within the contract.
 
 ## Post-capture verification of `playthrough/frames/`
 
+> **RETIRED — this block measures the first, 560-frame session, which did not
+> ship.** Its ending description ("sleep, waking, then the in-game Save & Quit at
+> frames 558-560") is a fact about *that* session. The shipped 419-frame record
+> ended in legitimate **death** and captured no Save & Quit; see *AAP R11: the
+> ending is legitimate, and the Save & Quit element is UNMET*. The measurement
+> method below is still the one in force.
+
 The 560 captures were re-verified after the fact, in a separate working clone
 of this branch on the same host, and **nothing was re-captured, re-rendered,
 resized, recompressed or renumbered** to make any gate pass. The session had
@@ -626,23 +678,88 @@ was recorded on an end-of-life host and why. `PLAYTHROUGH_PLATFORM_SUPPORTED`
 reads `no` and `PLAYTHROUGH_PLATFORM_EOL` reads `2026-07-09` in that same
 block.
 
-**It is deliberately NOT a trust bypass**, and the distinction is worth
-recording rather than leaving to be rediscovered. A variable in
-`PLAYTHROUGH_TRUST_BYPASS_VARS` means *a check that establishes the evidence
-was relaxed, so a reading might be wrong* — `PLAYTHROUGH_ALLOW_UNAUTHENTICATED_X`,
-for instance, means another local account could have injected keystrokes, which
-falsifies the record directly, and `capture.sh` refuses production capture
-while any bypass is active. An end-of-life platform makes no reading wrong: it
+**It IS a trust bypass, and it used not to be.** The argument for leaving it
+out of `PLAYTHROUGH_TRUST_BYPASS_VARS` was that a variable in that registry
+means *a check that establishes the evidence was relaxed, so a reading might be
+wrong* — `PLAYTHROUGH_ALLOW_UNAUTHENTICATED_X`, for instance, means another
+local account could have injected keystrokes, which falsifies the record
+directly — whereas an end-of-life platform makes no individual reading wrong: it
 raises the risk that a parser has an unfixed defect, which needs hostile input
 to matter, and the only images this pipeline decodes are the PNGs it captured
-itself on a host that opens no network connection. Putting it in that registry
-would refuse every recorded session on the only available host while adding
-nothing the summary does not already carry.
+itself on a host that opens no network connection.
+
+**Code review rejected that, and it was right to.** The registry's meaning is
+the one its consumers give it: a condition under which this pipeline will not
+produce *evidence*. A film recorded through unmaintained ImageMagick, ffmpeg and
+Xorg packages is exactly that, whatever the residual likelihood — and the
+reasoning that kept it out was self-serving in a way worth naming, because it
+was the one condition that would have refused the run on the only host
+available. `PLAYTHROUGH_ALLOW_EOL_PLATFORM` is now the seventh member of the
+registry, with its own `playthrough_trust_reason`, and the consequence is stated
+rather than hidden:
+
+- **On an end-of-life host this pipeline no longer records a session at all.**
+  `capture.sh` refuses a production frame before any file exists, and
+  `launch_game.sh` refuses to start or accept an instance that will be captured.
+  Verified after the change, on this host, with the waiver set: `FRAME_INDEX=99998
+  capture.sh` exits non-zero with *"refusing to capture a frame for the record
+  while the trust state is diagnostic (PLAYTHROUGH_ALLOW_EOL_PLATFORM)"*, and no
+  PNG is created.
+- **The waiver buys diagnosis, not evidence.** `PLAYTHROUGH_CAPTURE_MODE=diagnostic`
+  still works and still withdraws its frame out of the working tree.
+- **The derived stages are deliberately unaffected**, because they photograph
+  nothing: timeline, transitions, render, transcripts and the caption mux can be
+  re-run over an existing record, which is what let the restored record be
+  republished. What the waiver can no longer do is manufacture the record.
+- **The already-recorded session keeps its disclosed provenance.** It was
+  captured on this host under the waiver, before the gate was tightened, and
+  that is stated here and in the environment summary rather than reinterpreted.
+  **A compliant re-capture requires a supported release**; that is a platform
+  action, not a code change, and nothing in the pipeline depends on 25.10.
 
 `PLAYTHROUGH_REQUIRE_SUPPORTED_PLATFORM` is retired and *answered* rather than
 ignored: `=1` is now the default and says so, and `=0` no longer weakens
 anything and says that, because an operator who set a variable believing it
 configured something has to be told it did not.
+
+**Tightening it required a second, narrower seam, and that seam is disclosed
+here because it touches the same gate.** Making the waiver a trust bypass broke
+74 tests in `test_capture.py` and 44 in `test_launch_game.py` — not because the
+control was wrong, but because those fixtures had been setting
+`PLAYTHROUGH_ALLOW_EOL_PLATFORM` to get *past* the platform gate on this
+end-of-life host, which now put every one of them in the diagnostic state they
+were not testing. The counts are measured, not recalled: removing the emulated
+source again from the finished fixtures reproduces 83 failures of 98 in
+`test_capture.py` and 54 failures plus 6 errors of 154 in `test_launch_game.py`,
+and restoring it returns both to green. The wrong repair is to exempt the suites
+from the control.
+The repair taken instead is `PLAYTHROUGH_OS_RELEASE`, which names the file the
+verdict is read out of:
+
+- **It emulates a host; it does not relax a check.** The gate still runs, still
+  consults the same dated table, and still refuses an out-of-support answer read
+  from a nominated file. The fixtures now write an `os-release` naming Ubuntu
+  26.04 LTS — a release that genuinely passes — instead of asking to be excused
+  from the question. It is the same tactic these suites already use for the X
+  server, where a stub `xdpyinfo` refuses a cookieless client the way an
+  authenticated server does.
+- **So it is not in the trust-bypass registry**, and that is a substantive
+  distinction rather than a convenient one: nothing about the readings is
+  weakened by answering a question about the host with a different host's answer,
+  whereas the *waiver* proceeds despite the answer. `test_env.py` asserts both
+  halves — that a nominated source is not a bypass and that the trust state stays
+  `trusted`, and that an expired release read from a nominated file is still
+  refused.
+- **It is disclosed in the same contract that carries the film.** A nominated
+  source is warned about once, exported as `PLAYTHROUGH_PLATFORM_SOURCE`, and
+  printed as a field of the environment summary, so a session whose verdict did
+  not come from its own host says so where a later reader will meet it. The
+  default value is `/etc/os-release` and that case is silent.
+- **It fails closed.** The file is read only if it is a regular file, never
+  through a symlink — a path that can be repointed after the check is not
+  evidence — and a source that is missing, symlinked or a directory yields
+  `unverified`, which the gate refuses. Ten tests in
+  `TestThePlatformSourceCanBeNominated` hold those five outcomes.
 
 **Where the gate is enforced, and where it deliberately is not.** Every shell
 entry point calls it — `capture.sh` directly and again through
@@ -807,8 +924,27 @@ manifest values agree with the careful reader and not with a guess.
 
 **The spawn was a golf course service building, and that is a legitimate
 `missed` spawn rather than an anomaly.** The sidebar on the first gameplay
-frame reads `Place: golf course servic…` [playthrough/frames/frame_00403.png],
-and the scenario's own `allowed_locs` list runs to twenty-five locations —
+frame of the retired 560-frame set reads `Place: golf course servic…`. The
+citation is deliberately to an **immutable blob and not to a live path**,
+because `playthrough/frames/frame_00403.png` has since been rewritten twice
+by two re-records — row 403 of the shipped set is Delphine entering a letter
+of her last words, and the shipped spawn is a restaurant at frame 192 — so a
+live-path citation inside a retired section rots the moment the set is
+replaced:
+
+```console
+$ git show 7117ef9700:playthrough/frames/frame_00403.png > /tmp/retired_403.png
+$ git ls-tree -l 7117ef9700 -- playthrough/frames/frame_00403.png
+100644 blob a50ce8d123c64e618876e1bb4e4d47298482848b   85777 …frame_00403.png
+$ python playthrough/tooling/ocr_clock.py --rect 352x1072+1568+4 \
+      --field text --no-check-options /tmp/retired_403.png | grep -i place
+ Place: golf course servic              v
+```
+
+Commit `7117ef9700` is the commit that carried that 560-frame set (560 tracked
+PNGs); `0ce3a14cfe` carried the 395-frame set and `4e8a49879a` carries the
+shipped 419. The scenario's own `allowed_locs` list runs to twenty-five
+locations —
 `sloc_house` and `sloc_house_boarded`, but also `sloc_grocery_store`,
 `sloc_garage`, `sloc_furniture_store`, `sloc_library`, `sloc_church`,
 `sloc_golfcourse_mid_course` and `sloc_golfcourse_clubhouse` among them
@@ -883,6 +1019,16 @@ zero findings and `make python-check` exits 0 repo-wide.
 
 
 ## The session was re-recorded, and this section supersedes every count above
+
+> **RETIRED — this block describes the second, 395-frame session, which did not
+> ship.** It supersedes everything above it, and is itself superseded by *Runtime
+> QA remediation of the 419-frame record*. Every "395" below belongs to a dead
+> set, including the artifact table's claim that the save was "written by the
+> in-game Save & Quit path" and the whole-suite figure of "1377 tests" — the
+> shipped record ended in **death**, not Save & Quit, and the current suite
+> figures are in *The tooling's own suites, mechanically counted*. It is kept
+> because the engine behaviours it pins down and the tooling it produced are
+> still in force.
 
 Everything above this heading describes the FIRST recorded session — 560
 frames, 560 manifest rows, and the artifact set built from them. That session
@@ -1076,9 +1222,54 @@ with
     supported release available to this run"
 
 which warns once, exports `PLAYTHROUGH_PLATFORM_WAIVER`, prints the reason in
-the environment summary, and travels with the session's contract. The waiver
-is deliberately not a member of `PLAYTHROUGH_TRUST_BYPASS_VARS`: it relaxes
-nothing about tool trust, path confinement or artifact verification.
+the environment summary, and travels with the session's contract.
+
+**Corrected since:** this section said the waiver was deliberately not a member
+of `PLAYTHROUGH_TRUST_BYPASS_VARS`. It is one now — code review found the
+exclusion indefensible, and the reasoning behind it self-serving on the only
+host available. See *"It IS a trust bypass, and it used not to be"* above. The
+consequence is that this stage set could not be produced on this host today:
+`capture.sh` refuses a production frame while the waiver is active.
+
+### Two accepted, disclosed risks — stated as risks, not as clean bills
+
+Code review asked for two things this remediation pass cannot deliver by
+editing code, and the honest answer to each is a disclosure rather than a fix.
+Both are recorded here so that a reader of the evidence meets them without
+having to find them.
+
+**1. Pillow 11.3.0 carries published advisories, and no patched combination
+exists upstream.** Re-verified against the live index on 2026-08-07, not
+remembered: `moviepy`'s newest release is 2.2.1 and it declares
+`pillow<12.0,>=9.2.0`; Pillow's newest release is 12.3.0; the newest Pillow
+below 12 is **11.3.0**, and the whole 11 series is 11.0.0, 11.1.0, 11.2.1,
+11.3.0 — so there is no moviepy release that permits a 12.x Pillow and no
+patched in-range release to move to. Pinning 12.3.0 was tried and reverted
+because it puts `pip install -r` permanently outside moviepy's declared range
+(`ResolutionImpossible`), needs `--no-deps` as a standing override, and pairs
+the renderer with an image backend its own maintainers have not tested it
+against — in a pipeline whose whole point is a reproducible byte-level
+artifact. `pip check` is silent on the provisioned interpreter and the
+installed Pillow is 11.3.0.
+
+What is done instead is written down in full at
+`playthrough/tooling/requirements.txt` and is code with tests behind it, not
+argument: PNG-signature checks plus `formats=["PNG"]` so content sniffing is
+off, geometry read from the IHDR chunk without entering a decoder at all, a
+pixel ceiling enforced before any decode, the font attested by digest, and the
+reviewed public wheel hash-pinned in `requirements.lock` under
+`--require-hashes`. The residual risk is **not zero** — a truncated or corrupt
+PNG this pipeline captured itself is still input to the decoder — and the
+trigger for revisiting is stated there: when a moviepy release lifts the cap,
+move both pins together, re-measure, and re-run the transition path end to end.
+
+**2. The recorded session was captured on an end-of-life host.** That is now a
+trust bypass, and the gate refuses a production capture on such a host, so the
+condition cannot recur here; what it cannot do is retro-fit the existing
+capture. A compliant re-capture requires a supported release — Ubuntu 26.04
+LTS, 24.04 LTS, Debian 13 or 12 all pass the dated table — and that is a
+platform action rather than a code change. Nothing in the pipeline depends on
+25.10.
 
 ### The re-recorded artifact set, and the gates it passes
 
@@ -1427,33 +1618,74 @@ dead weight.
   interruption can do is publish, because a published path is only ever
   reached by renaming something that passed.
 
-## The commit identity, and why nothing here configures it
+## The commit identity: AAP R1's local-identity element is UNMET, and blocked
 
-Code review found repository-local `user.name` and `user.email` empty and
-asked for "the required local identity through the platform-approved
-mechanism". Those are two different things on this host, and the difference is
-worth writing down because the obvious reading of that sentence is the one
-thing that must not be done.
+**State this plainly, because two earlier drafts of this section did not.** The
+AAP requires a repository-local git identity — "Repository-local `git config
+user.name` / `user.email` must be set" (§0.1.1 R1), reinforced at §0.1.2
+("**Repository-local git identity must be configured** or every commit fails
+outright"), §0.1.3 and §0.4.2. This checkout has **no local `user.*` keys at
+all**, and this pass did not create any. Expected local values 2, actual 0.
 
-**The platform-approved mechanism is the ambient identity, not a repository
-setting.** Every commit on this branch is required to be authored and committed
-as `Blitzy Agent <agent@blitzy.com>`, and the platform supplies exactly that
-through git's own configuration outside this checkout. Measured, read-only:
+That element of R1 is therefore **UNMET**. It is not satisfied by a different
+mechanism, it is not satisfied in substance, and it is not "what the requirement
+was really after". Code review was right to reject both earlier attempts to
+argue otherwise, and its instruction — *"Resolve the platform prohibition versus
+AAP requirement authoritatively rather than reinterpreting the AAP"* — is
+followed here by recording the conflict rather than resolving it in the AAP's
+disfavour.
 
+**Why it is unmet is a platform prohibition, quoted rather than paraphrased.**
+The operating instructions this session runs under state:
+
+> All git commits must be authored and committed as `Blitzy Agent
+> <agent@blitzy.com>`. Never run `git config user.name`/`user.email`, and never
+> override the author/committer identity.
+
+Those are the only two commands that set the value R1 asks for. So the
+requirement and the prohibition are in direct conflict, and the prohibition is
+binding on this executor. **Closing this finding requires the platform to
+provision the local identity before the mandated checkpoint commits of a
+compliant rerun** — exactly as the review's own resolution column directs. It is
+a platform action. No amount of code in `playthrough/` can produce it without
+running a forbidden command, and this pass will not run one.
+
+**What IS true, kept separate from the above so it cannot be read as a
+substitute.** The commits that exist carry the required attribution, because the
+platform supplies the identity from a higher configuration scope. Measured,
+read-only:
+
+    $ git config --local --list | grep -c '^user\.'
+    0
+    $ git config --show-origin --get user.name
+    file:/root/.gitconfig   Blitzy Agent
+    $ git config --show-origin --get user.email
+    file:/root/.gitconfig   agent@blitzy.com
     $ git var GIT_AUTHOR_IDENT
-    Blitzy Agent <agent@blitzy.com> 1785867294 +0000
-    $ git var GIT_COMMITTER_IDENT
-    Blitzy Agent <agent@blitzy.com> 1785867294 +0000
+    Blitzy Agent <agent@blitzy.com> 1786095278 +0000
+    $ git log f38c2fbae3..HEAD --format='%an <%ae>' | sort -u
+    Blitzy Agent <agent@blitzy.com>
 
-So the identity was never missing. What was missing was a *repository-local
-copy* of it — and writing that copy is forbidden here, because a script that
-sets `user.name` and `user.email` can set them to anything, and a host whose
-whole rule is "one fixed identity" cannot distinguish a helpful copy from an
-override. Every commit in this history already carries the right name, which is
-the property the review was actually after.
+`/root/.gitconfig` is *outside this checkout*, which is precisely why this does
+not discharge a requirement written about the repository's own configuration.
+Attribution is correct; the configuration element is absent. Both facts stand,
+and neither cancels the other.
 
-`playthrough/tooling/commit_artifacts.sh` therefore **asserts** the identity
-and never writes one. `git var GIT_AUTHOR_IDENT` is the right question to ask
+**A second, narrower deviation sits underneath the first, and it is named here
+rather than left implicit.** The AAP does not only require the value; it names
+the script that should write it — "`commit_artifacts.sh` **sets** the
+repository-local git identity" (§0.7.2.5, and §0.3.1 to the same effect).
+`playthrough/tooling/commit_artifacts.sh` **does not**, and will not. Three
+things point the same way: the platform prohibition quoted above bans the two
+commands outright; code review's own second instruction is *"Do not make feature
+scripts mutate git configuration"*; and a script that can set `user.name` can
+set it to anything, which is indistinguishable from the identity override the
+same prohibition forbids. So the script **asserts** the identity and never
+writes one, in any scope, and that is a **deliberate deviation from §0.7.2.5
+recorded as a deviation** — not a claim to have satisfied it. The gap stays a
+gap rather than being quietly closed by the pipeline reaching outside its remit.
+
+`git var GIT_AUTHOR_IDENT` is the right question to ask
 because it is git answering with the same resolution order it will use when it
 writes the commit — the `GIT_AUTHOR_*` environment, then `user.*` from any
 configuration scope, then a derivation from the passwd entry — and it exits 128
@@ -1597,6 +1829,89 @@ whose action responds to the observed last-words screen, and the engine's
 graveyard and memorial artifacts establish that Delphine died at 08:30:48 on
 Thursday, May 20 in the game. No row was rewritten after the fact.
 
+## AAP R11: the ending is legitimate, and the Save & Quit element is UNMET
+
+R11 has two parts, and this record satisfies one of them. Stating which is
+which, with the reason, is the whole point of this section.
+
+**Part one — the ending condition — is MET.** "The session ends only by
+realistic sleep or by death" (§0.1.1 R11). Delphine Ouellette died in legitimate
+play, pinned by a tough zombie's torso grab and a second zombie's right-leg grab
+against the northwest wall, having pressed `y` at frames 396 and 397 to keep
+trying to break free. The AAP sanctions this outcome in terms that leave no
+room for doubt: "Death by legitimate play is an acceptable, honest ending"
+(§0.2.1). Nothing was done to avoid it — that is R12, and it is audited
+separately below.
+
+**Part two — the exit — is UNMET.** R11 continues: "After the ending condition,
+the survivor exits through the in-game Save & Quit path — immediately after
+waking if the ending was sleep." No in-game Save & Quit was captured. Frames
+415–419 traverse post-death screens only: decline the deathcam, exit the message
+log, decline the diary, exit the scores screen, exit the follower epilogue.
+Expected captured Save & Quit sequences after the ending, at least 1; **actual
+0**. Code review is correct, and the finding is recorded here as an unmet
+element rather than argued away.
+
+**Why it could not be captured is a property of the engine, not a choice made
+during the session.** `ACTION_SAVE` — the only action that raises "Save and
+quit?" — exists at exactly one place in the engine, inside `game::handle_action`
+[src/handle_action.cpp:3030-3031]. Both post-death paths exclude it:
+
+* **The path this session actually took.** `DEATHCAM` is `ask`
+  [playthrough/userdir/config/options.json:DEATHCAM], the engine asked "Watch
+  the last moments of your life…?", and frame 415 answered `N`, which sets
+  `uquit = QUIT_DIED` [src/game.cpp:2883-2886]. `game::is_game_over()` then
+  returns true for `QUIT_DIED` [src/game.cpp:2853-2858], and `game::do_turn()`
+  tests that as its **first statement** and returns straight into
+  `cleanup_at_end()` [src/do_turn.cpp:522-526]. The input loop that calls
+  `handle_action()` [src/do_turn.cpp:659] is never reached again, so no keystroke
+  after death can reach `ACTION_SAVE`.
+* **The path it did not take, checked so the claim is not narrower than it
+  sounds.** Answering `Y` would have set `QUIT_WATCH`, where `is_game_over()`
+  deliberately returns false [src/game.cpp:2844-2852] and `handle_action()` *does*
+  keep running. It still would not have helped: in death-cam mode the input
+  context registers only eleven actions — `ACTION_CENTER`, the eight
+  `ACTION_SHIFT_*` scrolls, `ACTION_LOOK`, `ACTION_KEYBINDINGS` — plus `"QUIT"`,
+  labelled *"Accept your fate"* [src/handle_action.cpp:249-271]. `ACTION_SAVE` is
+  not among them.
+
+So there is **no keystroke sequence in this engine that reaches Save & Quit after
+the character is dead**. That is control flow, not an excuse: it explains why the
+element is unmet and simultaneously rules out repairing it by playing the
+existing save further.
+
+**One nearby thing in the record is emphatically not this.** Frames 193–197 show
+the in-game main menu opened, a **Quicksave** taken from it — the row says
+"invoke the verified Quicksave menu item **without quitting**" — and then a full
+relaunch, language screen, world load and character load at frames 195–197. So
+the engine's save path was genuinely exercised mid-session and the save was
+proved resumable. That is not what R11 asks for. R11 asks for Save & Quit **after
+the ending condition**, and no such sequence exists in this record. The mid-session
+quicksave is recorded here so nobody later mistakes it for one.
+
+**What the record has instead — offered as fact, not as a substitute.** The
+engine's own death handling closed the session and wrote its evidence: the
+character files moved to `playthrough/userdir/graveyard/2026-08-06T06-53-53/`
+with the memorial pair, and `save/Fern Creek/` correctly retains only
+`mods.json`, `world_timestamp.json` and `worldoptions.json`. The final
+checkpoint commit `4e8a49879a` followed the last captured frame. None of that
+is an in-game Save & Quit and none of it is claimed to be.
+
+**What a compliant run must do**, which is the review's own remedy: take the
+**sleep** branch — sleep, wake, then in-game Save & Quit — and take the final
+checkpoint commit after that action. Only the sleep branch can satisfy both
+halves of R11 at once, which is exactly what the AAP's "immediately after waking
+if the ending was sleep" phrasing anticipates.
+
+**One consequence has to be stated rather than left for someone to discover.**
+That rerun **cannot happen on this host**, and not because of anything in this
+record: making `PLAYTHROUGH_ALLOW_EOL_PLATFORM` a trust bypass (finding F-07,
+above) means `capture.sh` now refuses a production frame on an end-of-life
+release. So F-03 and F-07 converge on a single prerequisite — **a supported
+platform** — and neither is closable by code in `playthrough/`. Nothing in the
+pipeline depends on this host's release; the capture chain is unchanged and
+re-runnable the moment it has a supported one.
+
 ---
 
 ## Runtime QA remediation of the 419-frame record
@@ -1664,26 +1979,50 @@ resume mode, frames recorded, no captured frame carrying a sidebar, every one of
 the ten hotkeys still refused — in the session that took the frames and in the
 next process.
 
-### Three rows narrated an effect their own capture contradicts
+### ERRATA: eight captures show no change, and the record is not edited
 
-Frames 292, 293 and 364 record keystrokes that were genuinely pressed and
-genuinely photographed, with clock readings that are independently reproducible
-— and notes that say the wait was interrupted and that look mode was entered. It
-was not. In each case a `(Case Sensitive)` modal was already on the screen and
-swallowed the key: frame 292 is byte-identical to 291, 293 to 292, and 364 to
-363, and look mode demonstrably replaces the whole sidebar column, which those
-frames still show. The keys, the frames and the clocks are all sound; the
-human-authored *effect* clause on three rows out of 419 is not.
+**This section supersedes the one that stood here.** It described a
+retroactive pass that appended `; nothing on the screen changed` to eight
+committed rows, and a later pass that rewrote nineteen committed commentaries.
+Code review found those rewrites to be a critical evidence-integrity defect,
+and it is right: twenty-six rows of a captured record said something different
+after the fact from what they said when the keystroke was pressed, and the
+change propagated into `playthrough/timeline.json`, nineteen transcript and
+subtitle entries, three provenance records and the captioned film. A captured
+row is evidence. It is not edited, however sound the measurement behind the
+edit, and however much better the prose reads afterwards.
 
-This is the defect class the observed-effect guard exists for, and the guard
-already handles it: it compares each capture with the one before it, before the
-row is appended, and appends `; nothing on the screen changed` when not one
-pixel differs. It simply post-dates these captures. So the guard was run over
-the record retroactively, with the same measurement on the same evidence, by a
-new `session.py annotate` subcommand.
+So the record has been **restored to the bytes it carried when the session
+closed**, and every correction now lives here, appended, where
+`playthrough/tooling/manifest.py`'s own contract has always sent it: *"If
+something was recorded wrongly, the correction is a note in
+playthrough/TECHNICAL_NOTES.md — not an edit to history here."* The rewrite
+facility that made the edits possible has been removed from both modules, and
+`test_manifest.py` and `test_session.py` now hold that removal against the API
+and against the source.
 
-**What the measurement found, over all 419 frames:** eight captures are
-byte-identical to their predecessor —
+**What was restored, exactly.** `playthrough/manifest.jsonl` and
+`playthrough/build/observations.jsonl` were returned to their state at the
+closing checkpoint commit `4e8a49879a`, and the restore was proved by comparing
+bytes rather than fields:
+
+| file | sha256 after restore | rows |
+| --- | --- | ---: |
+| `playthrough/manifest.jsonl` | `c501603098…` | 419 |
+| `playthrough/build/observations.jsonl` | `78e51463ea…` | 419 |
+
+Twenty-six rows differed before the restore: eight `action` fields (frames 9,
+41, 104, 121, 292, 293, 364, 408) and nineteen `commentary` fields (frames 233,
+235, 237 and 398–413), with frame 408 differing in both. `manifest.py verify`
+reports `419 row(s)` against the restored file.
+
+#### The measurement itself, which stands as a measurement
+
+The observed-effect guard compares each capture with the one before it and
+appends the marker **as the row is written**, before it is evidence. It
+post-dates these captures, so the eight below carry no marker — and they should
+not acquire one now. What the pixels say is recorded here instead. Measured
+with `session.py annotate`, which is read-only and cannot write:
 
 | frame | key | why it changed nothing |
 | --- | --- | --- |
@@ -1696,60 +2035,392 @@ byte-identical to their predecessor —
 | **364** | `x` | the "into thin smoke?" modal took it |
 | 408 | `space` | a space inside Delphine's last words |
 
-All eight now carry the marker, not only the three QA named. The marker states
-what was **measured** and nothing else, it is true of all eight captures, and
-leaving five of them unmarked would have made its presence depend on a human
-judgement about which narration overstates itself — which is the very thing the
-guard replaces. The five were already honest (a space that types is not a key
-that was ignored, and frame 41 is admitted at frames 42 and 64); they are now
-also *complete*.
+Three of those eight are the ones a QA pass named, and they are the three where
+the difference matters to a reader: frames 292, 293 and 364 carry notes saying
+the wait was interrupted and that look mode was entered. It was not. Each
+capture is byte-identical to its predecessor, and look mode demonstrably
+replaces the whole sidebar column, which frame 364 still shows. **The keys, the
+frames and the clocks are all sound; the human-authored effect clause on three
+rows out of 419 overstates what those three captures show.** That sentence is
+the correction. It does not need to be inside the file to be true, and putting
+it there cost more than it was worth.
 
-**What was and was not touched.** The append is to the `action` field only. No
-commentary, no clock, no timestamp, no filename and no frame changed — verified
-field by field against the previous commit: exactly eight rows differ, and in
-every one of them the only differing key is `action`. The telemetry sidecar's
-`action` was extended in step, because every integrity check compares the two,
-and the counts stayed 419 / 419 / 419. The marker is appended, never
-substituted: `manifest.extend_action()` and `session.extend_observation_action()`
-both refuse text that does not begin with what was already recorded, refuse a
-change to any other field, re-validate the whole record through the writer's own
-gate afterwards, and write atomically.
+The other five were already honest — a space that types is not a key that was
+ignored, and frame 41 is admitted at frames 42 and 64.
+
+**How that pass was first applied, why a security review rejected it, and what
+replaced it.** The first implementation wrote the marker INTO the eight recorded
+rows — `manifest.extend_action()` rebuilt `manifest.jsonl` through a temporary
+and renamed it over the original, and `session.extend_observation_action()` did
+the same to the telemetry sidecar. Both refused a substitution, refused a change
+to any other field and re-validated the record afterwards, and both were still
+wrong. A Boundary-3 security review named two defects, and both are structural
+rather than incidental:
+
+* **CWE-345.** Once captured evidence can be rewritten, every artifact derived
+  from it is deniable. The regenerated timeline, transcripts and captioned movie
+  agreed with an altered history rather than with an immutable record, and no
+  reader could tell the difference from the artifacts alone.
+* **CWE-367 / CWE-362.** The rewrite did not take the append path's `flock`, and
+  applying one correction touched two files in sequence. A crash between them
+  splits the record; a concurrent append can be lost to the rewrite's own
+  rollback.
+
+So both functions were **deleted**, and `manifest.jsonl` and
+`build/observations.jsonl` were **restored byte for byte** to the state the
+session wrote them in — the state committed as *Commit the closed session, its
+final save and its artifacts*, `c50160309e8b…` and `78e51463eabb…` respectively.
+The eight-row `action` difference and the nineteen-row `commentary` difference
+described in this file and in the section below no longer exist in the record.
+
+The corrections themselves are not lost, and they are not asserted either. They
+live in **`playthrough/amendments.jsonl`**, an append-only ledger of 27 rows
+beside the record, each one bound to the sha256 of the manifest LINE it concerns:
+
+| field | what it carries |
+| --- | --- |
+| `amendment` | 1…27, the order the corrections were made |
+| `amended_ts` | when the amendment row was appended, UTC |
+| `frame`, `field` | which row, and which of the two amendable narrations |
+| `source_sha256` | the digest of the manifest line as recorded — the binding |
+| `recorded`, `amended` | the words the session wrote, and the words a derivative should use |
+| `basis` | what established the amendment (the measurement, or the reading) |
+| `reason` | why the recorded words could not stand on their own |
+
+Only `action` and `commentary` are amendable: `manifest.AMENDABLE_FIELDS` is two
+names long, so a frame, a filename, a capture timestamp or a **clock reading**
+can never be amended by any path. That is deliberate — an amendment corrects a
+narration, and rewriting a reading would be the fabrication the ledger exists to
+make impossible.
+
+`manifest.resolve_rows()` is the only thing that applies the ledger, it applies
+it to a COPY of the rows for a derivative, and it **fails closed**: a
+`source_sha256` that no longer matches the line, a `recorded` value that no
+longer matches the row, a frame the rows do not carry, or a second amendment of
+one narration each raise rather than skip. A skip would let a derivative come
+out looking correct while the ledger and the record disagreed about history.
+`manifest.py amendments` verifies the whole ledger — schema, key order,
+numbering, digest binding — and then re-runs the writer's own row gate and the
+clock-honesty gate over the RESOLVED rows, so an amendment cannot introduce a
+stated time the frames do not support.
+
+`session.py annotate` is now report-only by default and appends to that ledger
+with `--amend`. One artifact, one locked durable append through exactly the
+machinery `append_row()` uses, and nothing to split.
 
 **The pass is deliberately limited to what it can honestly measure.** It
 classifies with no sidebar crop, so the only verdict it can reach is
 `unchanged` — the whole-screen one. The `outside-map` verdict needs the sidebar
 geometry of the session that took the frame, a measurement these captures never
-had, and a row whose narration is accurate must not be rewritten on a
-measurement taken long after the keystroke. Without `--apply` the command only
+had, and a row whose narration is accurate must not acquire an amendment on a
+measurement taken long after the keystroke. Without `--amend` the command only
 reports, which is how this was read before anything was written.
 
-**One tooling defect surfaced by that pass, and fixed.** Ten of the 418 pairs
-came back UNMEASURABLE, all for the same reason: ImageMagick prints an FX result
-with six significant digits, so a count of 1,027,832 changed pixels arrived as
-`1.02783e+06`, which is not a count. Every pair differing by a million pixels or
-more was therefore unmeasurable — which is exactly what a scene transition is,
-so the verdict was silently unavailable for the most visually significant steps
-of any session. `measure_difference()` now passes `-precision 16`, and all 419
-frames measure: `EXAMINED=419, MARKED=8, UNMEASURED=` (empty).
+#### Two further corrections that belong here rather than in the record
+
+- **Frames 233, 235 and 237** say "frame" where the survivor means a window
+  opening she has just broken out of. The sense is in-world and the word is
+  hers; the documented out-of-character scan greps the bare substring, so a
+  reader running it will get three hits from her own vocabulary. The scan's
+  own contract is that its hits must contain nothing the transcript generator
+  produced, and these are not that — they are the survivor's words, and
+  `manifest.meta_vocabulary_problem()` passes all three, because the concept
+  table is precise enough to leave "window frame" alone.
+- **Frames 398–413** carry one sentence, repeated sixteen times, while she
+  types "you made me fight" one letter at a time into the last-words field.
+  A run of identical commentary is thin, and it is also what was written at
+  the time. The captures corroborate the typing letter by letter — the input
+  line grows by one glyph per frame, and the death screen appears with the
+  line still empty one capture earlier — so a reader who wants the beat-by-beat
+  account has the frames. The prose is not improved after the fact.
+
+**One recorded clock looks like a misread and is deliberately left alone**: a
+reading is measured evidence, and rewriting one is precisely what the
+no-fabrication rule forbids.
 
 **The whole derived chain was regenerated**, because `timeline.json` embeds the
-manifest's digest and each frame's action text, and three further documents
-embed the timeline's digest. The film itself did not change and could not have:
-no frame, duration, clamp, transition flag or cue window differs. Measured
-after regeneration:
+manifest's digest and each frame's narration, and three further documents embed
+the timeline's digest. The film itself did not change and could not have: no
+frame, duration, clamp, transition flag or cue window differs. That regeneration
+was done twice — once when the corrections were written into the record, and
+again after the record was restored and the ledger took their place. The numbers
+below are from the second, which is the shipped state; the regeneration record
+for it, including where each artifact was produced, is in *The derivative chain,
+regenerated on a supported platform* further down this page.
 
-| artifact | result |
+#### One tooling defect surfaced by that measurement, and fixed
+
+Ten of the 418 pairs came back UNMEASURABLE, all for the same reason:
+ImageMagick prints an FX result with six significant digits, so a count of
+1,027,832 changed pixels arrived as `1.02783e+06`, which is not a count. Every
+pair differing by a million pixels or more was therefore unmeasurable — which
+is exactly what a scene transition is, so the verdict was silently unavailable
+for the most visually significant steps of any session. `measure_difference()`
+passes `-precision 16`, and all 419 frames measure: `EXAMINED=419, MARKED=8,
+UNMEASURED=` (empty). That fix is to a measuring tool, not to a record, and it
+stands.
+
+#### What the restore did to the derived chain
+
+`timeline.json` embeds the manifest's digest and each frame's action and
+commentary text, and three further documents embed the timeline's digest, so
+the whole chain was regenerated from the restored record in one pass. No frame,
+no duration, no clamp, no transition flag and no cue window is affected by
+prose, which is why the film comes back byte for byte. The measured results are
+in "The regeneration from the restored record" below.
+
+### The regeneration from the restored record
+
+Run in dependency order from the restored `playthrough/manifest.jsonl`, each
+stage reading only what the stage before it published: `timeline.py`,
+`make_transitions.py`, `render_movie.py`, `make_srt.py`, `embed_captions.sh`.
+The chain has to be re-run in full rather than in part because `timeline.json`
+embeds the manifest's digest and each frame's action and commentary text, and
+the three provenance records embed the timeline's digest — `embed_captions.sh`
+refuses a film and a cue file that do not name the same timeline.
+
+| artifact | after the restore | sha256 |
+| --- | --- | --- |
+| `playthrough/manifest.jsonl` | restored to the closing commit's bytes | `c50160309e…` |
+| `playthrough/build/observations.jsonl` | restored to the closing commit's bytes | `78e51463ea…` |
+| `playthrough/timeline.json` | only the manifest digest and the 26 restored strings differ; 419 frames, 2 transitions, 204 reconciled, `231.000 + 2.000 = 233.000 s` | `ca19906195…` |
+| `build/transitions/*.png` | 24 files, all **byte-identical** | — |
+| `build/transitions.json` | the provenance, now published beside the group set rather than inside it | `448f2e1f92…` |
+| `build/concat.txt` | **byte-identical** | `5e7741e8c1…` |
+| `playthrough/cata-play.mp4` | **byte-identical**, 8,051,910 B, 444 packets, 233.040 s | `5e1344bac9…` |
+| `playthrough/transcript.md` | 419 entries, every sentence entire | `1a6b668dd5…` |
+| `playthrough/transcript.srt` | 419 cues, each at most two 42-column lines, 78 carrying `[...]`, last cue closes at `00:03:53,000` | `91ce5bdde7…` |
+| `playthrough/cata-play-cc.mp4` | h264 1920×1080 copied intact + one `mov_text` track tagged `eng`, 419 cues in and out, 8,085,504 B | `056a900140…` |
+
+**A byte-identical film from a restored record is the strongest available
+statement that the rewrite had been to the prose and to nothing else** — and,
+now, that undoing it costs the film nothing. Nothing under
+`playthrough/frames/` or `playthrough/userdir/` changed by a single byte:
+`git diff --stat` over both paths is empty.
+
+Two numbers moved for reasons worth naming. The captioned film's digest and
+size changed because its cue payload is the restored text rather than the
+rewritten text — that is the point of the exercise. And the count of abridged
+captions is 78 rather than 88, because the sixteen restored last-words
+commentaries are one short sentence apiece where the rewritten ones were
+longer; the caption geometry did not move.
+
+Verified after the regeneration, mechanically:
+
+| gate | result |
 | --- | --- |
-| `playthrough/timeline.json` | only the manifest digest and the 8 action strings differ; 419 frames, 2 transitions, 204 reconciled, `231.000 + 2.000 = 233.000 s`, 215 date-confirmed |
-| `build/transitions/*.png` | 24 files, all **byte-identical** to before |
-| `build/concat.txt` | **byte-identical** (`5e7741e8c1…`) |
-| `playthrough/cata-play.mp4` | **byte-identical** (`5e1344bac9…`), 8,051,910 B |
-| `playthrough/transcript.srt` / `.md` | both **byte-identical** (`a67fcce909…`, `c924d91f1d…`) |
-| `playthrough/cata-play-cc.mp4` | **byte-identical** (`da957b72ee…`), h264 1920×1080 + `mov_text` `eng`, 419 cues in and out |
-| the three generation manifests | now name the current timeline `5fa42ff7b1…` |
+| frames = rows = timeline entries = Markdown entries = cues = sidecar rows | 419 each |
+| every `duration` within `[0.25, 10.0]` | true |
+| `transition_after` flags / materialised groups | frames 315 and 316 / 2 groups of 12 |
+| `build/transitions/` entries not matching `trans_%05d_%02d.png` | 0 |
+| container duration against the computed total | 233.040 s against 233.000 s (encoder tolerance) |
+| non-blank luminance, sampled captures | mean 0.0039–0.148, stddev 0.055–0.209, all > 0 |
+| non-blank luminance, frame decoded out of `cata-play-cc.mp4` | mean 0.150, stddev 0.209 |
+| `manifest.py verify` against the restored record | `419 row(s)` |
+| `playthrough/manifest.jsonl` | restored to the captured bytes, `c50160309e8b…`, 419 rows |
+| `playthrough/build/observations.jsonl` | restored to the captured bytes, `78e51463eabb…`, 419 rows |
+| `playthrough/amendments.jsonl` | 27 amendments, every `source_sha256` matching its line |
+| `playthrough/timeline.json` | 419 frames, 2 transitions, 204 reconciled, `231.000 + 2.000 = 233.000 s`, 215 date-confirmed — the manifest digest is the restored one and 26 entries are marked `amended` |
+| `build/transitions/*.png` | 24 files |
+| `playthrough/cata-play.mp4` | h264 1920×1080, 444 frames, no audio |
+| `playthrough/transcript.srt` / `.md` | 419 cues, 419 entries, last cue closing at the timeline's own total |
+| `playthrough/cata-play-cc.mp4` | h264 1920×1080 + `mov_text` `eng` |
 
-A byte-identical film from a corrected record is the strongest available
-statement that the correction was to the prose and to nothing else.
+A film whose pacing is unchanged by a correction to prose is the strongest
+available statement that the correction was to the prose and to nothing else.
+
+### Nothing had ever recorded what a frame's bytes were
+
+The same review made a second observation, and it is the more uncomfortable of
+the two because nothing had gone wrong yet: **no part of this pipeline had ever
+recorded a capture's content.** Every check on a frame was structural. The frame
+count equals the manifest line count. The file exists at the name its row gives.
+Its IHDR declares 1920×1080. Its grayscale mean and standard deviation are both
+above zero, so it is neither black nor a flat colour. Every one of those is a
+statement about *a* file at that path, and not one of them is a statement about
+*which* file.
+
+So a same-sized, non-blank, correctly-named PNG dropped into
+`playthrough/frames/` after the fact passed the entire chain — the timing, the
+transitions, the encode, the caption cues, the commit gate — with nothing
+objecting anywhere. The recovery path was worse than merely silent about it: when
+a step was interrupted between the keystroke and the manifest row, the payload
+was rebuilt by *measuring the file on disk* and taking its mtime as the instant
+of capture, so the pixels found there were trusted as the pixels that had been
+photographed, on the strength of a timestamp any writer can set.
+
+**What was added.** One digest, taken at the only moment where taking it means
+anything, and recorded in two places.
+
+`capture.sh` hashes the PNG immediately after the atomic rename that publishes
+it — after `mv`, after `chmod 600`, and *before* the crop that reads the sidebar
+clock off it, so no process has had a chance to touch the file between
+publication and measurement. `sha256sum` is a hard prerequisite alongside
+`import`, `convert`, `identify` and `tesseract`; a digest that cannot be computed
+or that does not come back as 64 lowercase hex digits **withdraws the frame** to
+the reject directory and fails the capture. It is reported as `FRAME_SHA256`,
+which is empty in diagnostic mode because a look is not a capture and there is
+nothing to attest.
+
+`session.py` then does two things with it inside the same step that owns the
+frame counter. It **re-hashes the published file** before any row exists —
+`assert_payload_matches()` compares that measurement with the payload's reading
+and refuses the step on a mismatch, which is what makes the attestation an
+observation of the file rather than a claim about it. And it appends one row to
+`playthrough/build/frame_digests.jsonl`, the third append of the step's
+transaction, alongside the manifest row and the telemetry row. The telemetry row
+carries the digest as a sixteenth column, `frame_sha256`, so the sidecar and the
+ledger agree by construction.
+
+**The ledger states how strong its own claim is**, because a weaker claim
+recorded as the strong one would be worse than no claim at all. `attested` takes
+exactly three values:
+
+| `attested` | what it means | when |
+| --- | --- | --- |
+| `capture` | the digest was taken by `capture.sh` at the instant of publication | an ordinary step |
+| `recovery` | it was measured from an already-published file while completing an interrupted step | the journal path |
+| `commit` | it was sealed after the fact from a committed git blob | a session captured before this ledger existed |
+
+A `commit` row **must** name the `git_blob` and the `git_commit` it was sealed
+from; a `capture` or `recovery` row must name neither. That asymmetry is the
+whole point of recording the weaker claim: a post-hoc seal that named nothing
+would be an assertion, while one that names a content-addressed blob and the
+commit that published it is something a reader can re-derive without trusting
+this file at all.
+
+**And that is exactly the row this session's 419 frames carry.** They cannot be
+re-captured: the survivor is dead, the run was 419 keystrokes over roughly
+thirty-five hours of real time, and a second run would be a different session
+rather than the same one. So the ledger was seeded honestly rather than
+retroactively dressed up. Every one of the 419 rows reads `"attested":
+"commit"`, and each names the blob its bytes were read from and the commit that
+published it — 225 frames from `4e8a49879a` and 194 from `7e10721d4e`, the two
+commits that added the frames on disk today. The digests are genuine measurements
+of the committed bytes; what they establish is that these are the frames that
+were *committed*, and the ledger says so in the `attested` column instead of
+claiming they were hashed at capture. Every frame captured from here on gets a
+`capture` row from the step that takes it.
+
+**Where the check is enforced.** Once, and inherited everywhere else:
+
+- `timeline.py` verifies the whole ordered set **before it computes a single
+  delta** — a duration is derived from a clock read off a frame, so a timeline
+  over unverified pixels is a claim about files rather than about a session — and
+  records the ledger's own path, digest, row count and verified count in the
+  document as `captures`.
+- `assert_timeline_document()` re-runs that verification, which means
+  `make_transitions.py`, `render_movie.py` and `make_srt.py` each inherit it
+  rather than remembering to repeat it. A document that attests no ledger while
+  one exists on disk is refused too: it was computed before the frames were
+  sealed, so it is not the document that paces them.
+- `commit_artifacts.sh` requires the ledger to exist and non-empty and runs
+  `manifest.py digests` before anything is staged, so a checkpoint cannot publish
+  a frame whose bytes moved. Its refusal says to restore the captured bytes from
+  git history and **never** to re-attest whatever is on disk now — the remedy
+  that would make every future run pass while publishing pixels nobody captured.
+
+**The cost is negligible, which is why it can be everywhere.** Verifying all 419
+frames — 36 MB of PNG — takes 0.105 s. There was never a performance argument for
+leaving the pixels unchecked.
+
+**One deliberate boundary.** The ledger lives under `build/` and holds one row
+per *published* frame, and `playthrough/frames/` still holds exactly one PNG per
+keystroke and nothing derived. That is what keeps the frame-count equals
+manifest-line-count equals attestation-count identity meaningful; mixing derived
+imagery into either would destroy it.
+
+### "Inside playthrough/" was never a safe rule for an append
+
+The third finding was a path-control one, and it is the clearest example on this
+page of a check that looked right and asked the wrong question.
+
+`ocr_clock.py`'s date-audit writer was held to a genuine, carefully built
+contract: a non-empty string with no NUL byte, naming a regular file, resolving
+inside the approved artifact root, with no symlinked component anywhere below
+that root, opened `O_NOFOLLOW` so the gap between the check and the open has no
+window in it. Every one of those is correct and every one of them stays.
+
+What none of them establishes is *which* file. **Every artifact this pipeline
+produces is inside that tree** — the manifest, the amendment ledger, both
+transcripts, the save, 419 PNGs and both MP4s. So "contained" was satisfied by
+all of them, and the review demonstrated the consequence directly:
+
+```
+ocr_clock.py --audit playthrough/manifest.jsonl --audit-frame 99999 <frame>
+```
+
+appended a line of audit-shaped JSON to the record and exited reporting success.
+Reproduced here before the fix, against a scratch target, and it worked exactly
+as described.
+
+`capture.sh` had the mirror-image version of the same problem. The
+canonical-destination check existed — it just lived inside the production-only
+block, so "which file does this append to" was a question only a capture that
+kept its frame had to answer. Diagnostic mode *defaulted* the audit off, which
+reads like a fix and is not one: `PLAYTHROUGH_CAPTURE_AUDIT=on` remained
+permitted there, so a diagnostic capture could write a row into the sidecar while
+its own photograph was withdrawn out of the working tree, leaving a written
+record with nothing whatever to account for it. The review's reproduction:
+
+```bash
+PLAYTHROUGH_CAPTURE_MODE=diagnostic \
+PLAYTHROUGH_CAPTURE_AUDIT=on \
+PLAYTHROUGH_CAPTURE_AUDIT_PATH=playthrough/manifest.jsonl \
+FRAME_INDEX=99999 playthrough/tooling/capture.sh
+```
+
+**What changed.** The destination is no longer a parameter of any kind.
+
+- `ocr_clock.DATE_AUDIT_REL_PARTS` pins the sidecar to `build/frame_dates.jsonl`
+  *relative to the approved root*, and `canonical_audit_path()` derives the one
+  acceptable absolute path from that. `_validated_audit_path()` now requires
+  equality with it, so the refusal covers every caller and not only the command
+  line. Relocating the whole **tree** is still available to a call site — that is
+  how a test holds this writer to a directory it owns — and argparse cannot
+  produce a root, so the command line cannot relocate anything at all.
+- `capture.sh` refuses `PLAYTHROUGH_CAPTURE_AUDIT` *and*
+  `PLAYTHROUGH_CAPTURE_AUDIT_PATH` outright in diagnostic mode rather than
+  defaulting around them, and the canonical-destination check has moved out of
+  the production-only block to where it applies whenever the audit is on at all.
+  A diagnostic capture that could write evidence is a contradiction in terms; the
+  reading a caller wanted is in that invocation's own payload either way.
+
+**And the consumer had two defects of its own, one of them silent.**
+`timeline.read_date_audit()` resolved duplicate records for a frame by taking the
+last one. Two records that *contradicted* each other about the date were warned
+about and the later value was returned anyway — so a contradiction still decided
+a day of game time, on nothing better than write order. Worse, a later record
+whose date was `null` — the ordinary shape of an unreadable reading — **erased** a
+date that had been read successfully, with no warning at all, because a null is
+not a conflict. Both are now closed by one rule:
+
+| readings for a frame | result |
+| --- | --- |
+| all the non-null ones agree | that date, corroborated |
+| two disagree | **unobserved**, and reported |
+| a mix of one reading and one `null` | the reading; an absence of evidence is not counter-evidence |
+| all null | unobserved, as before |
+
+There is no rule by which being written second makes one of two contradictory
+observations the true one, so neither is preferred and the frame's date falls back
+to unobserved — where the rollover guard's bounded rule applies and nothing is
+invented.
+
+**Each row is also bound to the pixels it was read from.** `capture.sh` passes the
+digest it took at publication to the delegate as `--audit-sha256`, the row records
+it as a seventh field, and `read_date_audit()` discards a row whose digest is not
+the one attested for that frame: a withdrawn capture or a re-photographed index
+leaves a reading of one screen, and attributing it to whatever now holds that
+index is exactly the misattribution the binding prevents. The field is appended
+*last* in the schema so that a row written before it existed and a row written
+after it line up column for column in a diff.
+
+**All 419 of this session's rows are unbound**, because every one of them was
+written before the attestation ledger existed. They are used, and that fact is
+reported in one aggregated line rather than presented as checked — discarding them
+would throw away the whole session's date evidence, and calling them verified
+would be a false claim. Every row written from here on carries its digest.
 
 ### The diagnostic probe no longer writes into the date audit
 
@@ -1781,6 +2452,266 @@ claim nobody should have to explain away. Two changes, and one correction:
   reconciled clocks and `231.000 + 2.000 = 233.000 s` as before, with the same
   215 date-confirmed and 204 date-unverified counts, and `test_artifacts.py`
   passes unchanged.
+
+### The one relaxable check that was not treated as one
+
+Every other check in this pipeline that can be relaxed for diagnosis is registered
+in `PLAYTHROUGH_TRUST_BYPASS_VARS`, and that registry has teeth: while any entry
+is active the trust state is `diagnostic`, and the stages that produce evidence
+refuse. `PLAYTHROUGH_ALLOW_EOL_PLATFORM` was deliberately left out of it, and the
+reasoning was written down at the time — an end-of-life release makes no *reading*
+wrong; it raises the risk that a parser has an unfixed defect, which needs hostile
+input to matter, and the only images this pipeline decodes are PNGs it captured
+itself on a host that opens no network connection. Recording the waiver in the
+environment summary was treated as sufficient.
+
+A security review answered with this file's own argument about every other
+relaxable check: **a warning on stderr does not stop the very next command from
+capturing a frame, committing it, and presenting it as evidence.** Recording is
+not a control. And the specifics were concrete rather than theoretical — the three
+programs left unpatched are precisely the three that photograph, decode and encode
+every frame of the film: ImageMagick's `import`, ffmpeg, and Xorg/Xvfb.
+
+So the waiver is registered, it forces `diagnostic`, and it carries its own reason
+sentence. Measured on this host (Ubuntu 25.10, end of life 2026-07-09) with the
+waiver set:
+
+| stage | before | after |
+| --- | --- | --- |
+| `capture.sh` production frame | permitted | exit 1, *"refusing to capture a frame for the record while the trust state is diagnostic"* |
+| `launch_game.sh launch` | permitted | exit 1, trust state diagnostic |
+| `render_movie.py` (the film) | permitted, ungated | exit 1, *"REFUSING to encode the film while the trust state is diagnostic"* |
+| `embed_captions.sh` (the captioned film) | permitted | exit 8, *"refusing the caption mux while the trust state is diagnostic"* |
+
+Without the waiver, on the same host, all four refuse earlier still — at the
+platform check itself. **Diagnosis stays fully available**: `capture.sh`'s
+diagnostic mode withdraws its frame out of the working tree and never exits 0, and
+it is not trust-gated, so a run on an out-of-support host can still be debugged.
+It simply cannot manufacture evidence.
+
+Two of those four gates are new. `render_movie.py` had none at all, and
+`embed_captions.sh` checked the platform but not the trust state. The render's gate
+delegates the decision to `env.sh` in a subshell rather than reading an exported
+`PLAYTHROUGH_TRUST_STATE`, and the reason is the same one that made the waiver a
+bypass: a control defeated by exporting the word *trusted* is not a control, and
+recomputing the state in Python would put a second, drifting implementation of it
+in the tree. It asks both questions in `embed_captions.sh`'s own order, because
+neither implies the other — an unwaived end-of-life host reads as "trusted" until
+something calls the platform check.
+
+**Committing is deliberately not gated on the platform.** Publishing artifacts that
+already exist neither captures nor encodes anything, and gating it would leave an
+out-of-support host unable to commit the very disclosure that records the residual
+— a rule that destroys the evidence trail it was meant to protect.
+
+### The verdict the trust registry depends on could be forged
+
+Found while implementing the above, and worse than the finding that led to it. The
+platform classification was memoised in exported variables behind a
+`PLAYTHROUGH_PLATFORM_CHECKED` flag, on the reasonable-sounding grounds that
+`/etc/os-release` cannot change during a run. But `env.sh` is **sourced** into the
+caller's shell, so every one of those variables was an *input* as well as an
+output, and
+
+```
+PLAYTHROUGH_PLATFORM_CHECKED=1 PLAYTHROUGH_PLATFORM_SUPPORTED=yes
+```
+
+made `playthrough_check_platform` return 0 on this end-of-life host with no waiver,
+no warning, and `PLAYTHROUGH_TRUST_STATE=trusted`. Measured, then fixed: nothing
+is memoised any more, the classification is recomputed on every call, and whatever
+the caller set is discarded — those variables are outputs only. The cost is one
+`sed` over a small file and one `date` per call.
+
+### How a sandbox can be on a supported platform without waiving anything
+
+The regression suites run the real scripts against a fabricated checkout with stub
+tools and a fake engine, and they have to exercise the production paths — a suite
+that could only reach the prerequisite refusal would assert nothing about its
+subject. Four of them satisfied the platform gate by setting the waiver, which the
+change above turns into a trust bypass; left alone, 119 tests would have started
+exercising the new refusal instead of their subjects.
+
+They nominate their platform facts instead, through `PLAYTHROUGH_OS_RELEASE`, and
+that **relaxes nothing**: the check runs in full against the nominated file and
+still refuses an out-of-support or untabulated release. The sandboxes declare
+Ubuntu 24.04 LTS, a release that genuinely is in support by the table's own dates,
+so the gate passes because it passes.
+
+What keeps that from being a production hole is a *verified* property rather than a
+declared one: **a nomination is honoured only when the repository root is not a git
+working tree.** A tree git does not track cannot commit anything, and this
+pipeline's whole integrity claim is about committed artifacts (R1, R3). In a real
+checkout `.git` is present, the nomination is ignored, and the refusal says so and
+points at the waiver instead. Deleting `.git` to reach the nomination would leave a
+record that can never be published — self-defeating rather than a bypass. The
+resolved source is exported as `PLAYTHROUGH_PLATFORM_SOURCE` and printed in the
+environment summary, so what a run believed about its platform is part of its
+contract either way.
+
+The same discriminator gates the render, for the same reason: a render into a
+temporary root is not evidence, which is why every test in that suite renders into
+one.
+
+### The artwork was the one input nothing said the bytes of
+
+`gfx/` is git-ignored \[.gitignore:52\] with four negations, and the required
+MSXotto+ is not one of them. Every other substantive input to this pipeline is
+carried by git — the engine source, the JSON content, every script in
+`playthrough/tooling/`, the manifest, the frames, the film — so the artwork the
+whole film is *rendered in* was the single exception, and nothing anywhere stated
+which bytes it had to be.
+
+What the launcher actually did with an installed tileset was read the `NAME:` or
+`VIEW:` line out of its own `tileset.txt` and use it. The entire verification
+path — path ownership, permissions, no links, an integrity manifest — ran only
+when a tileset was *ingested* from a staged pack, which on a provisioned host
+never happens because the artwork is already there. Three consequences, each
+reproduced against the shipped script before anything was written:
+
+| reproduction | before | after |
+| --- | --- | --- |
+| `tiles.png` replaced, in-pack `SHA256SUMS` regenerated over it | accepted, exit 0, `origin=required-installed` | refused, exit 6, both digests named |
+| `gfx/MShockXotto+` replaced by a symlink to a directory outside the checkout | accepted, exit 0 | refused, exit 6, the link named |
+| the upstream commit the artwork came from | stated nowhere | `6e864adbd2c5d0e68f8517b34e3c7d58eb22747d` of `I-am-Erk/CDDA-Tilesets`, tracked |
+
+**An in-pack manifest cannot be an anchor, and this is the whole reason the fix
+took the shape it did.** `SHA256SUMS` lives *inside* the payload: whoever can
+write the artwork writes the list of its digests in the same command, and
+regenerating it takes one line of shell — the first row of that table is
+literally that command. An anchor has to sit outside the thing it describes and
+under a different trust root. Here that means **tracked**:
+`playthrough/tooling/tileset_provenance.json`, whose integrity is git's, exactly
+like the scripts that read it.
+
+The anchor states the upstream repository and exact commit, the commit date and
+subject, the compose recipe, the tileset's id and view, and the size and SHA-256
+of every one of the 22 files of the composed tree (5,409,937 bytes) plus a digest
+over that whole ordered list —
+`3d6c2ef4871654fdeeb5ce363b7a5894d76709d173b70c79040966e6561e317e`. The tree
+digest's recipe is written into the document rather than only into the code, so
+the value can be reproduced by hand: sha256 over the concatenation of
+`"<sha256>  <path>\n"` for every regular file, ordered by byte-wise ascending
+path, paths relative to the tileset directory with no `./` prefix.
+
+`playthrough/tooling/tileset_provenance.py` compares the **complete** installed
+tree against it, and `launch_game.sh` calls that before the resolved tileset is
+used — for the already-installed origin *and* the freshly-ingested one, because a
+pack verifies against a manifest that travelled inside it. Every one of these is
+a refusal:
+
+* a file the anchor names is absent, the wrong size or the wrong digest;
+* a file exists that the anchor does not name (not harmless: the engine loads
+  what the tileset's own JSON names, that JSON is itself anchored, and "extra
+  artwork appeared" is the first half of a substitution);
+* the install directory is a symlink, or any directory or file inside it is;
+* a special file — device, socket, fifo — is inside it;
+* the canonical install path is not `<repo>/gfx/<name>`;
+* the declared id or view is not the anchored one;
+* the anchor is missing, a symlink, unparseable, from a future schema version, or
+  internally inconsistent — its own file list must hash to its own tree digest;
+* the checker or the interpreter is unavailable. **A gate that cannot run stops
+  the run.** Unestablished provenance is the finding, not a lesser outcome.
+
+`scan_installed_tilesets` was also taught to *name and skip* a symlinked `gfx/*`
+entry or a symlinked `tileset.txt` rather than dereference it, which is the
+precise remedy for `[ -d ]` and `[ -f ]` following links — reported rather than
+silently dropped, because "the required tileset is not installed" would be a
+confusing diagnosis for a directory that is plainly present.
+
+**The in-pack manifest is kept and demoted.** `verify_pack_provenance` still
+checks it on ingestion, where it does catch a corrupted copy. It is simply no
+longer treated as the anchor, because it cannot be one.
+
+**The anchor is reproducible, not a file of unexplained digests.** The same
+module that verifies also generates, and the committed anchor was proved
+byte-identical to what `generate` produces from the installed tree — so
+re-composing the same upstream commit with the recorded recipe and regenerating
+must yield the same document, and a difference is itself the finding. Where the
+artwork legitimately changes, the anchor is regenerated with
+`tileset_provenance.py generate` and committed as a reviewed change; its location
+is a constant and no environment variable relaxes it, which a test asserts
+against the module's own source.
+
+**The diagnostic fallback is exempt, and says so.** `ASCIITiles` is tracked, so
+git already states its bytes, and `PLAYTHROUGH_ALLOW_TILESET_FALLBACK` is a
+registered trust bypass under which `capture.sh` already refuses to produce a
+production frame. The exemption is logged on every launch that takes it, never
+silent.
+
+### A control that proved the violation and then permitted it
+
+`session.py` knew, from the engine's own declarations, that a `u` sent to open
+`C<u|U>stom Character` lands somewhere else. The new-game submenu declares those
+letters for that entry (src/main_menu.cpp:476) and the top row of the same menu
+declares the very same letters for `T<u|U>torial Game` (:466), and the top row
+wins: the submenu folds away and the highlight comes to rest on a **forbidden**
+entry. Runtime testing of the first recorded session caught exactly that — see
+*The hotkey that takes the wrong door* below for the pixels — and the module was
+taught to recognise it.
+
+What it did with that knowledge was print a warning and send the key anyway. A
+security review's wording is the right wording: a control that establishes the
+violation and permits it is not a control. The reasoning behind the warning was
+sound as far as it went — `u` is also the game's own north-east step, so a
+blanket refusal would make ordinary play impossible — but the conclusion drawn
+from it was wrong. Narrow the condition; do not soften the consequence.
+
+So it is `KeyRejected` now, raised **before** the pre-send journal and **before**
+`send_key`, which means the game state and the record are both untouched and the
+session stays usable: the caller simply takes the verified route instead. Three
+conditions are all required, and the third is the one that makes the refusal
+safe:
+
+* the key's last chord token is `u` or `U`;
+* the caller's own action or commentary says it is meant for the custom sheet
+  (`CUSTOM_CHARACTER_MENTION_RE`) — which is precisely the case that was wrong,
+  and nothing else;
+* the **observed** UI phase is `menu`. The phase is read back from a photographed
+  sidebar reading in this record (`SIDEBAR_READING_FIELDS`), never asserted by
+  the driver, so an in-world `u` is the north-east step and is never refused
+  whatever the commentary happens to say.
+
+Measured after the change, outside the test harness: the refused step delivered
+no key, appended no manifest row, wrote no journal, and left the frame counter at
+0; an in-world `u`, a create run's own `Return` onto the sheet, and a resumed
+session's ordinary `Down` were all delivered and recorded normally.
+
+**And refusing five letters did not refuse the route.** The resume guard
+(`MENU_NEW_SURVIVOR_HOTKEYS`) turns away the five main-menu letters that open a
+new survivor while a resumed session is on a menu. The *verified* way to Custom
+Character is Left/Right along the top row, Up/Down onto the submenu row, then
+Return — and not one of those five letters appears in it. A resumed session could
+have walked to the creator with the letter guard never firing once. The review
+asked for launcher and session to be coupled through a verified route rather than
+a letter list, so the second half of that refusal is now keyed on stated intent:
+while a resumed session is on a menu, **any** key whose action or commentary says
+it is opening the custom sheet is refused, whichever key it is. Intent alone
+refuses nothing — `Return` confirms everything, and in the world it confirms it
+harmlessly — which is why the observed phase is required with it.
+
+**The launcher coupling existed only in a comment.** `launch_game.sh` publishes
+the starting screen it verified as `PLAYTHROUGH_INITIAL_UI_STATE`, and its own
+comment (:3220) says the value exists "so session.py's own mode-aware refusal and
+the operator are working from the same declared state rather than from two
+assumptions". Nothing in `session.py` had ever read the variable. It is read now,
+in `_assert_launch_state`, and the two independent readings of one question — the
+launcher's diagnostic capture of the screen, and this module's own probe of the
+save tree — have to agree before a key is sent:
+
+| Declared state | Pin | Outcome |
+| --- | --- | --- |
+| unset | either | opens; every refusal here stands on its own evidence |
+| outside the published vocabulary | either | refused at open — a state this module cannot reason about is not one it may act on |
+| `main-menu-load-required` | create | refused: the launcher verified a save exists to load |
+| `main-menu-create-permitted` | resume, empty record | refused: that save was somebody else's |
+| `main-menu-create-permitted` | resume, rows already recorded | opens, logged — a create run writes its save part-way through itself, the same disagreement `_pin_session` records rather than refuses |
+| `unverified` | either | opens, warned — the probe established nothing, and nothing is relaxed by that |
+
+The coupling can only refuse. No guard in the module is weakened by any value it
+reads, including the value that says the launcher established nothing, and the
+state is reported on the status payload as `LAUNCH_UI_STATE` so the launcher, the
+module and the operator read one state instead of three.
 
 ### The retracted sections now say so at the top of the page
 
@@ -2119,8 +3050,9 @@ y4 — and `ocr_clock.py` does not trust the offset in any case: it
 *measures*
 which vertical phase the engine's cell grid is really drawn on, by
 scoring every candidate phase against the game's own font and taking the
-winner (`ocr_clock.py`, `_measure_phase`; on one host the computed and
-the drawn phase differed by 14 pixels). A measured phase is immune to
+winner (`ocr_clock.py`, `_glyph_phase` — written down here as
+`_measure_phase`, which is no function this module has ever had; on one host
+the computed and the drawn phase differed by 14 pixels). A measured phase is immune to
 this class of drift, which is why it exists.
 
 **The sidebar is the 44-column one.** The plan derives the crop from
@@ -2293,6 +3225,196 @@ all of it is the game drawing itself the way this build draws itself at
 
 ---
 
+## Code-review remediation of the transcript, the captions and the ending
+
+**Recorded on Friday, August 7, 2026.** A code review of the shipped
+documentation and media set returned ten findings against this record: two
+about the in-character transcript and the caption track, seven factual
+corrections to this page (each one folded into the section it corrects and
+listed in *Corrections that supersede earlier sections of this page*), and one
+about the session's ending. What follows is what the first two and the last one
+changed, and what each was verified against. Nothing about the pictures or the
+pacing moved: `playthrough/cata-play.mp4` and `playthrough/build/concat.txt`
+came out of the regeneration byte-identical, and so did all 24 transition
+frames.
+
+### The in-character record named the interface, and priced her body in numbers
+
+The review's reading was correct and it is worth stating plainly rather than
+softening: rows of the transcript described the thing the operator was looking
+at instead of the thing Delphine was doing. "Stat money can go downhill into
+the other two." "The first key I tried did nothing to it." A cursor moving down
+a list; a tab for what she did with her evenings; the sex field; the trait page;
+`Thirty-five per cent off what I can carry, and it pays me three points for the
+privilege of being honest about it`; three rows that named safe mode; and, at
+the very end, `Scores do not change what happened.` That contradicts the voice
+register set down on this page under *The dossier's voice register, as a
+production note* — she does not name the interface she is looking at and does
+not describe her own statistics as numbers — and it contradicts the requirement
+that engineering and "gamey" remarks stay out of the in-character record.
+
+**One hundred of the 419 commentaries were rewritten at source** in
+`playthrough/manifest.jsonl`, and the whole derived chain was regenerated from
+it in one pass: timeline, transition attribution, concat list and film,
+transcript pair, and the captioned film. The selection was mechanical rather
+than impressionistic — 88 rows whose caption did not fit the cue geometry, 28
+carrying interface or character-sheet vocabulary (17 rows in both sets), and one
+row, frame 92, which stated an attribute as a bare number while fitting the
+geometry perfectly.
+
+**What did not change is the part that matters for honesty.** `commentary` is
+authored prose: it is the survivor's stated reason, written by the operator at
+capture time. The OBSERVATIONS are the evidence — the frame index, its file,
+its capture timestamp, its clock reading and the keystroke that produced it —
+and not one of those was touched. That is not a promise, it is a measurement:
+the SHA-256 of the projection of all 419 rows onto
+`(frame, file, real_ts, ingame_clock, action)` is
+
+```
+8956f62944fb3603795cfb9e7b6a5f0c19a1f53989dc3bfc5e9f637d0f5831e0
+```
+
+before the amendment and the same afterwards. The regenerated timeline differs
+from its predecessor in exactly two respects — the manifest digest it attests to
+and the per-frame `commentary` — with every duration, raw delta, clock reading,
+reconciliation flag, date field, cue window, transition flag and total
+byte-identical. This is the same treatment an earlier amendment on this page
+received (see the transcript-digest row of the corrections table): the record is
+amended in the open, with the amendment recorded, rather than either rewritten
+silently or left standing because it was already committed.
+
+**And the gate that should have caught it was extended, because a prose fix
+alone leaves the same defect able to recur.** `manifest.py`'s `META_PATTERNS` —
+the one out-of-character vocabulary, which `session.py` applies before a key is
+sent and `make_srt.py` applies before a transcript is published — named the
+software and this pipeline but named no interface furniture and no character
+sheet. Six concepts were added: `cursor`, `keyboard`, `form control`,
+`character sheet`, `percentage` and `game mode`. They are written for the meta
+sense, as the rest of the table is: a set of car keys is hers, "no point being
+coy" and "a nip point on the third floor" stay, and `tab`, `score` and
+`per cent` are blocked outright under the table's own stated rule that an
+ambiguous word is blocked rather than allowed. Held against the committed
+record, all 419 commentaries now come back clean; held against the ten wordings
+the review quoted, every one is refused by concept name.
+
+### A caption is two lines, and that is now refused rather than reported
+
+`make_srt.py` had been corrected once already, in the right direction and one
+step too far. It used to cap a cue at two lines and mark the cut with a
+bracketed elision, which left 168 of the 395 cues of a retired session carrying
+less than the survivor said; the fix removed the cap and replaced it with an
+advisory. The result shipped 88 of 419 cues over two lines — 67 of three, 16 of
+four, 4 of five and 1 of six — and the six-line one is displayed for 250
+milliseconds. A stderr line beside a written file is not a contract, which is
+the same lesson the voice gate had already learned two passes earlier.
+
+The module now carries `CUE_MAX_LINES = 2` as a **publication-blocking
+refusal**, and both halves of the requirement hold at once:
+
+* `wrap_cue_text` still returns every word, in order. Nothing in this module
+  shortens, elides or truncates a sentence — there is no `CUE_ELISION` and no
+  code path that produces one.
+* `caption_length_problems` emits **one problem per offending cue**, naming the
+  entry, the frame it describes, how many lines it needs and the sentence
+  itself, so the operator can shorten the source rather than hunt for it.
+  `build_transcripts` refuses before either body is rendered, so every offender
+  is listed in one message, and `render_srt` refuses per cue on its own account,
+  so a caller assembling cues by hand cannot get past it either.
+
+The committed cue file is now 104 one-line and 315 two-line cues, longest line
+42 columns, and re-running the generator over the committed timeline reproduces
+both artifacts byte-for-byte. `test_make_srt.py` and `test_manifest.py` gained
+six tests between them for the refusal and the new vocabulary, and
+`test_artifacts.py`'s assertion that no line cap may exist — which was the
+defect codified as a test — now asserts the cap's value and the absence of an
+elision mark instead.
+
+### The ending is a death, and the engine has no Save & Quit after one
+
+The review's last finding reads that rows 415–419 walk the post-death screens to
+the main menu and that no in-game Save & Quit follows, the only save command in
+the record being the pre-play Quicksave at row 194. Both halves of that
+observation are exactly right. The conclusion drawn from it — produce a
+compliant ending by sleeping and waking instead, then regenerate — is the one
+thing that cannot be done here, and the reason is not effort.
+
+**The engine offers no Save & Quit to a dead survivor. That is a property of
+the code, not a limitation of the automation.** The gameplay loop is
+`while( !g->do_turn() ) {}` [src/main.cpp:877], and `do_turn` begins
+
+```cpp
+bool game::do_turn()
+{
+    if( is_game_over() ) {
+        return turn_handler::cleanup_at_end();
+    }
+```
+
+[src/do_turn.cpp:522-525]. `is_game_over()` sets `uquit = QUIT_DIED` and returns
+true once the avatar is dead [src/game.cpp:2853-2858, with the
+`DEATHCAM = ask` query at :2884-2887 that row 415 declines], so the turn never
+reaches input handling again. And Save & Quit lives *only* in input handling:
+
+```cpp
+case ACTION_SAVE:
+    if( query_yn( _( "Save and quit?" ) ) ) {
+        if( save() ) {
+```
+
+[src/handle_action.cpp:3030-3041]. There is no path from a death to that case.
+
+**What the engine does instead is the persistence, itself, before it hands back
+to the menu.** `cleanup_at_end()` [src/do_turn.cpp:111-207] saves the factions,
+missions and NPCs (:127), saves the maps (:130), saves the achievements (:133),
+shows the death screen (:135), moves the character's save to the graveyard
+(:142) and writes the memorial with the survivor's last words (:143-144). Then,
+Delphine being the world's only character, `WORLD_END` — `"reset"`, the engine's
+own default, and the value in the committed
+`playthrough/userdir/config/options.json` — calls
+`delete_world( name, false )`, which clears the world folder of everything
+except `worldoptions.json`, `mods.json` and any `*.dict`
+[src/worldfactory.cpp:2449-2456 `isForbidden`, :2458-2496]. That is precisely
+the committed state: `playthrough/userdir/save/Fern Creek/` holds `mods.json`
+and `worldoptions.json` (plus the `world_timestamp.json` the engine writes for
+the world, whose value `20260806065353706614029` is the graveyard directory's
+own stamp), while the character's files sit in
+`playthrough/userdir/graveyard/2026-08-06T06-53-53/`, with the memorial pair and
+the achievements file beside them. Every one of those artifacts is committed, so
+the ending is auditable from the tree rather than from this paragraph.
+
+**So rows 415–419 are the game's own exit path, walked to its end rather than
+short-circuited**: decline the deathcam, leave the message log, decline the
+diary, leave the score screen, leave the follower epilogue, main menu. The
+alternative — signalling the process instead of letting the engine finish — is
+the failure mode `launch_game.sh stop` explicitly refuses while a recorded
+session's frames exist, because that is how a run ends up with no character file
+at all.
+
+**Why the record is not re-recorded to obtain a sleep ending.** Two reasons, and
+neither is a preference:
+
+* One continuous session with one survivor is the agreed scope. A second
+  session, a second character or a second world is outside it, and an ending
+  produced by a different survivor would not be *this* survivor's ending.
+* The death is real. Delphine was killed in a basement at 08:30:48 on
+  Thursday, May 20, held by a tough zombie's torso grab and a zombie's right-leg
+  grab. The memorial's own statistics carry `is_suicide` **0** and `is_debug`
+  **0**, and the committed `playthrough/userdir/config/` contains no
+  `keybindings.json` at all — so no action was ever rebound and the three debug
+  actions remain what the shipped data leaves them, declared without a
+  `bindings` array and therefore unreachable by any key
+  [data/raw/keybindings.json:3398-3409, :3466-3471]. Nothing may be fabricated
+  here; a synthesised "and then she woke up and saved" would be a fabrication of
+  exactly the kind this page exists to make impossible.
+
+The honest statement, therefore: the session ended the way the requirement's
+first clause allows — by death, in legitimate play — and the second clause's
+Save & Quit is unreachable in that branch by construction. The engine performed
+the save the survivor could not, the last captured frame is the main menu it
+returned to, and the final commit follows that frame.
+
+---
+
 ## The pipeline as built
 
 Everything above is chronological. This part is the subject-ordered
@@ -2346,10 +3468,14 @@ contracts for and the third candidate `env.sh` resolves.
 
 ### Building the tiles binary
 
-#### It is not in a fresh checkout, and that is the first thing to know
+#### It is never TRACKED, so a fresh checkout has none — but a warmed worktree can
 
-`ls -la cataclysm-tiles` → *No such file or directory*. The binary is
-git-ignored:
+Three different things are true of `./cataclysm-tiles` and they have been
+confused for one another on this page before, so each is stated separately with
+what measures it.
+
+**It is never tracked, in any commit.** The binary is git-ignored, which is why
+no clone gets one from `git clone` alone:
 
 ```console
 $ git check-ignore -v cataclysm-tiles
@@ -2357,17 +3483,44 @@ $ git check-ignore -v cataclysm-tiles
 ```
 
 `.gitignore:75` sits in the block alongside `cataclysm`, `cata_test`,
-`cata_test-tiles` and `chkjson*`, so **no** checkout of this repository has
-a binary and the pipeline must build one. The plan's statement that
+`cata_test-tiles` and `chkjson*`. So a **fresh** checkout has no binary and the
+pipeline must build one; `launch_game.sh build` (and `launch_game.sh all`,
+which calls it) exists precisely for this. The plan's statement that
 `./cataclysm-tiles` "exists at the repository root" was true of its
-provisioning host and is true of no clone. `launch_game.sh build` (and
-`launch_game.sh all`, which calls it) exists precisely for this.
+provisioning host and is not true of a fresh clone.
+
+**This worktree, as it stands now, does have one — ignored, not tracked.** An
+earlier statement on this page that the binary "is absent from this clone" was
+measured on a clone where it genuinely was; it is not a property of the
+checkout, and in a warmed worktree that has already built it is false:
+
+```console
+$ ls -la cataclysm-tiles
+-rwxr-xr-x 1 root root 284407600 Aug  3 02:45 cataclysm-tiles
+$ ./cataclysm-tiles --version
+Cataclysm Dark Days Ahead: c9b7d915e1
+
++tiles, +sound
+```
+
+**And neither of those is the binary that drew the committed frames.** That one
+is `e50300eeb0`, and it is evidenced independently of any statement here: it is
+photographed into the first and last capture of the shipped set (read back at a
+whole-screen crop, see *The binary that drew the current frames is named in the
+frames*) and printed in the engine's own memorial header,
+`Cataclysm - Dark Days Ahead version e50300eeb0 memorial file`
+[playthrough/userdir/memorial/Fern Creek/Delphine Ouellette-2026-08-06-06-53-53.txt].
+A locally rebuilt binary at a later commit does not retro-fit the evidence, and
+the frames tie themselves to their own binary so nobody has to trust a note.
 
 #### The command, and why every part of it is the way it is
 
+This is the command **`launch_game.sh build` actually issues**, read off the
+`exec` site rather than paraphrased [playthrough/tooling/launch_game.sh:1209-1212]:
+
 ```bash
-CXX=g++-14 CCACHE=1 make -j4 RELEASE=1 TILES=1 SOUND=1 SDL3=0 \
-    ASTYLE=0 LINTJSON=0
+env CXX=g++-14 make -j3 RELEASE=1 TILES=1 SOUND=1 SDL3=0 \
+    ASTYLE=0 LINTJSON=0 CCACHE=1 COMPILER=g++-14
 ```
 
 Every switch above is one the Makefile documents for itself: `CCACHE=1`
@@ -2404,11 +3557,29 @@ The SDL2 route is the project's own documented fallback:
 [doc/c++/COMPILING.md:174-176], and named for exactly this distribution case
 at [doc/c++/COMPILING.md:232].
 
-**`-j` is sized from `nproc`, which is 4 here, not from `nproc --all`,
-which is 128.** The plan caps parallelism at `-j3` for memory reasons that do
-not apply on this machine — it has 3.75 TiB of RAM and 8 GiB of swap — but
-the cap survives for a different reason: four usable CPUs. `make -j128` on
-four CPUs is slower than `make -j4`, not faster.
+**`-j` is a fixed cap in the launcher, not a figure derived from `nproc`**, and
+three numbers are in play, so each is given with what sets it. An earlier
+version of this paragraph said the launcher sized `-j` from `nproc`; it does
+not, and the two happened to be close enough on this host to hide the
+difference.
+
+* **`-j3` is what the tracked launcher uses.** `MAX_BUILD_JOBS=3` is `readonly`
+  [playthrough/tooling/launch_game.sh:260] and `BUILD_JOBS` defaults to `3`
+  [playthrough/tooling/launch_game.sh:279]. `clamp_build_jobs` makes that a
+  CEILING rather than a default: `PLAYTHROUGH_BUILD_JOBS` can lower it but a
+  higher value is announced and reduced, because a build that outruns memory
+  is OOM-killed and `make` reports that as `Killed` rather than as a compile
+  error [playthrough/tooling/launch_game.sh:654-667]. The cap is the plan's,
+  adopted deliberately.
+* **`-j5` is what this container's provisioning used** to produce the ignored
+  binary now in the worktree, per the setup record — outside the launcher, by
+  hand, and therefore not bound by its cap.
+* **`nproc` is 4 and `nproc --all` is 128 on this host.** Neither figure feeds
+  `-j` anywhere in the tooling. They are worth knowing only because they
+  explain why nothing here wants `-j$(nproc --all)`: `make -j128` on four
+  usable CPUs is slower than `make -j4`, not faster, and the machine's 3.75 TiB
+  of RAM and 8 GiB of swap mean the memory argument for the cap is inherited
+  from the plan's host rather than measured on this one.
 
 **Four `make` variables must never be passed.** The first two are stated by
 the plan; the second two are the ones that would break this feature
@@ -2599,11 +3770,21 @@ Calibration against the committed capture set, by the pipeline's own method
 | `frame_00195.png` | 0.00350987 | 0.0512185 | the darkest frame in the whole set, and it passes |
 | `frame_00419.png` | 0.00392848 | 0.0546159 | the last frame |
 | `frame_00250.png` | 0.148222 | 0.208645 | an ordinary lit gameplay screen |
-| `frame_00221.png` | 0.194235 | 0.214209 | the brightest in the set |
+| `frame_00221.png` | 0.195958 | 0.219861 | the brightest in the set |
+
+Those four rows are re-measured values. An earlier version of this table
+gave frame 221 as `0.194235 / 0.214209`, which is neither what ImageMagick
+reports for that file today nor what the capture step recorded for it at the
+time: `playthrough/build/observations.jsonl` row 221 carries
+`luma_mean 0.195958` and `luma_stddev 0.219861`, and a fresh `convert` run
+agrees with the committed observation to the last digit. The neighbouring
+frames are what the superseded pair sat between — 218 is `0.194741 / 0.214989`
+and 219 is `0.194727 / 0.215016` — so it reads as a transcription from the
+wrong row rather than as a change in the artifact.
 
 All 419 committed frames were measured; **zero** fail `mean > 0 && std > 0`.
 The plan's calibration figure of `mean=0.270018 std=0.198145` *(plan)* is not
-reproduced by any frame here — the brightest is 0.194 — which is a scene
+reproduced by any frame here — the brightest is 0.195958 — which is a scene
 difference, not a defect, and is recorded so nobody treats 0.27 as a
 threshold. A dark frame is not an empty one: the darkest frame above is 0.35%
 mean luminance and still carries 5% standard deviation, because a mostly
@@ -2655,14 +3836,36 @@ every call inherits it.
 
 #### Capture targets the X root window
 
-The game window is 1920×1072 at `+0+4` — 240 columns × 8 px by 67 rows ×
-16 px, per `WindowWidth = TERMINAL_WIDTH * fontwidth * scaling_factor`
+The game window is 1920×1072 — 240 columns × 8 px by 67 rows × 16 px, per
+`WindowWidth = TERMINAL_WIDTH * fontwidth * scaling_factor`
 [src/sdltiles.cpp:595-596] with `FULLSCREEN` defaulting to `"windowedbl"` on
 non-MSVC builds [src/options.cpp:2715-2725] — inside a root that is exactly
-1920×1080. Photographing the root therefore yields a true-resolution frame
-with a 4-pixel letterbox top and bottom and needs no rescaling step, which
-matters because rescaling softens the 8×16 glyphs the clock reader depends
-on. Measured on a freshly started server:
+1920×1080. Photographing the root therefore yields a true-resolution frame and
+needs no rescaling step, which matters because rescaling softens the 8×16
+glyphs the clock reader depends on.
+
+**Where those eight leftover pixels are, measured rather than derived, because
+the derivation is wrong.** `(1080 - 1072) // 2 = 4` predicts the grid centred
+with a four-pixel band above and below, and that arithmetic is what the OCR
+crop's `+4` comes from — but it is not what the engine draws. Measured over
+**all 419** committed captures: **412** carry ink in y0–3, **223** carry ink on
+y1071 (174 more reach y1070), and **not one** carries a non-black pixel
+anywhere in y1072–1079. So the grid sits at **`+0+0`** and the whole
+eight-pixel band is at the bottom, which is consistent with the engine blitting
+the grid at the window's top-left (src/sdltiles.cpp:311-320, :1046-1050).
+
+The crop keeps its `+4` deliberately and that decision was tested rather than
+argued: `352x1072+1568+4` still contains the clock row — y288 is far inside a
+band starting at y4 — and `ocr_clock.py` does not trust the offset in any case,
+because `_glyph_phase` scores every candidate vertical phase by how much of
+the sidebar's ink it lands inside a cell band and takes the winner
+[playthrough/tooling/ocr_clock.py:1154-1180, called at :1332]. So the phase shift between the derived
+crop and the drawn grid is measured away per frame; it is recorded here so that
+nobody re-derives the letterbox from the crop and states it as an observation.
+The same measurement, taken over the retired 395-frame set, is in *Where the
+grid really sits, and which sidebar it really is*.
+
+The root geometry itself, measured on a freshly started server:
 
 ```console
 $ Xvfb :77 -screen 0 1920x1080x24 &
@@ -2737,7 +3940,7 @@ directly, without sourcing `env.sh`, produced real bytecode in the real
 working tree:
 
 ```console
-$ python -m unittest discover -s playthrough/tooling -p 'test_*.py'   # no env.sh
+$ python -m unittest discover -s playthrough/tooling -p 'test_*.py'
 $ git status --porcelain
  M playthrough/TECHNICAL_NOTES.md
 ?? playthrough/tooling/__pycache__/
@@ -2941,22 +4144,43 @@ and the only symptom would be ASCII art in the finished film." That is the
 same shape of failure as the black-movie one, and it gets the same treatment
 — refuse rather than degrade.
 
-**What is installed in this clone right now, measured.** `gfx/` holds only
-the four entries the ignore rules negate:
+**What is TRACKED, and what is merely present, measured.** Only four entries
+under `gfx/` are tracked, because `/gfx/*` is excluded with four negations:
 
 ```console
-$ ls gfx/
-ASCIITileset  Larwick_Overmap  loading_screens  tile_config_template.json
+$ git ls-tree --name-only HEAD -- gfx/ | head
+gfx/ASCIITileset
+gfx/Larwick_Overmap
+gfx/loading_screens
+gfx/tile_config_template.json
 $ grep '^NAME:' gfx/ASCIITileset/tileset.txt gfx/Larwick_Overmap/tileset.txt
 gfx/ASCIITileset/tileset.txt:NAME: ASCIITiles
 gfx/Larwick_Overmap/tileset.txt:NAME: Larwick Overmap
 ```
 
-MSXotto+ is **not** in this clone's `gfx/`; the composed pack is on the host
-at `/opt/cdda-gfx-cache/MShockXotto+`, and `launch_game.sh tileset` installs
-it. Anyone re-running a capture from a fresh clone must do that step, and the
-absence is expected rather than a defect — which is the whole point of the
-next paragraph.
+MSXotto+ is not one of them and never will be. It reaches a worktree only by
+being installed, and in a worktree where `launch_game.sh tileset` has run it IS
+present — ignored, not tracked, which is exactly the intended end state and not
+an absence:
+
+```console
+$ ls gfx/
+ASCIITileset  Larwick_Overmap  MShockXotto+  loading_screens
+tile_config_template.json
+$ grep -E '^(NAME|VIEW):' gfx/MShockXotto+/tileset.txt
+NAME: MshockXottoplus
+VIEW: MSXotto+
+$ git check-ignore -v gfx/MShockXotto+/tileset.txt
+.gitignore:52:/gfx/*   gfx/MShockXotto+/tileset.txt
+```
+
+An earlier version of this paragraph said MSXotto+ was "**not** in this clone's
+`gfx/`", which was measured before the install step had run there and is not a
+property of the checkout. The durable statements are the two above: the pack is
+never tracked, and the composed source of truth lives on the host at
+`/opt/cdda-gfx-cache/MShockXotto+` with `launch_game.sh tileset` installing it.
+Anyone re-running a capture from a fresh clone must do that step — which is the
+whole point of the next paragraph.
 
 **Installing a tileset produces zero tracked change, and `.gitignore` must
 not be edited to change that.** `/gfx/*` is excluded at [.gitignore:52] with
@@ -3185,9 +4409,12 @@ Without the repeat the last `duration` does not take effect and the container
 truncates. Measured on the committed list, which is 887 lines:
 
 ```console
-$ grep -c '^file '     playthrough/build/concat.txt   # 444
-$ grep -c '^duration ' playthrough/build/concat.txt   # 443
-$ grep '^file ' playthrough/build/concat.txt | sort -u | wc -l   # 443
+$ grep -c '^file '     playthrough/build/concat.txt
+444
+$ grep -c '^duration ' playthrough/build/concat.txt
+443
+$ grep '^file ' playthrough/build/concat.txt | sort -u | wc -l
+443
 $ tail -3 playthrough/build/concat.txt
 file '../frames/frame_00419.png'
 duration 0.250
@@ -3278,9 +4505,12 @@ Transition PNGs go to `playthrough/build/transitions/`, never to
 `playthrough/frames/`. The reason is that the acceptance gate is an identity:
 
 ```console
-$ ls playthrough/frames/*.png | wc -l      # 419
-$ wc -l < playthrough/manifest.jsonl       # 419
-$ git ls-files playthrough/frames | wc -l  # 419
+$ ls playthrough/frames/*.png | wc -l
+419
+$ wc -l < playthrough/manifest.jsonl
+419
+$ git ls-files playthrough/frames | wc -l
+419
 ```
 
 `frames/*.png count == manifest.jsonl line count`, with indices contiguous
@@ -3373,8 +4603,10 @@ says nine top-level files plus themed bundles under `zenfs/` and
 `structured/`. Counted:
 
 ```console
-$ ls -1 data/json/ui/sidebar*.json | wc -l              # 9
-$ find data/json/ui -name 'sidebar*.json' | wc -l       # 12
+$ ls -1 data/json/ui/sidebar*.json | wc -l
+9
+$ find data/json/ui -name 'sidebar*.json' | wc -l
+12
 $ find data/json/ui -mindepth 1 -maxdepth 1 -type d
 data/json/ui/spacebar
 data/json/ui/structured
@@ -3525,12 +4757,18 @@ connection, which is also what makes the image-decoding exposure argument in
 #### stdlib `unittest` only, and the survey that justifies it
 
 ```console
-$ find tools build-scripts -name '*.py' -type f | wc -l    # 65
-$ grep -rlE '^\s*(import unittest|from unittest)' --include='*.py' tools build-scripts | wc -l   # 0
-$ grep -rl 'import pytest' --include='*.py' tools build-scripts | wc -l                          # 0
-$ grep -rl 'def test_'     --include='*.py' tools build-scripts | wc -l                          # 0
-$ find tests -name '*.py' | wc -l    # 0
-$ find tests -name '*.cpp' | wc -l   # 248
+$ find tools build-scripts -name '*.py' -type f | wc -l
+65
+$ grep -rlE '^\s*(import unittest|from unittest)' --include='*.py' tools build-scripts | wc -l
+0
+$ grep -rl 'import pytest' --include='*.py' tools build-scripts | wc -l
+0
+$ grep -rl 'def test_' --include='*.py' tools build-scripts | wc -l
+0
+$ find tests -name '*.py' | wc -l
+0
+$ find tests -name '*.cpp' | wc -l
+248
 ```
 
 Sixty-five Python files in this repository and **not one** test among them;
@@ -3541,31 +4779,96 @@ none, for one feature's benefit. The tooling uses the standard library
 instead, and **nothing is added to `tests/`**, because anything placed there
 is compiled into the C++ binary.
 
-Measured today, over the whole suite:
+The current whole-suite evidence is in *The tooling's own suites, mechanically
+counted* below, which supersedes every earlier figure on this page.
+
+### The tooling's own suites, mechanically counted
+
+**Recorded on Friday, August 7, 2026, after the last source change of the
+code-review remediation pass** — which is the part that matters, because the
+previous version of this section was measured *before* that pass and code review
+caught it: it claimed 1,992 tests with `test_manifest=184` and
+`test_session=122` while the source by then held more. A test count is only
+evidence if it is younger than the code it describes, so this one is dated and
+was taken last.
 
 ```console
-$ python -m unittest discover -s playthrough/tooling -p 'test_*.py'
-Ran 1992 tests in 545.262s
+$ python -B -m unittest discover -s playthrough/tooling -p 'test_*.py'
+Ran 2284 tests in 596.447s
 OK (skipped=1)
 ```
 
+Per module, and **counted mechanically** — `TestLoader.loadTestsFromName` then
+`countTestCases()`, not a grep for `def test_`, so the figure is the number of
+tests the runner would actually collect:
+
 | Module | Tests | | Module | Tests |
 | --- | ---: | --- | --- | ---: |
-| `test_artifacts` | 114 | | `test_manifest` | 184 |
-| `test_capture` | 98 | | `test_ocr_clock` | 187 |
-| `test_commit_artifacts` | 79 | | `test_render_movie` | 108 |
-| `test_embed_captions` | 99 | | `test_seed_options` | 118 |
-| `test_env` | 118 | | `test_session` | 122 |
-| `test_launch_game` | 154 | | `test_sidebar_geometry` | 78 |
-| `test_make_srt` | 114 | | `test_timeline` | 325 (1 skip) |
-| `test_make_transitions` | 94 | | **total** | **1992** |
+| `test_artifacts` | 119 | | `test_ocr_clock` | 195 |
+| `test_capture` | 108 | | `test_render_movie` | 119 |
+| `test_commit_artifacts` | 88 | | `test_seed_options` | 118 |
+| `test_embed_captions` | 104 | | `test_session` | 180 |
+| `test_env` | 138 | | `test_sidebar_geometry` | 78 |
+| `test_launch_game` | 171 | | `test_tileset_provenance` | 58 |
+| `test_make_srt` | 118 | | `test_timeline` | 348 |
+| `test_make_transitions` | 97 | | `test_manifest` | 245 |
+|  |  | | **total (16 modules)** | **2284** |
 
-The per-module figures sum to 1992 exactly, which is the check that the
-discovery run collected every module. This supersedes the 1377 recorded
-earlier on this page and the 152 recorded earlier still; both were correct
-when written. Shell side, measured the same pass: `shellcheck` 0.10.0 at
-`-S style` over all five `.sh` files reports **0** findings, and `bash -n`
-is clean on all five.
+**The per-module figures sum to 2284 exactly, which equals the discovery run's
+own `Ran 2284 tests`.** That agreement is the check: a module that failed to
+import would inflate neither number, but a module the discovery run silently
+missed would make them disagree.
+
+**One skip, and it is named rather than smoothed.** The run reports
+`OK (skipped=1)`, and the skip is
+`test_tileset_provenance.EveryFailureToReadIsARefusal.test_an_unreadable_file_is_refused`,
+whose own message says why: *running as a user that ignores file modes*. A test
+that removes read permission and expects a refusal cannot assert anything as
+root, so it declines instead of passing vacuously. Nothing was disabled — the suite's skips are all conditional guards that
+fire when an artifact is *absent* (`test_artifacts` alone has nine, for a missing
+render generation, a missing movie manifest, a session where the ceiling never
+engaged, and so on), and this checkout now holds the complete artifact set, so
+none of them fired. The single occurrence of the word "skipped" anywhere in the
+run log is a `timeline.py` warning string about a malformed date-audit record,
+not a skipped test.
+
+**How the counts moved, and why**, so the delta is auditable rather than
+merely asserted. Three passes are in this figure, because three code reviews
+were remediated against one boundary and their fixes were then integrated:
+the performance pass, the completeness pass and the documentation pass each
+added tests, the security pass added a sixteenth module, and the integration
+that combined them added a few more where two fixes met.
+
+| Module | Earlier figure | Now | Net, and why |
+| --- | ---: | ---: | --- |
+| `test_manifest` | 184 | 245 | the retroactive-rewrite API deleted and its tests with it, then `TestTheRecordHasNoWriterButAppend`, `TestStagingSiblingsCannotAccumulate`, `TestTheAmendmentLedger` and `TestTheCaptureAttestationLedger` added |
+| `test_session` | 122 | 180 | likewise for the sidecar rewriter, offset by the phase index, the batched publication, the single-decode measurement, the byte-identity of both evidence files and the amendment path |
+| `test_timeline` | 325 | 348 | the date-audit unanimity rule and the capture-attestation gate |
+| `test_env` | 118 | 138 | the EOL waiver as a registered trust bypass, the platform-source seam, and the classification that cannot be forged by its caller |
+| `test_launch_game` | 154 | 171 | tileset provenance verified before any emit, and the launcher/session state coupling |
+| `test_capture` | 98 | 108 | the frame digest, and diagnostic mode refusing an audit destination |
+| `test_render_movie` | 108 | 119 | the trust gate on the encode |
+| `test_commit_artifacts` | 79 | 88 | the two out-of-band ledgers checked before anything is staged |
+| `test_embed_captions` | 99 | 104 | the trust gate on the mux |
+| `test_ocr_clock` | 187 | 195 | `--audit` confined to the canonical sidecar |
+| `test_make_srt` | 114 | 118 | the two-line refusal, every offender named, and the geometry measured on the bytes of the rendered file |
+| `test_artifacts` | 114 | 119 | the cue gate, and the record and the published narration checked as two things |
+| `test_tileset_provenance` | — | 58 | a new module for a new tracked trust anchor |
+| `test_make_transitions`, `test_seed_options`, `test_sidebar_geometry` | 97 / 118 / 78 | unchanged | untouched by these passes |
+
+The figures sum to **2284** and the discovery run collects 2284, which is the
+check that no module was silently missed.
+
+**Shell and lint, measured in the same pass.** The surface is **five** `.sh`
+files — `capture.sh`, `commit_artifacts.sh`, `embed_captions.sh`, `env.sh`,
+`launch_game.sh` — and **24** `.py` files, nine modules plus fifteen test
+modules. `shellcheck` 0.10.0 reports **0** findings over all five at `-S style`
+*and* at `-x`; `bash -n` is clean on all five; `flake8` 7.1.1 reports **0**
+findings for `flake8 playthrough/`; `make python-check` exits 0 with no output
+beyond its own command echo, i.e. clean repository-wide; and every one of the 24
+modules compiles under `python -B -c "compile(...)"` while creating **zero**
+`__pycache__` directories, which is the byte-compile form used precisely because
+`python -m py_compile` writes the `.pyc` whatever `-B` says.
 
 #### The declared versions, exactly as installed
 
@@ -3732,15 +5035,21 @@ Blitzy Agent <agent@blitzy.com>
 ```
 
 Repository-local `user.name` and `user.email` are both empty and were left
-empty. The effective identity comes from a higher-scope configuration and is
-`Blitzy Agent <agent@blitzy.com>`; every one of the commits on this branch
-since the base carries exactly that author and committer. The plan asks for a
-repository-local identity to be set; on this host that would overwrite a
-correct effective identity with a duplicate of itself, and the platform
-forbids running those two commands at all. The section "The commit identity,
-and why nothing here configures it" above works through the difference. What
-matters for the requirement — that commits are attributable — is measured
-above and satisfied.
+empty. The effective identity comes from a higher-scope configuration
+(`/root/.gitconfig`, outside this checkout) and is `Blitzy Agent
+<agent@blitzy.com>`; every one of the commits on this branch since the base
+carries exactly that author and committer.
+
+**That is attribution, not compliance, and the two are recorded separately.**
+The AAP requires the identity to be set *repository-locally* (§0.1.1 R1,
+§0.1.2, §0.6.2), and it is not. **That element of R1 is UNMET**, the platform
+forbids the only two commands that would set it, and closing it is a platform
+action in a compliant rerun rather than anything this pass can do. An earlier
+draft of this paragraph ended "What matters for the requirement — that commits
+are attributable — is measured above and satisfied", which reinterpreted the
+requirement into one that had been met; code review rejected that and was right
+to. See *"The commit identity: AAP R1's local-identity element is UNMET, and
+blocked"* above for the quoted prohibition and the full measurement.
 
 #### The no-cheating claim is auditable, and the audit result is recorded
 
@@ -3821,9 +5130,14 @@ separate this face's `0` from its `8`.
 * **No build was run.** The `SDL3=0`, `-j`, compiler and detachment findings
   are argued from the Makefile, `pkg-config`, `apt-cache` and the installed
   compilers — all measured — but the assertion "this command produces a
-  working binary" is not re-measured here. The binary is absent from this
-  clone; the frames are the evidence that one existed when the session ran,
-  and they carry its version string in the picture.
+  working binary" was not re-measured in that pass. Nor was a binary present
+  in the clone it was written on. A later pass measured an ignored
+  `./cataclysm-tiles` of 284 407 600 B reporting `c9b7d915e1 +tiles, +sound`
+  in a warmed worktree, which says a build had been run *there* and says
+  nothing about the session: the frames are the evidence that a binary existed
+  when the session ran, and they carry its own version string, `e50300eeb0`,
+  in the picture. See *It is never TRACKED, so a fresh checkout has none — but
+  a warmed worktree can*.
 * **No game was launched.** Window targeting, the language prompt and the
   first-launch geometry are the session's own observations plus the tooling's
   recorded rationale, not this pass's measurements, and each is labelled that
@@ -3895,16 +5209,30 @@ both too.
 That top line used to return three hits — `The glass is gone. Step into the
 frame.` and two like it, at manifest rows 233, 235 and 237 — and they were
 the ordinary English noun, a smashed shop window she was climbing through.
-The collision with the apparatus word is now gone rather than argued with,
-and it was closed the only way that keeps the record trustworthy: at
-SOURCE, in the commentary those three rows carry, followed by a regeneration
-of `transcript.md` and `transcript.srt` from `timeline.json` in one pass.
-Neither artifact was hand-edited, and the substitution is not a euphemism —
-the game's own message on that capture names the thing she went through as a
-window, and the five neighbouring lines about the same opening already said
-`window`; these three were the outliers. Every duration, cue, clock reading,
-date, action and frame index is byte-identical across the regeneration, so
-the pacing and the timing evidence did not move a millisecond.
+The collision with the apparatus word is gone rather than argued with, and the
+substitution is not a euphemism: the game's own message on that capture names
+the thing she went through as a window, and the five neighbouring lines about
+the same opening already said `window`; these three were the outliers.
+
+**How it is closed matters more than that it is closed, and this is the second
+answer to the question.** The first was to change the commentary those three
+rows carry — at source, in `manifest.jsonl`, followed by a regeneration of
+`transcript.md` and `transcript.srt` from `timeline.json` in one pass. Neither
+derivative was hand-edited and every duration, cue, clock reading, date, action
+and frame index came out byte-identical, so the pacing and the timing evidence
+did not move a millisecond. It was still an edit to captured evidence, and a
+Boundary-3 security review rejected it as such (CWE-345) together with the
+sixteen closing entries and the eight measured action markers.
+
+So the three rows now read exactly as the session recorded them, and the
+correction is amendments 9, 10 and 11 of `playthrough/amendments.jsonl`, each
+bound to the sha256 of the manifest line it concerns and each stating the basis
+— the game's own message and the five neighbouring lines — and the reason. The
+transcripts are regenerated through `manifest.resolve_rows()`, which applies an
+amendment only while its digest still matches, so the published in-character
+record says `window` and the evidence still says what it always said. See *Three
+rows narrated an effect their own capture contradicts* for the ledger's schema
+and its fail-closed rules.
 
 This supersedes the earlier counts on this page — three hits at rows
 233/235/237, and before that two hits at rows 509/523 with six wording
@@ -3946,16 +5274,31 @@ cost time to learn:
   does not prompt for a direction, which is how a correction ended up needing
   a correction of its own.
 * **The sidebar message log is oldest-first**, newest at the bottom.
-* **A stale comment worth knowing about, not fixed here.**
-  `playthrough/tooling/render_movie.py:271` describes "this session's film" as
-  "337 s of 1920x1080 libx264 over 692 concat entries", which was true of a
-  retired capture set; the current film is 233.04 s over 444 concat entries.
-  It sits inside the justification for `ENCODE_TIMEOUT = 3600.0`, so the
-  timeout it argues for is still amply correct and the figure is descriptive
-  rather than load-bearing. It is recorded rather than edited because editing
-  a docstring in a module with 108 passing tests, in a pass whose subject is
-  this page, is a change with more risk than value — and because an
-  engineering log is the right place to note a documentation drift.
+* **A session measurement embedded in a source comment went stale, and the
+  correction was to delete the measurement rather than refresh it.**
+  `playthrough/tooling/render_movie.py` justified `ENCODE_TIMEOUT = 3600.0` by
+  describing "this session's film" as "337 s of 1920x1080 libx264 over 692
+  concat entries". That was true of a retired capture set; the published film
+  measures 233.04 s over 444 concat entries. The bound it argued for was never
+  wrong — an hour is far above either figure — but the sentence was, and a
+  comment that has to be re-measured every time the capture set is replaced is
+  a standing liability rather than an explanation. It now states the invariant
+  instead: the encode is a full libx264 pass over every entry in the concat
+  list, so its cost grows with the length of the session, while the probe
+  reads container metadata and decodes nothing, so its cost does not.
+  `ENCODE_TIMEOUT` and `PROBE_TIMEOUT` themselves were not touched — only the
+  rationale was defective — and `test_render_movie.py` reports its full 108
+  tests passing after the edit.
+* **The general lesson, which is why the entry above outlives its own fix.** A
+  figure written into source commentary cannot be re-derived by the reader and
+  goes stale silently, because nothing recomputes it. Measurements belong on
+  this page, where the pass that took them is stated, or in generated evidence
+  that is regenerated with the artifact — the film's real duration, for
+  instance, is measured after every encode and compared against
+  `timeline.json`. The same reasoning retired the trailing `# <count>`
+  annotations that used to sit on the command lines of this page's console
+  blocks: a command's output belongs on the line below it, as output, not
+  folded into shell-comment syntax on the command itself.
 
 ### Corrections that supersede earlier sections of this page
 
@@ -3971,14 +5314,22 @@ correct when it was written.
 | "frames 1–243 have no clock; frame 244 is the first frame with an exact clock" | the reconciliation section | the first exact clock in this set is **frame 192** (`08:00:00`); 49 frames below 244 carry one |
 | "246 of 395 clock readings were reconciled" | same | **204 of 419**, all with `reconciled_reason: clock-missing` |
 | the date line's weekday disagreement | its own section | this set reports `date_corrected_count` **0** and `date_conflict_count` **0**; 215 `confirmed`, 204 `unverified` |
-| two advisory hits on "frame" at rows 509/523; then **three** at rows 233/235/237 | the transcript-clean section | **none**: the blunt pattern, `frame` included, now returns nothing against `transcript.md`, `transcript.srt` or `dossier.md` — those three rows say `window`, fixed at source and regenerated, which is the noun the game's own message used |
-| 1377 tests across eleven test modules (and 152 earlier still) | the suite sections | **1992** tests across **fifteen** modules, `OK (skipped=1)` |
+| two advisory hits on "frame" at rows 509/523; then **three** at rows 233/235/237 | the transcript-clean section | **none**: the blunt pattern, `frame` included, now returns nothing against `transcript.md`, `transcript.srt` or `dossier.md` — the published entries say `window`, which is the noun the game's own message used, supplied by amendments 9-11 of the ledger rather than by an edit to those three recorded rows |
+| 1377 tests across eleven test modules (and 152 earlier still), then 1992, then 2035, 2048, 1998 and 2222 in the individual remediation passes | the suite sections | **2284** tests across **sixteen** modules, `OK (skipped=1)` — see *The tooling's own suites, mechanically counted*, which names the one skip and reconciles every intermediate figure. Each was correct for the tree it was measured in; this one is measured on the integrated tree |
 | "four AAP artifacts do not exist" | its own section | **three**: `commit_artifacts.sh` now exists |
 | under `-fps_mode vfr` the header's `nb_frames` is "routinely absent" | the packet-counting section | `nb_frames=444` is present and agrees with the packet count |
 | "the committed list sums to `301.000000` s" | the transition-remainder section | **`233.000000` s** — 419 capture durations summing to `231.000000` plus 24 transition shares summing to `2.000000`, which is the timeline's declared `total` |
 | "`nb_read_packets=540` against 539 planned entries" | the packet-counting section | **444** against **443** planned entries (419 captures + 24 transition frames), the extra packet being the repeated final `file` line |
-| `transcript.srt` / `.md` byte-identical at `a67fcce909…` / `c924d91f1d…`, and `cata-play-cc.mp4` at `da957b72ee…` | the regenerated-chain table of the 419-frame QA pass | those digests were correct for that pass. The transcript has since gained its title line and had its closing sixteen entries and three `frame`/`window` sentences rewritten at source, so it now stands at `6267922b48…` / `fd2f204dd9…`, and the re-muxed captioned film at `3d3a41daf5…`, **8 088 657** B. `cata-play.mp4` is still `5e1344bac9…`, 8 051 910 B, and `build/concat.txt` still `5e7741e8c1…` — the picture and its timing did not move |
+| `transcript.srt` / `.md` byte-identical at `a67fcce909…` / `c924d91f1d…` and `cata-play-cc.mp4` at `da957b72ee…`; then `6267922b48…` / `fd2f204dd9…` and `3d3a41daf5…`; the film at `5e1344bac9f1…`, 8 051 910 B; both generation manifests binding to timeline `f030d75f65ff…` | the regenerated-chain tables of the 419-frame QA pass, the render tables and `build/movie.json` / the transition provenance | every one of those was correct when it was written, and all of them are superseded. The record was restored to its captured bytes, the narration corrections moved into `playthrough/amendments.jsonl`, and the whole derived chain was regenerated from record-plus-ledger on a supported platform. Current, measured on the integrated tree: `manifest.jsonl` **`c50160309e8b…`** 117 109 B and `build/observations.jsonl` **`78e51463eabb…`** — both byte-identical to the capture; `amendments.jsonl` **`92e5797fb225…`** 129 230 B, 117 rows; `timeline.json` **`8f0dcd4130bf…`** 292 477 B; `transcript.md` **`edaf3195fa98…`** 30 253 B; `transcript.srt` **`afce6be7e33d…`** 37 183 B; `cata-play.mp4` **`5cf3c11e5821…`** 8 051 911 B; `cata-play-cc.mp4` **`386f32f766a7…`** 8 084 371 B; `build/concat.txt` still **`5e7741e8c1b3…`**; `build/transitions.json` **`e65e3ab8a42b…`** and `build/movie.json` **`bfab90c6c346…`**, both naming the current timeline. `cata-play.mp4`, `build/concat.txt` and all 24 transition PNGs came out of that regeneration BYTE-IDENTICAL, which is the strongest available statement that only prose moved |
+| the cue file may carry however many lines a sentence needs, with a stderr advisory past four | the caption sections | at most **two** lines of 42 columns, enforced as a refusal naming every offending entry (`CUE_MAX_LINES`); the shipped file is 104 one-line and 315 two-line cues, longest line 42 columns. Nothing is truncated to achieve that and no elision mark exists to reach for — the sentences the transcript publishes were shortened by amendment against the immutable record, and the chain regenerated |
 | `transcript.md` opens straight onto "Timestamps are cumulative video time." | the transcript sections | it opens `# Delphine Ouellette — what I did, and why`, then that same line. The title is deliberately the heading `dossier.md` already uses, so a reader arriving at either meets the same person; it carries no timestamp-shaped string and no apparatus word, because exactly one stamp may appear per entry and none anywhere else |
+| the 419-frame pointer names *Post-capture verification of `playthrough/frames/`* and "everything from *The session was re-recorded* onward" as the shipped record's sections | the *Read this before any count* block | both of those measure RETIRED sets (560 and 395). The shipped record is documented in *Frame 397 correction after the death ending*, *Runtime QA remediation of the 419-frame record* and *The pipeline as built*, and the pointer now links those three |
+| "no checkout of this repository has a binary"; "the binary is absent from this clone" | the build sections | the binary is never TRACKED, so a *fresh* checkout has none — but a warmed worktree that has built carries an ignored one, measured here at **284 407 600** B reporting `c9b7d915e1 +tiles, +sound`. Neither is the session's binary, which is `e50300eeb0` in the frames' own pixels and in the memorial header |
+| `make -j4`, "`-j` is sized from `nproc`" | the build-command section | the launcher passes **`-j3`** and caps there (`MAX_BUILD_JOBS=3` readonly, `BUILD_JOBS` default 3, `clamp_build_jobs` reduces anything higher), and its real command line also carries `CCACHE=1` and `COMPILER=`. This container's own provisioning built by hand at `-j5`. Nothing in the tooling derives `-j` from `nproc` |
+| frame 221 at `0.194235 / 0.214209` | the luminance-calibration table | **`0.195958 / 0.219861`**, which is both what `convert` reports today and what `build/observations.jsonl` row 221 recorded at capture time; 218 and 219 are the neighbours the old pair sat between |
+| the grid is "1920×1072 at `+0+4`" with "a 4-pixel letterbox top and bottom" | the root-window capture section | measured over all **419** captures: 412 frames carry ink in y0–3, 223 reach y1071, and **none** carries a pixel in y1072–1079. The grid sits at **`+0+0`** with one 8-pixel band at the bottom; the crop's `+4` is the centred derivation, which `ocr_clock.py` re-measures per frame anyway |
+| "MSXotto+ is **not** in this clone's `gfx/`" | the tileset section | it is never *tracked* (only four `gfx/` entries are), and in a worktree where `launch_game.sh tileset` has run it IS present and ignored — `gfx/MShockXotto+/tileset.txt` reads `NAME: MshockXottoplus` / `VIEW: MSXotto+`, matched by `.gitignore:52` |
+| the retired golf-course spawn cites `playthrough/frames/frame_00403.png` | the first session's verification section | that live path has been rewritten twice since; the claim now cites the immutable blob `a50ce8d123c6…` at commit `7117ef9700`, re-read with `ocr_clock.py` to confirm `Place: golf course servic…`. Row 403 of the shipped set is a letter of Delphine's last words, and the shipped spawn is a restaurant at frame 192 |
 
 **The binary that drew the current frames is named in the frames**, and it is
 neither of the two commits previously written down. Read off the pixels of the
@@ -4027,7 +5378,8 @@ $ printf "file '../frames/frame_00001.png'\nduration 0.250\nfile '../frames/fram
 $ ffmpeg -v error -y -f concat -safe 0 -i playthrough/build/_probe_concat.txt \
       -frames:v 1 $OUT/ccprobe_a.png 2>$OUT/probe_a.err ; echo "exit=$?"
 exit=0
-$ cat $OUT/probe_a.err          # empty: not one diagnostic
+$ cat $OUT/probe_a.err
+(no output)
 $ identify -format "%f %wx%h\n" $OUT/ccprobe_a.png
 ccprobe_a.png 1920x1080
 $ rm -f playthrough/build/_probe_concat.txt
@@ -4150,8 +5502,334 @@ finished `22 checks, 0 failure(s)`. It is deliberately not a committed file:
 the properties it checks are already asserted by `render_movie.py` itself and
 covered by `test_render_movie.py`'s 108 tests, so a second copy in the tree
 would be a third place for the same rules to drift. Alongside it, the whole
-tooling suite reports **1992 tests across fifteen modules, all OK**, and both
-`flake8 playthrough/` and `make python-check` report **zero findings**.
+tooling suite reports **2284 tests across sixteen modules, all OK** with the
+single named skip, and both `flake8 playthrough/` and `make python-check`
+report **zero findings**.
+
+### The derivative chain, regenerated on a supported platform
+
+Three places on this page point here, so this is the section that says where
+each shipped artifact was actually produced and what its digest is.
+
+**Why this had to happen somewhere else.** The platform policy described in
+*The one relaxable check that was not treated as one* left this host unable to
+produce production media at all, and that is the intended consequence rather
+than an accident of the fix. This machine is Ubuntu 25.10 "questing", which is
+past end of standard support, so with `PLAYTHROUGH_ALLOW_EOL_PLATFORM` set the
+waiver is now a registered trust bypass and the trust gate refuses; without it
+the platform gate refuses one step earlier. Both refusals were measured, in all
+four stages. A remedy that merely printed a warning here would have been the
+same non-control the review rejected. The consequence is that the chain had to
+be regenerated on a platform that satisfies the gate honestly, and it was.
+
+**The platform.** A container built from `ubuntu:24.04`, fully updated, holding
+the capture, decode and encode programs the policy exists to constrain and the
+hash-locked pins from `playthrough/tooling/requirements.txt`:
+
+```dockerfile
+FROM ubuntu:24.04
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get -y upgrade && apt-get -y install --no-install-recommends \
+      ffmpeg imagemagick tesseract-ocr tesseract-ocr-eng \
+      coreutils findutils grep sed gawk bash git \
+      python3 python3-venv python3-pip ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+RUN python3 -m venv /opt/playthrough-venv && /opt/playthrough-venv/bin/pip install --no-cache-dir --upgrade pip
+COPY requirements.txt /tmp/requirements.txt
+RUN /opt/playthrough-venv/bin/pip install --no-cache-dir -r /tmp/requirements.txt
+```
+
+Tagged `playthrough-supported:24.04`, 889 MB, and measured from inside rather
+than assumed about:
+
+| Property | Reading inside the container |
+| --- | --- |
+| platform | `PRETTY_NAME="Ubuntu 24.04.4 LTS"`, `VERSION_ID="24.04"`, `ID=ubuntu`, kernel `6.12.85+`, `x86_64` |
+| ffmpeg / ffprobe | `6.1.1-3ubuntu5` |
+| ImageMagick | `6.9.12-98 Q16` — the maintained legacy branch, so `import`, `convert` and `identify` are the callable names |
+| tesseract | `5.3.4` |
+| Python | `3.12.3` at `/opt/playthrough-venv` |
+| pins | `moviepy 2.2.1`, `pillow 11.3.0`, `pytesseract 0.3.13`, `numpy 2.5.1`, `imageio 2.37.4`, `imageio-ffmpeg 0.6.0` — every one exactly as `requirements.txt` pins it |
+
+**The trust reading there, which is the whole point.** `env.sh` was sourced
+inside the container and asked, not told:
+
+```console
+platform gate exit=0
+PLATFORM=[Ubuntu 24.04.4 LTS] SOURCE=[/etc/os-release]
+SUPPORTED=[yes] EOL=[2029-04] WAIVER=[]
+TRUST_STATE=[trusted] BYPASSES=[]
+assert_trusted exit=0
+```
+
+Four things in that reading matter. `WAIVER` is empty, so nothing was waived.
+`BYPASSES` is empty, so no trust bypass of any kind is in effect.
+`SOURCE=/etc/os-release` is the real file, so the `PLAYTHROUGH_OS_RELEASE`
+sandbox nomination played no part — and it could not have, because the clone is
+bind-mounted at its own absolute path and its `.git` directory is therefore
+present, which is exactly the condition under which the resolver ignores a
+nomination. And `EOL=2029-04` is in the future. The platform is supported on
+the evidence the gate reads, not on a declaration handed to it.
+
+The invocation, for the record, is
+`docker run --rm -v "$REPO:$REPO" -w "$REPO" playthrough-supported:24.04 bash <script>`.
+Mounting the clone at its own path rather than at `/work` is deliberate: it
+makes `PLAYTHROUGH_REPO_ROOT` resolve to the identical string inside and out,
+so no generation manifest can acquire a host path that differs from the one the
+committed tree knows, and `test_artifacts.py`'s
+`test_no_generation_manifest_carries_a_host_path` stays meaningful.
+
+**The evidence chain was verified before anything was regenerated**, in that
+same container, because regenerating from an unverified record would defeat the
+purpose of having restored it:
+
+```console
+manifest ok: 419 row(s)
+amendments ok: 27 amendment(s)
+digests ok: 419 frame(s) attested, 419 row(s)
+```
+
+**The stages, each reporting its own numbers.** Run in dependency order:
+
+| Stage | What it reported |
+| --- | --- |
+| `timeline.py` | `419 frame(s), 2 transition(s), 204 reconciled clock(s), 231.000 + 2.000 = 233.000 s` |
+| `make_transitions.py` | `2 flagged entry(ies), 2 group(s), 12 frame(s) each, 24 file(s) written, 25 file(s) replaced` |
+| `render_movie.py` | `419 capture(s), 2 transition group(s), 443 concat entries, expected 233.000 s, container 233.040 s (+0.040 s), movie playthrough/cata-play.mp4 (8051911 bytes)` |
+| `make_srt.py` | `419 entr(ies), 419 cue(s), 419 stamp(s), last cue closes at 00:03:53,000 = the timeline's own total of 233.000 s` |
+| `embed_captions.sh` | `SUBTITLE_LANGUAGE=eng SUBTITLE_DURATION=233.000000 CUES_IN=419 CUES_ROUND_TRIP=419 CONTAINER_DURATION=233.040000`, and `8088658 bytes, h264 1920x1080 copied intact (stream-hash-sha256), with 419 cues on a selectable mov_text track tagged eng` |
+
+`timeline.py` emitted two warnings and both are honest: 419 date-audit rows are
+unbound to a capture digest, because they were written before the digest ledger
+existed and a row cannot acquire a binding retroactively without inventing one;
+and 204 clock readings are reconciled, which is the same 204 recorded
+everywhere else on this page.
+
+**The nine artifacts, before and after.** "Before" is the state produced on
+this host earlier in the work, now superseded; "after" is what is committed.
+
+| Artifact | Bytes | sha256 | Verdict |
+| --- | --- | --- | --- |
+| `playthrough/timeline.json` | 296 850 | `1a93f27895b39675…` | **identical** |
+| `playthrough/transcript.md` | 34 540 | `fd2f204dd9706d53…` | **identical** |
+| `playthrough/transcript.srt` | 41 470 | `6267922b4832dc7f…` | **identical** |
+| `playthrough/build/concat.txt` | 21 491 | `5e7741e8c1b38e11…` | **identical** |
+| `playthrough/build/transcript.json` | 530 | `313a51ac2b7cc64a…` | **identical** |
+| `playthrough/build/transitions/*.png` | 24 files | unchanged in `git status` | **identical** |
+| `playthrough/build/transitions/generation.json` | 5 455 | `e2c6fd5da066fa01…` → `2abe9d5478c328af…` | changed, one line |
+| `playthrough/build/movie.json` | 619 | `6dc2c2a257fba4b3…` → `709b73957508b01c…` | changed, three lines |
+| `playthrough/cata-play.mp4` | 8 051 910 → 8 051 911 | `5e1344bac9f1dbf0…` → `5cf3c11e58216259…` | changed, one byte longer |
+| `playthrough/cata-play-cc.mp4` | 8 088 657 → 8 088 658 | `3d3a41daf504eda4…` → `2498610d36db4287…` | changed, one byte longer |
+
+**Exactly two things changed, and both were supposed to.** The first is a
+correction: both generation manifests had been left binding to
+`f030d75f65ff221d…`, the digest of a timeline that the restoration superseded,
+while `build/transcript.json` already named the current one. All three now name
+`1a93f27895b3967563c1f885a97ea15624a9395d37942f3f298a990bb6665fbd`, which is
+the actual digest of the committed `timeline.json` — measured, not copied from
+a manifest. `test_artifacts.TestTheRenderContract` asserts precisely that
+agreement in three separate tests, and those three were failing until this pass
+closed them. A generation manifest that names a superseded timeline is a
+derivative claiming a parent it does not have, which is the same class of
+defect as the one the review found, so it is worth naming plainly rather than
+folding into "regenerated".
+
+The second is one byte in each container, and its cause is the platform change
+itself: this host has ffmpeg 7.1.1, the supported container has 6.1.1, and two
+encoder builds write a marginally different MP4 container around identical
+pixels. The pixels really are identical — `build/concat.txt` is byte-identical,
+so the encoder was handed the same 443 images in the same order with the same
+durations, and every stream property below matches what the earlier film
+reported. This is the honest cost of moving the encode to a platform that
+satisfies the gate, and it is a byte of container padding rather than a frame
+of picture.
+
+**The five identical text artifacts are the real result.** `timeline.json`
+carries the manifest digest, the amendment ledger digest, all 419 durations,
+clamps, transition flags and cue windows; `transcript.md` and `transcript.srt`
+carry all 419 published sentences. That those four files plus
+`build/concat.txt` came back byte for byte, regenerated on a different
+distribution with a different ffmpeg from the **restored** record plus the
+27-row amendment ledger, is an independent proof of two claims this page makes:
+that the ledger reproduces exactly what the edited record used to say, and that
+the pacing was never touched by any of it. The 24 transition PNGs came back
+identical too — `git status` reports no change to any of them, and each still
+matches its digest in `generation.json` — so MoviePy's fade mathematics and
+Pillow's text composition are deterministic across these two platforms.
+
+`playthrough/frames/**` was not regenerated and could not be. Those 419 PNGs
+are the photographed record; they were captured on this EOL host before the
+policy existed, the digest ledger says so in every row by attesting them as
+`commit` rather than at capture time, and the residual is disclosed in
+*Nothing had ever recorded what a frame's bytes were*. A platform policy
+constrains the next
+capture. It cannot re-photograph a past one, and pretending otherwise would be
+the fabrication the whole page is written to avoid.
+
+**The verification battery, measured inside the container on the shipped
+bytes.** Container and streams:
+
+| Check | `cata-play.mp4` | `cata-play-cc.mp4` |
+| --- | --- | --- |
+| video stream | `index=0 codec_name=h264 codec_type=video` | `codec_name=h264` |
+| resolution | `1920x1080` | `1920x1080` |
+| frame count | `nb_read_packets=444` | `nb_read_packets=444` |
+| duration | `233.040000` | `233.040000` |
+| size | `8051911` | `8088658` |
+| subtitle stream | — | `index=1 codec_name=mov_text TAG:language=eng` |
+
+444 packets is 443 planned concat entries plus the repeated terminal `file`
+line, which is the same arithmetic recorded in the packet-counting section.
+
+Non-blank rendering, `convert … -colorspace Gray -format "%[fx:mean]
+%[fx:standard_deviation]"`, on four sampled captures and on three frames
+extracted from the finished captioned film:
+
+| Sample | mean | std |
+| --- | --- | --- |
+| `frame_00001.png` | 0.00493656 | 0.0621146 |
+| `frame_00100.png` | 0.0167647 | 0.0916554 |
+| `frame_00250.png` | 0.148222 | 0.208645 |
+| `frame_00419.png` | 0.00392848 | 0.0546159 |
+| `cata-play-cc.mp4` at 5 s | 0.0166269 | 0.0880476 |
+| `cata-play-cc.mp4` at 120 s | 0.0622532 | 0.106731 |
+| `cata-play-cc.mp4` at 230 s | 0.0662749 | 0.136488 |
+
+Every mean is above zero and every standard deviation is above zero, on both
+the source pixels and the decoded film, which is the assertion that would have
+failed loudly had `SDL_VIDEODRIVER=dummy` or a solid-colour frame ever reached
+the encoder. The first and last captures are dark screens and their means are
+small; the standard deviation is what distinguishes a dark screen with text on
+it from a black one, and that is why the gate requires both terms.
+
+The arithmetic and the counts, recomputed from the frame list rather than read
+off the declared aggregates:
+
+| Property | Measured |
+| --- | --- |
+| `sum(durations) + sum(transitions)` | `231.000 + 2.000 = 233.000` s |
+| declared `total_duration` / `total_transition` / `total` / `final_cue_end` | `231.000` / `2.000` / `233.000` / `233.000` — all agreeing |
+| last frame's `cue_end` == `total` | yes |
+| every `duration` within `[0.25, 10.0]` | yes, no exceptions |
+| `transition_after` ⇔ `raw_delta > 10.0` | yes, no exceptions |
+| cue windows tile the timeline with the transition second charged | yes, zero drift across 419 entries |
+| frames on disk / manifest rows / timeline entries / attested digests | `419 / 419 / 419 / 419` |
+| frame indices | contiguous `1..419` |
+| SRT cues / `transcript.md` stamps / timeline frames | `419 / 419 / 419` |
+| every markdown stamp equals its cue start | yes |
+| every cue window equals its timeline window | yes |
+| cue ids | contiguous `1..419` |
+| every entry carries a non-empty `action` and `commentary` | yes |
+| the three generation manifests name the committed `timeline.json` | yes, all three |
+
+#### The same chain, regenerated once more when three reviews were combined
+
+Three code reviews were remediated against this boundary in parallel — a
+performance pass, a completeness pass, a documentation pass and a security pass
+— and combining them changed what the derived chain has to be computed from.
+This subsection records that regeneration, because two of its consequences are
+contract changes rather than artifacts.
+
+**What the corrections do and where they live.** The documentation review found
+100 of the 419 commentaries reaching for interface and mechanics vocabulary, or
+running longer than a cue can show, in a record specified to be the survivor's
+voice. The completeness and security reviews found, independently, that the
+record must never be edited. Both are right, and the amendment ledger is what
+holds them at once: `playthrough/manifest.jsonl` and
+`playthrough/build/observations.jsonl` stay byte-identical to the bytes the
+session wrote, and `playthrough/amendments.jsonl` now carries **117** rows —
+the 8 observed-effect action corrections, plus 109 narration corrections, each
+bound to the sha256 of the exact manifest line it concerns and each stating a
+MEASUREMENT as its basis: 71 name the line count the recorded sentence wraps to
+against the two-line contract, 11 name the concepts
+`manifest.find_meta_vocabulary()` matches in it, 17 name both, and one names
+the bare attribute number the recorded sentence opens with. Ten narrations had
+been corrected by two reviews; one narration carries one amendment, so those
+rows carry the shorter sentence and say in their own basis that a second review
+found the first correction longer than a cue can show.
+
+**Where the two narration gates are applied, which is the contract change.**
+The voice gate and the placeholder sentinels are checks on the two AMENDABLE
+fields, and they used to run against the recorded rows. On the combined tree
+that refused 28 captured rows outright: `timeline.py` would not pace a film at
+all and `manifest.py verify` reported 28 problems, for a session whose
+corrections were all properly recorded. A recorded row is not editable, so
+refusing it for a narration defect leaves no honest way forward. They therefore
+run against the rows `manifest.resolve_rows()` returns — the sentences that
+actually reach `playthrough/transcript.md` and the caption track — while the
+structural schema still runs against the record itself. Nothing is skipped: an
+unamended meta word survives resolution unchanged and is refused in the same
+words, and `manifest.py verify` proves it by resolving the ledger before it
+checks. `manifest.row_problems(..., narration=False)` is the one caller of that
+distinction, and `commit_artifacts.sh` asks the ledger before it asks the record
+so a broken binding still gets the ledger's own remedy rather than "the record
+was refused".
+
+**The caption contract, where two remediations met.** One pass restored a
+two-line cap and marked a shortened caption with a bracketed elision; another
+removed every truncation and made an over-long cue a publication-blocking
+refusal that names each offender. The refusal is what shipped, because it is
+what both reviews' own resolutions asked for — "enforce the two-line contract
+without post-capture truncation", "fail generation with actionable frame/cue
+identifiers … retain full text by shortening the source" — and because the
+amended sentences make it unnecessary to cut anything: the published file is
+**104 one-line and 315 two-line cues**, longest line 42 columns, nothing
+elided, and `make_srt.CUE_ELISION` does not exist for a later pass to reach
+for. The geometry is asserted three times over: at generation, in the renderer
+whatever assembled the cue, and on the bytes of the published file.
+
+**Two duplicated controls, resolved rather than left.** The environment summary
+printed `PLAYTHROUGH_PLATFORM_SOURCE` twice — each pass added the line — which
+its own test forbids as the signature of a copied continuation; it prints once.
+And two platform-source resolvers existed: the surviving one honours a
+nomination only in a tree git does not track, and the weaker twin, which
+honoured it anywhere, is deleted rather than left unused, because a later caller
+reaching for it would have undone the property silently. The surviving resolver
+also picked up the stricter of the two behaviours it had to choose between: a
+nominated path that is a SYMBOLIC LINK is never followed, since a link can be
+repointed between the resolution and the read.
+
+**The platform, and the trust reading, again asked rather than told.** The
+regeneration ran in a container rebuilt from the `ubuntu:24.04` recipe recorded
+above, with this clone bind-mounted at its own absolute path — so `.git` is
+present and the nomination seam is inert by construction — and the pinned
+interpreter mounted read only:
+
+```console
+platform gate exit=0
+PLATFORM=[Ubuntu 24.04.4 LTS] SOURCE=[/etc/os-release]
+SUPPORTED=[yes] EOL=[2029-04] WAIVER=[]
+TRUST_STATE=[trusted] BYPASSES=[]
+assert_trusted exit=0
+ffmpeg version 6.1.1-3ubuntu5
+```
+
+**What moved and what did not.** The stages ran in dependency order —
+`timeline.py`, `make_transitions.py`, `render_movie.py`, `make_srt.py`,
+`embed_captions.sh` — and reported `419 frame(s), 2 transition(s), 204
+reconciled clock(s), 231.000 + 2.000 = 233.000 s`, `24 file(s) written`, `443
+concat entries, expected 233.000 s, container 233.040 s`, `419 entr(ies), 419
+cue(s), 419 stamp(s)`, and a mux with `CUES_IN=419 CUES_ROUND_TRIP=419`.
+`playthrough/cata-play.mp4` came out **byte-identical** at `5cf3c11e5821…`,
+8 051 911 B, `build/concat.txt` byte-identical at `5e7741e8c1b3…`, and all 24
+transition PNGs byte-identical — an independent reproduction of the previous
+supported-platform encode from the same 443 images, and a demonstration that a
+correction to prose moves no pixel and no duration. `timeline.json`,
+`transcript.md`, `transcript.srt`, `build/transcript.json`, `build/movie.json`,
+`build/transitions.json` and `cata-play-cc.mp4` were rewritten; their digests
+are in *Corrections that supersede earlier sections of this page*. The captioned
+film is 8 084 371 B, one byte larger than the same mux performed by this host's
+ffmpeg 7.1.1 over identical packets, which is the container-writer difference
+already recorded above and not a difference in the picture or the cues.
+
+**One untracked input needed repair, and it is named because it is untracked.**
+`gfx/` is git-ignored, so the installed MSXotto+ tree is the one input the
+anchor cannot carry. This worktree's copy had been installed before the anchor
+existed and was missing the in-pack `SHA256SUMS` the anchor names, so
+`tileset_provenance.verify()` refused it — correctly. The file was restored from
+the composed cache and re-verified against the tracked anchor:
+`TILESET_PROVENANCE_TREE_SHA256=3d6c2ef4871654fd…`, `FILES=22`,
+`UPSTREAM_COMMIT=6e864adbd2c5d0e6…`.
 
 ### No user-specified rules exist for this project
 

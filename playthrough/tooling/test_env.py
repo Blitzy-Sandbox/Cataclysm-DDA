@@ -187,6 +187,13 @@ SUMMARY_FIELDS = (
     "PLAYTHROUGH_RUNTIME_DIR",
     "PLAYTHROUGH_XAUTHORITY_ORIGIN",
     "PLAYTHROUGH_PLATFORM",
+    # WHICH FILE the platform facts came from, once.  Normally
+    # /etc/os-release; a harness may nominate another through
+    # PLAYTHROUGH_OS_RELEASE to emulate a host it is not running on, and
+    # that nomination is honoured only in a tree git does not track -- so
+    # this line is what says whether the verdict beside it is about this
+    # host, and a verdict from elsewhere is still one the record carries.
+    "PLAYTHROUGH_PLATFORM_SOURCE",
     "PLAYTHROUGH_PLATFORM_SUPPORTED",
     # The end-of-life date and the waiver reason travel with the record
     # because the platform gate is a REFUSAL by default: a session that
@@ -207,8 +214,14 @@ SUMMARY_FIELDS = (
     "PLAYTHROUGH_USERDIR",
     "PLAYTHROUGH_USERDIR_ARG",
     "PLAYTHROUGH_MANIFEST",
+    # The two out-of-band ledgers the record cannot carry itself: a
+    # correction bound to the sha256 of the line it corrects, and the
+    # captured bytes of every frame.  Both are in the contract because
+    # both are evidence a reader has to be able to find.
+    "PLAYTHROUGH_AMENDMENTS",
     "PLAYTHROUGH_OBSERVATIONS",
     "PLAYTHROUGH_DATE_AUDIT",
+    "PLAYTHROUGH_FRAME_DIGESTS",
     "PLAYTHROUGH_TIMELINE",
     "PLAYTHROUGH_MOVIE",
     "PLAYTHROUGH_MOVIE_CC",
@@ -1370,7 +1383,7 @@ class TestThePythonInterpreter(EnvFixture):
 
 
 class TestTheTrustState(EnvFixture):
-    """One computed answer about the environment, not six warnings."""
+    """One computed answer about the environment, not seven warnings."""
 
     BYPASSES = (
         "PLAYTHROUGH_ALLOW_UNVERIFIED_EXECUTABLES",
@@ -1379,6 +1392,16 @@ class TestTheTrustState(EnvFixture):
         "PLAYTHROUGH_ALLOW_TILESET_FALLBACK",
         "PLAYTHROUGH_ALLOW_VULNERABLE_PILLOW",
         "PLAYTHROUGH_ALLOW_ANY_COMPILER",
+        # ADDED BY A SECURITY REVIEW, and it was right.  The end-of-life
+        # platform waiver was deliberately kept out of this registry, on
+        # the argument that an unmaintained release makes no reading
+        # WRONG.  But the packages it leaves unpatched are the three that
+        # photograph, decode and encode every frame -- ImageMagick's
+        # `import`, ffmpeg and Xorg/Xvfb -- and recording a waiver in a
+        # summary does not stop the next command from producing evidence
+        # under it.  It forces the diagnostic state now, and the four
+        # stages that make production media refuse under it.
+        "PLAYTHROUGH_ALLOW_EOL_PLATFORM",
     )
 
     def test_the_registry_lists_every_bypass_this_pipeline_has(self):
@@ -1664,12 +1687,17 @@ class TestThePlatformGate(EnvFixture):
     the inversion in both directions.
 
     THE OS IS FAKED BY REDEFINING playthrough_os_release AFTER SOURCING,
-    which is the only honest way to test this: /etc/os-release is an
-    absolute path that no sandbox can stand in for, and the alternative
-    -- asserting against whatever this host happens to be -- would make
-    the suite pass or fail for a reason that has nothing to do with the
-    code.  The memo flags are cleared in the same breath so the
-    classification is recomputed against the fake.
+    which isolates the part under test here -- the dated table, the
+    date comparison, the waiver and the retired knob -- from the
+    separate question of which file the keys were read out of.  The
+    alternative, asserting against whatever this host happens to be,
+    would make the suite pass or fail for a reason that has nothing to
+    do with the code.  The memo flags are cleared in the same breath so
+    the classification is recomputed against the fake.
+
+    The file-reading half is covered by
+    TestThePlatformSourceCanBeNominated, which nominates a real file
+    through PLAYTHROUGH_OS_RELEASE instead of replacing the reader.
 
     The two releases named are chosen so the assertions cannot expire in
     one direction: ubuntu:24.10 reached end of life on 2025-07-10 and
@@ -1767,23 +1795,51 @@ class TestThePlatformGate(EnvFixture):
             "PLAYTHROUGH_ALLOW_EOL_PLATFORM": ""})
         self.assertEqual(reported.get("GATE"), "1")
 
-    def test_the_waiver_is_not_a_trust_bypass(self):
-        """A DELIBERATE non-membership, so it is asserted.
+    def test_the_waiver_is_a_trust_bypass(self):
+        """It was deliberately kept out of the registry, and that was
+        the wrong call.
 
-        A bypass in that registry means a check that establishes the
-        evidence was relaxed, and capture.sh refuses production capture
-        while any is active.  An end-of-life platform makes no reading
-        wrong -- it raises the risk that a parser has an unfixed defect
-        -- so listing it there would refuse every recorded session on the
-        only available host while adding nothing the summary does not
-        already carry.
+        The argument was that an end-of-life platform makes no reading
+        WRONG -- it raises the risk that a parser has an unfixed defect,
+        which needs hostile input to matter -- so recording the waiver in
+        the summary was treated as enough.  A security review answered
+        with this file's own reasoning about every other relaxable check:
+        a warning on stderr does not stop the next command from capturing
+        a frame and presenting it as evidence.  The packages left
+        unpatched are the three that photograph, decode and encode every
+        frame.  So it forces the diagnostic state, and the four stages
+        that make production media refuse under it.
         """
         result = self.sourced(preset={
             "PLAYTHROUGH_ALLOW_EOL_PLATFORM": "a reason"})
-        self.assertNotIn("PLAYTHROUGH_ALLOW_EOL_PLATFORM",
-                         result["PLAYTHROUGH_TRUST_BYPASS_VARS"])
+        self.assertIn("PLAYTHROUGH_ALLOW_EOL_PLATFORM",
+                      result["PLAYTHROUGH_TRUST_BYPASS_VARS"])
+        self.assertEqual(result["PLAYTHROUGH_TRUST_STATE"], "diagnostic")
+        self.assertIn("PLAYTHROUGH_ALLOW_EOL_PLATFORM",
+                      result.get("PLAYTHROUGH_TRUST_BYPASSES", ""))
+
+    def test_the_waiver_says_what_it_costs(self):
+        """The consequence is stated where an operator will read it."""
+        _reported, stderr = self.gate(preset={
+            "PLAYTHROUGH_ALLOW_EOL_PLATFORM": "the only host available"})
+        self.assertIn("PLATFORM WAIVER", stderr)
+        self.assertIn("TRUST BYPASS", stderr)
+        self.assertIn("diagnosis on this host, not evidence", stderr)
+
+    def test_the_waiver_has_a_reason_of_its_own(self):
+        """A refusal that names a variable and stops explains nothing."""
+        result = self.sourced(after=(
+            'playthrough_trust_reason '
+            'PLAYTHROUGH_ALLOW_EOL_PLATFORM\n'))
+        for expected in ("ImageMagick", "ffmpeg", "Xorg",
+                         "no further security fixes"):
+            self.assertIn(expected, result.source_output)
+
+    def test_an_empty_waiver_leaves_the_state_trusted(self):
+        """Registered is not the same as active."""
+        result = self.sourced(preset={
+            "PLAYTHROUGH_ALLOW_EOL_PLATFORM": ""})
         self.assertEqual(result["PLAYTHROUGH_TRUST_STATE"], "trusted")
-        self.assertEqual(result.get("PLAYTHROUGH_TRUST_BYPASSES"), "")
 
     # -- a supported platform ----------------------------------------
 
@@ -1794,6 +1850,121 @@ class TestThePlatformGate(EnvFixture):
         self.assertEqual(reported.get("GATE"), "0")
         self.assertNotIn("PLATFORM WAIVER", stderr)
         self.assertNotIn("end of life", stderr)
+
+    # -- the classification cannot be handed to it -------------------
+
+    def test_the_verdict_cannot_be_forged_by_the_caller(self):
+        """MEASURED, not theorised, and it is why nothing is memoised.
+
+        The classification used to be cached in exported variables behind
+        a PLAYTHROUGH_PLATFORM_CHECKED flag, on the reasonable-sounding
+        grounds that /etc/os-release cannot change during a run.  But this
+        file is SOURCED into the caller's shell, so every one of those
+        variables was an input as well as an output, and presetting two
+        of them returned success on an end-of-life host with no waiver, no
+        warning and PLAYTHROUGH_TRUST_STATE=trusted -- a silent forgery of
+        the very verdict the trust-bypass registry now depends on.
+        """
+        forged = {
+            "PLAYTHROUGH_PLATFORM_CHECKED": "1",
+            "PLAYTHROUGH_PLATFORM_SUPPORTED": "yes",
+            "PLAYTHROUGH_PLATFORM": "Forged Linux 99.99",
+            "PLAYTHROUGH_PLATFORM_EOL": "2099-01",
+        }
+        reported, _ = self.gate("ubuntu", "24.10", "Ubuntu 24.10",
+                                preset=forged)
+        self.assertEqual(
+            reported.get("VERDICT"), "no",
+            msg="the preset verdict is discarded, not honoured")
+        self.assertEqual(reported.get("GATE"), "1")
+
+    def test_the_platform_fields_are_outputs_only(self):
+        """Whatever the caller set is overwritten, every call."""
+        result = self.sourced(preset={
+            "PLAYTHROUGH_PLATFORM": "Forged Linux 99.99",
+            "PLAYTHROUGH_ALLOW_EOL_PLATFORM": "a reason"},
+            after='playthrough_check_platform\n')
+        self.assertNotEqual(result["PLAYTHROUGH_PLATFORM"],
+                            "Forged Linux 99.99")
+        self.assertTrue(result["PLAYTHROUGH_PLATFORM_SOURCE"])
+
+    # -- where the platform facts are read from ----------------------
+
+    def nominated(self, body, root_has_git):
+        """Source env.sh in a sandbox that nominates its own facts."""
+        root, script = self.sandbox_checkout(
+            name="nominated-git" if root_has_git else "nominated-plain")
+        if root_has_git:
+            os.makedirs(os.path.join(root, ".git"))
+        nomination = os.path.join(root, "os-release")
+        with open(nomination, "w", encoding="utf-8") as handle:
+            handle.write(body)
+        result = self.sourced(
+            script=script, cwd=root,
+            preset={"PLAYTHROUGH_OS_RELEASE": nomination},
+            after='playthrough_check_platform\n'
+                  'printf "GATE=%s\\n" "$?"\n')
+        return result, nomination
+
+    def test_a_nomination_is_honoured_in_a_tree_git_does_not_track(self):
+        """The suites' own sandboxes, and nothing relaxed by it.
+
+        The check runs in FULL against the nominated file -- this one
+        declares a release that really is in support -- so it passes
+        because it passes.
+        """
+        result, nomination = self.nominated(
+            'ID=ubuntu\nVERSION_ID="24.04"\n'
+            'PRETTY_NAME="Ubuntu 24.04.3 LTS"\n', False)
+        self.assertEqual(result["PLAYTHROUGH_PLATFORM_SOURCE"],
+                         nomination)
+        self.assertEqual(result["PLAYTHROUGH_PLATFORM_SUPPORTED"], "yes")
+        self.assertIn("GATE=0", result.source_output)
+        self.assertEqual(result["PLAYTHROUGH_TRUST_STATE"], "trusted")
+
+    def test_a_nomination_still_refuses_an_unsupported_release(self):
+        """It says which host to believe, not what to conclude."""
+        result, _ = self.nominated(
+            'ID=ubuntu\nVERSION_ID="24.10"\n'
+            'PRETTY_NAME="Ubuntu 24.10"\n', False)
+        self.assertEqual(result["PLAYTHROUGH_PLATFORM_SUPPORTED"], "no")
+        self.assertIn("GATE=1", result.source_output)
+
+    def test_a_nomination_is_ignored_in_a_git_working_tree(self):
+        """THE PROPERTY THAT MAKES IT SAFE, and it is verified.
+
+        A tree git tracks can publish artifacts, and the platform facts
+        for a run that can publish are the host's own.  Deleting .git to
+        reach the nomination would leave a record that can never be
+        committed, which is self-defeating rather than a bypass.
+        """
+        result, nomination = self.nominated(
+            'ID=ubuntu\nVERSION_ID="24.04"\n'
+            'PRETTY_NAME="Ubuntu 24.04.3 LTS"\n', True)
+        self.assertEqual(result["PLAYTHROUGH_PLATFORM_SOURCE"],
+                         "/etc/os-release")
+        self.assertNotEqual(result["PLAYTHROUGH_PLATFORM"],
+                            "Ubuntu 24.04.3 LTS")
+        self.assertIn("IGNORED", result.stderr)
+        self.assertIn("PLAYTHROUGH_ALLOW_EOL_PLATFORM", result.stderr)
+        self.assertNotIn(nomination,
+                         result["PLAYTHROUGH_PLATFORM_SOURCE"])
+
+    def test_an_unreadable_nomination_falls_back_and_says_so(self):
+        root, script = self.sandbox_checkout(name="nomination-absent")
+        result = self.sourced(
+            script=script, cwd=root,
+            preset={"PLAYTHROUGH_OS_RELEASE":
+                    os.path.join(root, "no-such-file")},
+            after='playthrough_check_platform\n')
+        self.assertEqual(result["PLAYTHROUGH_PLATFORM_SOURCE"],
+                         "/etc/os-release")
+        self.assertIn("not a readable regular file", result.stderr)
+
+    def test_the_default_source_is_the_hosts_own(self):
+        result = self.sourced(after='playthrough_check_platform\n')
+        self.assertEqual(result["PLAYTHROUGH_PLATFORM_SOURCE"],
+                         "/etc/os-release")
 
     # -- the retired knob --------------------------------------------
 
@@ -1816,6 +1987,185 @@ class TestThePlatformGate(EnvFixture):
         _, stderr = self.gate("ubuntu", "26.04", "Ubuntu 26.04 LTS",
                               preset=quiet)
         self.assertNotIn("no longer weakens", stderr)
+
+
+class TestThePlatformSourceCanBeNominated(EnvFixture):
+    """PLAYTHROUGH_OS_RELEASE lets a harness EMULATE a host.
+
+    Every suite that exercises a production path -- capture.sh's frame
+    write, launch_game.sh's preflight -- has to stand up on whatever
+    host it is run on, and that host's platform verdict is not the thing
+    under test.  The seam is the one those suites already use for the X
+    server: a stub xdpyinfo that refuses a cookieless client the way an
+    authenticated server does.
+
+    IT EMULATES, IT DOES NOT RELAX.  The gate still runs, still consults
+    the dated table, and still refuses an out-of-support answer read
+    from a nominated file.  That is precisely what separates it from
+    PLAYTHROUGH_ALLOW_EOL_PLATFORM, and the reason this one is not a
+    trust bypass while that one now is.
+
+    AND IT IS EXERCISED WHERE IT APPLIES: in a sandbox checkout that git
+    does not track.  The nomination is honoured only there -- a verified
+    property of the tree, not a claim a caller makes -- because a tree
+    git tracks can publish artifacts and the platform facts for a run
+    that can publish are the host's own.  These cases therefore source a
+    copy of env.sh from a temporary root, which is exactly the shape of
+    the sandboxes test_capture.py and test_launch_game.py stand up; the
+    git-tree half of the rule has its own cases above.
+    """
+
+    def nomination_sandbox(self):
+        """A checkout-shaped root, without .git, made once per test."""
+        if not hasattr(self, "_nomination_sandbox"):
+            self._nomination_sandbox = self.sandbox_checkout(
+                name="nomination-seam")
+        return self._nomination_sandbox
+
+    def write(self, body, name="os-release"):
+        """A platform source file inside the sandbox checkout."""
+        root, _script = self.nomination_sandbox()
+        path = os.path.join(root, name)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(body)
+        return path
+
+    def supported(self, name="os-release"):
+        """A release the table knows and that runs to 2031-04."""
+        return self.write('ID=ubuntu\nVERSION_ID="26.04"\n'
+                          'PRETTY_NAME="Ubuntu 26.04 LTS"\n', name)
+
+    def expired(self, name="expired"):
+        """A release the table knows and that ended 2025-07-10."""
+        return self.write('ID=ubuntu\nVERSION_ID="24.10"\n'
+                          'PRETTY_NAME="Ubuntu 24.10"\n', name)
+
+    def check(self, source, preset=None):
+        """Run the real gate with ``source`` nominated."""
+        root, script = self.nomination_sandbox()
+        environment = {"PLAYTHROUGH_OS_RELEASE": source}
+        environment.update(preset or {})
+        result = self.source(
+            script=script, cwd=root, preset=environment,
+            after='playthrough_check_platform\n'
+                  'printf "GATE=%s\\n" "$?"\n')
+        reported = {}
+        for line in result.source_output.splitlines():
+            name, _, value = line.partition("=")
+            reported[name] = value
+        return reported, result
+
+    # -- it reads the file it was pointed at --------------------------
+
+    def test_the_verdict_comes_from_the_nominated_file(self):
+        reported, result = self.check(self.supported())
+        self.assertEqual(reported.get("GATE"), "0")
+        self.assertEqual(result["PLAYTHROUGH_PLATFORM_SUPPORTED"], "yes")
+        self.assertEqual(result["PLAYTHROUGH_PLATFORM"],
+                         "Ubuntu 26.04 LTS")
+
+    def test_the_default_source_is_the_hosts_own_file(self):
+        result = self.sourced(after="playthrough_check_platform")
+        self.assertEqual(result["PLAYTHROUGH_PLATFORM_SOURCE"],
+                         "/etc/os-release")
+        self.assertNotIn("rather than from /etc/os-release",
+                         result.stderr)
+
+    # -- it does not excuse anything ----------------------------------
+
+    def test_an_expired_nominated_release_is_still_refused(self):
+        """The seam stands in for a host; it does not pardon one."""
+        reported, result = self.check(self.expired())
+        self.assertEqual(reported.get("GATE"), "1")
+        self.assertEqual(result["PLAYTHROUGH_PLATFORM_SUPPORTED"], "no")
+        self.assertIn("2025-07-10", result.stderr)
+
+    def test_nominating_a_source_is_not_a_trust_bypass(self):
+        """Emulating a host leaves the readings themselves sound."""
+        result = self.sourced(preset={
+            "PLAYTHROUGH_OS_RELEASE": self.supported()})
+        self.assertNotIn("PLAYTHROUGH_OS_RELEASE",
+                         result["PLAYTHROUGH_TRUST_BYPASS_VARS"])
+        self.assertEqual(result["PLAYTHROUGH_TRUST_STATE"], "trusted")
+
+    # -- it says so ---------------------------------------------------
+
+    def test_the_nomination_is_disclosed_and_never_silent(self):
+        """A verdict that is not the host's own says so.
+
+        The disclosure is the EXPORTED source, not a stderr line.  An
+        earlier version of this seam warned on every honoured nomination,
+        which made sense while a nomination could be honoured in a real
+        checkout; it cannot any more -- git tracks a publishable tree and
+        the nomination is ignored there -- so the fact travels where a
+        reader of the record will find it, in the contract, and stderr is
+        reserved for the case where a nomination is REFUSED.
+        """
+        source = self.supported()
+        _reported, result = self.check(source)
+        self.assertEqual(result["PLAYTHROUGH_PLATFORM_SOURCE"], source)
+        self.assertNotEqual(result["PLAYTHROUGH_PLATFORM_SOURCE"],
+                            "/etc/os-release")
+
+    def test_a_refused_nomination_is_warned_about_only_once(self):
+        """A per-call warning in a long session is noise, not notice."""
+        root, script = self.nomination_sandbox()
+        result = self.source(
+            script=script, cwd=root,
+            preset={"PLAYTHROUGH_OS_RELEASE":
+                    os.path.join(root, "no-such-file")},
+            after='playthrough_check_platform\n'
+                  'playthrough_check_platform\n')
+        self.assertEqual(
+            result.stderr.count("is not a readable regular file"), 1)
+
+    def test_the_nomination_travels_in_the_environment_summary(self):
+        """A session whose verdict is not its host's has to admit it."""
+        source = self.supported()
+        root, script = self.nomination_sandbox()
+        result = self.sourced(
+            script=script, cwd=root,
+            preset={"PLAYTHROUGH_OS_RELEASE": source},
+            after="playthrough_env_summary")
+        self.assertIn("PLAYTHROUGH_PLATFORM_SOURCE",
+                      result.source_output)
+        # The summary shortens a path under the root it is describing, so
+        # the line carries the file's name rather than its absolute path.
+        self.assertIn(os.path.basename(source), result.source_output)
+
+    # -- an unreadable nomination fails closed ------------------------
+
+    def test_a_symlinked_source_is_not_followed(self):
+        """A path that can be repointed after the check is not evidence.
+
+        The link names a release that really is in support, so honouring
+        it would read as `yes`; the assertion is that the verdict did not
+        come from it at all.  Whatever the host's own answer then is, it
+        is the host's -- which is the fail-closed direction, because a
+        nomination can then never make a verdict more favourable than the
+        truth.
+        """
+        root, _script = self.nomination_sandbox()
+        link = os.path.join(root, "linked")
+        os.symlink(self.supported("real"), link)
+        _reported, result = self.check(link)
+        self.assertEqual(result["PLAYTHROUGH_PLATFORM_SOURCE"],
+                         "/etc/os-release")
+        self.assertIn("symbolic link", result.stderr)
+
+    def test_a_missing_source_is_not_honoured(self):
+        root, _script = self.nomination_sandbox()
+        _reported, result = self.check(os.path.join(root, "absent"))
+        self.assertEqual(result["PLAYTHROUGH_PLATFORM_SOURCE"],
+                         "/etc/os-release")
+        self.assertIn("is not a readable regular file", result.stderr)
+
+    def test_a_directory_named_as_the_source_is_not_honoured(self):
+        root, _script = self.nomination_sandbox()
+        _reported, result = self.check(root)
+        self.assertEqual(result["PLAYTHROUGH_PLATFORM_SOURCE"],
+                         "/etc/os-release")
+        self.assertIn("is not a readable regular file", result.stderr)
 
 
 class TestTheSummaryDisclosesNoHostPath(EnvFixture):

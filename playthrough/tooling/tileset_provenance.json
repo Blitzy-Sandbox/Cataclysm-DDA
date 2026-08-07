@@ -1,0 +1,134 @@
+{
+  "version": 1,
+  "purpose": "The EXTERNAL trust anchor for the required tileset.  gfx/ is git-ignored (.gitignore:52), so the artwork the film is rendered in is the one untracked input to the whole pipeline: this file is the tracked statement of exactly which bytes it must be.  launch_game.sh verifies the COMPLETE installed tree against it before the tileset is used, on every launch.",
+  "tileset": {
+    "id": "MshockXottoplus",
+    "view": "MSXotto+",
+    "directory": "gfx/MShockXotto+"
+  },
+  "upstream": {
+    "repo": "https://github.com/I-am-Erk/CDDA-Tilesets.git",
+    "commit": "6e864adbd2c5d0e68f8517b34e3c7d58eb22747d",
+    "committed": "2026-08-01T19:54:10-07:00",
+    "subject": "[MSX] Highlands (#2910)",
+    "path": "gfx/MShockXotto+"
+  },
+  "composed_with": "python3 tools/gfx_tools/compose.py --feedback CONCISE --format-json --loglevel INFO <clone>/gfx/MShockXotto+ <dest>/MShockXotto+",
+  "in_pack_manifest": "SHA256SUMS",
+  "tree_sha256_recipe": "sha256 over the concatenation of '<sha256>  <path>\\n' for every regular file in the tree, ordered by byte-wise ascending path (LC_ALL=C sort), paths relative to the tileset directory with no './' prefix",
+  "tree_sha256": "3d6c2ef4871654fdeeb5ce363b7a5894d76709d173b70c79040966e6561e317e",
+  "file_count": 22,
+  "byte_count": 5409937,
+  "files": [
+    {
+      "path": "SHA256SUMS",
+      "bytes": 1690,
+      "sha256": "ac372c1947e7df841b8e7439c3d3144808b4512b02fae79cd68101c627d1714f"
+    },
+    {
+      "path": "big.png",
+      "bytes": 2655,
+      "sha256": "64e3b73421352de8212eca634f5288d27cfc6f09de465ea701d99f695aa3b208"
+    },
+    {
+      "path": "dcss.png",
+      "bytes": 2011,
+      "sha256": "b014e903e0c8ec914d4e5aaae841aac76d4c0286d22df17b01a95e07a2822a61"
+    },
+    {
+      "path": "dcssTall.png",
+      "bytes": 1086,
+      "sha256": "dcac4d03bb47cd26dfa4d5eea262827d9a3e65f82eac4910ee9a7bf4f986196b"
+    },
+    {
+      "path": "fallback.png",
+      "bytes": 316141,
+      "sha256": "e82e2e775517cf2255fd1905e31df574ee585709b820d512d0d64a5fbfd63155"
+    },
+    {
+      "path": "fillerlarge.png",
+      "bytes": 9751,
+      "sha256": "8cfebdca5964e0e02b12b3f1f577487b849cc9bd9f8e808df45b150b4e81615d"
+    },
+    {
+      "path": "fillernormal.png",
+      "bytes": 5387,
+      "sha256": "6546221ef93ab92cf22867b0347b639bf547fdfcd1a824b63bcbd39222900736"
+    },
+    {
+      "path": "fillersmall.png",
+      "bytes": 3704,
+      "sha256": "3e8312b89eb8cdea163a607e39b004b6942257509e31457ef3662c8c6131ed70"
+    },
+    {
+      "path": "fillertall.png",
+      "bytes": 4221,
+      "sha256": "e0e58c8661001e29e0e1bf71db5555300f4d47ef549c7f73047b3467208e8f7f"
+    },
+    {
+      "path": "huge.png",
+      "bytes": 89316,
+      "sha256": "067aa4e574857edd0a19817acea59c66b76154ceb287d6ff13c37fe9a25344bd"
+    },
+    {
+      "path": "large.png",
+      "bytes": 591164,
+      "sha256": "a38c0d704c90cf60aae405f8ded058ebcca273cce7d554db5ebc87690569adae"
+    },
+    {
+      "path": "layering.json",
+      "bytes": 8126,
+      "sha256": "b7c9bbe894aae01777dbfec542a6898484fe98ffce19642e636534e22ad7f934"
+    },
+    {
+      "path": "overmap.png",
+      "bytes": 182415,
+      "sha256": "3ee5732ac2839d6f581e76401bb3281e220d6d79665edb4ed498844512eb64df"
+    },
+    {
+      "path": "overmap_tall.png",
+      "bytes": 7952,
+      "sha256": "47775197402b83e83fb9e454ab9cbdfef34f5316e78f0bee2cec60d702cd5e63"
+    },
+    {
+      "path": "small.png",
+      "bytes": 176184,
+      "sha256": "4bcfe3ec47db09e191f809f5888045552df3ae4c387353b7c3a1b13c92fd2d36"
+    },
+    {
+      "path": "tall.png",
+      "bytes": 195145,
+      "sha256": "d7a421e30aeac1ad1ac5c19da367d7b0d0ee4c241eebd2a128b51144264620d3"
+    },
+    {
+      "path": "taller.png",
+      "bytes": 9555,
+      "sha256": "b42c9defb6d2c8b7a7daf73a4e7c256a7e5b5695395d182c5ff862c21e6c6344"
+    },
+    {
+      "path": "tile_config.json",
+      "bytes": 774731,
+      "sha256": "9725384838a54404bb7524993940aa4c9b3771cb24601bde677e53b0fbd504ec"
+    },
+    {
+      "path": "tiles.png",
+      "bytes": 2968847,
+      "sha256": "ef0b025a704fcb86c79115e60429d2ae0fd07ec186c81ba517f2193bbfc18a98"
+    },
+    {
+      "path": "tileset.txt",
+      "bytes": 961,
+      "sha256": "e57dad8057a7da89654962cf4f7bc7efb188b543861fa251dc6b352f2fdd4be1"
+    },
+    {
+      "path": "wide.png",
+      "bytes": 56611,
+      "sha256": "cb645d99e697ef7efcf3851dd7c0ca793950aeff7dab681988a96bf92c1d5234"
+    },
+    {
+      "path": "widecenter.png",
+      "bytes": 2284,
+      "sha256": "ef45df26a02f4373946ff469fa4582c19ded2db8480a8ab08e965075b4b61c75"
+    }
+  ]
+}

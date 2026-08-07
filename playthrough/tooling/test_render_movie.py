@@ -55,6 +55,7 @@ from an image is nothing at all.
 """
 
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -363,7 +364,7 @@ class RenderFixture(unittest.TestCase):
 
     # -- fixtures -----------------------------------------------------
 
-    def png_bytes(self):
+    def png_bytes(self, colour=b""):
         """Return a PNG header declaring the film's own geometry.
 
         The renderer reads every planned image's IHDR and REFUSES one
@@ -372,18 +373,45 @@ class RenderFixture(unittest.TestCase):
         stub has to carry a real header: the signature, the IHDR chunk
         length and type, and the two dimensions.  Nothing decodes these
         bytes, so the pixel data is not needed.
+
+        `colour` appends bytes AFTER the header, which is how a test
+        produces a second image of the same geometry and a DIFFERENT
+        digest -- the substitution the attestation ledger exists to
+        catch.
         """
         width, height = mt.expected_size()
         return (b"\x89PNG\r\n\x1a\n" +
                 (13).to_bytes(4, "big") + b"IHDR" +
-                width.to_bytes(4, "big") + height.to_bytes(4, "big"))
+                width.to_bytes(4, "big") + height.to_bytes(4, "big") +
+                colour)
 
     def capture(self, index):
-        """Create one capture and return its absolute path."""
+        """Create one capture, SEAL IT, and return its absolute path.
+
+        The seal is part of taking a capture, not a step a fixture may
+        skip: the renderer verifies every frame it is about to pace
+        against the attestation ledger, so a fixture that wrote pixels
+        without attesting them would be exercising a refusal rather than
+        the render.
+        """
         path = os.path.join(self.frames, "frame_%05d.png" % index)
+        payload = self.png_bytes()
         with open(path, "wb") as handle:
-            handle.write(self.png_bytes())
+            handle.write(payload)
+        manifest.append_frame_digest(
+            os.path.join(self.root, *manifest.DIGESTS_REL_PARTS),
+            index, "playthrough/frames/frame_%05d.png" % index,
+            hashlib.sha256(payload).hexdigest(), len(payload),
+            manifest.DIGEST_AT_CAPTURE,
+            "2026-08-03T17:56:%02d.400Z" % (index % 60),
+            root=self.root)
         return path
+
+    def attest_frames(self, count):
+        """Describe the ledger the fixture's captures were sealed into."""
+        return timeline.attest_captures(
+            os.path.join(self.root, *manifest.DIGESTS_REL_PARTS),
+            self.root, verified=count)
 
     def group(self, index, count=None):
         """Create one whole transition group on disk."""
@@ -501,6 +529,12 @@ class RenderFixture(unittest.TestCase):
                 "cue_end": float(cursor + length),
                 "action": "press '%d'" % (position % 10),
                 "commentary": "I take one step and look again.",
+                # No amendment ledger in this fixture, so no entry's
+                # narration came through one.  The field is not optional:
+                # a derivative has to be able to say, per frame, whether
+                # the text above is what the record says or what a
+                # digest-bound correction says instead.
+                "amended": False,
             })
             cursor += length
             if position in flagged:
@@ -532,6 +566,17 @@ class RenderFixture(unittest.TestCase):
             # attests it, exactly as timeline.py does when it writes the
             # real document.
             "manifest": self.attest(count),
+            # The ordinary case: no corrections were recorded, so there
+            # is no ledger to attest.  A document that carried amended
+            # narration with no attestation is refused by
+            # timeline.amendment_attestation_problems().
+            "amendments": None,
+            # THE ORDERED SET, BOUND.  The renderer re-hashes every frame
+            # it is about to pace against this ledger, so a document that
+            # attested none while a ledger existed beside it -- or one
+            # whose ledger no longer matches the pixels -- is refused
+            # before a byte is encoded.
+            "captures": self.attest_frames(len(durations)),
             "frames": entries,
         }
         body.update(overrides)
@@ -770,13 +815,61 @@ class TestPlanningTheRender(RenderFixture):
         self.assertIn("no frames", str(caught.exception))
 
     def test_a_missing_capture_aborts_and_is_never_skipped(self):
+        """The ATTESTATION gate reaches it first, and names it.
+
+        Skipping the frame would preserve every appearance of success and
+        break the one-frame-per-keystroke invariant, so what matters is
+        that the render stops and says which capture is gone.  Since the
+        frames are sealed, the refusal now comes from the digest ledger
+        rather than from the path check below it -- an earlier and
+        stronger objection to the same defect.
+        """
         document = self.scene()
         os.unlink(os.path.join(self.frames, "frame_00002.png"))
         with self.assertRaises(rm.RenderError) as caught:
             self.plan(document)
         message = str(caught.exception)
         self.assertIn("frame_00002.png", message)
-        self.assertIn("refused rather than rendered", message)
+        self.assertIn("frame 2 is attested but", message)
+
+    def test_a_substituted_capture_aborts_the_render(self):
+        """THE DEFECT THIS TEST EXISTS FOR.
+
+        A same-sized, non-blank replacement PNG at the right name passes
+        the existence check, the geometry check and the count identity.
+        Only the digest disagrees, so this is the one gate that stops it
+        -- and it stops it before a byte is encoded, while the previous
+        film and its concat list are still consistent with each other.
+        """
+        document = self.scene()
+        path = os.path.join(self.frames, "frame_00002.png")
+        with open(path, "wb") as handle:
+            handle.write(self.png_bytes(colour=b"\x40\x40\x40"))
+        with self.assertRaises(rm.RenderError) as caught:
+            self.plan(document)
+        message = str(caught.exception)
+        self.assertIn("frame 2 is attested as sha256", message)
+        self.assertIn("not the bytes that were captured", message)
+
+    def test_an_unsealed_capture_aborts_the_render(self):
+        """A frame the ledger never sealed is not paced.
+
+        A document whose ledger is short by one row describes a session
+        in which one keystroke's pixels were never attested; rendering it
+        would put an unverifiable frame on screen among verified ones,
+        indistinguishable afterwards.
+        """
+        durations = (0.25, 1.0, 5.0, 0.25, 0.25)
+        for index in range(1, len(durations)):
+            self.capture(index)
+        path = os.path.join(self.frames,
+                            "frame_%05d.png" % len(durations))
+        with open(path, "wb") as handle:
+            handle.write(self.png_bytes())
+        with self.assertRaises(rm.RenderError) as caught:
+            self.plan(self.document(durations))
+        self.assertIn("frame 5 is recorded but its bytes are not "
+                      "attested", str(caught.exception))
 
     def test_a_missing_group_is_refused(self):
         document = self.scene(flags=(2,))
@@ -802,7 +895,7 @@ class TestPlanningTheRender(RenderFixture):
             self.plan(document)
         message = str(caught.exception)
         self.assertIn("cannot be attributed", message)
-        self.assertIn("generation.json", message)
+        self.assertIn("transitions.json", message)
 
     def test_a_group_set_from_another_timeline_is_refused(self):
         document = self.scene(flags=(2,))
@@ -1394,6 +1487,149 @@ class TestStagingAndPublication(RenderFixture):
             msg=("under the APPROVED root, not the render root -- the two "
                  "are one directory apart and confusing them puts the "
                  "manifest outside the committed tree"))
+
+
+class TestTheTrustGate(RenderFixture):
+    """Finding 5: the film is committed, so the encode is gated.
+
+    An end-of-life release leaves the ImageMagick, ffmpeg and Xorg/Xvfb
+    packages that photograph, decode and encode every frame without
+    further security fixes, and the platform waiver used not to force the
+    diagnostic trust state -- so capture and mux stayed "eligible as
+    trusted production evidence".  The waiver is a registered bypass now,
+    and this module refuses the encode under it.
+
+    THE ANSWER COMES FROM env.sh.  Reading an exported
+    PLAYTHROUGH_TRUST_STATE would be a control a caller defeats by
+    exporting the word "trusted", and recomputing it here would put a
+    second, drifting implementation of it in the tree.
+    """
+
+    def publishable(self, script=True):
+        """Make the fixture's checkout look like a git working tree."""
+        os.makedirs(os.path.join(self.checkout, ".git"))
+        tooling = os.path.join(self.checkout, "playthrough", "tooling")
+        if not os.path.isdir(tooling):
+            os.makedirs(tooling)
+        target = os.path.join(tooling, "env.sh")
+        if script:
+            shutil.copyfile(
+                os.path.join(os.path.dirname(os.path.abspath(rm.__file__)),
+                             "env.sh"),
+                target)
+        return target
+
+    def stub_env(self, body):
+        """Install a stand-in env.sh with a chosen verdict."""
+        target = self.publishable(script=False)
+        with open(target, "w", encoding="utf-8") as handle:
+            handle.write(body)
+        return target
+
+    def test_a_temporary_root_is_not_gated(self):
+        """It cannot be committed, so it is not evidence.
+
+        Which is what every other test in this suite relies on, and the
+        reason the discriminator is a property of the tree rather than a
+        claim a caller makes.
+        """
+        self.assertIsNone(rm._publishable_root(self.root))
+        self.assertIsNone(rm.assert_trusted_render(self.root))
+
+    def test_a_git_working_tree_is_gated(self):
+        self.stub_env(
+            'playthrough_check_platform() { return 0; }\n'
+            'playthrough_assert_trusted() { return 0; }\n')
+        self.assertEqual(rm._publishable_root(self.root), self.checkout)
+        self.assertEqual(rm.assert_trusted_render(self.root),
+                         self.checkout)
+
+    def test_a_diagnostic_trust_state_refuses_the_encode(self):
+        self.stub_env(
+            'playthrough_check_platform() { return 0; }\n'
+            'playthrough_assert_trusted() {\n'
+            '    echo "FATAL: refusing $1 while the trust state is '
+            'diagnostic (PLAYTHROUGH_ALLOW_EOL_PLATFORM)" >&2\n'
+            '    return 1\n'
+            '}\n')
+        with self.assertRaises(rm.RenderError) as caught:
+            rm.assert_trusted_render(self.root)
+        message = str(caught.exception)
+        self.assertIn("REFUSING to encode the film", message)
+        self.assertIn("trust state is diagnostic", message)
+        self.assertIn("PLAYTHROUGH_ALLOW_EOL_PLATFORM", message)
+        self.assertIn(rm.TRUST_CONTEXT, message)
+
+    def test_an_out_of_support_platform_refuses_the_encode(self):
+        """Two questions, and neither implies the other.
+
+        An unwaived end-of-life host is "trusted" until something calls
+        the platform check, so the delegate asks both -- in
+        embed_captions.sh's own order.
+        """
+        self.stub_env(
+            'playthrough_check_platform() {\n'
+            '    echo "FATAL: refusing to run because it reached end of '
+            'life" >&2\n'
+            '    return 1\n'
+            '}\n'
+            'playthrough_assert_trusted() { return 0; }\n')
+        with self.assertRaises(rm.RenderError) as caught:
+            rm.assert_trusted_render(self.root)
+        message = str(caught.exception)
+        self.assertIn("REFUSING to encode the film on this platform",
+                      message)
+        self.assertIn("end of life", message)
+
+    def test_a_missing_env_sh_is_a_refusal_not_a_skip(self):
+        self.publishable(script=False)
+        with self.assertRaises(rm.RenderError) as caught:
+            rm.assert_trusted_render(self.root)
+        message = str(caught.exception)
+        self.assertIn("playthrough/tooling/env.sh", message)
+        self.assertIn("not skipped", message)
+
+    def test_an_unsourceable_env_sh_is_a_refusal(self):
+        # `return`, not `exit`: a sourced file that exits takes the whole
+        # subshell with it, which is a different branch.  A non-zero
+        # RETURN is what a real env.sh refusal looks like.
+        self.stub_env(
+            'echo "this file cannot be sourced" >&2\nreturn 3\n')
+        with self.assertRaises(rm.RenderError) as caught:
+            rm.assert_trusted_render(self.root)
+        self.assertIn("could not be sourced", str(caught.exception))
+
+    def test_the_delegate_asks_the_platform_first(self):
+        """The program text is the contract, so it is asserted."""
+        self.assertLess(
+            rm.TRUST_PROGRAM.index("playthrough_check_platform"),
+            rm.TRUST_PROGRAM.index("playthrough_assert_trusted"))
+        self.assertIn('. "$1"', rm.TRUST_PROGRAM)
+        self.assertNotIn("PLAYTHROUGH_TRUST_STATE", rm.TRUST_PROGRAM)
+
+    def test_the_module_never_reads_the_trust_state_variable(self):
+        """A control defeated by exporting a word is not a control.
+
+        The names may be MENTIONED -- the comments explain the delegation
+        -- but no line may both name one and consult the environment.
+        """
+        with open(os.path.abspath(rm.__file__), encoding="utf-8") as fh:
+            lines = fh.read().splitlines()
+        offenders = [
+            number for number, line in enumerate(lines, start=1)
+            if "PLAYTHROUGH_TRUST" in line and
+            ("environ" in line or "getenv" in line)]
+        self.assertEqual(
+            offenders, [],
+            msg="the trust state is asked for, never read")
+
+    def test_the_gate_precedes_the_lock_and_the_plan(self):
+        """Refused before a byte is encoded, and before the lock."""
+        with open(os.path.abspath(rm.__file__), encoding="utf-8") as fh:
+            source = fh.read()
+        gate = source.index("assert_trusted_render(root)\n"
+                            "        with ArtifactLock")
+        self.assertGreater(gate, 0)
 
 
 class TestTheCommandLine(RenderFixture):

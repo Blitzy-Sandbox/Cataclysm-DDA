@@ -32,6 +32,41 @@ recording them here as well would create the second source of truth the
 pipeline exists to avoid.  Engineering and diagnostic observations
 belong to playthrough/TECHNICAL_NOTES.md.
 
+A RECORDED ROW IS NEVER EDITED, AND THIS MODULE HOLDS NO CODE THAT
+COULD.  There is no rewrite, no read-modify-write, no truncate and no
+"w" mode anywhere: the only write is :func:`append_row`, and the only
+other writer is :func:`append_amendment`, which appends to a DIFFERENT
+file.  A security review found the previous exception to that rule --
+an ``extend_action`` path that rebuilt the whole manifest through a
+temporary and renamed it over the original -- and it is gone rather
+than hardened, because a mechanism that can rewrite captured evidence
+is a defect however carefully it is guarded.
+
+CORRECTIONS ARE AMENDMENTS, IN THEIR OWN APPEND-ONLY LEDGER.  When a
+recorded row turns out to overstate what its own capture shows, or to
+carry a word the in-character record may not carry, the correction is
+appended to playthrough/amendments.jsonl as an AMENDMENT keyed to the
+sha256 of the immutable manifest line it corrects:
+
+    amendment      int   1..n, in the order amendments were made
+    amended_ts     str   when the amendment was recorded, UTC
+    frame          int   the recorded frame the amendment concerns
+    field          str   "action" or "commentary" -- nothing else
+    source_sha256  str   sha256 of the manifest LINE as recorded,
+                         newline included; the binding to history
+    recorded       str   the value as the session recorded it
+    amended        str   the value a derivative should use instead
+    basis          str   what established the amendment
+    reason         str   why the recorded value could not stand
+
+Both files are then evidence: the manifest says what was recorded, the
+ledger says what was later established and on what basis, and
+:func:`resolve_rows` applies an amendment to a derivative ONLY when its
+``source_sha256`` still matches the row on disk.  A digest that does
+not match is a refusal, not a skip -- a stale amendment means the two
+records disagree about history, and that is exactly the condition
+nothing downstream may paper over.
+
 ``ingame_clock`` IS THE HONESTY FIELD.  ``display::time_string()``
 (src/display.cpp:207-218) returns an exact time only when the survivor
 has a watch; otherwise one of the coarse phrases from
@@ -60,6 +95,8 @@ and no shell caller can slip a row in beside it:
 
     python3 playthrough/tooling/manifest.py verify --require-frames
     python3 playthrough/tooling/manifest.py count
+    python3 playthrough/tooling/manifest.py amendments
+    python3 playthrough/tooling/manifest.py digests --require-frames
 
 The command line is read-only on purpose: appending is available to
 importers only, so that session.py keeps sole ownership of the frame
@@ -93,11 +130,12 @@ import argparse
 import datetime
 import errno
 import fcntl
+import hashlib
 import json
 import os
 import re
+import stat
 import sys
-import tempfile
 
 
 # The schema, in the order rows are written.  Exactly these six keys,
@@ -111,6 +149,34 @@ FIELDS = (
     "action",
     "commentary",
 )
+
+# THE STAGING PREFIX, WHICH NOW ONLY EVER GETS SWEPT.
+#
+# THERE IS NO WRITER BEHIND IT ANY MORE, AND THAT IS THE POINT.  A
+# superseded version of this module could rewrite the record: it wrote
+# the whole file to a sibling under this prefix and renamed it, so that
+# a row recorded wrongly could be corrected in place.  Code review
+# found that facility to be the defect rather than the fix -- a captured
+# row is evidence, and 26 committed rows had been rewritten after the
+# keystroke that produced them -- so every rewrite entry point, its
+# planning and publication halves, and the staging opener were removed.
+# What this module can do to playthrough/manifest.jsonl is append one
+# validated row, and nothing else; a correction is a note in
+# playthrough/TECHNICAL_NOTES.md, which is what the file's own contract
+# has always said.
+#
+# The prefix survives for exactly one reason: sweep_staging() must still
+# be able to remove a leftover that the retired writer -- or an
+# interruption of it, before it was retired -- left on disk.  These
+# siblings live inside playthrough/, which .gitignore re-includes
+# wholesale with its terminal `!/playthrough/**` negation, so a survivor
+# is an untracked file that `git add -A playthrough/` would commit into
+# an evidence tree nobody authored it into.  The prefix matches both the
+# deterministic name and the unique names earlier versions produced, so
+# one sweep clears every generation of them.
+STAGING_PREFIX = ".manifest-"
+STAGING_SUFFIX = ".jsonl"
+STAGING_OF = "the record"
 
 # One capture per keystroke, indexed from 1.  The five-digit
 # zero-padded field is what keeps a lexical sort of the frames
@@ -134,6 +200,94 @@ FRAME_FILE_FORMAT = FRAMES_REL_DIR + "/" + FRAME_NAME_FORMAT
 # and nowhere else: see _validated_manifest_target() for why the exact
 # path, and not merely containment, is what is required.
 MANIFEST_NAME = "manifest.jsonl"
+
+# playthrough/amendments.jsonl -- the amendment ledger, beside the
+# record it amends and never inside it.  A SEPARATE FILE is the whole
+# point: the manifest keeps the bytes the session wrote, and every
+# later correction is an append to this one, so no code path in this
+# module has any reason to open the manifest for writing.
+AMENDMENTS_NAME = "amendments.jsonl"
+
+# The amendment schema, in the order rows are written.  As with FIELDS,
+# this tuple is the authority for the writer, the reader and the
+# verifier alike.
+AMENDMENT_FIELDS = (
+    "amendment",
+    "amended_ts",
+    "frame",
+    "field",
+    "source_sha256",
+    "recorded",
+    "amended",
+    "basis",
+    "reason",
+)
+
+# The only two fields an amendment may concern.  `frame`, `file` and
+# `real_ts` are the row's identity and its capture, and `ingame_clock`
+# is the reading itself -- amending any of them would be inventing
+# evidence rather than correcting a narration, which is the one thing
+# this ledger exists NOT to make possible.
+AMENDABLE_FIELDS = ("action", "commentary")
+
+# 64 lowercase hex digits, pinned as a shape so that a truncated,
+# uppercase or algorithm-swapped digest is a reported problem rather
+# than a comparison that silently never matches.
+SHA256_RE = re.compile(r"\A[0-9a-f]{64}\Z")
+
+# playthrough/build/frame_digests.jsonl -- the capture attestation
+# ledger, beside the telemetry sidecar it corroborates rather than
+# beside the frames it describes.
+#
+# WHY IT EXISTS.  A security review found that nothing in the record
+# attested the BYTES of a captured frame: the sidecar carried the path,
+# the geometry, the luminance and the clock, so a same-sized non-blank
+# replacement file passed the whole chain, and the interrupted-step
+# recovery went further and took a frame's modification time for the
+# instant it was captured.  capture.sh now hashes each PNG the moment it
+# is published and reports FRAME_SHA256; session.py appends it here, and
+# every stage that consumes a frame verifies the bytes against this
+# ledger before timing, transitioning, rendering or committing them.
+DIGESTS_REL_PARTS = ("build", "frame_digests.jsonl")
+
+DIGEST_FIELDS = (
+    "frame",
+    "file",
+    "sha256",
+    "bytes",
+    # HOW STRONG THE CLAIM IS, in the row itself.  "capture" means the
+    # digest was taken by capture.sh at the instant the frame was
+    # published, which is the only attestation that establishes the
+    # bytes ARE the captured bytes.  "recovery" means it was measured
+    # from the file when an interrupted step was completed.  "commit"
+    # means it was sealed after the fact from a committed blob, for a
+    # session captured before this ledger existed -- a weaker claim,
+    # stated as such rather than dressed up as the strong one.
+    "attested",
+    "attested_ts",
+    # The git object the bytes were sealed from, and the commit that
+    # published it, for an "attested": "commit" row.  Both null
+    # otherwise.  They exist so that a post-hoc seal names the
+    # independent, content-addressed evidence it rests on instead of
+    # asserting a digest a reader cannot re-derive.
+    "git_blob",
+    "git_commit",
+)
+
+# The three values `attested` may take, strongest first.
+DIGEST_AT_CAPTURE = "capture"
+DIGEST_AT_RECOVERY = "recovery"
+DIGEST_AT_COMMIT = "commit"
+DIGEST_ATTESTATIONS = (DIGEST_AT_CAPTURE, DIGEST_AT_RECOVERY,
+                       DIGEST_AT_COMMIT)
+
+# A git object name: 40 hex digits for sha-1, 64 for sha-256 repositories.
+GIT_OBJECT_RE = re.compile(r"\A[0-9a-f]{40}(?:[0-9a-f]{24})?\Z")
+
+# Frames are read in blocks when their digest is recomputed: a session
+# is hundreds of 1920x1080 PNGs and verifying them must not depend on
+# holding one in memory whole.
+DIGEST_BLOCK = 65536
 
 # real_ts: the wall-clock instant of the capture, in UTC, to the
 # millisecond, in one fixed form on every row so that the column sorts
@@ -301,6 +455,62 @@ META_PATTERNS = (
     ("commit", r"\bcommit(?:s|ted|ting)?\b|\bgit\b|\brepositor(?:y|"
                r"ies)\b"),
     ("requirement", r"\bR1[0-3]\b|\bR[1-9]\b"),
+    # THE INTERFACE AS FURNITURE, AND THE CHARACTER SHEET AS ARITHMETIC.
+    # This block is the second thing a review found in the committed
+    # transcript, and it was invisible to every pattern above: the rows
+    # named the input device and the screen furniture she was looking at
+    # ("the first key I tried", the cursor moving down a list, a tab, the
+    # sex field, the trait page), and they accounted for her own body in
+    # the numbers the creator prices it in ("Stat money", "thirty-eight
+    # points", "thirty-five per cent off what I can carry", "three
+    # points back"), and they named two engine modes by their interface
+    # names ("safe mode", "Scores").  None of that is a survivor's
+    # sentence -- she has a body, a trade and a list of things wrong with
+    # her, not statistics -- so the concepts belong here beside the rest.
+    #
+    # The same precision rule applies as above, and two cases are worth
+    # calling out because the blunt reading would refuse honest prose:
+    #
+    #   * `keyboard` matches the DEVICE and named keys, not a key that
+    #     opens something: "something with keys in it and a clear road"
+    #     is a set of car keys and is hers.
+    #   * `character sheet` matches a point that is COUNTED or POOLED,
+    #     not the idiom: "no point being coy" and "a nip point on the
+    #     third floor" are both in the record and both stay.
+    #
+    # `tab`, `score` and `per cent` are blocked outright, ambiguity and
+    # all, under the rule stated above: she has no in-world tab, she says
+    # "dozens" rather than "scores", and a percentage is arithmetic
+    # somebody else did about her.
+    ("cursor", r"\bcursors?\b|\bhighlight(?:ed)?\s+(?:bar|row|line)\b"),
+    ("keyboard", r"\bkey[- ]?boards?\b|\bhot[- ]?keys?\b"
+                 r"|\barrow keys?\b|\bkeys?\s+(?:list|bindings?|map)\b"
+                 r"|\bthe\s+(?:escape|return|enter|tab|space|shift"
+                 r"|control|alt|plus|minus|up|down|left|right"
+                 r"|apostrophe|at[- ]sign)\s+keys?\b"
+                 r"|\bkeys?\s+I\s+(?:tried|pressed|sent|used|thought)"
+                 r"\b"),
+    ("form control", r"\btabs?\b"
+                     r"|\b(?:text|input|entry|name|age|sex)\s+fields?\b"
+                     r"|\bthe fields?\b|\bcheck[- ]?box(?:es)?\b"
+                     r"|\bdrop[- ]?downs?\b|\bmain menu\b"
+                     r"|\bmenu (?:entry|entries|item|items|option"
+                     r"|options)\b"),
+    ("character sheet",
+     r"\bstats?\b|\bstatistics?\b|\bthe traits?\b|\bperks?\b"
+     r"|\b(?:trait|traits|skill|skills|stat|stats|attribute"
+     r"|attributes|profession|scenario|background)\s+(?:page|pages"
+     r"|tab|tabs|screen|list|pool|budget)\b"
+     r"|\bskill\s+(?:level|levels|points?)\b"
+     r"|\bpoints?\s+(?:pool|pools|budget|left|back|spent|earned"
+     r"|remaining)\b"
+     r"|\b(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten"
+     r"|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen"
+     r"|eighteen|nineteen|twenty|thirty|forty|fifty)\s+points?\b"
+     r"|\bpoint[- ]bu(?:y|ild)\b"),
+    ("percentage", r"\bper\s?cents?\b|\bpercentages?\b|%"),
+    ("game mode", r"\bsafe[- ]?mode\b|\brun[- ]mode\b|\bmove[- ]mode\b"
+                  r"|\bscores?\b|\bscore[- ]?boards?\b"),
 )
 
 # The compiled table, kept in the declared order so a report reads the
@@ -2436,137 +2646,976 @@ def append_record(manifest_path, row, require_durable=True, root=None):
     )
 
 
-def extend_action(manifest_path, frame, action, root=None):
-    """Extend ONE recorded row's action, and change nothing else.
+def staging_candidates(directory, prefix, suffix):
+    """Return the staging siblings in `directory`, sorted.  Read-only.
 
-    THE ONE WRITE IN THIS MODULE THAT IS NOT AN APPEND, AND THE NARROW
-    REASON IT EXISTS.  Every other write here appends a row and nothing
-    ever edits one, because the record of a captured session is evidence.
-    This function exists because a runtime QA pass found the one defect
-    that cannot be remedied by appending: rows whose keystroke and frame
-    and clock are all genuine, and whose human-authored note claims an
-    effect their own capture contradicts, because the observed-effect
-    guard that measures pixels and appends `; nothing on the screen
-    changed` was written AFTER those frames were captured.  A note
-    elsewhere cannot fix a row that overstates itself; the row has to
-    carry what was seen.
-
-    WHAT IS THEREFORE ENFORCED HERE RATHER THAN TRUSTED TO THE CALLER:
-
-    * `action` must START WITH the recorded action.  The operator's own
-      words stay exactly as written and the new text can only be
-      appended to them -- so a row says what was intended AND what was
-      observed, and a reader can see where the two part company.  A
-      substitution, a truncation or an unrelated rewrite is refused.
-    * every other field is compared and must be identical.  The frame,
-      its file, the timestamp, the clock reading and the survivor's own
-      commentary are not touched by this path at all.
-    * exactly one row may carry the index, and the whole file is
-      re-validated through :func:`row_problems` after the rewrite, so a
-      correction cannot leave the record in a state the writer would
-      never have produced.
-    * the rewrite is atomic: the whole file is written to a sibling
-      temporary, fsynced, and then os.replace()d, so a reader sees the
-      old file or the new one and never a partial one.
-
-    Returns the row as it now stands.  Raises ManifestError and leaves
-    the file byte-identical on any refusal.
+    Names only, and only ones that genuinely carry the private prefix
+    AND the suffix, so nothing an operator or the engine put there can
+    be mistaken for one.  A directory that cannot be listed yields
+    nothing: this exists to clean up, and failing to clean up is not a
+    reason to refuse to write.
     """
-    path = _validated_manifest_path(manifest_path, root)
-    index = _validated_frame(frame)
-    rows = list(read_rows(path, root=root))
-    matches = [number for number, row in enumerate(rows)
-               if row.get("frame") == index]
-    if not matches:
-        raise ManifestError(
-            "%s records no frame %d, so there is no action to extend"
-            % (path, index))
-    if len(matches) > 1:
-        raise ManifestError(
-            "%s records frame %d on %d rows; an ambiguous index is "
-            "reported by verify_manifest() and resolved before any row "
-            "of it is corrected" % (path, index, len(matches)))
-    position = matches[0]
-    recorded = rows[position]
-    text = _validated_text(action, "action")
-    previous = recorded["action"]
-    if not text.startswith(previous):
-        raise ManifestError(
-            "the action for frame %d would become %r, which does not "
-            "begin with the recorded %r.  This path only EXTENDS what "
-            "was written -- an observation is appended to the note, "
-            "never substituted for it" % (index, text, previous))
-    if text == previous:
-        return dict(recorded)
-    replacement = build_row(
-        recorded["frame"], recorded["file"], recorded["real_ts"],
-        recorded["ingame_clock"], text, recorded["commentary"])
-    for name in FIELDS:
-        if name == "action":
-            continue
-        if replacement[name] != recorded[name]:
-            raise ManifestError(
-                "extending frame %d's action would change %s from %r "
-                "to %r; this path changes the action and nothing else"
-                % (index, name, recorded[name], replacement[name]))
-    rewritten = list(rows)
-    rewritten[position] = replacement
-    problems = row_problems(rewritten)
-    if problems:
-        raise ManifestError(
-            "extending frame %d's action would leave the record "
-            "invalid: %s" % (index, "  ".join(problems)))
-    _rewrite_rows(path, rewritten)
-    return dict(replacement)
-
-
-def _rewrite_rows(path, rows):
-    """Replace `path` with `rows`, atomically.  Internal.
-
-    The temporary is a SIBLING because os.replace() is only atomic
-    within one filesystem, and the directory itself is fsynced after the
-    rename so the new name survives a power loss rather than only the
-    new bytes.  The permissions are set explicitly because mkstemp
-    creates at 0600 and this file is committed evidence a reader must be
-    able to open.
-    """
-    directory = os.path.dirname(path) or os.curdir
-    descriptor, temporary = tempfile.mkstemp(
-        dir=directory, prefix=".manifest-", suffix=".jsonl")
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8",
-                       newline="\n") as handle:
-            for row in rows:
-                handle.write(encode_row(row))
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.chmod(temporary, 0o644)
-        os.replace(temporary, path)
-    except OSError as err:
+        names = os.listdir(directory)
+    except OSError:
+        return ()
+    return tuple(sorted(
+        name for name in names
+        if name.startswith(prefix) and name.endswith(suffix) and
+        len(name) > len(prefix) + len(suffix)))
+
+
+def sweep_staging(directory, prefix, suffix, label):
+    """Remove staging siblings a retired rewrite left behind.
+
+    WHY THIS OUTLIVED THE WRITER IT SERVED.  This module can no longer
+    rewrite anything: the record is append-only and every rewrite entry
+    point was removed.  A sibling temporary under the private prefix can
+    still be sitting on disk, though, because the retired writer renamed
+    one into place and an UNHANDLED interruption -- SIGKILL, the power
+    going -- left it behind where no handled path could unlink it.  These
+    siblings live inside playthrough/, which .gitignore re-includes
+    wholesale with its terminal `!/playthrough/**` negation, so a
+    survivor is an untracked file that `git add -A playthrough/` would
+    commit into an evidence tree nobody authored it into.
+
+    It is therefore swept whenever a session opens, which is the moment
+    that can still heal the tree now that nothing writes one: no later
+    rewrite is ever going to run and clear it.
+
+    WHAT IT WILL NOT DELETE.  Only a REGULAR file, never a symbolic link
+    (which could point anywhere), never a directory, and only one owned
+    by this account.  Anything else is reported and LEFT, because
+    removing a file this module did not write is not reconciliation.
+
+    session.py sweeps its telemetry sidecar's staging siblings through
+    this same function, because both files sit in the re-included tree
+    and have exactly one failure mode between them.
+
+    Returns the names removed, so a caller can report them.
+    """
+    removed = []
+    for name in staging_candidates(directory, prefix, suffix):
+        candidate = os.path.join(directory, name)
         try:
-            os.unlink(temporary)
+            info = os.lstat(candidate)
         except OSError:
-            pass
+            continue
+        if not stat.S_ISREG(info.st_mode):
+            _warn_once(
+                "staging-not-regular",
+                "%s is not a regular file, so it is left alone even "
+                "though it carries the private staging prefix %r used "
+                "for %s; look at it, because nothing this pipeline "
+                "writes belongs there"
+                % (relative_to_repo(candidate), prefix, label))
+            continue
+        if info.st_uid != os.getuid():
+            _warn_once(
+                "staging-foreign-owner",
+                "%s is owned by uid %d rather than by uid %d, so it is "
+                "left alone even though it carries the private staging "
+                "prefix %r used for %s"
+                % (relative_to_repo(candidate), info.st_uid,
+                   os.getuid(), prefix, label))
+            continue
+        try:
+            os.unlink(candidate)
+        except OSError as err:
+            _warn_once(
+                "staging-unlink",
+                "%s could not be removed (%s); it is a leftover from an "
+                "interrupted rewrite of %s and it must not be committed"
+                % (relative_to_repo(candidate), err, label))
+            continue
+        removed.append(name)
+        _warn(
+            "%s was left behind by an interrupted rewrite of %s and has "
+            "been removed; the file it was staging is unchanged"
+            % (relative_to_repo(candidate), label))
+    return tuple(removed)
+
+
+# ---------------------------------------------------------------------
+# The amendment ledger
+#
+# WHY THIS EXISTS AT ALL.  A row can be wrong in exactly one way that
+# an append cannot fix and a prose note cannot either: its narration can
+# claim an effect that its own capture contradicts, or carry a word the
+# in-character record may not carry, while its keystroke, its frame and
+# its clock reading are all genuine.  A derivative -- the transcript,
+# the caption track -- then repeats the wrong sentence however carefully
+# the evidence was gathered.
+#
+# The previous answer to that was a path that rewrote the manifest in
+# place.  A security review named it correctly: a mechanism that can
+# rewrite captured evidence is a defect, because it makes every later
+# artifact deniable.  It has been deleted, and this ledger replaces it.
+#
+# WHAT AN AMENDMENT IS.  A row in a SECOND append-only file, bound to
+# the manifest line it concerns by that line's sha256.  It states the
+# recorded value, the amended value, what established the amendment and
+# why the recorded value could not stand.  Nothing in the manifest
+# moves.  Both files are committed, so a reader can see the record, the
+# correction, and the exact binding between them.
+#
+# WHAT IT DELIBERATELY CANNOT DO.  It cannot touch `frame`, `file`,
+# `real_ts` or `ingame_clock` (AMENDABLE_FIELDS is two names long), so a
+# clock reading, a timestamp or a frame path can never be amended -- an
+# amendment corrects a narration, and rewriting a reading would be
+# fabricating evidence.  It cannot apply to a row whose bytes have moved
+# since the amendment was written: resolve_rows() REFUSES on a digest
+# mismatch rather than skipping it, because a stale amendment means the
+# two records disagree about history.
+# ---------------------------------------------------------------------
+
+def default_amendments_path():
+    """Return the amendment ledger's path.
+
+    Honours PLAYTHROUGH_AMENDMENTS for the same reason
+    default_manifest_path() honours PLAYTHROUGH_MANIFEST -- env.sh is
+    the single definition of the artifact layout -- and the value is
+    then held to exactly the same containment rules.
+    """
+    from_env = os.environ.get("PLAYTHROUGH_AMENDMENTS")
+    if from_env and from_env.strip():
+        return os.path.abspath(from_env)
+    return os.path.join(_playthrough_dir(), AMENDMENTS_NAME)
+
+
+def _validated_amendments_target(value, root=None):
+    """Return an absolute ledger path this module may touch.
+
+    The same four conditions as _validated_manifest_target(), against
+    the ledger's own canonical name: inside the approved root, no
+    symlinked component, EXACTLY <approved root>/amendments.jsonl, and a
+    regular file.  Condition three matters here for the identical
+    reason: every artifact of this pipeline lives inside playthrough/,
+    so containment alone would let an environment variable point the
+    ledger's appends at the manifest, at a frame or at the movie.
+    """
+    resolved = _validated_path(value, "amendment ledger path")
+    approved = _assert_within_root(
+        resolved, "the amendment ledger path", root)
+    _assert_no_symlink(resolved, approved, "the amendment ledger path")
+    canonical = os.path.join(approved, AMENDMENTS_NAME)
+    if os.path.realpath(resolved) != canonical:
         raise ManifestError(
-            "the record %s could not be rewritten: %s.  The file is "
-            "unchanged" % (path, err)) from err
-    handle = None
+            "the amendment ledger is %s and nothing else, but %s was "
+            "given.  Appending amendment rows onto another artifact "
+            "would corrupt it and would report success."
+            % (canonical, resolved))
+    if os.path.exists(resolved) and not os.path.isfile(resolved):
+        raise ManifestError(
+            "the amendment ledger path is not a regular file: %s"
+            % resolved)
+    return resolved
+
+
+def _validated_amendments_path(value, root=None):
+    """Return a ledger path that is safe to append to."""
+    resolved = _validated_amendments_target(value, root)
+    parent = os.path.dirname(resolved)
+    if not os.path.isdir(parent):
+        raise ManifestError(
+            "the directory for the amendment ledger does not exist: %s"
+            % parent)
+    return resolved
+
+
+def line_digest(line):
+    """Return the sha256 of one manifest LINE, newline included.
+
+    THE LINE, NOT THE PARSED ROW, and that is the whole point: the
+    binding is to the bytes on disk, so a digest cannot match a row that
+    was re-encoded, re-ordered or re-spaced.  A row is accepted here too
+    and is encoded through encode_row() first, which is the same
+    function append_row() writes with -- so the digest of a row equals
+    the digest of the line that row was written as.
+    """
+    if isinstance(line, dict):
+        line = encode_row(line)
+    if isinstance(line, bytes):
+        payload = line
+    elif isinstance(line, str):
+        payload = line.encode("utf-8")
+    else:
+        raise ManifestError(
+            "a digest is taken over a manifest line or row, got %s"
+            % type(line).__name__)
+    return hashlib.sha256(payload).hexdigest()
+
+
+def row_digests(manifest_path=None, root=None):
+    """Return {frame index: line digest} for the manifest on disk.
+
+    Read-only, and it reads the FILE rather than re-encoding rows, so
+    the digests are of the bytes a reviewer can hash for themselves.
+    """
+    path = _validated_manifest_target(
+        default_manifest_path() if manifest_path is None
+        else manifest_path, root)
+    if not os.path.isfile(path):
+        raise ManifestError("no manifest at %s" % path)
+    digests = {}
+    descriptor = _open_nofollow(path, os.O_RDONLY | os.O_NOFOLLOW)
     try:
-        handle = os.open(directory, os.O_RDONLY)
-        os.fsync(handle)
-    except OSError as err:
-        _warn_once(
-            "rewrite-dir-fsync",
-            "the directory %s could not be fsynced after rewriting the "
-            "record (%s); the new content is on the device, but the "
-            "name change may not survive a power loss until the "
-            "filesystem flushes it" % (directory, err))
+        with os.fdopen(descriptor, "r", encoding="utf-8",
+                       newline="") as handle:
+            descriptor = None
+            for number, raw in enumerate(handle, start=1):
+                row = _decode_line(raw, number, path)
+                digests[row["frame"]] = line_digest(raw)
     finally:
-        if handle is not None:
-            try:
-                os.close(handle)
-            except OSError:
-                pass
+        if descriptor is not None:
+            os.close(descriptor)
+    return digests
+
+
+def _validated_amendment_field(value):
+    """Return an amendable field name, or raise."""
+    if not isinstance(value, str) or value not in AMENDABLE_FIELDS:
+        raise ManifestError(
+            "an amendment may concern %s and nothing else, got %r.  "
+            "The frame, its file, its capture timestamp and its clock "
+            "reading are the evidence itself: amending one of those "
+            "would be inventing a reading rather than correcting a "
+            "narration"
+            % (" or ".join(AMENDABLE_FIELDS), value))
+    return value
+
+
+def _validated_digest(value, label):
+    """Return a lowercase 64-hex sha256, or raise."""
+    if not isinstance(value, str):
+        raise ManifestError(
+            "%s must be a sha256 hex digest, got %s"
+            % (label, type(value).__name__))
+    text = value.strip()
+    if not SHA256_RE.match(text):
+        raise ManifestError(
+            "%s must be 64 lowercase hex digits (a sha256), got %r"
+            % (label, value))
+    return text
+
+
+def build_amendment(number, amended_ts, frame, field, source_sha256,
+                    recorded, amended, basis, reason):
+    """Validate one amendment and return it in canonical key order.
+
+    Pure: it writes nothing, so a caller can inspect exactly what would
+    be appended.  Every field is held to the same rules the manifest's
+    own text fields are held to -- no line breaks, no control
+    characters, no runaway length -- and three more that are specific to
+    an amendment:
+
+    * `field` must be one of AMENDABLE_FIELDS;
+    * `amended` must DIFFER from `recorded`, because an amendment that
+      changes nothing is noise in a ledger that has to be read;
+    * `basis` and `reason` are MANDATORY and non-empty.  An amendment
+      without a stated basis is an assertion, and the whole reason this
+      ledger exists rather than an edit is that an assertion is not
+      evidence.
+    """
+    if isinstance(number, bool) or not isinstance(number, int):
+        raise ManifestError(
+            "the amendment number must be an integer, got %s"
+            % type(number).__name__)
+    if number < 1:
+        raise ManifestError(
+            "the amendment number is 1 or greater, got %d" % number)
+    row = {
+        "amendment": number,
+        "amended_ts": canonical_real_ts(amended_ts),
+        "frame": _validated_frame(frame),
+        "field": _validated_amendment_field(field),
+        "source_sha256": _validated_digest(source_sha256,
+                                           "source_sha256"),
+        "recorded": _validated_text(recorded, "recorded"),
+        "amended": _validated_text(amended, "amended"),
+        "basis": _validated_text(basis, "basis"),
+        "reason": _validated_text(reason, "reason"),
+    }
+    if row["recorded"] == row["amended"]:
+        raise ManifestError(
+            "the amendment for frame %d's %s does not change it; an "
+            "amendment that says nothing does not belong in a ledger a "
+            "reviewer has to read"
+            % (row["frame"], row["field"]))
+    if row["field"] == "commentary":
+        problem = meta_vocabulary_problem(row["amended"])
+        if problem:
+            raise ManifestError(
+                "the amended commentary for frame %d is not in the "
+                "survivor's voice: %s" % (row["frame"], problem))
+    else:
+        problem = action_shape_problem(row["amended"], "amended")
+        if problem:
+            raise ManifestError(
+                "the amended action for frame %d is not the derived "
+                "shape: %s" % (row["frame"], problem))
+    return {name: row[name] for name in AMENDMENT_FIELDS}
+
+
+def encode_amendment(row):
+    """Return one amendment as the exact line to be written."""
+    ordered = {name: row[name] for name in AMENDMENT_FIELDS}
+    return json.dumps(ordered, ensure_ascii=False) + "\n"
+
+
+def append_amendment(amendments_path, number, amended_ts, frame, field,
+                     source_sha256, recorded, amended, basis, reason,
+                     require_durable=True, root=None):
+    """Validate one amendment and APPEND it to the ledger.
+
+    THE SECOND AND LAST WRITER IN THIS MODULE, and it goes through
+    exactly the machinery append_row() goes through -- the same
+    O_NOFOLLOW open, the same MANDATORY exclusive flock, the same
+    end-of-file measurement, the same whole-line write, the same
+    rollback of a partial line and the same fsync before the row is
+    reported as stored.  That is deliberate and it is the point: a
+    correction is evidence too, so it is not allowed to be written by a
+    lazier path than the record it corrects.
+
+    Returns the amendment exactly as written.  Raises ManifestError and
+    writes nothing at all on any refusal -- there is no partial row.
+    """
+    path = _validated_amendments_path(
+        default_amendments_path() if amendments_path is None
+        else amendments_path, root)
+    row = build_amendment(number, amended_ts, frame, field,
+                          source_sha256, recorded, amended, basis,
+                          reason)
+    payload = encode_amendment(row).encode("utf-8")
+    descriptor = _open_nofollow(
+        path, os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW)
+    try:
+        _lock_exclusively(descriptor, path)
+        try:
+            committed = os.lseek(descriptor, 0, os.SEEK_END)
+        except OSError as err:
+            raise ManifestError(
+                "could not measure the end of the amendment ledger %s "
+                "(%s), so amendment %s was not written"
+                % (path, err, row["amendment"])) from err
+        _assert_row_boundary(descriptor, committed, path,
+                             row["amendment"])
+        _append_whole_row(descriptor, payload, committed, path,
+                          row["amendment"])
+        _fsync(descriptor, path, row["amendment"], require_durable)
+    finally:
+        try:
+            os.close(descriptor)
+        except OSError as err:
+            _warn_once(
+                "amendment-close",
+                "could not close the amendment ledger %s after "
+                "appending (%s); the row itself was written and forced "
+                "to the device before this point, so the ledger is "
+                "intact" % (path, err))
+    return row
+
+
+def read_amendments(amendments_path=None, root=None):
+    """Return the ledger's rows, in the order they were written.
+
+    An ABSENT ledger yields an empty tuple rather than an error: a
+    session with nothing to amend legitimately has none, and that is
+    the ordinary case rather than a fault.
+    """
+    path = _validated_amendments_target(
+        default_amendments_path() if amendments_path is None
+        else amendments_path, root)
+    if not os.path.isfile(path):
+        return ()
+    rows = []
+    descriptor = _open_nofollow(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        with os.fdopen(descriptor, "r", encoding="utf-8",
+                       newline="") as handle:
+            descriptor = None
+            for number, raw in enumerate(handle, start=1):
+                text = raw.rstrip("\n")
+                if text.endswith("\r"):
+                    raise ManifestError(
+                        "%s line %d ends CRLF; the ledger is LF only"
+                        % (path, number))
+                if not text.strip():
+                    raise ManifestError(
+                        "%s line %d is blank; the ledger is one JSON "
+                        "object per line with no blank lines"
+                        % (path, number))
+                try:
+                    row = json.loads(text)
+                except ValueError as err:
+                    raise ManifestError(
+                        "%s line %d is not JSON: %s"
+                        % (path, number, err)) from err
+                if not isinstance(row, dict):
+                    raise ManifestError(
+                        "%s line %d is a %s, not a JSON object"
+                        % (path, number, type(row).__name__))
+                rows.append(row)
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+    return tuple(rows)
+
+
+def amendment_problems(amendments, digests=None):
+    """Return a list of problems with the ledger.  Read-only, pure.
+
+    An empty list means every row carries the nine fields in the
+    declared order with values of the right shape, the amendment
+    numbers run 1..n without a gap or a repeat, no (frame, field) pair
+    is amended twice, and -- when `digests` is supplied, as
+    :func:`row_digests` returns it -- every row's `source_sha256`
+    matches the manifest line it names.
+
+    A repeated (frame, field) is a PROBLEM rather than a
+    last-one-wins rule on purpose: two amendments of one narration are
+    two claims about the same sentence, and choosing between them
+    automatically is how a record stops meaning anything.
+    """
+    problems = []
+    seen_numbers = {}
+    seen_pairs = {}
+    for position, row in enumerate(amendments, start=1):
+        if not isinstance(row, dict):
+            problems.append(
+                "amendment row %d is a %s, not an object"
+                % (position, type(row).__name__))
+            continue
+        missing = [name for name in AMENDMENT_FIELDS if name not in row]
+        if missing:
+            problems.append(
+                "amendment row %d omits %s"
+                % (position, ", ".join(missing)))
+        extra = [name for name in row if name not in AMENDMENT_FIELDS]
+        if extra:
+            problems.append(
+                "amendment row %d carries unexpected field(s) %s"
+                % (position, ", ".join(sorted(extra))))
+        if missing or extra:
+            continue
+        if list(row) != list(AMENDMENT_FIELDS):
+            problems.append(
+                "amendment row %d writes its fields in the order %s, "
+                "not the declared %s"
+                % (position, ", ".join(row), ", ".join(AMENDMENT_FIELDS)))
+        try:
+            rebuilt = build_amendment(
+                row["amendment"], row["amended_ts"], row["frame"],
+                row["field"], row["source_sha256"], row["recorded"],
+                row["amended"], row["basis"], row["reason"])
+        except ManifestError as err:
+            problems.append("amendment row %d: %s" % (position, err))
+            continue
+        for name in AMENDMENT_FIELDS:
+            if rebuilt[name] != row[name]:
+                problems.append(
+                    "amendment row %d records %s as %r, which is not "
+                    "its canonical form %r"
+                    % (position, name, row[name], rebuilt[name]))
+        number = row["amendment"]
+        if number in seen_numbers:
+            problems.append(
+                "amendment %d appears on rows %d and %d; the numbers "
+                "are the order corrections were made and are not "
+                "reused" % (number, seen_numbers[number], position))
+        else:
+            seen_numbers[number] = position
+        if number != position:
+            problems.append(
+                "amendment row %d is numbered %d; the ledger is "
+                "append-only, so the numbers run 1..n in the order "
+                "they were written" % (position, number))
+        pair = (row["frame"], row["field"])
+        if pair in seen_pairs:
+            problems.append(
+                "frame %d's %s is amended by rows %d and %d; one "
+                "narration carries one correction, and two claims "
+                "about the same sentence are resolved by a human "
+                "rather than by the last line to be written"
+                % (pair[0], pair[1], seen_pairs[pair], position))
+        else:
+            seen_pairs[pair] = position
+        if digests is None:
+            continue
+        if row["frame"] not in digests:
+            problems.append(
+                "amendment row %d amends frame %d, which the manifest "
+                "does not record" % (position, row["frame"]))
+        elif digests[row["frame"]] != row["source_sha256"]:
+            problems.append(
+                "amendment row %d binds frame %d to source_sha256 %s, "
+                "but that row's line hashes to %s: the ledger and the "
+                "record disagree about what was written"
+                % (position, row["frame"], row["source_sha256"],
+                   digests[row["frame"]]))
+    return problems
+
+
+def resolve_rows(rows, amendments, digests=None):
+    """Apply the ledger to a copy of the rows.  Pure.
+
+    Returns ``(resolved, amended)`` -- the rows a DERIVATIVE should be
+    computed from, and the tuple of frame indices an amendment reached,
+    in ascending order.  The input rows are not modified and neither is
+    any file: this is the one function the transcript, the caption cues
+    and the timeline all pass through, so it is deliberately pure and
+    deliberately strict.
+
+    FAIL CLOSED, EVERY TIME.  An amendment is applied only when its
+    `source_sha256` matches the digest of the row as it stands and its
+    `recorded` value matches that row's current text.  Anything else --
+    a frame the rows do not carry, a digest that has moved, a
+    `recorded` value that does not match, a second amendment of the
+    same narration -- raises ManifestError.  A skip would be worse than
+    a refusal here: the derivative would come out looking correct while
+    the ledger and the record disagreed about history.
+
+    `digests` is the {frame: line digest} mapping :func:`row_digests`
+    reads off the file.  When it is omitted the digests are computed
+    from the rows through encode_row(), which is the same encoding
+    append_row() wrote them with.
+    """
+    materialised = [dict(row) for row in rows]
+    by_frame = {}
+    for position, row in enumerate(materialised, start=1):
+        index = row.get("frame")
+        if isinstance(index, bool) or not isinstance(index, int):
+            raise ManifestError(
+                "row %d records %r as its frame index, so an amendment "
+                "cannot be bound to it" % (position, index))
+        if index in by_frame:
+            raise ManifestError(
+                "frame %d appears on rows %d and %d; an ambiguous "
+                "index is reported by verify_manifest() and resolved "
+                "before any amendment is applied to it"
+                % (index, by_frame[index] + 1, position))
+        by_frame[index] = position - 1
+    if digests is None:
+        digests = {row["frame"]: line_digest(encode_row(row))
+                   for row in materialised}
+    applied = []
+    for position, row in enumerate(amendments, start=1):
+        missing = [name for name in AMENDMENT_FIELDS if name not in row]
+        if missing:
+            raise ManifestError(
+                "amendment row %d omits %s, so it cannot be applied"
+                % (position, ", ".join(missing)))
+        index = row["frame"]
+        field = _validated_amendment_field(row["field"])
+        if index not in by_frame:
+            raise ManifestError(
+                "amendment %s amends frame %s, which these rows do not "
+                "carry" % (row["amendment"], index))
+        if index in [one for one, name in applied if name == field]:
+            raise ManifestError(
+                "frame %d's %s carries more than one amendment; that "
+                "is resolved by a human, not by the last line to be "
+                "written" % (index, field))
+        target = materialised[by_frame[index]]
+        recorded = digests.get(index)
+        if recorded != row["source_sha256"]:
+            raise ManifestError(
+                "amendment %s binds frame %d to source_sha256 %s, but "
+                "that row hashes to %s.  The ledger and the record "
+                "disagree about what was written, and nothing is "
+                "derived from a record in that state"
+                % (row["amendment"], index, row["source_sha256"],
+                   recorded))
+        if target.get(field) != row["recorded"]:
+            raise ManifestError(
+                "amendment %s quotes frame %d's %s as %r, but the row "
+                "reads %r"
+                % (row["amendment"], index, field, row["recorded"],
+                   target.get(field)))
+        target[field] = row["amended"]
+        applied.append((index, field))
+    return materialised, tuple(sorted({one for one, _ in applied}))
+
+
+# ---------------------------------------------------------------------
+# The capture attestation ledger
+#
+# One row per published frame, appended by session.py from the digest
+# capture.sh took at the moment of publication.  See DIGEST_FIELDS for
+# the schema and why `attested` is part of it rather than implied.
+#
+# THE LEDGER IS APPEND-ONLY LIKE EVERYTHING ELSE HERE, and for the same
+# reason: it is the statement that makes a frame's bytes evidence, so a
+# path that could rewrite it would be a path that could re-attest
+# substituted pixels.  A frame captured twice at the same index -- a
+# retry inside one step -- legitimately produces two rows, and
+# verify_frame_digests() takes the LAST row for an index because that is
+# the capture that is on disk, while reporting that it happened.
+# ---------------------------------------------------------------------
+
+def default_digests_path():
+    """Return the capture attestation ledger's path.
+
+    Honours PLAYTHROUGH_FRAME_DIGESTS for the same reason the other
+    defaults honour their exports; the value is then held to the same
+    containment rules.
+    """
+    from_env = os.environ.get("PLAYTHROUGH_FRAME_DIGESTS")
+    if from_env and from_env.strip():
+        return os.path.abspath(from_env)
+    return os.path.join(_playthrough_dir(), *DIGESTS_REL_PARTS)
+
+
+def _validated_digests_target(value, root=None):
+    """Return an absolute ledger path this module may touch.
+
+    Contained in the approved root, no symlinked component, EXACTLY
+    <approved root>/build/frame_digests.jsonl, and a regular file -- the
+    same four conditions the manifest and the amendment ledger are held
+    to, and condition three for the same reason: containment alone would
+    let an export point these appends at another artifact.
+    """
+    resolved = _validated_path(value, "frame digest ledger path")
+    approved = _assert_within_root(
+        resolved, "the frame digest ledger path", root)
+    _assert_no_symlink(resolved, approved,
+                       "the frame digest ledger path")
+    canonical = os.path.join(approved, *DIGESTS_REL_PARTS)
+    if os.path.realpath(resolved) != canonical:
+        raise ManifestError(
+            "the frame digest ledger is %s and nothing else, but %s "
+            "was given.  Appending attestation rows onto another "
+            "artifact would corrupt it and would report success."
+            % (canonical, resolved))
+    if os.path.exists(resolved) and not os.path.isfile(resolved):
+        raise ManifestError(
+            "the frame digest ledger path is not a regular file: %s"
+            % resolved)
+    return resolved
+
+
+def file_digest(path, label="file"):
+    """Return the sha256 of a file's exact bytes, in hex.
+
+    Read in blocks and opened with O_NOFOLLOW: a frame is megabytes and
+    a link where a capture belongs is a read somewhere else.
+    """
+    resolved = _validated_path(path, "%s path" % label)
+    digest = hashlib.sha256()
+    descriptor = _open_nofollow(resolved, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        with os.fdopen(descriptor, "rb") as handle:
+            descriptor = None
+            while True:
+                block = handle.read(DIGEST_BLOCK)
+                if not block:
+                    break
+                digest.update(block)
+    except OSError as err:
+        raise ManifestError(
+            "could not hash %s: %s" % (resolved, err)) from err
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+    return digest.hexdigest()
+
+
+def _validated_attestation(value):
+    """Return one of DIGEST_ATTESTATIONS, or raise."""
+    if not isinstance(value, str) or value not in DIGEST_ATTESTATIONS:
+        raise ManifestError(
+            "a capture attestation is %s, got %r.  How the digest was "
+            "established is part of the claim: a digest sealed from a "
+            "commit is weaker evidence than one taken as the frame was "
+            "published, and recording them alike would hide that"
+            % (" or ".join(DIGEST_ATTESTATIONS), value))
+    return value
+
+
+def _validated_git_object(value, label):
+    """Return a git object name, or None, or raise."""
+    if value is None:
+        return None
+    if not isinstance(value, str) or not GIT_OBJECT_RE.match(value):
+        raise ManifestError(
+            "%s must be a git object name (40 or 64 hex digits) or "
+            "null, got %r" % (label, value))
+    return value
+
+
+def build_digest_row(frame, file, sha256, byte_count, attested,
+                     attested_ts, git_blob=None, git_commit=None):
+    """Validate one attestation row and return it in key order.  Pure.
+
+    A "commit" attestation MUST name the blob and the commit it was
+    sealed from: a post-hoc seal that named nothing would be an
+    assertion, and the whole point of recording the weaker claim is that
+    a reader can re-derive it.  A "capture" or "recovery" attestation
+    must name neither, because it was taken from the running pipeline and
+    a git object would be an invention.
+    """
+    index = _validated_frame(frame)
+    row = {
+        "frame": index,
+        "file": _validated_file(file, index),
+        "sha256": _validated_digest(sha256, "sha256"),
+        "bytes": byte_count,
+        "attested": _validated_attestation(attested),
+        "attested_ts": canonical_real_ts(attested_ts),
+        "git_blob": _validated_git_object(git_blob, "git_blob"),
+        "git_commit": _validated_git_object(git_commit, "git_commit"),
+    }
+    if isinstance(row["bytes"], bool) or \
+            not isinstance(row["bytes"], int):
+        raise ManifestError(
+            "the byte count for frame %d is %r, not an integer"
+            % (index, byte_count))
+    if row["bytes"] <= 0:
+        raise ManifestError(
+            "the byte count for frame %d is %d; a published frame is "
+            "not empty" % (index, row["bytes"]))
+    if row["attested"] == DIGEST_AT_COMMIT:
+        if not row["git_blob"] or not row["git_commit"]:
+            raise ManifestError(
+                "frame %d's digest is attested from a commit, so it "
+                "must name the blob and the commit it was sealed from; "
+                "a post-hoc seal that names nothing is an assertion "
+                "rather than evidence a reader can re-derive" % index)
+    elif row["git_blob"] or row["git_commit"]:
+        raise ManifestError(
+            "frame %d's digest is attested at %s, which is taken from "
+            "the running pipeline, so it may not name a git object"
+            % (index, row["attested"]))
+    return {name: row[name] for name in DIGEST_FIELDS}
+
+
+def encode_digest_row(row):
+    """Return one attestation as the exact line to be written."""
+    ordered = {name: row[name] for name in DIGEST_FIELDS}
+    return json.dumps(ordered, ensure_ascii=False) + "\n"
+
+
+def append_frame_digest(digests_path, frame, file, sha256, byte_count,
+                        attested, attested_ts, git_blob=None,
+                        git_commit=None, require_durable=True,
+                        root=None):
+    """Validate one attestation and APPEND it to the ledger.
+
+    The third and last writer in this module, and it goes through the
+    same machinery as the other two: O_NOFOLLOW, a MANDATORY exclusive
+    flock, the end-of-file measurement, one whole-line write with
+    rollback, and an fsync before the row is reported as stored.
+    """
+    path = _validated_digests_target(
+        default_digests_path() if digests_path is None
+        else digests_path, root)
+    parent = os.path.dirname(path)
+    if not os.path.isdir(parent):
+        raise ManifestError(
+            "the directory for the frame digest ledger does not "
+            "exist: %s" % parent)
+    row = build_digest_row(frame, file, sha256, byte_count, attested,
+                           attested_ts, git_blob, git_commit)
+    payload = encode_digest_row(row).encode("utf-8")
+    descriptor = _open_nofollow(
+        path, os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW)
+    try:
+        _lock_exclusively(descriptor, path)
+        try:
+            committed = os.lseek(descriptor, 0, os.SEEK_END)
+        except OSError as err:
+            raise ManifestError(
+                "could not measure the end of the frame digest ledger "
+                "%s (%s), so frame %d's attestation was not written"
+                % (path, err, row["frame"])) from err
+        _assert_row_boundary(descriptor, committed, path, row["frame"])
+        _append_whole_row(descriptor, payload, committed, path,
+                          row["frame"])
+        _fsync(descriptor, path, row["frame"], require_durable)
+    finally:
+        try:
+            os.close(descriptor)
+        except OSError as err:
+            _warn_once(
+                "digest-close",
+                "could not close the frame digest ledger %s after "
+                "appending (%s); the row itself was written and forced "
+                "to the device before this point" % (path, err))
+    return row
+
+
+def read_frame_digests(digests_path=None, root=None):
+    """Return the ledger's rows, in the order they were written.
+
+    An absent ledger yields an empty tuple: a session captured before
+    the ledger existed legitimately has none, and the CONSUMERS are
+    where that is treated as a missing attestation rather than as
+    permission to proceed.
+    """
+    path = _validated_digests_target(
+        default_digests_path() if digests_path is None
+        else digests_path, root)
+    if not os.path.isfile(path):
+        return ()
+    rows = []
+    descriptor = _open_nofollow(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        with os.fdopen(descriptor, "r", encoding="utf-8",
+                       newline="") as handle:
+            descriptor = None
+            for number, raw in enumerate(handle, start=1):
+                rows.append(_decode_line(raw, number, path))
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+    return tuple(rows)
+
+
+def attested_digests(rows):
+    """Return {frame: last attestation row} from ledger rows.  Pure.
+
+    THE LAST ROW FOR AN INDEX WINS, because a retry inside one step
+    captures the same index twice and the last capture is the one on
+    disk.  verify_frame_digests() reports the repeat; this function is
+    what a consumer asks "what should frame N hash to".
+    """
+    latest = {}
+    for row in rows:
+        index = row.get("frame")
+        if isinstance(index, bool) or not isinstance(index, int):
+            continue
+        latest[index] = row
+    return latest
+
+
+def digest_row_problems(rows):
+    """Return a list of problems with the ledger's rows.  Pure."""
+    problems = []
+    seen = {}
+    for position, row in enumerate(rows, start=1):
+        if not isinstance(row, dict):
+            problems.append(
+                "digest row %d is a %s, not an object"
+                % (position, type(row).__name__))
+            continue
+        missing = [name for name in DIGEST_FIELDS if name not in row]
+        extra = [name for name in row if name not in DIGEST_FIELDS]
+        if missing:
+            problems.append("digest row %d omits %s"
+                            % (position, ", ".join(missing)))
+        if extra:
+            problems.append(
+                "digest row %d carries unexpected field(s) %s"
+                % (position, ", ".join(sorted(extra))))
+        if missing or extra:
+            continue
+        if list(row) != list(DIGEST_FIELDS):
+            problems.append(
+                "digest row %d writes its fields in the order %s, not "
+                "the declared %s"
+                % (position, ", ".join(row), ", ".join(DIGEST_FIELDS)))
+        try:
+            rebuilt = build_digest_row(
+                row["frame"], row["file"], row["sha256"], row["bytes"],
+                row["attested"], row["attested_ts"], row["git_blob"],
+                row["git_commit"])
+        except ManifestError as err:
+            problems.append("digest row %d: %s" % (position, err))
+            continue
+        for name in DIGEST_FIELDS:
+            if rebuilt[name] != row[name]:
+                problems.append(
+                    "digest row %d records %s as %r, which is not its "
+                    "canonical form %r"
+                    % (position, name, row[name], rebuilt[name]))
+        index = row["frame"]
+        if index in seen:
+            problems.append(
+                "frame %d is attested by rows %d and %d; a retry at one "
+                "index legitimately produces two, and the LAST is the "
+                "capture on disk -- reported so that a repeat is never "
+                "silent" % (index, seen[index], position))
+        seen[index] = position
+    return problems
+
+
+def verify_frame_digests(rows, digests=None, frames_dir=None,
+                         digests_path=None, root=None,
+                         require_all=True):
+    """Check the frames on disk against their attestations.
+
+    `rows` are the manifest rows -- the ledger is keyed off the RECORD,
+    so an attestation for a frame no row mentions is reported and a row
+    with no attestation is reported too.  Returns a list of problems;
+    an empty list means every recorded frame exists, hashes to the
+    digest attested for it, and is the size that attestation names.
+
+    `require_all` False downgrades "this frame has no attestation" from
+    a problem to silence, for the one honest case that exists: a session
+    captured before this ledger did.  It is never the default, and the
+    consumers that must not proceed without attestation leave it True.
+    """
+    if digests is None:
+        digests = read_frame_digests(digests_path, root)
+    if frames_dir is None:
+        # A NOMINATED ROOT OUTRANKS THE EXPORT, exactly as it does for
+        # every other default in this module.  Reading
+        # PLAYTHROUGH_FRAMES_DIR here would send a confined caller --
+        # a test, or a verifier pointed at a tree it owns -- to hash the
+        # REAL session's frames against the ledger it was handed, which
+        # is both wrong and a way to touch evidence from a run that was
+        # meant to reach nothing.
+        frames_dir = (default_frames_dir() if root is None
+                      else os.path.join(approved_root(root), "frames"))
+    directory = _validated_directory(
+        frames_dir, "frames directory", root)
+    problems = digest_row_problems(digests)
+    latest = attested_digests(digests)
+    recorded = set()
+    for row in rows:
+        index = row.get("frame")
+        if isinstance(index, bool) or not isinstance(index, int):
+            continue
+        recorded.add(index)
+        path = os.path.join(directory, FRAME_NAME_FORMAT % index)
+        attestation = latest.get(index)
+        if attestation is None:
+            if require_all:
+                problems.append(
+                    "frame %d is recorded but its bytes are not "
+                    "attested: nothing establishes that %s holds the "
+                    "pixels that were captured"
+                    % (index, FRAME_FILE_FORMAT % index))
+            continue
+        if not os.path.isfile(path):
+            problems.append(
+                "frame %d is attested but %s is missing"
+                % (index, FRAME_FILE_FORMAT % index))
+            continue
+        try:
+            observed = file_digest(path, "frame")
+            size = os.path.getsize(path)
+        except (ManifestError, OSError) as err:
+            problems.append(
+                "frame %d could not be verified against its "
+                "attestation: %s" % (index, err))
+            continue
+        if observed != attestation.get("sha256"):
+            problems.append(
+                "frame %d is attested as sha256 %s but %s now hashes "
+                "to %s: these are not the bytes that were captured"
+                % (index, attestation.get("sha256"),
+                   FRAME_FILE_FORMAT % index, observed))
+        elif size != attestation.get("bytes"):
+            problems.append(
+                "frame %d is attested as %r byte(s) but %s holds %d"
+                % (index, attestation.get("bytes"),
+                   FRAME_FILE_FORMAT % index, size))
+    for index in sorted(set(latest) - recorded):
+        problems.append(
+            "the digest ledger attests frame %d, which the record does "
+            "not carry" % index)
+    return problems
 
 
 def _decode_line(raw, number, path):
@@ -2688,7 +3737,7 @@ def _shape_problems(path):
     return problems
 
 
-def row_field_problems(row, number):
+def row_field_problems(row, number, narration=True):
     """Report every schema defect in ONE row.  Read-only.
 
     PUBLIC AND AUTHORITATIVE.  This function -- not a paraphrase of it
@@ -2712,6 +3761,21 @@ def row_field_problems(row, number):
     `number` is the 1-based line number, used only in the messages.
     Nothing is modified, and a returned empty list means this row
     satisfies the six-field schema.
+
+    `narration` decides whether the two checks on the AMENDABLE fields
+    -- the voice gate on `commentary` and the placeholder sentinels on
+    both narrations -- are applied here.  It defaults to true, so every
+    existing caller is held to the whole schema.  It is false in exactly
+    one place: timeline.py gates the RECORDED rows without it and then
+    applies the full gate to the rows manifest.resolve_rows() returns.
+    That is not a relaxation, it is where the check belongs.  A recorded
+    narration cannot be edited -- that is the whole of the amendment
+    ledger's reason for existing -- so refusing the record for one would
+    leave a session with no honest way forward, while the sentence that
+    actually reaches the transcript and the caption track is the
+    RESOLVED one, which is still refused if it carries a meta word.
+    Everything this argument suppresses is checked one step later, on
+    the text a reader will actually see.
     """
     problems = []
     if list(row) != list(FIELDS):
@@ -2779,17 +3843,19 @@ def row_field_problems(row, number):
     # satisfied by a warning nobody reads: a row that carries one is
     # reported by every gate that reads this file, including the
     # committed-artifact suite.
-    voice = meta_vocabulary_problem(row["commentary"],
-                                    "row %d commentary" % number)
-    if voice is not None:
-        problems.append(voice)
+    if narration:
+        voice = meta_vocabulary_problem(row["commentary"],
+                                        "row %d commentary" % number)
+        if voice is not None:
+            problems.append(voice)
     # A HARD PROBLEM, like the voice gate above and for a different
     # reason.  See the PLACEHOLDER sentinels beside META_PATTERNS for why
     # the two stay separate: a field marked as not yet filled in is not a
     # record of anything, and every other check here passes straight
     # over it.
-    problems.extend(sentinel_problems(
-        row["action"], row["commentary"], "row %d" % number))
+    if narration:
+        problems.extend(sentinel_problems(
+            row["action"], row["commentary"], "row %d" % number))
     return problems
 
 
@@ -2819,7 +3885,7 @@ def sequence_problems(rows):
     return problems
 
 
-def row_problems(rows, allow_index_gaps=False):
+def row_problems(rows, allow_index_gaps=False, narration=True):
     """Report every schema defect in a sequence of rows.  Pure.
 
     THE canonical in-memory gate for manifest rows: it applies
@@ -2845,8 +3911,11 @@ def row_problems(rows, allow_index_gaps=False):
     timestamp at all.
 
     `allow_index_gaps` suppresses only the 1..n sequence check -- the
-    single problem an operator may knowingly accept, and the only one
-    this function will ever stay quiet about.  Every other defect is
+    single problem an operator may knowingly accept.  `narration` is
+    passed to row_field_problems(), where it is documented: with it
+    false the two checks on the amendable narrations are left to the
+    caller to apply to the RESOLVED rows, which is what timeline.py
+    does, and no other caller passes it.  Every other defect is
     reported unconditionally, and verify_manifest() never passes the
     flag, so `manifest.py verify` reports a gap whatever anybody else
     chose to tolerate.
@@ -2862,7 +3931,7 @@ def row_problems(rows, allow_index_gaps=False):
                 "row %d is a %s, not an object"
                 % (position, type(row).__name__))
             continue
-        problems.extend(row_field_problems(row, position))
+        problems.extend(row_field_problems(row, position, narration))
     if not allow_index_gaps:
         problems.extend(sequence_problems(rows))
     return problems
@@ -2956,8 +4025,19 @@ def verify_manifest(manifest_path=None, frames_dir=None,
     with `require_frames` the existence of the capture each row names --
     rather than restating the row rules.  Nothing is repaired, reordered
     or rewritten: a problem is reported so that a human can decide, which
-    for this file means a note in playthrough/TECHNICAL_NOTES.md rather
-    than an edit here.
+    for this file means an amendment in playthrough/amendments.jsonl
+    rather than an edit here.
+
+    WHERE THE TWO NARRATION GATES ARE APPLIED, and why it is not here on
+    the recorded text.  A recorded row is never edited, so the only
+    honest remedy for a meta word or a placeholder sentinel in one is an
+    amendment -- and the sentence a reader actually meets, in
+    playthrough/transcript.md and on the caption track, is the RESOLVED
+    one.  So the recorded rows are held to the structural schema, the
+    resolved rows are held to the whole of it, and a defect with no
+    amendment behind it is still reported because resolving leaves it
+    exactly where it was.  With no ledger the two sets are the same rows
+    and this is indistinguishable from checking them once.
     """
     if manifest_path is None:
         manifest_path = default_manifest_path()
@@ -2969,13 +4049,81 @@ def verify_manifest(manifest_path=None, frames_dir=None,
     except ManifestError as err:
         return [str(err)]
     problems = _shape_problems(path)
-    problems.extend(row_problems(rows))
-    problems.extend(honesty_problems(rows))
+    problems.extend(row_problems(rows, narration=False))
+    resolved = rows
+    # The ledger beside THIS manifest, named the way timeline.py names
+    # it: derived from the approved root when one is given, so a
+    # sandboxed caller checks its own ledger and not the repository's.
+    ledger = (default_amendments_path() if root is None else
+              os.path.join(approved_root(root), AMENDMENTS_NAME))
+    ledger_problems = verify_amendments(ledger, path, root)
+    if ledger_problems:
+        problems.extend(ledger_problems)
+    else:
+        try:
+            resolved, _ = resolve_rows(
+                rows, read_amendments(ledger, root))
+        except ManifestError as err:
+            problems.append(
+                "the amendment ledger does not apply to this record: "
+                "%s" % err)
+            resolved = rows
+    problems.extend(row_problems(resolved))
+    problems.extend(honesty_problems(resolved))
     if require_frames:
         if frames_dir is None:
             frames_dir = default_frames_dir()
         problems.extend(_frame_problems(rows, frames_dir, root))
     _check_frame_format_contract()
+    return problems
+
+
+def verify_amendments(amendments_path=None, manifest_path=None,
+                      root=None):
+    """Return a list of problems with the amendment ledger.  Read-only.
+
+    An empty list means the ledger is either absent -- the ordinary
+    case for a session with nothing to amend -- or that every row
+    satisfies the nine-field schema in its declared order, the
+    numbering runs 1..n, no narration is amended twice, every amended
+    value would itself be a valid field, and every `source_sha256`
+    matches the sha256 of the manifest line it names.
+
+    The digest half is the reason this is a verifier rather than a
+    schema check: it is what turns "the ledger claims to correct this
+    row" into "the ledger corrects THIS row, byte for byte".
+    """
+    ledger = _validated_amendments_target(
+        default_amendments_path() if amendments_path is None
+        else amendments_path, root)
+    if not os.path.isfile(ledger):
+        return []
+    try:
+        amendments = read_amendments(ledger, root)
+    except ManifestError as err:
+        return [str(err)]
+    try:
+        digests = row_digests(manifest_path, root)
+        rows = read_rows(manifest_path, root)
+    except ManifestError as err:
+        return ["the amendment ledger cannot be checked against the "
+                "record: %s" % err]
+    problems = amendment_problems(amendments, digests)
+    if problems:
+        return problems
+    # AND THE AMENDED RECORD IS HELD TO THE RULES THE RECORDED ONE IS.
+    # An amendment reaches the transcript and the caption track, so an
+    # amended sentence that stated a time the frames do not support, or
+    # an amended action that lost its derived shape, would be exactly
+    # the fabrication this ledger exists to make impossible.  The gates
+    # are therefore re-run over the RESOLVED rows rather than trusted to
+    # the shape checks above.
+    try:
+        resolved, _ = resolve_rows(rows, amendments, digests)
+    except ManifestError as err:
+        return ["the amendment ledger cannot be applied: %s" % err]
+    problems.extend(row_problems(resolved))
+    problems.extend(honesty_problems(resolved))
     return problems
 
 
@@ -3009,6 +4157,34 @@ def _build_parser():
         help="also require the capture named by every row to exist")
     commands.add_parser(
         "count", help="print the number of rows on stdout")
+    amendments = commands.add_parser(
+        "amendments",
+        help=("check the amendment ledger's schema, its numbering and "
+              "the digest binding every row to the line it amends"))
+    amendments.add_argument(
+        "--ledger", default=None, metavar="PATH",
+        help=("the amendment ledger to read; defaults to "
+              "PLAYTHROUGH_AMENDMENTS or "
+              "<repository>/playthrough/amendments.jsonl"))
+    digests = commands.add_parser(
+        "digests",
+        help=("check every recorded frame against the sha256 the "
+              "capture attestation ledger holds for it"))
+    digests.add_argument(
+        "--ledger", default=None, metavar="PATH",
+        help=("the capture attestation ledger to read; defaults to "
+              "PLAYTHROUGH_FRAME_DIGESTS or "
+              "<repository>/playthrough/build/frame_digests.jsonl"))
+    digests.add_argument(
+        "--frames-dir", default=None, metavar="DIR",
+        help=("the captures to hash; defaults to "
+              "PLAYTHROUGH_FRAMES_DIR or "
+              "<repository>/playthrough/frames"))
+    digests.add_argument(
+        "--allow-unattested", action="store_true",
+        help=("do not report a recorded frame that has no attestation "
+              "at all.  For a session captured before the ledger "
+              "existed; never for one that must be trusted"))
     return parser
 
 
@@ -3025,6 +4201,34 @@ def main(argv=None, root=None):
     try:
         if args.command == "count":
             print(count_rows(args.manifest, root))
+            return 0
+        if args.command == "amendments":
+            problems = verify_amendments(
+                args.ledger, args.manifest, root=root)
+            total = 0 if problems else len(
+                read_amendments(args.ledger, root))
+            for problem in problems:
+                print("manifest.py: %s" % problem, file=sys.stderr)
+            if problems:
+                print("manifest.py: %d problem(s) found"
+                      % len(problems), file=sys.stderr)
+                return 1
+            print("amendments ok: %d amendment(s)" % total)
+            return 0
+        if args.command == "digests":
+            rows = read_rows(args.manifest, root)
+            ledger = read_frame_digests(args.ledger, root)
+            problems = verify_frame_digests(
+                rows, ledger, frames_dir=args.frames_dir, root=root,
+                require_all=not args.allow_unattested)
+            for problem in problems:
+                print("manifest.py: %s" % problem, file=sys.stderr)
+            if problems:
+                print("manifest.py: %d problem(s) found"
+                      % len(problems), file=sys.stderr)
+                return 1
+            print("digests ok: %d frame(s) attested, %d row(s)"
+                  % (len(attested_digests(ledger)), len(ledger)))
             return 0
         problems = verify_manifest(
             args.manifest,

@@ -172,6 +172,12 @@ DISPLAY = ":99"
 
 MSX_ID = "MshockXottoplus"
 MSX_VIEW = "MSXotto+"
+# The three spellings of the ONE required tileset -- the id, the menu
+# label and the directory -- which env.sh carries as
+# PLAYTHROUGH_TILESET_ALIASES.  The fixture anchors whatever it installs
+# under any of them, because that is the tileset a real checkout's
+# tracked anchor describes.
+MSX_ALIASES = frozenset((MSX_ID, MSX_VIEW, "MShockXotto+"))
 ASCII_ID = "ASCIITiles"
 
 # The coreutils the script really runs.  Nothing else is on PATH.
@@ -315,7 +321,12 @@ class LaunchFixture(unittest.TestCase):
                    "// a marker, not the engine\n")
         self.write(os.path.join(self.checkout, "Makefile"),
                    "# a marker, not the build system\n")
-        for name in ("env.sh", "launch_game.sh"):
+        # tileset_provenance.py travels with the launcher: the
+        # tileset gate delegates the whole comparison to it, and a
+        # sandbox without it would exercise the missing-checker refusal
+        # instead of the subject.
+        for name in ("env.sh", "launch_game.sh",
+                     "tileset_provenance.py"):
             shutil.copyfile(os.path.join(TOOLING, name),
                             os.path.join(self.tooling, name))
         os.chmod(os.path.join(self.tooling, "launch_game.sh"), 0o755)
@@ -331,6 +342,13 @@ class LaunchFixture(unittest.TestCase):
         # populated on this machine; pointing it inside the sandbox is
         # what keeps every tileset outcome decided by the fixture.
         self.pack = os.path.join(self.root, "pack")
+        # A supported release for the platform gate to read, so the
+        # gate passes on its own terms rather than being waived.
+        self.os_release = os.path.join(self.root, "os-release")
+        with open(self.os_release, "w", encoding="utf-8") as handle:
+            handle.write('ID=ubuntu\n'
+                         'VERSION_ID="26.04"\n'
+                         'PRETTY_NAME="Ubuntu 26.04 LTS"\n')
         self.bin = os.path.join(self.root, "bin")
         os.makedirs(self.bin)
         # The fake engine's own record of its pid, which the xdotool
@@ -659,15 +677,56 @@ class LaunchFixture(unittest.TestCase):
             time.sleep(0.05)
         return None
 
-    def install_tileset(self, directory, ident, view=None):
-        """Write one gfx/<pack>/tileset.txt."""
+    def install_tileset(self, directory, ident, view=None,
+                        anchor=True):
+        """Write one gfx/<pack>/tileset.txt.
+
+        AND ITS PROVENANCE ANCHOR, when what is being installed is the
+        REQUIRED tileset.  gfx/ is git-ignored, so a correctly
+        provisioned checkout carries a tracked anchor stating which bytes
+        the artwork must be, and the launcher verifies the complete
+        installed tree against it before using it.  A fixture that
+        omitted the anchor would exercise the missing-anchor refusal
+        rather than its own subject; `anchor=False` is for the tests that
+        want exactly that refusal.
+        """
         conf = os.path.join(self.checkout, "gfx", directory,
                             "tileset.txt")
         lines = ["# a comment, as the shipped packs have",
                  "NAME: %s" % ident]
         if view is not None:
             lines.append("VIEW: %s" % view)
-        return self.write(conf, "\n".join(lines) + "\n")
+        written = self.write(conf, "\n".join(lines) + "\n")
+        if anchor and (ident in MSX_ALIASES or view in MSX_ALIASES):
+            self.write_provenance_anchor(directory)
+        return written
+
+    def write_provenance_anchor(self, directory, **overrides):
+        """Anchor the installed tree at gfx/<directory> as it now is.
+
+        Digests are REAL -- computed from the files the fixture just
+        wrote by the same module the launcher calls -- so a test that
+        alters one byte afterwards produces a genuine mismatch rather
+        than a contrived one.
+        """
+        sys.path.insert(0, TOOLING)
+        try:
+            import tileset_provenance
+        finally:
+            sys.path.pop(0)
+        document = tileset_provenance.generate(
+            os.path.join("gfx", directory),
+            {"repo": "https://example.invalid/tilesets.git",
+             "commit": "0" * 40,
+             "committed": "2026-01-01T00:00:00+00:00",
+             "subject": "a sandbox anchor, not the shipped one",
+             "path": "gfx/%s" % directory},
+            "the fixture wrote these files directly",
+            root=self.checkout)
+        document.update(overrides)
+        return tileset_provenance.write_anchor(
+            document,
+            os.path.join(self.tooling, "tileset_provenance.json"))
 
     def install_seeder(self):
         """Put the REAL seed_options.py in the sandbox.
@@ -736,6 +795,26 @@ class LaunchFixture(unittest.TestCase):
         if manifest:
             self.write_pack_manifest(directory)
         return written
+
+    def anchor_pack_as_installed(self, directory):
+        """Anchor the tree a pack ingestion WILL produce.
+
+        `cp -a` of the pack's contents is what lands under gfx/, so the
+        anchor is generated from a copy of the pack placed there, then
+        the copy is removed -- leaving the checkout exactly as it was
+        with an anchor that describes what the ingestion is about to
+        install.
+        """
+        destination = os.path.join(self.checkout, "gfx", directory)
+        existed = os.path.exists(destination)
+        if not existed:
+            shutil.copytree(os.path.join(self.pack, directory),
+                            destination)
+        try:
+            return self.write_provenance_anchor(directory)
+        finally:
+            if not existed:
+                shutil.rmtree(destination, True)
 
     def write_pack_manifest(self, directory, corrupt=False):
         """Write SHA256SUMS over every regular file in one pack entry."""
@@ -808,20 +887,28 @@ class LaunchFixture(unittest.TestCase):
             # Each refusal keeps its own test, which arranges the
             # untrustworthy condition on purpose.
             "PLAYTHROUGH_STUB_LOG": self.stub_log,
-            # THE PLATFORM GATE IS SATISFIED, NOT SWITCHED OFF.
-            # playthrough_check_platform REFUSES an out-of-support or
-            # untabulated release by default, and the host this suite
-            # runs on may well be one -- so without a waiver every test
-            # here would exercise the prerequisite refusal and assert
-            # nothing about the subject.  The waiver takes a REASON,
-            # which is what makes declaring it in a fixture honest: it
-            # says why, in the same words a run on this host would.  It
-            # is not a trust bypass, so the enforced production path is
-            # unaffected, and the gate itself has its own tests in
-            # test_env.py.
-            "PLAYTHROUGH_ALLOW_EOL_PLATFORM":
-                "test fixture; the platform gate has its own coverage "
-                "in test_env.py",
+            # THE PLATFORM GATE IS SATISFIED, NOT WAIVED -- AND THE
+            # DIFFERENCE IS THE WHOLE POINT.  This fixture used to set
+            # PLAYTHROUGH_ALLOW_EOL_PLATFORM with a reason, on the
+            # grounds that the waiver was not a trust bypass.  A
+            # security review was right that it had to become one: an
+            # end-of-life release means the ImageMagick, ffmpeg and
+            # Xorg/Xvfb packages that photograph, decode and encode
+            # every frame receive no further security fixes, and
+            # recording that in a summary does not stop the next command
+            # from producing evidence under it.  It is registered now,
+            # so it forces the diagnostic state and this suite's own
+            # subject would refuse.
+            #
+            # So the sandbox NOMINATES its platform facts instead, which
+            # relaxes nothing: playthrough_check_platform runs in full
+            # against the nominated file and still refuses an
+            # out-of-support or untabulated release.  env.sh honours a
+            # nomination ONLY in a tree git does not track -- a verified
+            # property, not a declared one -- and this sandbox is such a
+            # tree, while a real checkout is not.  The gate and the
+            # nomination both have their own coverage in test_env.py.
+            "PLAYTHROUGH_OS_RELEASE": self.supported_os_release(),
             "PLAYTHROUGH_PYTHON": interpreter,
             "PLAYTHROUGH_WINDOW_TIMEOUT": "10",
             "PLAYTHROUGH_STOP_TIMEOUT": "10",
@@ -846,6 +933,23 @@ class LaunchFixture(unittest.TestCase):
             else:
                 env[name] = str(value)
         return env
+
+    def supported_os_release(self):
+        """Write, and name, an os-release the support table accepts.
+
+        Ubuntu 24.04 LTS -- a real release, genuinely in support until
+        2029-04 by env.sh's own dated table -- so the platform check
+        passes because it PASSES, not because anything was relaxed.  The
+        file lives in the sandbox, and env.sh honours the nomination only
+        because this tree is not a git working tree.
+        """
+        path = os.path.join(self.root, "os-release")
+        if not os.path.isfile(path):
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write('ID=ubuntu\n'
+                             'VERSION_ID="24.04"\n'
+                             'PRETTY_NAME="Ubuntu 24.04.3 LTS"\n')
+        return path
 
     def run_launch(self, *args, **overrides):
         """Run launch_game.sh in the sandbox."""
@@ -1654,6 +1758,12 @@ class TestTheTilesetResolution(LaunchFixture):
 
     def test_the_required_pack_is_installed_when_only_pre_placed(self):
         self.install_pack("MShockXotto+", MSX_ID, MSX_VIEW)
+        # A correctly provisioned checkout anchors the tree the
+        # ingestion is about to install; the gate applies to a
+        # freshly-ingested tileset exactly as it does to a pre-installed
+        # one, because the manifest an ingestion verifies travelled
+        # inside the pack.
+        self.anchor_pack_as_installed("MShockXotto+")
         self.install_tileset("ASCIITileset", ASCII_ID, "ASCII")
         status, out, err = self.run_launch("tileset")
         self.assertEqual(status, EX_OK)
@@ -1680,6 +1790,7 @@ class TestTheTilesetResolution(LaunchFixture):
 
     def test_no_partial_directory_survives_a_pack_install(self):
         self.install_pack("MShockXotto+", MSX_ID, MSX_VIEW)
+        self.anchor_pack_as_installed("MShockXotto+")
         self.run_launch("tileset")
         leftovers = [name for name
                      in os.listdir(os.path.join(self.checkout, "gfx"))
@@ -1911,6 +2022,272 @@ class TestTheTilesetResolution(LaunchFixture):
             msg=("a pack carrying one is not trustworthy at all, so "
                  "dropping the offending entry and copying the rest "
                  "would be the wrong repair"))
+
+
+class TestTheTilesetProvenanceGate(LaunchFixture):
+    """Finding 4: which BYTES the artwork is, proven from outside it.
+
+    gfx/ is git-ignored (.gitignore:52) with four negations, and the
+    required MSXotto+ is not one of them -- so the artwork every frame of
+    the film is rendered in is the one substantive input git does not
+    carry.  Until this gate existed, an installed tileset was accepted on
+    the strength of the NAME:/VIEW: line in its own tileset.txt, and all
+    three consequences below were reproduced against the shipped script:
+    a replaced payload with a regenerated in-pack SHA256SUMS accepted at
+    exit 0; a symlinked install directory accepted at exit 0; and no
+    statement anywhere of the upstream commit.
+
+    The anchor is playthrough/tooling/tileset_provenance.json, TRACKED,
+    so its integrity is git's -- the same trust root as the scripts
+    themselves. An in-pack manifest cannot be the anchor: whoever can
+    write the artwork writes the digest list in the same command.
+    """
+
+    def installed(self, name="tiles.png", body=b"the reviewed artwork"):
+        """A required tileset with one payload file, anchored as it is."""
+        self.install_tileset("MShockXotto+", MSX_ID, MSX_VIEW,
+                             anchor=False)
+        path = os.path.join(self.checkout, "gfx", "MShockXotto+", name)
+        with open(path, "wb") as handle:
+            handle.write(body)
+        self.write_provenance_anchor("MShockXotto+")
+        return path
+
+    def resolve(self, **overrides):
+        """Run the tileset subcommand and return its three outputs."""
+        return self.run_launch("tileset", **overrides)
+
+    def anchor_document(self):
+        """Return the sandbox anchor, parsed."""
+        with open(os.path.join(self.tooling, "tileset_provenance.json"),
+                  encoding="utf-8") as handle:
+            return json.load(handle)
+
+    def test_the_genuine_tree_verifies(self):
+        self.installed()
+        status, out, err = self.resolve()
+        self.assertEqual(status, EX_OK)
+        self.assertEqual(
+            self.emitted(out)["PLAYTHROUGH_TILESET_RESOLVED"], MSX_ID)
+        self.assertIn("provenance VERIFIED", err)
+
+    def test_a_replaced_payload_is_refused(self):
+        """THE EXPLOIT, verbatim: modify a file, regenerate SHA256SUMS.
+
+        The in-pack manifest verifies perfectly afterwards, which is
+        precisely why it was never an anchor.
+        """
+        payload = self.installed()
+        with open(payload, "wb") as handle:
+            handle.write(b"not the artwork that was reviewed")
+        rows = []
+        holder = os.path.dirname(payload)
+        for name in sorted(os.listdir(holder)):
+            path = os.path.join(holder, name)
+            if not os.path.isfile(path) or name == "SHA256SUMS":
+                continue
+            with open(path, "rb") as handle:
+                rows.append("%s  ./%s" % (
+                    hashlib.sha256(handle.read()).hexdigest(), name))
+        self.write(os.path.join(holder, "SHA256SUMS"),
+                   "\n".join(rows) + "\n")
+        status, out, err = self.resolve()
+        self.assertEqual(status, EX_TILESET)
+        self.assertIn("tiles.png", err)
+        self.assertIn("hashes to", err)
+        self.assertNotIn("PLAYTHROUGH_TILESET_RESOLVED", out)
+
+    def test_an_extra_file_is_refused(self):
+        """Not harmless: it is the first half of a substitution."""
+        self.installed()
+        self.write(os.path.join(self.checkout, "gfx", "MShockXotto+",
+                                "extra.png"), "surplus\n")
+        status, _, err = self.resolve()
+        self.assertEqual(status, EX_TILESET)
+        self.assertIn("is NOT named by the anchor", err)
+
+    def test_a_missing_file_is_refused(self):
+        payload = self.installed()
+        os.unlink(payload)
+        status, _, err = self.resolve()
+        self.assertEqual(status, EX_TILESET)
+        self.assertIn("is NOT installed", err)
+
+    def test_a_symlinked_install_directory_is_refused(self):
+        """`[ -d ]` dereferences, so this used to be accepted."""
+        outside = os.path.join(self.root, "elsewhere")
+        os.makedirs(outside)
+        self.write(os.path.join(outside, "tileset.txt"),
+                   "NAME: %s\nVIEW: %s\n" % (MSX_ID, MSX_VIEW))
+        os.symlink(outside,
+                   os.path.join(self.checkout, "gfx", "MShockXotto+"))
+        status, out, err = self.resolve()
+        self.assertEqual(status, EX_TILESET)
+        self.assertIn("is a symbolic link", err)
+        self.assertIn(
+            "AS A DIRECTORY OF THIS CHECKOUT", err,
+            msg=("the link is skipped rather than followed, so the "
+                 "tileset reads as absent -- and the refusal names the "
+                 "real reason rather than that symptom"))
+        self.assertNotIn("PLAYTHROUGH_TILESET_RESOLVED", out)
+
+    def test_a_symlinked_tileset_txt_is_refused(self):
+        """The id itself would be read from somewhere unaccounted for."""
+        outside = os.path.join(self.root, "elsewhere.txt")
+        self.write(outside, "NAME: %s\nVIEW: %s\n" % (MSX_ID, MSX_VIEW))
+        holder = os.path.join(self.checkout, "gfx", "MShockXotto+")
+        os.makedirs(holder)
+        os.symlink(outside, os.path.join(holder, "tileset.txt"))
+        status, _, err = self.resolve()
+        self.assertEqual(status, EX_TILESET)
+        self.assertIn("symbolic link", err)
+
+    def test_a_symlink_inside_the_installed_tree_is_refused(self):
+        self.installed()
+        os.symlink("/etc/passwd",
+                   os.path.join(self.checkout, "gfx", "MShockXotto+",
+                                "sneaky.png"))
+        status, _, err = self.resolve()
+        self.assertEqual(status, EX_TILESET)
+        self.assertIn("symbolic link", err)
+
+    def test_a_missing_anchor_is_refused(self):
+        """No anchor is no provenance, which is the whole finding."""
+        self.install_tileset("MShockXotto+", MSX_ID, MSX_VIEW,
+                             anchor=False)
+        status, _, err = self.resolve()
+        self.assertEqual(status, EX_TILESET)
+        self.assertIn("no tileset provenance anchor", err)
+
+    def test_a_symlinked_anchor_is_refused(self):
+        """A link in its place redirects the trust root itself."""
+        self.installed()
+        anchored = os.path.join(self.tooling,
+                                "tileset_provenance.json")
+        elsewhere = os.path.join(self.root, "somebody-elses.json")
+        os.rename(anchored, elsewhere)
+        os.symlink(elsewhere, anchored)
+        status, _, err = self.resolve()
+        self.assertEqual(status, EX_TILESET)
+        self.assertIn("is a symbolic link", err)
+
+    def test_a_malformed_anchor_is_refused(self):
+        self.installed()
+        self.write(os.path.join(self.tooling, "tileset_provenance.json"),
+                   "{ this is not json\n")
+        status, _, err = self.resolve()
+        self.assertEqual(status, EX_TILESET)
+        self.assertIn("could not be read as JSON", err)
+
+    def test_an_anchor_for_another_tileset_is_refused(self):
+        """Anchoring SOMETHING is not anchoring THIS."""
+        self.installed()
+        document = self.anchor_document()
+        document["tileset"]["id"] = "SomebodyElsesTiles"
+        self.write(os.path.join(self.tooling, "tileset_provenance.json"),
+                   json.dumps(document))
+        status, _, err = self.resolve()
+        self.assertEqual(status, EX_TILESET)
+        self.assertIn("SomebodyElsesTiles", err)
+
+    def test_an_internally_inconsistent_anchor_is_refused(self):
+        """Its own file list must hash to its own tree digest."""
+        self.installed()
+        path = os.path.join(self.tooling, "tileset_provenance.json")
+        document = self.anchor_document()
+        document["tree_sha256"] = "0" * 64
+        self.write(path, json.dumps(document))
+        status, _, err = self.resolve()
+        self.assertEqual(status, EX_TILESET)
+        self.assertIn("internally inconsistent", err)
+
+    def test_the_missing_checker_is_a_refusal_not_a_skip(self):
+        self.installed()
+        os.unlink(os.path.join(self.tooling, "tileset_provenance.py"))
+        status, _, err = self.resolve()
+        self.assertEqual(status, EX_PREREQ)
+        self.assertIn("cannot be verified", err)
+
+    def test_an_unusable_interpreter_is_a_refusal_not_a_skip(self):
+        """Called directly, because env.sh will not hand one over.
+
+        env.sh re-resolves an unusable PLAYTHROUGH_PYTHON rather than
+        exporting it, so this branch cannot be reached through the
+        environment -- which is exactly why it is asserted here instead
+        of assumed: a gate that cannot run must stop the run, and the
+        function is called with the global set to a path that is not
+        executable.
+        """
+        self.installed()
+        status, _, err = self.run_sourced(
+            'PLAYTHROUGH_PYTHON="%s"\n'
+            'TILESET_ORIGIN="required-installed"\n'
+            'verify_tileset_provenance "${PLAYTHROUGH_REPO_ROOT}/gfx/'
+            'MShockXotto+" "%s" "%s"\n'
+            % (os.path.join(self.root, "no-python"), MSX_ID, MSX_VIEW))
+        self.assertEqual(status, EX_PREREQ)
+        self.assertIn("is not skipped", err)
+
+    def test_the_gate_runs_for_a_freshly_ingested_tileset_too(self):
+        """A pack verifies against a manifest that travelled inside it.
+
+        So ingestion is not provenance either: the anchor is applied to
+        what actually landed under gfx/, whichever origin put it there.
+        """
+        self.install_pack("MShockXotto+", MSX_ID, MSX_VIEW)
+        self.anchor_pack_as_installed("MShockXotto+")
+        self.write(os.path.join(self.pack, "MShockXotto+",
+                                "tile_config.json"), "{ }\n")
+        self.write_pack_manifest("MShockXotto+")
+        status, out, err = self.resolve()
+        self.assertEqual(
+            status, EX_TILESET,
+            msg=("the pack's own SHA256SUMS verifies perfectly -- it "
+                 "was regenerated over the altered file -- and the "
+                 "anchor still refuses it"))
+        self.assertIn("tile_config.json", err)
+        self.assertNotIn("PLAYTHROUGH_TILESET_RESOLVED", out)
+
+    def test_the_diagnostic_fallback_is_exempt_and_says_so(self):
+        """ASCIITiles is TRACKED, and the run is already diagnostic.
+
+        PLAYTHROUGH_ALLOW_TILESET_FALLBACK is a registered trust bypass,
+        so capture.sh already refuses to produce a production frame under
+        it; the anchor describes the required MSXotto+ and is not applied
+        to artwork git itself carries.  The exemption is logged.
+        """
+        self.install_tileset("ASCIITileset", ASCII_ID, "ASCII")
+        status, out, err = self.resolve(
+            PLAYTHROUGH_ALLOW_TILESET_FALLBACK="1")
+        self.assertEqual(status, EX_OK)
+        self.assertEqual(
+            self.emitted(out)["PLAYTHROUGH_TILESET_ORIGIN"], "fallback")
+        self.assertIn("DIAGNOSTIC", err)
+        self.assertIn("is not applied to it", err)
+
+    def test_the_tracked_anchor_describes_the_real_installation(self):
+        """The shipped anchor, checked against the shipped rules.
+
+        Not the sandbox's -- the repository's own file, read and
+        validated by the module the launcher calls, so a committed anchor
+        that was hand-edited into an inconsistent state fails here rather
+        than at a launch.
+        """
+        sys.path.insert(0, TOOLING)
+        try:
+            import tileset_provenance
+        finally:
+            sys.path.pop(0)
+        document = tileset_provenance.load_anchor(
+            os.path.join(TOOLING, "tileset_provenance.json"))
+        self.assertEqual(document["tileset"]["id"], MSX_ID)
+        self.assertEqual(document["tileset"]["view"], MSX_VIEW)
+        self.assertEqual(document["tileset"]["directory"],
+                         "gfx/MShockXotto+")
+        self.assertEqual(len(document["upstream"]["commit"]), 40)
+        self.assertIn("I-am-Erk/CDDA-Tilesets",
+                      document["upstream"]["repo"])
+        self.assertIn("compose.py", document["composed_with"])
 
 
 class TestTheStatusReport(LaunchFixture):
@@ -2150,6 +2527,16 @@ class TestTheTrustState(LaunchFixture):
         "PLAYTHROUGH_ALLOW_TILESET_FALLBACK",
         "PLAYTHROUGH_ALLOW_VULNERABLE_PILLOW",
         "PLAYTHROUGH_ALLOW_ANY_COMPILER",
+        # ADDED BY A SECURITY REVIEW, and it was right.  The end-of-life
+        # platform waiver was deliberately kept out of this registry, on
+        # the argument that an unmaintained release makes no reading
+        # WRONG.  But the packages it leaves unpatched are the three that
+        # photograph, decode and encode every frame -- ImageMagick's
+        # `import`, ffmpeg and Xorg/Xvfb -- and recording a waiver in a
+        # summary does not stop the next command from producing evidence
+        # under it.  It forces the diagnostic state now, and the four
+        # stages that make production media refuse under it.
+        "PLAYTHROUGH_ALLOW_EOL_PLATFORM",
     )
 
     def seeded(self):

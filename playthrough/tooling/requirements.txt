@@ -118,8 +118,9 @@ numpy==2.5.1  # frame luminance statistics and MoviePy arrays
 # are properties of the effect rather than of the input, and both hold.
 #
 # The alternative was measured rather than dismissed.  Queried against
-# the OSV database by exact version rather than by range, on 2026-08-03
-# and re-queried on 2026-08-04 with identical results:
+# the OSV database by exact version rather than by range, on 2026-08-03,
+# re-queried on 2026-08-04 and again on 2026-08-07, identical every
+# time -- the pinned figure is 18 GHSA plus 18 PYSEC records:
 #
 #     pillow 11.3.0   36 advisory records   <- pinned
 #     pillow 12.0.0   38
@@ -201,6 +202,30 @@ numpy==2.5.1  # frame luminance statistics and MoviePy arrays
 # time.  That is the achievable half of "hash-pinned build", and it is
 # in force.
 #
+# RE-VERIFIED AGAINST THE LIVE INDEX ON 2026-08-07, because a pin
+# defended by an upstream constraint has to be re-checked rather than
+# remembered, and because code review asked -- correctly -- for a patched
+# stack rather than an explanation.  Queried directly, that day:
+#
+#     moviepy   latest release 2.2.1, requires "pillow<12.0,>=9.2.0"
+#     pillow    latest release 12.3.0
+#     pillow    newest release below 12: 11.3.0
+#     pillow    the whole 11 series: 11.0.0, 11.1.0, 11.2.1, 11.3.0
+#
+# So the answer has not changed and is not a matter of preference: there
+# is NO moviepy release that permits Pillow 12.x, and 11.3.0 is both the
+# newest Pillow the declared render stack supports and the last of its
+# series, so there is no patched in-range release to move to either.
+# `pip check` on the provisioned interpreter is silent and the installed
+# Pillow is 11.3.0, which is what this file says.
+#
+# THIS IS AN ACCEPTED, DISCLOSED RISK RATHER THAN A CLEAN BILL OF
+# HEALTH, and it is recorded as one in playthrough/TECHNICAL_NOTES.md
+# rather than only here: the pin carries published advisories, the
+# controls below narrow the exposure to PNGs this pipeline captured
+# itself, and neither of those facts cancels the other.  What is NOT
+# claimed is that the native dependency is patched.
+#
 # THE TRIGGER FOR REVISITING THIS, stated so it is not left to taste:
 # when a moviepy release lifts the `pillow<12.0` cap, move both pins
 # together to that release and the newest Pillow it allows, re-measure
@@ -255,6 +280,14 @@ imageio-ffmpeg==0.6.0  # encoder bridge for MoviePy and imageio
 #
 #     apt-get install -y ffmpeg imagemagick tesseract-ocr xdotool xvfb \
 #         x11-utils openbox scrot
+#
+# coreutils is not listed there because no base system omits it, but one
+# of its tools is load-bearing enough to name: sha256sum takes each
+# capture's digest at the instant the frame is published, and a capture
+# whose digest cannot be computed is WITHDRAWN rather than recorded.  On
+# a stripped image that lacks it, capture.sh fails as a prerequisite --
+# which is the correct outcome, since an unattested frame is exactly the
+# state the digest ledger exists to prevent.
 #
 # THE PLATFORM REQUIREMENT IS PART OF THAT LIST, because a version
 # number is only as good as the archive still publishing fixes for it.

@@ -860,6 +860,19 @@ fi
 # decision, since it sources the same env.sh the others do.
 playthrough_check_platform || exit "${EX_PREREQ}"
 
+# AND THE TRUST STATE, because this stage produces PRODUCTION MEDIA.
+# The captioned film is the pipeline's final artifact and it is
+# committed, so it is evidence in exactly the sense capture.sh's kept
+# frame is -- and a security review was right that the platform waiver
+# had to force the diagnostic state rather than merely be recorded.
+# PLAYTHROUGH_ALLOW_EOL_PLATFORM is a registered trust bypass now, and
+# under it (or any other) the mux refuses HERE, before ffmpeg is
+# invoked, rather than producing a container nobody can attest to.
+# Diagnosis of this stage is a matter of reading the refusal and fixing
+# what the bypass was hiding; there is no captioned film worth having
+# that was produced under a relaxed check.
+playthrough_assert_trusted "the caption mux" || exit "${EX_PREREQ}"
+
 readonly FFMPEG="${PLAYTHROUGH_BIN_FFMPEG}"
 readonly FFPROBE="${PLAYTHROUGH_BIN_FFPROBE}"
 readonly GREP="${PLAYTHROUGH_BIN_GREP}"

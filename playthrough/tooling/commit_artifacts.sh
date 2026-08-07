@@ -58,6 +58,12 @@
 #     sequence for the loaded survivor
 #   * a manifest that does not verify against the frames, or a frame
 #     count, row count and observation count that disagree
+#   * an amendment whose sha256 no longer matches the manifest line it
+#     corrects, so the record cannot be resolved against its own
+#     corrections
+#   * a missing capture attestation ledger, or a frame whose bytes no
+#     longer hash to the digest attested for it -- the one substitution
+#     every structural check above passes
 #   * a keybindings file that binds any debug action
 #   * for `final`: no `creation` checkpoint in the history, or a
 #     manifest that has not grown since it -- both of which mean the
@@ -986,6 +992,9 @@ assert_evidence() {
             "so the record cannot be verified before it is committed." \
             "Nothing was committed."
     fi
+    # The ledger first: `verify` below resolves it, so a broken binding
+    # would otherwise be reported as a refusal of the record.
+    assert_amendment_ledger
     # --require-frames is the whole point of delegating: it holds every
     # row against the capture it names.  Its stderr is the diagnosis and
     # is passed through unchanged.
@@ -1026,8 +1035,83 @@ assert_evidence() {
             "committed."
     fi
     assert_observations_match
+    assert_ledgers
     playthrough_log "${FRAME_COUNT} capture(s), ${ROW_COUNT} row(s)," \
-        "and the sidecar agrees"
+        "the sidecar agrees, and every capture matches its attestation"
+    return 0
+}
+
+# ---------------------------------------------------------------------
+# THE TWO OUT-OF-BAND LEDGERS, CHECKED BEFORE ANYTHING IS STAGED.
+#
+# The manifest is append-only, so the two things it cannot itself carry
+# live beside it and are verified here rather than at the moment a
+# reader happens to look:
+#
+#   * amendments.jsonl -- a correction names the sha256 of the exact
+#     manifest line it corrects.  If that line has changed, the
+#     amendment no longer describes it, and the resolution is REFUSED
+#     rather than applied to whatever now occupies that row.  Committing
+#     an unresolvable pair would publish a record whose own corrections
+#     cannot be applied to it.
+#
+#   * build/frame_digests.jsonl -- every recorded frame's captured bytes.
+#     A capture is verified by re-hashing the PNG on disk, which is the
+#     only check in this pipeline that a same-sized, non-blank, correctly
+#     named replacement image cannot pass.  Every structural check above
+#     -- the count identity, the geometry, the luminance -- it passes
+#     easily.
+#
+# Both run before stage_artifacts(), so a mismatch stops the checkpoint
+# while the previous commit is still the last word.
+# ---------------------------------------------------------------------
+
+# The amendment half, separately, because it runs BEFORE the record gate.
+# manifest.py's own `verify` resolves the ledger so that it can hold the
+# published narration to the voice gate, which means a broken binding
+# surfaces there too -- as "the record was refused", which is not the
+# advice an operator needs.  Asking the ledger first keeps the specific
+# diagnosis, and the specific remedy, in front of the general one.
+assert_amendment_ledger() {
+    local manifest_script="${PLAYTHROUGH_TOOLING_DIR}/manifest.py"
+    if [ ! -s "${PLAYTHROUGH_AMENDMENTS}" ]; then
+        return 0
+    fi
+    if ! "${PLAYTHROUGH_PYTHON}" -B "${manifest_script}" \
+            amendments >&2; then
+        die "${EX_EVIDENCE}" "manifest.py refused the amendment" \
+            "ledger above.  Every amendment names the sha256 of" \
+            "the manifest line it corrects, so a complaint here" \
+            "means a correction no longer matches the line it was" \
+            "written against -- and the record is append-only, so" \
+            "the answer is a NEW amendment against the line as it" \
+            "actually stands, never an edit to either file." \
+            "Nothing was committed."
+    fi
+    return 0
+}
+
+assert_ledgers() {
+    local manifest_script="${PLAYTHROUGH_TOOLING_DIR}/manifest.py"
+    assert_amendment_ledger
+    if [ ! -s "${PLAYTHROUGH_FRAME_DIGESTS}" ]; then
+        die "${EX_EVIDENCE}" "there is no capture attestation ledger" \
+            "at $(rel "${PLAYTHROUGH_FRAME_DIGESTS}").  It holds the" \
+            "sha256 of every frame as it was published, and without it" \
+            "nothing distinguishes the pixels that were captured from" \
+            "a same-sized image put in their place afterwards -- which" \
+            "is the one substitution every other gate here passes." \
+            "Nothing was committed."
+    fi
+    if ! "${PLAYTHROUGH_PYTHON}" -B "${manifest_script}" digests >&2; then
+        die "${EX_EVIDENCE}" "manifest.py refused the captures above." \
+            "A frame no longer hashes to the digest attested for it, or" \
+            "a recorded frame has no attestation at all.  A frame is" \
+            "evidence and evidence is not re-authored, so this is" \
+            "resolved by restoring the captured bytes -- they are in" \
+            "git history -- and never by re-attesting whatever is on" \
+            "disk now.  Nothing was committed."
+    fi
     return 0
 }
 

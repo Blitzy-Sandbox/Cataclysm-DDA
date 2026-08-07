@@ -318,20 +318,42 @@ PNG_SUFFIX = ".png"
 #   * A frame whose CONTENT changed after it was composed.  Same name,
 #     same geometry, different pixels.
 #
-# So this module now publishes generation.json INSIDE the group set, which
-# means it is switched in by the same atomic rename and cannot be a
-# generation out of step with the frames beside it.  It binds the groups
-# to the timeline by that document's own digest, to the captures they were
-# faded between by theirs, to the card's typeface, and to its own output
-# bytes.  render_movie.py REQUIRES it and checks the group index set
-# GLOBALLY against the flags -- so an extra group is a refusal, not an
-# omission.
+# So this module publishes a provenance record binding the groups to the
+# timeline by that document's own digest, to the captures they were faded
+# between by theirs, to the card's typeface, and to its own output bytes.
+# render_movie.py REQUIRES it and checks the group index set GLOBALLY
+# against the flags -- so an extra group is a refusal, not an omission.
+#
+# WHERE IT LIVES, AND WHY IT MOVED.  It was written INSIDE the group set,
+# so that the same atomic rename published both.  Code review found that
+# to break the transitions directory's own schema, which admits
+# `trans_*.png` and nothing else: the acceptance gate globs that
+# directory, the AAP lists only PNGs in it, and a tracked JSON file
+# sitting among them is a surplus entry.  The record now lives beside the
+# film's and the transcripts' own, at playthrough/build/transitions.json,
+# and the directory holds nothing but transition frames.
+#
+# THE PAIR IS STILL PUBLISHED AS ONE GENERATION.  Two artifacts that only
+# mean anything together must not be able to disagree, which is the whole
+# reason the manifest was put inside the directory in the first place --
+# so the move does not simply give that up.  The switch and the record
+# are published under the generation JOURNAL timeline.py owns and
+# make_srt.py already uses: the journal names both targets and their
+# digests before the first rename, an interruption between them is
+# reported by the next run and repaired by republishing, and render_movie
+# refuses a group set whose record does not describe it.  Fail loud and
+# recoverable, rather than silently mixed.
+#
+# The legacy in-directory name is recognised as this module's OWN litter,
+# so a directory published by an older version is cleaned rather than
+# carried across the switch.
 #
 # Deterministic by construction: no timestamp, no host name, no absolute
 # path.  Two runs over one timeline produce byte-identical manifests, so a
 # committed tree does not churn.
 # ---------------------------------------------------------------------
-GENERATION_MANIFEST_NAME = "generation.json"
+GENERATION_MANIFEST_NAME = "transitions.json"
+LEGACY_MANIFEST_NAME = "generation.json"
 
 # The eight-byte PNG signature [RFC 2083 section 3.1].  Every image this
 # module reads must begin with it, checked before any decoder is
@@ -364,10 +386,15 @@ FONT_SHA256 = (
 # Read the font in blocks rather than whole.
 DIGEST_BLOCK = 65536
 
-# The group index is ZERO-BASED: the first frame of the group after
-# capture 1 is trans_00001_00.png.  Chosen once and applied everywhere,
-# because the second field is an offset within the group rather than a
-# count of anything.
+# The group index is ZERO-BASED: for any capture N the timeline flags
+# with transition_after, the group runs trans_NNNNN_00.png through
+# trans_NNNNN_11.png -- so capture 1 yields trans_00001_00.png only if
+# capture 1 is itself flagged.  A capture the timeline does not flag has
+# no group and therefore no file at all, and that absence is correct:
+# composing one to fill an apparent gap would put imagery in the film
+# that no timeline entry asked for.  Zero-based is chosen once and
+# applied everywhere, because the second field is an offset within the
+# group rather than a count of anything.
 FIRST_GROUP_INDEX = 0
 
 # The frame index field is five digits wide, so the capture it names has
@@ -1374,10 +1401,13 @@ def _assert_name_format() -> None:
 def group_frame_paths(out_prefix: str) -> List[str]:
     """Return the paths one group occupies, in order.
 
-    The index is zero-based, so the first frame of the group following
-    capture 1 is trans_00001_00.png -- chosen once and applied
-    everywhere, because the second field is an offset within the group
-    rather than a count of anything.
+    The index is zero-based, so for any capture N the timeline flags
+    with transition_after the group runs trans_NNNNN_00.png through
+    trans_NNNNN_11.png; capture 1 yields trans_00001_00.png only if
+    capture 1 is itself flagged, and an unflagged capture has no group
+    and no file.  Zero-based is chosen once and applied everywhere,
+    because the second field is an offset within the group rather than
+    a count of anything.
     """
     _assert_name_format()
     return [out_prefix + TRANSITION_SUFFIX_FORMAT % ordinal
@@ -1712,20 +1742,20 @@ def _remove_tree(directory: str) -> None:
 # ---------------------------------------------------------------------
 
 def generation_manifest_path(directory: str) -> str:
-    """Return the manifest path inside a transitions directory."""
-    return os.path.join(directory, GENERATION_MANIFEST_NAME)
+    """Return the provenance path for a transitions directory.
 
-
-def _is_owned_name(name: str) -> bool:
-    """True for a name this module publishes and therefore replaces.
-
-    The manifest belongs to the generation, so on a re-run it must be
-    REPLACED rather than carried across the switch as though somebody
-    else had left it -- carrying it would overwrite the new manifest with
-    the previous generation's, which is the one mixed state this whole
-    facility exists to make impossible.
+    BESIDE the directory, not inside it: playthrough/build/ holds every
+    derived committed intermediate -- the concat list, the film's
+    generation manifest, the transcripts' -- and the transitions
+    directory itself admits `trans_*.png` and nothing else.  Taking the
+    directory as the argument keeps every caller, this module's and
+    render_movie.py's, asking the one question it actually has an answer
+    to: where is the record for THIS group set.
     """
-    return name == GENERATION_MANIFEST_NAME
+    parent = os.path.dirname(os.path.normpath(directory))
+    if not parent:
+        parent = os.curdir
+    return os.path.join(parent, GENERATION_MANIFEST_NAME)
 
 
 def build_generation_manifest(
@@ -1788,12 +1818,18 @@ def generation_manifest_text(record: Mapping[str, Any]) -> str:
 
 
 def read_generation_manifest(directory: str) -> Dict[str, Any]:
-    """Return the provenance record published in `directory`.
+    """Return the provenance record published for `directory`.
+
+    Read from beside the group set, at
+    playthrough/build/transitions.json, because the directory itself
+    admits `trans_*.png` and nothing else.
 
     :raises TransitionError: when it is absent, unreadable or not a
         record.  ABSENCE IS A FAULT, not a default: a group set without
         provenance is a group set nobody can attribute to a timeline, and
-        accepting one is the defect this manifest exists to close.
+        accepting one is the defect this manifest exists to close.  An
+        interrupted publication can leave exactly that state, which is
+        why the generation journal reports it and a re-run repairs it.
     """
     path = generation_manifest_path(directory)
     if os.path.islink(path):
@@ -1805,12 +1841,13 @@ def read_generation_manifest(directory: str) -> Dict[str, Any]:
             text = handle.read()
     except FileNotFoundError:
         raise TransitionError(
-            "%s has no %s, so the transition frames in it cannot be "
-            "attributed to any timeline.  Run make_transitions.py "
-            "against the timeline being rendered: twelve files with the "
-            "right names and the right pixel dimensions are not evidence "
-            "that they were composed from this session's captures."
-            % (directory, GENERATION_MANIFEST_NAME)) from None
+            "there is no %s beside %s, so the transition frames in it "
+            "cannot be attributed to any timeline.  Run "
+            "make_transitions.py against the timeline being rendered: "
+            "twelve files with the right names and the right pixel "
+            "dimensions are not evidence that they were composed from "
+            "this session's captures."
+            % (GENERATION_MANIFEST_NAME, directory)) from None
     except OSError as err:
         raise TransitionError(
             "cannot read %s: %s" % (path, err)) from err
@@ -1876,12 +1913,12 @@ def generation_manifest_problems(
     except TransitionError as err:
         return [str(err)]
     if record.get("version") != timeline.GENERATION_VERSION:
-        return ["the generation manifest in %s is version %r, which this "
+        return ["the provenance record for %s is version %r, which this "
                 "module cannot interpret; recompose the transitions"
                 % (directory, record.get("version"))]
     if record.get("stage") != LOCK_NAME:
         problems.append(
-            "the generation manifest in %s was written by stage %r, not "
+            "the provenance record for %s was written by stage %r, not "
             "%r" % (directory, record.get("stage"), LOCK_NAME))
     problems.extend(_timeline_provenance_problems(record, timeline_path))
     problems.extend(_geometry_provenance_problems(record))
@@ -1889,7 +1926,7 @@ def generation_manifest_problems(
     entries = record.get("groups")
     if not isinstance(entries, list):
         problems.append(
-            "the generation manifest in %s names no groups" % directory)
+            "the provenance record for %s names no groups" % directory)
         return problems
     seen: List[int] = []
     for entry in entries:
@@ -2035,37 +2072,74 @@ def _group_set_problems(
     return problems
 
 
-def _write_generation_manifest(
-    staging: str,
-    groups: Sequence[Group],
-    timeline_path: str,
-    geometry: Tuple[int, int],
-    face: str,
-    staged_by_frame: Mapping[int, Sequence[str]],
-) -> str:
-    """Write generation.json into the staged generation.  Returns it.
+def _publish_generation_manifest(directory: str, text: str) -> str:
+    """Replace the provenance record beside `directory`.  Returns it.
 
-    Written last, so it describes a complete generation, and fsynced,
-    because the rename that publishes it is a metadata operation on bytes
-    that must already be on the device.
+    Staged as a dot-prefixed sibling in the same directory and renamed,
+    so a reader sees the whole previous record or the whole new one, and
+    both the file and its parent are fsynced -- a rename is not durable
+    until the directory entry is.
+
+    Published AFTER the switch and under the generation journal, so the
+    one ordering an interruption can leave behind is a group set whose
+    record is stale, which render_movie.py refuses by digest and the next
+    run repairs.  The reverse order would leave a record describing
+    frames that are not there, which reads like a complete generation.
     """
-    record = build_generation_manifest(
-        groups, timeline_path, geometry, face, staged_by_frame)
-    target = generation_manifest_path(staging)
-    data = generation_manifest_text(record).encode("utf-8")
-    descriptor = os.open(
-        target, os.O_CREAT | os.O_WRONLY | os.O_TRUNC | os.O_CLOEXEC,
-        0o644)
+    target = generation_manifest_path(directory)
+    parent = os.path.dirname(target) or os.curdir
+    staged = os.path.join(
+        parent, ".%s.publishing" % GENERATION_MANIFEST_NAME)
+    data = text.encode("utf-8")
+    try:
+        descriptor = os.open(
+            staged,
+            os.O_CREAT | os.O_WRONLY | os.O_TRUNC |
+            os.O_CLOEXEC | os.O_NOFOLLOW, 0o644)
+    except OSError as err:
+        raise TransitionError(
+            "could not stage the provenance record at %s: %s"
+            % (staged, err)) from err
     try:
         written = os.write(descriptor, data)
         if written != len(data):
             raise TransitionError(
                 "only %d of %d bytes of the generation manifest reached "
-                "%s" % (written, len(data), target))
+                "%s" % (written, len(data), staged))
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+    try:
+        os.replace(staged, target)
+    except OSError as err:
+        try:
+            os.unlink(staged)
+        except OSError:
+            pass
+        raise TransitionError(
+            "could not publish the provenance record to %s: %s"
+            % (target, err)) from err
+    timeline.fsync_directory(parent)
     return target
+
+
+def _assert_published_manifest(directory: str, text: str) -> None:
+    """Confirm the published record holds exactly `text`.
+
+    The rename is atomic with respect to a reader, which is not the same
+    as verified: the file is read back and compared with the bytes that
+    were staged before the journal is cleared, so the journal only ever
+    disappears once the tree demonstrably holds this generation.
+    """
+    target = generation_manifest_path(directory)
+    expected = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    found = timeline.file_digest(target)
+    if found != expected:
+        raise TransitionError(
+            "%s was published but now carries %s rather than the %s "
+            "that was staged; the generation journal is left in place so "
+            "the next run finishes this publication"
+            % (relative_to_repo(target), found[:16], expected[:16]))
 
 
 class Result(NamedTuple):
@@ -2171,6 +2245,17 @@ def make_transitions(
     # a concurrent run waits for a whole generation rather than
     # interleaving with half of one.
     with timeline.ArtifactLock(LOCK_NAME, root):
+        # AN INTERRUPTED PREVIOUS PUBLICATION IS REPORTED BEFORE THIS ONE
+        # STARTS.  It is not an error -- this run is about to replace the
+        # group set and its record with a consistent pair, which is
+        # exactly the repair -- but it must not pass in silence, because
+        # a mixed generation may already have been read by the renderer.
+        for problem in timeline.generation_journal_problems(
+                LOCK_NAME, root):
+            _warn("a previous transition publication was interrupted: "
+                  "%s.  This run republishes both the group set and its "
+                  "provenance from the same timeline, which repairs it"
+                  % problem)
         # WHAT IS THERE NOW IS INSPECTED BEFORE IT IS REPLACED.  The
         # switch below is atomic, which is what makes publication safe,
         # but atomicity alone would quietly absorb two things it must
@@ -2195,15 +2280,37 @@ def make_transitions(
                 staged_by_frame[group.frame] = list(composed)
                 staged.extend(composed)
             _assert_generation_complete(staging, staged, names)
-            # THE PROVENANCE, WRITTEN INSIDE THE GENERATION so the same
-            # atomic rename publishes both.  A manifest beside the
-            # directory could be switched in separately and would then be
-            # exactly the mixed state it exists to rule out.  It is
-            # hashed from the STAGED bytes, which are the bytes about to
-            # be published -- the switch is a rename, so it moves them
-            # rather than rewriting them.
-            _write_generation_manifest(
-                staging, groups, source, geometry, face, staged_by_frame)
+            # THE PROVENANCE, BUILT FROM THE STAGED BYTES -- which are the
+            # bytes about to be published, because the switch is a rename
+            # and moves them rather than rewriting them.  It is published
+            # BESIDE the directory, not inside it, so the group set holds
+            # nothing but `trans_*.png`; the two are held together by the
+            # journal written below rather than by sharing one rename.
+            manifest_text = generation_manifest_text(
+                build_generation_manifest(
+                    groups, source, geometry, face, staged_by_frame))
+            # THE JOURNAL, WRITTEN AND FSYNCED BEFORE THE FIRST RENAME.
+            # It names both halves of this generation and the digest the
+            # record must end up carrying, so an interruption between the
+            # two renames is a state the next run can NAME and repair
+            # instead of a directory nobody can attribute.  Absolute
+            # paths deliberately: it lives in the scratch directory
+            # outside the tree, it is machinery rather than committed
+            # evidence, and recovery must find the exact files this run
+            # meant.
+            timeline.write_generation_journal(LOCK_NAME, {
+                "version": timeline.GENERATION_VERSION,
+                "stage": LOCK_NAME,
+                "timeline": os.path.abspath(source),
+                "directory": os.path.abspath(directory),
+                "frames": sorted(names),
+                "targets": [{
+                    "path": os.path.abspath(
+                        generation_manifest_path(directory)),
+                    "sha256": hashlib.sha256(
+                        manifest_text.encode("utf-8")).hexdigest(),
+                }],
+            }, root)
             # THE LAST LOOK BEFORE THE SWITCH.  The published directory
             # is re-listed and compared with what it held when the run
             # started, because the switch REPLACES it: a frame that
@@ -2217,6 +2324,13 @@ def make_transitions(
             _carry_foreign_entries(keep, staging)
             timeline.fsync_directory(staging)
             _publish_generation(staging, directory)
+            # THE SECOND HALF OF THE SAME GENERATION.  The journal above
+            # already names it and its digest, so an interruption here
+            # leaves a group set whose record is stale -- which
+            # render_movie.py refuses by digest and the next run repairs
+            # -- rather than a record describing frames that are not
+            # there, which would read like a complete generation.
+            _publish_generation_manifest(directory, manifest_text)
         except BaseException:
             # A failed generation takes its staging directory with it and
             # leaves the published one exactly as it was.
@@ -2227,6 +2341,10 @@ def make_transitions(
         # being composed is not in the staging area and would otherwise
         # reach the acceptance gate, which globs this directory.
         _assert_published_generation(directory, names)
+        _assert_published_manifest(directory, manifest_text)
+        # Cleared LAST, and only once both halves are on disk carrying
+        # the bytes the journal named.
+        timeline.clear_generation_journal(LOCK_NAME, root)
 
     written = [os.path.join(directory, name) for name in
                (os.path.basename(candidate) for candidate in staged)]
@@ -2325,8 +2443,7 @@ def _foreign_entries(directory: str) -> List[str]:
         return []
     keep = []
     for name in names:
-        if _glob_matches(name) or _is_own_litter(name) or \
-                _is_owned_name(name):
+        if _glob_matches(name) or _is_own_litter(name):
             continue
         target = os.path.join(directory, name)
         if os.path.islink(target) or not os.path.isfile(target):
@@ -2336,15 +2453,19 @@ def _foreign_entries(directory: str) -> List[str]:
 
 
 def _is_own_litter(name: str) -> bool:
-    """True for a half-built file THIS module left behind.
+    """True for a half-built or superseded file THIS module left behind.
 
     A run killed mid-composition can leave a staging frame beside the
-    published ones.  It is this module's own litter, so it is swept
-    rather than carried across the switch -- which is the opposite of
-    how a file this module never wrote is treated.
+    published ones, and a directory published by an older version of this
+    module carries that version's in-directory provenance record.  Both
+    are this module's own, so both are swept rather than carried across
+    the switch -- which is the opposite of how a file this module never
+    wrote is treated.  Carrying the legacy record would keep a
+    non-`trans_*.png` entry in a directory whose schema admits none.
     """
     return (name.startswith(STAGING_PREFIX) or
-            name.endswith(STAGED_FRAME_SUFFIX))
+            name.endswith(STAGED_FRAME_SUFFIX) or
+            name == LEGACY_MANIFEST_NAME)
 
 
 def _own_litter(directory: str) -> List[str]:
@@ -2435,7 +2556,7 @@ def _previous_generation(directory: str) -> List[str]:
         raise TransitionError(
             "could not read %s: %s" % (directory, err)) from err
     return [os.path.join(directory, name) for name in names
-            if TRANSITION_NAME_RE.match(name) or _is_owned_name(name)]
+            if TRANSITION_NAME_RE.match(name) or _is_own_litter(name)]
 
 
 def _assert_generation_complete(
@@ -2470,9 +2591,7 @@ def _assert_generation_complete(
             "that the groups on disk match the flags, so the mismatch "
             "is refused before it is published."
             % (len(on_disk), len(wanted)))
-    unaccounted = sorted(
-        name for name in set(every) - set(on_disk)
-        if not _is_owned_name(name))
+    unaccounted = sorted(set(every) - set(on_disk))
     if unaccounted:
         raise TransitionError(
             "the staged generation holds %s, which this module did not "

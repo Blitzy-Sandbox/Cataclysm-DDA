@@ -267,10 +267,18 @@ PROBE_FORMAT = "json"
 # the concat list leaves ffmpeg waiting forever and the pipeline -- one
 # sequential script -- stops with no diagnosis at all.
 #
-# The encode limit is generous because it is genuinely the long pole:
-# this session's film is 337 s of 1920x1080 libx264 over 692 concat
-# entries.  An hour is far past that and still bounded.  The probe reads
-# metadata only, so two minutes is already absurd for it.
+# The two limits are asymmetric for a structural reason rather than a
+# measured one: the encode is a full libx264 pass over every entry in
+# the concat list at 1920x1080, so its cost grows with the length of the
+# session, while the probe reads container metadata and decodes nothing,
+# so its cost is independent of the film.  Neither value is a
+# performance budget.  Both are outer bounds, far enough above anything
+# this pipeline can produce that reaching one means the child is stuck
+# rather than slow -- which is why no figure from a particular session
+# is written here: it would go stale the moment the capture set is
+# replaced, and the bound does not depend on it.  The film's real
+# duration is measured after the encode and compared against
+# timeline.json, which is where that number belongs.
 ENCODE_TIMEOUT = 3600.0
 PROBE_TIMEOUT = 120.0
 
@@ -409,6 +417,52 @@ FFPROBE = "ffprobe"
 EXIT_OK = 0
 EXIT_FAILED = 1
 
+# ---------------------------------------------------------------------
+# THE TRUST GATE
+#
+# The film is a COMMITTED artifact, so it is evidence in exactly the
+# sense a kept frame is -- and a security review found that the
+# end-of-life platform waiver did not force the diagnostic state, leaving
+# capture and mux "eligible as trusted production evidence despite
+# known-unpatched parser/X risks".  It is a registered trust bypass now,
+# capture.sh and launch_game.sh refuse under it, embed_captions.sh
+# refuses the mux under it, and this module refuses the encode.
+#
+# THE ANSWER COMES FROM env.sh, NOT FROM A VARIABLE.  Reading an exported
+# PLAYTHROUGH_TRUST_STATE would be a control a caller defeats by
+# exporting the word "trusted", and recomputing the state here would put
+# a second, drifting implementation of it in the tree.  So the decision
+# is delegated to the one file that owns it, in a subshell, per render --
+# a few tens of milliseconds against an encode measured in minutes.
+#
+# AND IT APPLIES WHERE EVIDENCE CAN BE PUBLISHED.  A render into a tree
+# git does not track cannot be committed and is not evidence -- that is
+# every test in this suite, which renders into a temporary root -- so the
+# gate runs when the destination root IS a git working tree.  The same
+# verified discriminator env.sh uses for its platform source, and for the
+# same reason: it is a property of the tree rather than a claim a caller
+# makes about itself.
+ENV_SCRIPT_REL_PARTS = ("playthrough", "tooling", "env.sh")
+TRUST_CONTEXT = "the film render"
+TRUST_TIMEOUT = 60
+# Sourced, then asked BOTH questions, in embed_captions.sh's own order:
+# is this platform still receiving security fixes, and is any check
+# relaxed?  Both are required and neither implies the other -- an
+# unwaived end-of-life host is "trusted" until something calls the
+# platform check, and a waived one is in support of nothing.  The path
+# arrives as $1 so nothing is interpolated into the program text, and
+# stdout is discarded because env.sh's summary is not this module's
+# business; only the status and stderr are.
+TRUST_PROGRAM = (
+    'set +e\n'
+    '. "$1" >/dev/null 2>&1 || exit 97\n'
+    'playthrough_check_platform || exit 96\n'
+    'playthrough_assert_trusted "$2" || exit 98\n'
+    'exit 0\n'
+)
+TRUST_EXIT_UNSOURCEABLE = 97
+TRUST_EXIT_PLATFORM = 96
+
 
 class RenderError(Exception):
     """The film cannot be rendered honestly from these inputs.
@@ -533,6 +587,70 @@ def _approved_root(root: Optional[str] = None) -> str:
         return approved_root(root)
     except TimelineError as err:
         raise RenderError(str(err)) from err
+
+
+def _publishable_root(root: Optional[str] = None) -> Optional[str]:
+    """Return the repository root when a render there could be committed.
+
+    ``None`` when it could not -- when the tree is not a git working
+    tree, which is what a temporary render root is.  The distinction is
+    the whole basis of the trust gate: an artifact that cannot be
+    committed cannot become evidence, and the pipeline's integrity claim
+    is about committed artifacts (R1, R3).
+    """
+    base = os.path.dirname(_approved_root(root))
+    return base if os.path.exists(os.path.join(base, ".git")) else None
+
+
+def assert_trusted_render(root: Optional[str] = None) -> Optional[str]:
+    """Refuse the encode while the trust state is diagnostic.
+
+    Returns the repository root the gate ran against, or ``None`` when it
+    did not apply.  Raises :class:`RenderError` when the state is
+    diagnostic, and ALSO when the answer cannot be obtained at all: a
+    gate that cannot run stops the run, because "I could not ask" and
+    "the answer was no" leave the same film unattested.
+
+    The reason is env.sh's own, quoted verbatim, so an operator reads the
+    same sentence here that capture.sh and embed_captions.sh print.
+    """
+    base = _publishable_root(root)
+    if base is None:
+        return None
+    script = os.path.join(base, *ENV_SCRIPT_REL_PARTS)
+    if not os.path.isfile(script):
+        raise RenderError(
+            "there is no %s, so the trust state this film would be "
+            "encoded under cannot be established.  The check is not "
+            "skipped: a film produced while a security check was "
+            "relaxed is not evidence, and this render would be "
+            "committed" % "/".join(ENV_SCRIPT_REL_PARTS))
+    try:
+        result = subprocess.run(
+            ["bash", "--noprofile", "--norc", "-c", TRUST_PROGRAM,
+             "bash", script, TRUST_CONTEXT],
+            cwd=base, stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+            timeout=TRUST_TIMEOUT, check=False)
+    except (OSError, subprocess.SubprocessError) as err:
+        raise RenderError(
+            "the trust state could not be established (%s), so the "
+            "encode is refused rather than run without it" % err) from err
+    if result.returncode == 0:
+        return base
+    detail = result.stderr.decode("utf-8", "replace").strip()
+    if result.returncode == TRUST_EXIT_UNSOURCEABLE:
+        raise RenderError(
+            "%s could not be sourced, so the trust state this film "
+            "would be encoded under is unknown and the encode is "
+            "refused.  %s" % (script, detail or "No output."))
+    if result.returncode == TRUST_EXIT_PLATFORM:
+        raise RenderError(
+            "REFUSING to encode the film on this platform.  %s"
+            % (detail or "No output."))
+    raise RenderError(
+        "REFUSING to encode the film while the trust state is "
+        "diagnostic.  %s" % (detail or "No output."))
 
 
 def render_root(root: Optional[str] = None) -> str:
@@ -1445,13 +1563,20 @@ def plan_render(
     # _assert_group() above proves each flagged index has exactly its
     # twelve files at the right geometry, and a name and a size are not
     # evidence: the same twelve names exist in every session that flags
-    # frame 42.  This holds the whole directory to the generation manifest
-    # make_transitions.py published INSIDE it -- which binds the groups to
-    # a timeline by that document's digest, to the captures they were faded
+    # frame 42.  This holds the whole directory to the provenance record
+    # make_transitions.py publishes BESIDE it, at
+    # playthrough/build/transitions.json -- which binds the groups to a
+    # timeline by that document's digest, to the captures they were faded
     # between, and to their own bytes -- and holds the group INDEX SET to
     # the flags in THIS document, so a stale group for an index the
     # recomputed timeline no longer flags is refused instead of being
     # invisible here and counted by verify_artifacts.sh.
+    #
+    # The record moved out of the directory because that directory admits
+    # `trans_*.png` and nothing else, and the two halves are held
+    # together by the generation journal rather than by sharing one
+    # rename -- so a group set whose record does not describe it is a
+    # REFUSAL here, which is what makes the split safe.
     #
     # Skipped only when the timeline flags nothing at all, in which case
     # there is no group set to attribute; _assert_group() is likewise never
@@ -2815,6 +2940,12 @@ def main(
         # encode runs from those exact bytes, the container is measured
         # while it is still a staging sibling, and the list and the film
         # are switched in together under a journal.
+        # THE TRUST GATE, before the lock and before a byte is
+        # encoded.  A film produced while a security check was relaxed
+        # is not evidence, and this one would be committed.  It applies
+        # only where the destination tree can publish -- a render into a
+        # temporary root is not evidence and is not gated.
+        assert_trusted_render(root)
         with ArtifactLock(LOCK_NAME, root):
             plan = plan_render(document, root, source)
             for stale in clear_stale_staging(output):

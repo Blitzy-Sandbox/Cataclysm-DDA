@@ -911,7 +911,7 @@ class TestComposingOneGroup(TransitionFixture):
 
 
 class TestTheGenerationManifest(TransitionFixture):
-    """The provenance published INSIDE the group set.
+    """The provenance published BESIDE the group set.
 
     THE DEFECT IT EXISTS FOR IS A REAL ONE.  render_movie.py accepted a
     group because twelve files with the right NAMES and the right PIXEL
@@ -920,6 +920,14 @@ class TestTheGenerationManifest(TransitionFixture):
     group composed from a different timeline, a group left behind for an
     index that is no longer flagged, and a frame whose pixels changed under
     its own name were all indistinguishable from the right thing.
+
+    IT USED TO LIVE INSIDE THE DIRECTORY, so that one rename published
+    both halves.  Code review found that to break the directory's own
+    schema -- `trans_*.png` and nothing else -- so it moved to
+    playthrough/build/transitions.json beside the film's and the
+    transcripts' records, and the pair is held together by the generation
+    journal instead.  Both properties are tested here: the record says
+    what it always said, and the directory is pure.
     """
 
     def manifest_record(self):
@@ -927,11 +935,17 @@ class TestTheGenerationManifest(TransitionFixture):
         return json.loads(_read(
             mt.generation_manifest_path(self.transitions)))
 
-    def test_a_run_publishes_its_provenance_inside_the_group_set(self):
+    def test_a_run_publishes_its_provenance_beside_the_group_set(self):
         self.captures(4)
         self.write_timeline(4, flagged={1, 3})
         self.run_make()
-        self.assertIn(mt.GENERATION_MANIFEST_NAME, self.all_names())
+        published = mt.generation_manifest_path(self.transitions)
+        self.assertEqual(
+            published,
+            os.path.join(os.path.dirname(self.transitions),
+                         "transitions.json"))
+        self.assertTrue(os.path.isfile(published))
+        self.assertNotIn(mt.GENERATION_MANIFEST_NAME, self.all_names())
         record = self.manifest_record()
         self.assertEqual(record["version"], timeline.GENERATION_VERSION)
         self.assertEqual(record["stage"], mt.LOCK_NAME)
@@ -988,11 +1002,13 @@ class TestTheGenerationManifest(TransitionFixture):
                 self.transitions, self.timeline_path, [1, 3]),
             [])
 
-    def test_it_is_switched_in_with_the_frames_not_beside_them(self):
-        """One rename publishes both, so they cannot be out of step.
+    def test_it_is_replaced_whenever_the_group_set_is(self):
+        """The record always describes the generation on disk.
 
-        A manifest published separately could be switched in on its own,
-        which is exactly the mixed state it exists to rule out.
+        The two are published as one journalled generation rather than by
+        one rename, so this is the property that matters: after any run,
+        the record on disk describes the frames on disk, and a stale one
+        from the previous flag set cannot survive.
         """
         self.captures(3)
         self.write_timeline(3, flagged={2})
@@ -1000,22 +1016,15 @@ class TestTheGenerationManifest(TransitionFixture):
         self.assertEqual(
             [one["frame"] for one in self.manifest_record()["groups"]],
             [2])
-        # A re-run for a different flag replaces the manifest along with
-        # the group set: the previous manifest is not carried across the
-        # switch as though somebody else had left it there.
         self.write_timeline(3, flagged={1})
-        again = self.run_make()
+        self.run_make()
         self.assertEqual(
             [one["frame"] for one in self.manifest_record()["groups"]],
-            [1], msg="the manifest describes the CURRENT generation")
+            [1], msg="the record describes the CURRENT generation")
         self.assertEqual(
             mt.generation_manifest_problems(
                 self.transitions, self.timeline_path, [1]), [])
-        self.assertTrue(
-            any(name.endswith(mt.GENERATION_MANIFEST_NAME)
-                for name in again.removed),
-            msg="and the replaced one is reported as removed: %r"
-                % again.removed)
+        self.assertEqual(self.all_names(), self.written_names())
 
     def test_it_carries_no_host_detail_and_no_timestamp(self):
         self.captures(3)
@@ -1086,6 +1095,73 @@ class TestTheGenerationManifest(TransitionFixture):
                          self.written_names(),
                          msg=("verify_artifacts.sh globs trans_*.png, so "
                               "the manifest must not be inside that glob"))
+
+    def test_the_published_directory_holds_only_transition_frames(self):
+        """Code review finding: one surplus entry in a PNG-only folder.
+
+        The frozen schema for this directory admits `trans_*.png` and
+        nothing else, the AAP lists only PNGs in it, and the acceptance
+        gate globs it.  A tracked JSON file among the frames was a
+        surplus entry however useful its contents.
+        """
+        self.captures(4)
+        self.write_timeline(4, flagged={1, 3})
+        self.run_make()
+        names = self.all_names()
+        self.assertEqual(names, self.written_names())
+        for name in names:
+            with self.subTest(name=name):
+                self.assertTrue(mt.TRANSITION_NAME_RE.match(name))
+
+    def test_a_legacy_in_directory_record_is_swept_not_carried(self):
+        """A directory published by an older version is cleaned.
+
+        The retired name is this module's OWN litter, so the switch
+        removes it.  Carrying it -- which is what happens to a file this
+        module never wrote -- would leave the directory impure for ever.
+        """
+        self.captures(3)
+        self.write_timeline(3, flagged={2})
+        self.run_make()
+        legacy = os.path.join(self.transitions, mt.LEGACY_MANIFEST_NAME)
+        with open(legacy, "w", encoding="utf-8") as handle:
+            handle.write("{}\n")
+        self.run_make()
+        self.assertFalse(os.path.exists(legacy))
+        self.assertEqual(self.all_names(), self.written_names())
+
+    def test_an_interrupted_publication_is_reported_and_repaired(self):
+        """The two halves are one generation, journalled.
+
+        Publishing the record outside the directory means two renames.
+        The journal names both before the first one, so a run killed
+        between them leaves a state the NEXT run reports and repairs
+        rather than a group set nobody can attribute.
+        """
+        self.captures(3)
+        self.write_timeline(3, flagged={2})
+        self.run_make()
+        published = mt.generation_manifest_path(self.transitions)
+        text = _read(published)
+        timeline.write_generation_journal(mt.LOCK_NAME, {
+            "version": timeline.GENERATION_VERSION,
+            "stage": mt.LOCK_NAME,
+            "timeline": os.path.abspath(self.timeline_path),
+            "directory": os.path.abspath(self.transitions),
+            "frames": self.written_names(),
+            "targets": [{"path": os.path.abspath(published),
+                         "sha256": "0" * 64}],
+        }, self.root)
+        _result, noise = self.quietly(
+            mt.make_transitions,
+            timeline_path=self.timeline_path,
+            transitions_dir=self.transitions,
+            root=self.root, repo_root_dir=REPO_ROOT)
+        self.assertIn("interrupted", noise)
+        self.assertEqual(_read(published), text)
+        self.assertIsNone(
+            timeline.read_generation_journal(mt.LOCK_NAME, self.root),
+            msg="a completed publication clears its own journal")
 
 
 class TestTheDirectoryDescribesTheTimeline(TransitionFixture):

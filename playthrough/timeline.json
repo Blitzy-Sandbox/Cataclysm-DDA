@@ -2,8 +2,20 @@
   "version": 1,
   "manifest": {
     "path": "playthrough/manifest.jsonl",
-    "sha256": "78b38ea038ee16cf38dc995d6371543ffcc480011c67614d66fead4180f750ca",
+    "sha256": "c50160309e8b91843fcb928a8a7ec079c7879ec669a6859dc763a493cf40ba3b",
     "rows": 419
+  },
+  "amendments": {
+    "path": "playthrough/amendments.jsonl",
+    "sha256": "92e5797fb22505e79afa59743cf9cbfccf660d9c7ef88774a48ea94916a36558",
+    "rows": 117,
+    "applied": 117
+  },
+  "captures": {
+    "path": "playthrough/build/frame_digests.jsonl",
+    "sha256": "a1545b89397d9e4bc8948e051de56e1b37877b5147db641c3a9bab82f9a733c6",
+    "rows": 419,
+    "verified": 419
   },
   "floor": 0.25,
   "ceil": 10.0,
@@ -38,7 +50,8 @@
       "cue_start": 0.0,
       "cue_end": 0.25,
       "action": "press '1' -- choose English at the language prompt a fresh userdir opens on",
-      "commentary": "English, the same as every form I ever filled in at the plant. Nothing here to think about."
+      "commentary": "English. The same as every form I filled in at the plant.",
+      "amended": true
     },
     {
       "frame": 2,
@@ -58,7 +71,8 @@
       "cue_start": 0.25,
       "cue_end": 0.5,
       "action": "press 'Up' -- move the cursor off Preset Character onto Custom Character",
-      "commentary": "Not somebody else's. If I am going to write down honestly what I can and cannot do, I fill in every line of it myself."
+      "commentary": "Not somebody else's life. I set down my own, line by line.",
+      "amended": true
     },
     {
       "frame": 3,
@@ -78,7 +92,8 @@
       "cue_start": 0.5,
       "cue_end": 0.75,
       "action": "press 'Return' -- open the custom creator; it asks first for the world",
-      "commentary": "Right. Start at the top and work down, the way you fill in any form that matters."
+      "commentary": "Right. Start at the top and work down, the way you fill in any form that matters.",
+      "amended": false
     },
     {
       "frame": 4,
@@ -98,7 +113,8 @@
       "cue_start": 0.75,
       "cue_end": 1.0,
       "action": "press 'Return' -- open the world name field for editing",
-      "commentary": "It wants a name for the place. The one it offered is somewhere in the middle of the country and this is not that."
+      "commentary": "The name it offered is a thousand miles off. Mine is not that.",
+      "amended": true
     },
     {
       "frame": 5,
@@ -118,7 +134,8 @@
       "cue_start": 1.0,
       "cue_end": 1.25,
       "action": "press 'F' -- begin typing the name of the place over the one it suggested",
-      "commentary": "Fern Creek. Two miles of it either side of the river, the mill at the north end, my rooms on the top floor of a two-family house."
+      "commentary": "Fern Creek. The mill at the north end, my rooms above a porch.",
+      "amended": true
     },
     {
       "frame": 6,
@@ -138,7 +155,8 @@
       "cue_start": 1.25,
       "cue_end": 1.5,
       "action": "press 'e' -- continue typing the name of the place",
-      "commentary": "The creek is the first thing I would tell anybody about this town."
+      "commentary": "The creek is the first thing I would tell anybody about this town.",
+      "amended": false
     },
     {
       "frame": 7,
@@ -158,7 +176,8 @@
       "cue_start": 1.5,
       "cue_end": 1.75,
       "action": "press 'r' -- continue typing the name of the place",
-      "commentary": "It comes down out of the woods behind the high school."
+      "commentary": "It comes down out of the woods behind the high school.",
+      "amended": false
     },
     {
       "frame": 8,
@@ -178,7 +197,8 @@
       "cue_start": 1.75,
       "cue_end": 2.0,
       "action": "press 'n' -- continue typing the name of the place",
-      "commentary": "It goes under the road twice on its way through."
+      "commentary": "It goes under the road twice on its way through.",
+      "amended": false
     },
     {
       "frame": 9,
@@ -198,7 +218,8 @@
       "cue_start": 2.0,
       "cue_end": 2.25,
       "action": "press 'space' -- continue typing the name of the place; nothing on the screen changed",
-      "commentary": "And then into the river a quarter mile below the mill."
+      "commentary": "And then into the river a quarter mile below the mill.",
+      "amended": true
     },
     {
       "frame": 10,
@@ -218,7 +239,8 @@
       "cue_start": 2.25,
       "cue_end": 2.5,
       "action": "press 'C' -- continue typing the name of the place",
-      "commentary": "My father fished it every April, when the water was still too cold to be pleasant about."
+      "commentary": "My father fished it every April, when the water was still cold.",
+      "amended": true
     },
     {
       "frame": 11,
@@ -238,7 +260,8 @@
       "cue_start": 2.5,
       "cue_end": 2.75,
       "action": "press 'r' -- continue typing the name of the place",
-      "commentary": "He taught me to stand still and let the line do the work."
+      "commentary": "He taught me to stand still and let the line do the work.",
+      "amended": false
     },
     {
       "frame": 12,
@@ -258,7 +281,8 @@
       "cue_start": 2.75,
       "cue_end": 3.0,
       "action": "press 'e' -- continue typing the name of the place",
-      "commentary": "That is the only thing he taught me that I have never once managed to apply anywhere else."
+      "commentary": "The one lesson of his I have never managed to use anywhere else.",
+      "amended": true
     },
     {
       "frame": 13,
@@ -278,7 +302,8 @@
       "cue_start": 3.0,
       "cue_end": 3.25,
       "action": "press 'e' -- continue typing the name of the place",
-      "commentary": "Not today either. Today I want water I can drink, not water I can stand in."
+      "commentary": "Not today either. Today I want water I can drink, not water I can stand in.",
+      "amended": false
     },
     {
       "frame": 14,
@@ -298,7 +323,8 @@
       "cue_start": 3.25,
       "cue_end": 3.5,
       "action": "press 'k' -- finish typing the name of the place",
-      "commentary": "There. Where I am, written down, so the log starts with a place and not a feeling."
+      "commentary": "There. Where I am, written down, so the log starts with a place and not a feeling.",
+      "amended": false
     },
     {
       "frame": 15,
@@ -318,7 +344,8 @@
       "cue_start": 3.5,
       "cue_end": 3.75,
       "action": "press 'Return' -- accept the name of the place",
-      "commentary": "Accepted. I am not going to argue with the two settings underneath it either; they are what they are, and so is the week I have had."
+      "commentary": "Accepted. I will not argue with the two settings under it.",
+      "amended": true
     },
     {
       "frame": 16,
@@ -338,7 +365,8 @@
       "cue_start": 3.75,
       "cue_end": 4.0,
       "action": "press 'f' -- finish the world settings and move on to who I am",
-      "commentary": "Finish. Now the part that actually matters, which is what I can do and what I cannot."
+      "commentary": "Finished. Now what matters: what I can do, and what I cannot.",
+      "amended": true
     },
     {
       "frame": 17,
@@ -358,7 +386,8 @@
       "cue_start": 4.0,
       "cue_end": 4.25,
       "action": "press 'Y' -- confirm the world settings; the map is generated from here",
-      "commentary": "Yes. I am sure. Nothing on that page was going to be improved by me looking at it for another ten minutes."
+      "commentary": "Yes. I am sure. Another ten minutes of looking changes nothing.",
+      "amended": true
     },
     {
       "frame": 18,
@@ -378,7 +407,8 @@
       "cue_start": 4.25,
       "cue_end": 4.5,
       "action": "press 'Down' -- move down off the shelter entry, looking for the one that is mine",
-      "commentary": "Friends to the end. I had colleagues, and I sent them to the buses. There is a difference between those two words and I have had five days to think about it."
+      "commentary": "Friends to the end. I had colleagues, and I sent them to the buses.",
+      "amended": true
     },
     {
       "frame": 19,
@@ -398,7 +428,8 @@
       "cue_start": 4.5,
       "cue_end": 4.75,
       "action": "press 'Down' -- keep reading down the list",
-      "commentary": "Hunted forever. No. Whatever is out there has not been following me. It has been standing where it was left."
+      "commentary": "Hunted forever. No. Whatever is out there never followed me.",
+      "amended": true
     },
     {
       "frame": 20,
@@ -418,7 +449,8 @@
       "cue_start": 4.75,
       "cue_end": 5.0,
       "action": "press 'Down' -- keep reading down the list",
-      "commentary": "A helicopter crash. Nobody I have ever met has been in one of those."
+      "commentary": "A helicopter crash. Nobody I have ever met has been in one of those.",
+      "amended": false
     },
     {
       "frame": 21,
@@ -438,7 +470,8 @@
       "cue_start": 5.0,
       "cue_end": 5.25,
       "action": "press 'Down' -- keep reading down the list",
-      "commentary": "Infected. I have looked at my arms twice an hour for five days and there is nothing on them."
+      "commentary": "Infected. I have checked my arms twice an hour for five days.",
+      "amended": true
     },
     {
       "frame": 22,
@@ -458,7 +491,8 @@
       "cue_start": 5.25,
       "cue_end": 5.5,
       "action": "press 'Down' -- keep reading down the list",
-      "commentary": "Prison. The nearest one is forty miles south and I have never once been inside it."
+      "commentary": "Prison. Forty miles south, and I have never been inside it.",
+      "amended": true
     },
     {
       "frame": 23,
@@ -478,7 +512,8 @@
       "cue_start": 5.5,
       "cue_end": 5.75,
       "action": "press 'Down' -- keep reading down the list",
-      "commentary": "Sheltered. That is the same roof as the first entry, with the door still shut and somebody else behind it."
+      "commentary": "Sheltered. The same roof, with somebody else behind the door.",
+      "amended": true
     },
     {
       "frame": 24,
@@ -498,7 +533,8 @@
       "cue_start": 5.75,
       "cue_end": 6.0,
       "action": "press 'Down' -- keep reading down the list",
-      "commentary": "Surrounded. Not yet. I have been careful and I have been lucky, and I know exactly which of the two has done more of the work."
+      "commentary": "Surrounded. Not yet. I have been careful, and I have been lucky.",
+      "amended": true
     },
     {
       "frame": 25,
@@ -518,7 +554,8 @@
       "cue_start": 6.0,
       "cue_end": 6.25,
       "action": "press 'Down' -- keep reading down the list",
-      "commentary": "Hunted again. Whoever wrote this list has a favourite."
+      "commentary": "Hunted again. Whoever wrote this list has a favourite.",
+      "amended": false
     },
     {
       "frame": 26,
@@ -538,7 +575,8 @@
       "cue_start": 6.25,
       "cue_end": 6.5,
       "action": "press 'Down' -- keep reading down the list",
-      "commentary": "A burning building. I spent that whole afternoon making certain this would not be anybody's."
+      "commentary": "A burning building. I spent that afternoon making sure of the opposite.",
+      "amended": true
     },
     {
       "frame": 27,
@@ -558,7 +596,8 @@
       "cue_start": 6.5,
       "cue_end": 6.75,
       "action": "press 'Down' -- keep reading down the list",
-      "commentary": "Bordered in. I would not have got out of the state on those roads that afternoon even if I had left at six with everybody else."
+      "commentary": "Bordered in. Those roads were solid metal by four. I would not have got out.",
+      "amended": true
     },
     {
       "frame": 28,
@@ -578,7 +617,8 @@
       "cue_start": 6.75,
       "cue_end": 7.0,
       "action": "press 'Down' -- keep reading down the list",
-      "commentary": "A party. On a Tuesday, at my age, two miles from a live plant. No."
+      "commentary": "A party. On a Tuesday, at my age, two miles from a live plant. No.",
+      "amended": false
     },
     {
       "frame": 29,
@@ -598,7 +638,8 @@
       "cue_start": 7.0,
       "cue_end": 7.25,
       "action": "press 'Down' -- keep reading down the list",
-      "commentary": "A car crash. My truck is still in the lot at work with three quarters of a tank in it, because the road out was solid metal by four o'clock and I walked."
+      "commentary": "A car crash. My truck is still in the lot at work, three quarters full.",
+      "amended": true
     },
     {
       "frame": 30,
@@ -618,7 +659,8 @@
       "cue_start": 7.25,
       "cue_end": 7.5,
       "action": "press 'Down' -- keep reading down the list",
-      "commentary": "Hunted by the dead. Three entries on this page say the same thing in different words, and not one of them is what happened to me."
+      "commentary": "Hunted by the dead. Three of these say one thing, and none of it is mine.",
+      "amended": true
     },
     {
       "frame": 31,
@@ -638,7 +680,8 @@
       "cue_start": 7.5,
       "cue_end": 7.75,
       "action": "press 'Down' -- keep reading down the list",
-      "commentary": "A squatter. Not yet. Ask me again tonight, when I have to pick a room with a door."
+      "commentary": "A squatter. Not yet. Ask me again tonight, when I have to pick a room with a door.",
+      "amended": false
     },
     {
       "frame": 32,
@@ -658,7 +701,8 @@
       "cue_start": 7.75,
       "cue_end": 8.0,
       "action": "press 'Down' -- keep reading down the list",
-      "commentary": "A large building. I have been in exactly one large building all week and it had a boiler house attached to it."
+      "commentary": "A large building. One all week, and it had a boiler house on it.",
+      "amended": true
     },
     {
       "frame": 33,
@@ -678,7 +722,8 @@
       "cue_start": 8.0,
       "cue_end": 8.25,
       "action": "press 'Down' -- keep reading down the list",
-      "commentary": "Low profile. That is a description of how I intend to spend today. It is not a description of how I got here."
+      "commentary": "Low profile. That is today's plan. It is not how I got here.",
+      "amended": true
     },
     {
       "frame": 34,
@@ -698,7 +743,8 @@
       "cue_start": 8.25,
       "cue_end": 8.5,
       "action": "press 'Down' -- keep reading down the list",
-      "commentary": "Mass quarantine. There was no cordon on this side of the river. There was a list, a time, and a school car park."
+      "commentary": "Mass quarantine. No cordon this side of the river. A time and a car park.",
+      "amended": true
     },
     {
       "frame": 35,
@@ -718,7 +764,8 @@
       "cue_start": 8.5,
       "cue_end": 8.75,
       "action": "press 'Down' -- keep reading down the list; the one below this is mine",
-      "commentary": "A refugee centre. That is where the buses were going, and I have no idea at all whether they arrived."
+      "commentary": "A refugee centre. Where the buses went. I never learned if they arrived.",
+      "amended": true
     },
     {
       "frame": 36,
@@ -738,7 +785,8 @@
       "cue_start": 8.75,
       "cue_end": 9.0,
       "action": "press 'Down' -- land on the entry that is actually mine",
-      "commentary": "Missed. There it is, one word, and it is the honest one. Not brave, not chosen, not unlucky. I was thirty feet from a drum gauge with two operators watching me when the last bus left the school."
+      "commentary": "Missed. One word, and the honest one. Not brave, not chosen.",
+      "amended": true
     },
     {
       "frame": 37,
@@ -758,7 +806,8 @@
       "cue_start": 9.0,
       "cue_end": 9.25,
       "action": "press 'Return' -- take the missed-evacuation start",
-      "commentary": "Take it. Stubbornness, it says, or ignorance, or bad luck. I will own the first one and argue about the other two another day."
+      "commentary": "Take it. Stubbornness, it says. I will own that much of it.",
+      "amended": true
     },
     {
       "frame": 38,
@@ -778,7 +827,8 @@
       "cue_start": 9.25,
       "cue_end": 9.5,
       "action": "press 'shift+Tab' -- step back to the first tab, to see how the accounting works before spending anything",
-      "commentary": "Before I spend anything I want to see the ledger it is keeping. Twenty-two years of budgets taught me that much."
+      "commentary": "Before I spend anything I want to see how the ledger is kept.",
+      "amended": true
     },
     {
       "frame": 39,
@@ -798,7 +848,8 @@
       "cue_start": 9.5,
       "cue_end": 9.75,
       "action": "press 'Down' -- move off the entry that enforces no limits at all",
-      "commentary": "The one it starts on says no limits are enforced. I have never in my life been handed a job with no limits enforced and I am not going to pretend today is that."
+      "commentary": "It starts with no limits enforced. No job of mine came that way.",
+      "amended": true
     },
     {
       "frame": 40,
@@ -818,7 +869,8 @@
       "cue_start": 9.75,
       "cue_end": 10.0,
       "action": "press 'Return' -- take the mode with three separate point pools, so every choice has to be paid for",
-      "commentary": "Three separate budgets: what I am made of, what is wrong with me, and what I know how to do. Stat money can go downhill into the other two and never back up. That is a ledger I recognise."
+      "commentary": "Three ledgers: my body, my faults, my trade. No borrowing back.",
+      "amended": true
     },
     {
       "frame": 41,
@@ -838,7 +890,8 @@
       "cue_start": 10.0,
       "cue_end": 10.25,
       "action": "press '@' -- correct the sex it assumed; nothing on the screen changed",
-      "commentary": "It has me down as a man. I am not, and the rest of this form is going to be accurate whether or not that matters to anybody but me."
+      "commentary": "It has me down as a man. I am not, and this will be accurate.",
+      "amended": true
     },
     {
       "frame": 42,
@@ -858,7 +911,8 @@
       "cue_start": 10.25,
       "cue_end": 10.5,
       "action": "press '2' -- try the other key the form offers for the sex field",
-      "commentary": "The first key I tried did nothing to it. Fine. There is always a second way in, and finding it is most of the job."
+      "commentary": "The first way in did nothing. There is always a second; find it.",
+      "amended": true
     },
     {
       "frame": 43,
@@ -878,7 +932,8 @@
       "cue_start": 10.5,
       "cue_end": 10.75,
       "action": "press 'n' -- open the field for the name, which is the one thing on this form I am certain of",
-      "commentary": "Leave the sex field for a moment. The name I can do from memory."
+      "commentary": "Leave that line a moment. My name I can do from memory.",
+      "amended": true
     },
     {
       "frame": 44,
@@ -898,7 +953,8 @@
       "cue_start": 10.75,
       "cue_end": 11.0,
       "action": "press 'D' -- begin typing my name",
-      "commentary": "Delphine. My grandmother's name. She came down from Quebec at fifteen to sew uppers in a shoe shop."
+      "commentary": "Delphine. My grandmother's name. She came down from Quebec at fifteen.",
+      "amended": true
     },
     {
       "frame": 45,
@@ -918,7 +974,8 @@
       "cue_start": 11.0,
       "cue_end": 11.25,
       "action": "press 'e' -- continue typing my name",
-      "commentary": "She never once in her life let anybody see her cry in a kitchen."
+      "commentary": "She never once in her life let anybody see her cry in a kitchen.",
+      "amended": false
     },
     {
       "frame": 46,
@@ -938,7 +995,8 @@
       "cue_start": 11.25,
       "cue_end": 11.5,
       "action": "press 'l' -- continue typing my name",
-      "commentary": "I have not managed that. I have managed most of the rest of it."
+      "commentary": "I have not managed that. I have managed most of the rest of it.",
+      "amended": false
     },
     {
       "frame": 47,
@@ -958,7 +1016,8 @@
       "cue_start": 11.5,
       "cue_end": 11.75,
       "action": "press 'p' -- continue typing my name",
-      "commentary": "Everybody who ever paid me called me Del."
+      "commentary": "Everybody who ever paid me called me Del.",
+      "amended": false
     },
     {
       "frame": 48,
@@ -978,7 +1037,8 @@
       "cue_start": 11.75,
       "cue_end": 12.0,
       "action": "press 'h' -- continue typing my name",
-      "commentary": "Two syllables was more than the floor of that mill ever had time for."
+      "commentary": "Two syllables was more than the floor of that mill ever had time for.",
+      "amended": false
     },
     {
       "frame": 49,
@@ -998,7 +1058,8 @@
       "cue_start": 12.0,
       "cue_end": 12.25,
       "action": "press 'i' -- continue typing my name",
-      "commentary": "There is nobody left within twenty miles to shorten it now."
+      "commentary": "There is nobody left within twenty miles to shorten it now.",
+      "amended": false
     },
     {
       "frame": 50,
@@ -1018,7 +1079,8 @@
       "cue_start": 12.25,
       "cue_end": 12.5,
       "action": "press 'n' -- continue typing my name",
-      "commentary": "So it goes down in full."
+      "commentary": "So it goes down in full.",
+      "amended": false
     },
     {
       "frame": 51,
@@ -1038,7 +1100,8 @@
       "cue_start": 12.5,
       "cue_end": 12.75,
       "action": "press 'e' -- continue typing my name",
-      "commentary": "Delphine."
+      "commentary": "Delphine.",
+      "amended": false
     },
     {
       "frame": 52,
@@ -1058,7 +1121,8 @@
       "cue_start": 12.75,
       "cue_end": 13.0,
       "action": "press 'space' -- continue typing my name",
-      "commentary": "Then the other half, which is my father's."
+      "commentary": "Then the other half, which is my father's.",
+      "amended": false
     },
     {
       "frame": 53,
@@ -1078,7 +1142,8 @@
       "cue_start": 13.0,
       "cue_end": 13.25,
       "action": "press 'O' -- continue typing my name",
-      "commentary": "Ouellette. It is on the pension paperwork at the plant in his own handwriting."
+      "commentary": "Ouellette. It is on the pension paperwork at the plant in his own handwriting.",
+      "amended": false
     },
     {
       "frame": 54,
@@ -1098,7 +1163,8 @@
       "cue_start": 13.25,
       "cue_end": 13.5,
       "action": "press 'u' -- continue typing my name",
-      "commentary": "He was a millwright in that building before the strike years."
+      "commentary": "He was a millwright in that building before the strike years.",
+      "amended": false
     },
     {
       "frame": 55,
@@ -1118,7 +1184,8 @@
       "cue_start": 13.5,
       "cue_end": 13.75,
       "action": "press 'e' -- continue typing my name",
-      "commentary": "He taught me to listen to a machine before I looked at it."
+      "commentary": "He taught me to listen to a machine before I looked at it.",
+      "amended": false
     },
     {
       "frame": 56,
@@ -1138,7 +1205,8 @@
       "cue_start": 13.75,
       "cue_end": 14.0,
       "action": "press 'l' -- continue typing my name",
-      "commentary": "To keep my own tools clean."
+      "commentary": "To keep my own tools clean.",
+      "amended": false
     },
     {
       "frame": 57,
@@ -1158,7 +1226,8 @@
       "cue_start": 14.0,
       "cue_end": 14.25,
       "action": "press 'l' -- continue typing my name",
-      "commentary": "And to fish the river in the spring, when the water is still too cold to be pleasant about it."
+      "commentary": "And to fish the river in spring, when the water is still cold.",
+      "amended": true
     },
     {
       "frame": 58,
@@ -1178,7 +1247,8 @@
       "cue_start": 14.25,
       "cue_end": 14.5,
       "action": "press 'e' -- continue typing my name",
-      "commentary": "Two of those three are going to matter before dark."
+      "commentary": "Two of those three are going to matter before dark.",
+      "amended": false
     },
     {
       "frame": 59,
@@ -1198,7 +1268,8 @@
       "cue_start": 14.5,
       "cue_end": 14.75,
       "action": "press 't' -- continue typing my name",
-      "commentary": "The tools are in a red steel box on a bench two miles from here."
+      "commentary": "The tools are in a red steel box on a bench two miles from here.",
+      "amended": false
     },
     {
       "frame": 60,
@@ -1218,7 +1289,8 @@
       "cue_start": 14.75,
       "cue_end": 15.0,
       "action": "press 't' -- continue typing my name",
-      "commentary": "Which is the joke of my life, just at the minute."
+      "commentary": "Which is the joke of my life, just at the minute.",
+      "amended": false
     },
     {
       "frame": 61,
@@ -1238,7 +1310,8 @@
       "cue_start": 15.0,
       "cue_end": 15.25,
       "action": "press 'e' -- finish typing my name",
-      "commentary": "There. All of it, spelled the way she spelled it."
+      "commentary": "There. All of it, spelled the way she spelled it.",
+      "amended": false
     },
     {
       "frame": 62,
@@ -1258,7 +1331,8 @@
       "cue_start": 15.25,
       "cue_end": 15.5,
       "action": "press 'Return' -- accept the name",
-      "commentary": "Accepted. Delphine Ouellette, forty-seven years old, of Mount Chase, Maine, and this is the fifth morning."
+      "commentary": "Delphine Ouellette, forty-seven, of Mount Chase. Five days of this now.",
+      "amended": true
     },
     {
       "frame": 63,
@@ -1278,7 +1352,8 @@
       "cue_start": 15.5,
       "cue_end": 15.75,
       "action": "press 'question' -- ask the form which key does what, since two of my guesses did nothing",
-      "commentary": "Stop guessing and read the instructions. That is not humility, it is just faster."
+      "commentary": "Stop guessing and read the instructions. That is not humility, it is just faster.",
+      "amended": false
     },
     {
       "frame": 64,
@@ -1298,7 +1373,8 @@
       "cue_start": 15.75,
       "cue_end": 16.0,
       "action": "press 'Escape' -- close the key list; I have what I needed off it",
-      "commentary": "There it is in black and white. The sex field wants the at sign, and the key I thought was doing nothing was moving the cursor down the list instead. Noted. Close it."
+      "commentary": "So that is where it was hiding. Noted. Shut it and get on.",
+      "amended": true
     },
     {
       "frame": 65,
@@ -1318,7 +1394,8 @@
       "cue_start": 16.0,
       "cue_end": 16.25,
       "action": "press 'shift+2' -- hold shift and strike the two, which is the at sign, for the sex field",
-      "commentary": "Now the field itself. I am a woman of forty-seven and the form is going to say so before I put my name on the bottom of it."
+      "commentary": "A woman of forty-seven, and it will say so before I sign it.",
+      "amended": true
     },
     {
       "frame": 66,
@@ -1338,7 +1415,8 @@
       "cue_start": 16.25,
       "cue_end": 16.5,
       "action": "press 'shift+4' -- set the clothing to the women's cut of the same working kit",
-      "commentary": "And the clothes to match, since the boots and the shirt are mine and not borrowed off a shelf."
+      "commentary": "The clothes to match. The boots and the shirt are mine, not borrowed.",
+      "amended": true
     },
     {
       "frame": 67,
@@ -1358,7 +1436,8 @@
       "cue_start": 16.5,
       "cue_end": 16.75,
       "action": "press 'a' -- open the age field",
-      "commentary": "Age next. There is no point being coy about it: the number is half the reason my back is the way it is."
+      "commentary": "Age next. No point being coy: half the reason my back is what it is.",
+      "amended": true
     },
     {
       "frame": 68,
@@ -1378,7 +1457,8 @@
       "cue_start": 16.75,
       "cue_end": 17.0,
       "action": "press '4' -- start typing my age over the number it guessed",
-      "commentary": "It has guessed me twenty-four, which is generous and useless. Forty-seven."
+      "commentary": "It has guessed me twenty-four, which is generous and useless. Forty-seven.",
+      "amended": false
     },
     {
       "frame": 69,
@@ -1398,7 +1478,8 @@
       "cue_start": 17.0,
       "cue_end": 17.25,
       "action": "press '7' -- finish typing my age",
-      "commentary": "Forty-seven. Twenty-two of them in the same building, and I would not give those back."
+      "commentary": "Forty-seven. Twenty-two of them in one building, and no regrets.",
+      "amended": true
     },
     {
       "frame": 70,
@@ -1418,7 +1499,8 @@
       "cue_start": 17.25,
       "cue_end": 17.5,
       "action": "press 'Return' -- accept my age",
-      "commentary": "Accepted."
+      "commentary": "Accepted.",
+      "amended": false
     },
     {
       "frame": 71,
@@ -1438,7 +1520,8 @@
       "cue_start": 17.5,
       "cue_end": 17.75,
       "action": "press 'Tab' -- move forward off the ledger tab",
-      "commentary": "Forty-seven, and the field took it without comment. On to the work."
+      "commentary": "Forty-seven, taken without comment. On to the work.",
+      "amended": true
     },
     {
       "frame": 72,
@@ -1458,7 +1541,8 @@
       "cue_start": 17.75,
       "cue_end": 18.0,
       "action": "press 'Tab' -- move forward again, to the trade",
-      "commentary": "Past the start I already chose. What I did for a living is the next line and it is the one I can answer without thinking."
+      "commentary": "Past the start I already chose. What I did for a living is next.",
+      "amended": true
     },
     {
       "frame": 73,
@@ -1478,7 +1562,8 @@
       "cue_start": 18.0,
       "cue_end": 18.25,
       "action": "press 'slash' -- open the filter rather than scroll through every trade there is",
-      "commentary": "The list of what people did for a living is a mile long and I already know my line on it. Search for it instead."
+      "commentary": "The trades run a mile long. I know my line; go straight to it.",
+      "amended": true
     },
     {
       "frame": 74,
@@ -1498,7 +1583,8 @@
       "cue_start": 18.25,
       "cue_end": 18.5,
       "action": "press 'M' -- type the trade I want to find",
-      "commentary": "Mechanical."
+      "commentary": "Mechanical.",
+      "amended": false
     },
     {
       "frame": 75,
@@ -1518,7 +1604,8 @@
       "cue_start": 18.5,
       "cue_end": 18.75,
       "action": "press 'e' -- type the trade I want to find",
-      "commentary": "Not electrical, not chemical, not the software people on the second floor."
+      "commentary": "Not electrical, not chemical, not the software people on the second floor.",
+      "amended": false
     },
     {
       "frame": 76,
@@ -1538,7 +1625,8 @@
       "cue_start": 18.75,
       "cue_end": 19.0,
       "action": "press 'c' -- type the trade I want to find",
-      "commentary": "Pumps, fans, gearboxes, bearings, headers, valves."
+      "commentary": "Pumps, fans, gearboxes, bearings, headers, valves.",
+      "amended": false
     },
     {
       "frame": 77,
@@ -1558,7 +1646,8 @@
       "cue_start": 19.0,
       "cue_end": 19.25,
       "action": "press 'h' -- type the trade I want to find",
-      "commentary": "Anything that turns, anything under pressure, anything that gets hot."
+      "commentary": "Anything that turns, anything under pressure, anything that gets hot.",
+      "amended": false
     },
     {
       "frame": 78,
@@ -1578,7 +1667,8 @@
       "cue_start": 19.25,
       "cue_end": 19.5,
       "action": "press 'a' -- type the trade I want to find",
-      "commentary": "Twenty-two years of it in one building."
+      "commentary": "Twenty-two years of it in one building.",
+      "amended": false
     },
     {
       "frame": 79,
@@ -1598,7 +1688,8 @@
       "cue_start": 19.5,
       "cue_end": 19.75,
       "action": "press 'n' -- type the trade I want to find",
-      "commentary": "And the whole steam side of that building was mine by the end."
+      "commentary": "And the whole steam side of that building was mine by the end.",
+      "amended": false
     },
     {
       "frame": 80,
@@ -1618,7 +1709,8 @@
       "cue_start": 19.75,
       "cue_end": 20.0,
       "action": "press 'i' -- type the trade I want to find",
-      "commentary": "Not because I asked for it. Because everyone else who understood it left."
+      "commentary": "Not because I asked for it. Because everyone else who understood it left.",
+      "amended": false
     },
     {
       "frame": 81,
@@ -1638,7 +1730,8 @@
       "cue_start": 20.0,
       "cue_end": 20.25,
       "action": "press 'c' -- type the trade I want to find",
-      "commentary": "Which is how you become the one they phone at three in the morning."
+      "commentary": "Which is how you become the one they phone at three in the morning.",
+      "amended": false
     },
     {
       "frame": 82,
@@ -1658,7 +1751,8 @@
       "cue_start": 20.25,
       "cue_end": 20.5,
       "action": "press 'a' -- type the trade I want to find",
-      "commentary": "I never once let it ring out."
+      "commentary": "I never once let it ring out.",
+      "amended": false
     },
     {
       "frame": 83,
@@ -1678,7 +1772,8 @@
       "cue_start": 20.5,
       "cue_end": 20.75,
       "action": "press 'l' -- finish typing the trade",
-      "commentary": "Mechanical. There."
+      "commentary": "Mechanical. There.",
+      "amended": false
     },
     {
       "frame": 84,
@@ -1698,7 +1793,8 @@
       "cue_start": 20.75,
       "cue_end": 21.0,
       "action": "press 'Return' -- apply the filter",
-      "commentary": "Show me what is left."
+      "commentary": "Show me what is left.",
+      "amended": false
     },
     {
       "frame": 85,
@@ -1718,7 +1814,8 @@
       "cue_start": 21.0,
       "cue_end": 21.25,
       "action": "press 'Return' -- take the trade: mechanical engineer, two points",
-      "commentary": "One entry left and it is mine. Mechanical engineer, and it costs me two out of the skills budget, which is the cheapest honest thing on this whole form."
+      "commentary": "One left, and it is mine. Mechanical engineer, the honest line.",
+      "amended": true
     },
     {
       "frame": 86,
@@ -1738,7 +1835,8 @@
       "cue_start": 21.25,
       "cue_end": 21.5,
       "action": "press 'Tab' -- move forward past the background tab for now",
-      "commentary": "There is a tab for what I did with my evenings. It can wait; the body comes first."
+      "commentary": "What I did with my evenings can wait. The body comes first.",
+      "amended": true
     },
     {
       "frame": 87,
@@ -1758,7 +1856,8 @@
       "cue_start": 21.5,
       "cue_end": 21.75,
       "action": "press 'Tab' -- move forward to the four numbers that describe the body",
-      "commentary": "Four numbers for what I am made of. Thirty-eight points to spend on them and no way to get any of it back afterwards."
+      "commentary": "What I am made of, and none of it comes back once it is spent.",
+      "amended": true
     },
     {
       "frame": 88,
@@ -1778,7 +1877,8 @@
       "cue_start": 21.75,
       "cue_end": 22.0,
       "action": "press 'plus' -- put a point into strength",
-      "commentary": "Strength first. I have swung a two-foot pipe wrench at a seized coupling more mornings than I can count."
+      "commentary": "Strength first. I have swung a wrench at seized couplings for years.",
+      "amended": true
     },
     {
       "frame": 89,
@@ -1798,7 +1898,8 @@
       "cue_start": 22.0,
       "cue_end": 22.25,
       "action": "press 'plus' -- put a second point into strength",
-      "commentary": "Ten. Above average, it says, and that is right: strong for a woman my age and no use pretending further."
+      "commentary": "Above average, it says. Strong for my age; no pretending more.",
+      "amended": true
     },
     {
       "frame": 90,
@@ -1818,7 +1919,8 @@
       "cue_start": 22.25,
       "cue_end": 22.5,
       "action": "press 'Down' -- move to the next number",
-      "commentary": "That is what I can lift. What I cannot do with it comes later on the trait page."
+      "commentary": "That is what I can lift. What I cannot do with it comes later.",
+      "amended": true
     },
     {
       "frame": 91,
@@ -1838,7 +1940,8 @@
       "cue_start": 22.5,
       "cue_end": 22.75,
       "action": "press 'minus' -- take a point back out of dexterity",
-      "commentary": "And here is where I pay for it. I have never been quick. I plan instead, and when a plan runs out I am the wrong woman to be standing there."
+      "commentary": "Here is where I pay. I was never quick. I plan instead.",
+      "amended": true
     },
     {
       "frame": 92,
@@ -1858,7 +1961,8 @@
       "cue_start": 22.75,
       "cue_end": 23.0,
       "action": "press 'Down' -- move to the next number",
-      "commentary": "Seven. Below average, and I would rather the form said so than flattered me."
+      "commentary": "Below average. I would rather it said so than flattered me.",
+      "amended": true
     },
     {
       "frame": 93,
@@ -1878,7 +1982,8 @@
       "cue_start": 23.0,
       "cue_end": 23.25,
       "action": "press 'plus' -- put a point into intelligence",
-      "commentary": "This is the one I am actually good at."
+      "commentary": "This is the one I am actually good at.",
+      "amended": false
     },
     {
       "frame": 94,
@@ -1898,7 +2003,8 @@
       "cue_start": 23.25,
       "cue_end": 23.5,
       "action": "press 'plus' -- put a second point into intelligence",
-      "commentary": "Give me a machine and I will tell you what is wrong with it, usually before the cover is off."
+      "commentary": "Give me a machine and I find the fault before the cover is off.",
+      "amended": true
     },
     {
       "frame": 95,
@@ -1918,7 +2024,8 @@
       "cue_start": 23.5,
       "cue_end": 23.75,
       "action": "press 'plus' -- put a third point into intelligence",
-      "commentary": "That is not a boast. It is twenty-two years of being the one who had to know."
+      "commentary": "That is not a boast. It is twenty-two years of being the one who had to know.",
+      "amended": false
     },
     {
       "frame": 96,
@@ -1938,7 +2045,8 @@
       "cue_start": 23.75,
       "cue_end": 24.0,
       "action": "press 'plus' -- put a fourth point into intelligence",
-      "commentary": "Twelve. Top tenth, it reckons. A head full of machines, which is all I have brought with me."
+      "commentary": "A head full of machines is the whole of what I brought out.",
+      "amended": true
     },
     {
       "frame": 97,
@@ -1958,7 +2066,8 @@
       "cue_start": 24.0,
       "cue_end": 24.25,
       "action": "press 'Down' -- move to the last number",
-      "commentary": "One point left over and one line to spend it on."
+      "commentary": "One thing left to spend, and one line to spend it on.",
+      "amended": true
     },
     {
       "frame": 98,
@@ -1978,7 +2087,8 @@
       "cue_start": 24.25,
       "cue_end": 24.5,
       "action": "press 'plus' -- put the last point into perception",
-      "commentary": "My eyes still read a gauge from across a bay and my ears are the best thing I own. Both of those live on this line."
+      "commentary": "My eyes read a gauge across a bay. My ears are the best I own.",
+      "amended": true
     },
     {
       "frame": 99,
@@ -1998,7 +2108,8 @@
       "cue_start": 24.5,
       "cue_end": 24.75,
       "action": "press 'Tab' -- move forward to the traits, where the other side of the ledger lives",
-      "commentary": "Ten, seven, twelve, nine, and nothing left over. Now the part I would rather write down myself than be surprised by later."
+      "commentary": "Nothing left over. Now the half I would rather write myself.",
+      "amended": true
     },
     {
       "frame": 100,
@@ -2018,7 +2129,8 @@
       "cue_start": 24.75,
       "cue_end": 25.0,
       "action": "press 'slash' -- open the filter on the trait list",
-      "commentary": "Liabilities first. Nothing on the good side of this page is affordable until I have owned up to the bad."
+      "commentary": "Debts first. Nothing good is affordable until I own the bad.",
+      "amended": true
     },
     {
       "frame": 101,
@@ -2038,7 +2150,8 @@
       "cue_start": 25.0,
       "cue_end": 25.25,
       "action": "press 'B' -- type the first liability",
-      "commentary": "The back."
+      "commentary": "The back.",
+      "amended": false
     },
     {
       "frame": 102,
@@ -2058,7 +2171,8 @@
       "cue_start": 25.25,
       "cue_end": 25.5,
       "action": "press 'a' -- type the first liability",
-      "commentary": "Six years ago, on a lift I should have refused and did not."
+      "commentary": "Six years ago, on a lift I should have refused and did not.",
+      "amended": false
     },
     {
       "frame": 103,
@@ -2078,7 +2192,8 @@
       "cue_start": 25.5,
       "cue_end": 25.75,
       "action": "press 'd' -- type the first liability",
-      "commentary": "One end of a gearbox casing, a man off sick, and a shift that was already late."
+      "commentary": "One end of a gearbox casing, a man off sick, and a shift that was already late.",
+      "amended": false
     },
     {
       "frame": 104,
@@ -2098,7 +2213,8 @@
       "cue_start": 25.75,
       "cue_end": 26.0,
       "action": "press 'space' -- type the first liability; nothing on the screen changed",
-      "commentary": "I felt it go and I finished the job anyway, which is the whole of my personality in one afternoon."
+      "commentary": "I felt it go and finished the job anyway. Me, in one afternoon.",
+      "amended": true
     },
     {
       "frame": 105,
@@ -2118,7 +2234,8 @@
       "cue_start": 26.0,
       "cue_end": 26.25,
       "action": "press 'B' -- finish typing the first liability",
-      "commentary": "It has never once been right since."
+      "commentary": "It has never once been right since.",
+      "amended": false
     },
     {
       "frame": 106,
@@ -2138,7 +2255,8 @@
       "cue_start": 26.25,
       "cue_end": 26.5,
       "action": "press 'Return' -- apply the filter",
-      "commentary": "Find it."
+      "commentary": "Find it.",
+      "amended": false
     },
     {
       "frame": 107,
@@ -2158,7 +2276,8 @@
       "cue_start": 26.5,
       "cue_end": 26.75,
       "action": "press 'Return' -- take the bad back, which earns three points back",
-      "commentary": "Bad back. Thirty-five per cent off what I can carry, and it pays me three points for the privilege of being honest about it. I can still lift. I cannot carry. That is going to decide what I pick up and what I walk away from, all day."
+      "commentary": "Bad back. I can still lift. I cannot carry. That decides my whole day.",
+      "amended": true
     },
     {
       "frame": 108,
@@ -2178,7 +2297,8 @@
       "cue_start": 26.75,
       "cue_end": 27.0,
       "action": "press 'slash' -- open the filter again for the second liability",
-      "commentary": "Next. The sleep."
+      "commentary": "Next. The sleep.",
+      "amended": false
     },
     {
       "frame": 109,
@@ -2198,7 +2318,8 @@
       "cue_start": 27.0,
       "cue_end": 27.25,
       "action": "press 'I' -- type the second liability",
-      "commentary": "Not since the winter my mother was dying and I lived in a chair beside her for four months."
+      "commentary": "Not since the winter my mother was dying and I slept in her chair.",
+      "amended": true
     },
     {
       "frame": 110,
@@ -2218,7 +2339,8 @@
       "cue_start": 27.25,
       "cue_end": 27.5,
       "action": "press 'n' -- type the second liability",
-      "commentary": "Two hours a night. Two more if I am owed a favour."
+      "commentary": "Two hours a night. Two more if I am owed a favour.",
+      "amended": false
     },
     {
       "frame": 111,
@@ -2238,7 +2360,8 @@
       "cue_start": 27.5,
       "cue_end": 27.75,
       "action": "press 's' -- type the second liability",
-      "commentary": "Other people lie down and go under like a thrown switch."
+      "commentary": "Other people lie down and go under like a thrown switch.",
+      "amended": false
     },
     {
       "frame": 112,
@@ -2258,7 +2381,8 @@
       "cue_start": 27.75,
       "cue_end": 28.0,
       "action": "press 'o' -- type the second liability",
-      "commentary": "I lie there and listen to the building and wait to be tired enough to be allowed in."
+      "commentary": "I lie there and listen to the building and wait to be tired enough to be allowed in.",
+      "amended": false
     },
     {
       "frame": 113,
@@ -2278,7 +2402,8 @@
       "cue_start": 28.0,
       "cue_end": 28.25,
       "action": "press 'm' -- finish typing the second liability",
-      "commentary": "Tonight, whenever tonight comes, that is going to matter more than anything else on this page."
+      "commentary": "Tonight, whenever tonight comes, that will matter most of all.",
+      "amended": true
     },
     {
       "frame": 114,
@@ -2298,7 +2423,8 @@
       "cue_start": 28.25,
       "cue_end": 28.5,
       "action": "press 'Return' -- apply the filter",
-      "commentary": "Find it."
+      "commentary": "Find it.",
+      "amended": false
     },
     {
       "frame": 115,
@@ -2318,7 +2444,8 @@
       "cue_start": 28.5,
       "cue_end": 28.75,
       "action": "press 'Return' -- take the insomnia, which earns two points back",
-      "commentary": "Insomniac. A hard time falling asleep even under the best circumstances, it says, and it hands me two points for saying so out loud."
+      "commentary": "Insomniac. Hard to fall asleep at the best of times, and I say so.",
+      "amended": true
     },
     {
       "frame": 116,
@@ -2338,7 +2465,8 @@
       "cue_start": 28.75,
       "cue_end": 29.0,
       "action": "press 'slash' -- open the filter for the third liability",
-      "commentary": "One more. The legs."
+      "commentary": "One more. The legs.",
+      "amended": false
     },
     {
       "frame": 117,
@@ -2358,7 +2486,8 @@
       "cue_start": 29.0,
       "cue_end": 29.25,
       "action": "press 'S' -- type the third liability",
-      "commentary": "Slow. I have never been quick and I am slower now than I was at forty."
+      "commentary": "Slow. I have never been quick and I am slower now than I was at forty.",
+      "amended": false
     },
     {
       "frame": 118,
@@ -2378,7 +2507,8 @@
       "cue_start": 29.25,
       "cue_end": 29.5,
       "action": "press 'l' -- type the third liability",
-      "commentary": "Fifteen per cent off my pace on flat ground, and there is nothing flat about a street with cars across it."
+      "commentary": "Slower on flat ground, and nothing is flat with cars across it.",
+      "amended": true
     },
     {
       "frame": 119,
@@ -2398,7 +2528,8 @@
       "cue_start": 29.5,
       "cue_end": 29.75,
       "action": "press 'o' -- type the third liability",
-      "commentary": "Running is not a plan available to me. It has not been for years."
+      "commentary": "Running is not a plan available to me. It has not been for years.",
+      "amended": false
     },
     {
       "frame": 120,
@@ -2418,7 +2549,8 @@
       "cue_start": 29.75,
       "cue_end": 30.0,
       "action": "press 'w' -- type the third liability",
-      "commentary": "So every room I go into, I want to know the way out of before I am in it."
+      "commentary": "So every room I go into, I want to know the way out of before I am in it.",
+      "amended": false
     },
     {
       "frame": 121,
@@ -2438,7 +2570,8 @@
       "cue_start": 30.0,
       "cue_end": 30.25,
       "action": "press 'space' -- type the third liability; nothing on the screen changed",
-      "commentary": "That is not caution. That is arithmetic."
+      "commentary": "That is not caution. That is arithmetic.",
+      "amended": true
     },
     {
       "frame": 122,
@@ -2458,7 +2591,8 @@
       "cue_start": 30.25,
       "cue_end": 30.5,
       "action": "press 'F' -- finish typing the third liability",
-      "commentary": "Three liabilities, eight points, and every one of them true."
+      "commentary": "Three debts named, and every one of them true.",
+      "amended": true
     },
     {
       "frame": 123,
@@ -2478,7 +2612,8 @@
       "cue_start": 30.5,
       "cue_end": 30.75,
       "action": "press 'Return' -- apply the filter",
-      "commentary": "Find it."
+      "commentary": "Find it.",
+      "amended": false
     },
     {
       "frame": 124,
@@ -2498,7 +2633,8 @@
       "cue_start": 30.75,
       "cue_end": 31.0,
       "action": "press 'Return' -- take the slow feet, which earns three points back",
-      "commentary": "Slow footed. Three points back, and the plain truth of what my legs are worth on a street I have to leave in a hurry."
+      "commentary": "Slow footed. The plain truth of my legs on a street I must leave fast.",
+      "amended": true
     },
     {
       "frame": 125,
@@ -2518,7 +2654,8 @@
       "cue_start": 31.0,
       "cue_end": 31.25,
       "action": "press 'slash' -- open the filter for the first thing I am actually good for",
-      "commentary": "Eight points in the pot, all of it borrowed against my own body. Now what it bought."
+      "commentary": "All of it borrowed against my own body. Now what it bought.",
+      "amended": true
     },
     {
       "frame": 126,
@@ -2538,7 +2675,8 @@
       "cue_start": 31.25,
       "cue_end": 31.5,
       "action": "press 'G' -- type the first boon",
-      "commentary": "The ears."
+      "commentary": "The ears.",
+      "amended": false
     },
     {
       "frame": 127,
@@ -2558,7 +2696,8 @@
       "cue_start": 31.5,
       "cue_end": 31.75,
       "action": "press 'o' -- type the first boon",
-      "commentary": "I can hear a bad bearing through a concrete floor."
+      "commentary": "I can hear a bad bearing through a concrete floor.",
+      "amended": false
     },
     {
       "frame": 128,
@@ -2578,7 +2717,8 @@
       "cue_start": 31.75,
       "cue_end": 32.0,
       "action": "press 'o' -- type the first boon",
-      "commentary": "That is not a party trick, it is the whole of preventive maintenance."
+      "commentary": "That is not a party trick, it is the whole of preventive maintenance.",
+      "amended": false
     },
     {
       "frame": 129,
@@ -2598,7 +2738,8 @@
       "cue_start": 32.0,
       "cue_end": 32.25,
       "action": "press 'd' -- type the first boon",
-      "commentary": "And in five days I have learned it works on rooms as well as on gearboxes."
+      "commentary": "And in five days I have learned it works on rooms as well as on gearboxes.",
+      "amended": false
     },
     {
       "frame": 130,
@@ -2618,7 +2759,8 @@
       "cue_start": 32.25,
       "cue_end": 32.5,
       "action": "press 'space' -- type the first boon",
-      "commentary": "I can hear which ones have something in them long before there is anything to see."
+      "commentary": "I can hear which ones have something in them long before there is anything to see.",
+      "amended": false
     },
     {
       "frame": 131,
@@ -2638,7 +2780,8 @@
       "cue_start": 32.5,
       "cue_end": 32.75,
       "action": "press 'H' -- finish typing the first boon",
-      "commentary": "It has kept me alive twice already and I did not have to be brave either time."
+      "commentary": "It has kept me alive twice already and I did not have to be brave either time.",
+      "amended": false
     },
     {
       "frame": 132,
@@ -2658,7 +2801,8 @@
       "cue_start": 32.75,
       "cue_end": 33.0,
       "action": "press 'Return' -- apply the filter",
-      "commentary": "Find it."
+      "commentary": "Find it.",
+      "amended": false
     },
     {
       "frame": 133,
@@ -2678,7 +2822,8 @@
       "cue_start": 33.0,
       "cue_end": 33.25,
       "action": "press 'Return' -- take the good hearing for one point",
-      "commentary": "Good hearing, one point. Cheapest thing on the page and the most useful thing I own."
+      "commentary": "Good hearing. The cheapest thing here and the most useful I own.",
+      "amended": true
     },
     {
       "frame": 134,
@@ -2698,7 +2843,8 @@
       "cue_start": 33.25,
       "cue_end": 33.5,
       "action": "press 'slash' -- open the filter for the second boon",
-      "commentary": "And one more."
+      "commentary": "And one more.",
+      "amended": false
     },
     {
       "frame": 135,
@@ -2718,7 +2864,8 @@
       "cue_start": 33.5,
       "cue_end": 33.75,
       "action": "press 'F' -- type the second boon",
-      "commentary": "The hands."
+      "commentary": "The hands.",
+      "amended": false
     },
     {
       "frame": 136,
@@ -2738,7 +2885,8 @@
       "cue_start": 33.75,
       "cue_end": 34.0,
       "action": "press 'a' -- type the second boon",
-      "commentary": "Twenty-two years of threading nuts into holes I could not see."
+      "commentary": "Twenty-two years of threading nuts into holes I could not see.",
+      "amended": false
     },
     {
       "frame": 137,
@@ -2758,7 +2906,8 @@
       "cue_start": 34.0,
       "cue_end": 34.25,
       "action": "press 's' -- type the second boon",
-      "commentary": "They come back from a slip before my head has caught up."
+      "commentary": "They come back from a slip before my head has caught up.",
+      "amended": false
     },
     {
       "frame": 138,
@@ -2778,7 +2927,8 @@
       "cue_start": 34.25,
       "cue_end": 34.5,
       "action": "press 't' -- type the second boon",
-      "commentary": "Cuts close, knuckles heal, and I have never once needed stitches from that building."
+      "commentary": "Cuts close, knuckles heal, and never a stitch out of that building.",
+      "amended": true
     },
     {
       "frame": 139,
@@ -2798,7 +2948,8 @@
       "cue_start": 34.5,
       "cue_end": 34.75,
       "action": "press 'space' -- type the second boon",
-      "commentary": "It is the one part of me that has not aged at the rate the rest has."
+      "commentary": "It is the one part of me that has not aged at the rate the rest has.",
+      "amended": false
     },
     {
       "frame": 140,
@@ -2818,7 +2969,8 @@
       "cue_start": 34.75,
       "cue_end": 35.0,
       "action": "press 'H' -- finish typing the second boon",
-      "commentary": "Two points, and worth it: I am going to be handling broken glass and torn metal all day."
+      "commentary": "Worth it. I will be handling broken glass and torn metal all day.",
+      "amended": true
     },
     {
       "frame": 141,
@@ -2838,7 +2990,8 @@
       "cue_start": 35.0,
       "cue_end": 35.25,
       "action": "press 'Return' -- apply the filter",
-      "commentary": "Find it."
+      "commentary": "Find it.",
+      "amended": false
     },
     {
       "frame": 142,
@@ -2858,7 +3011,8 @@
       "cue_start": 35.25,
       "cue_end": 35.5,
       "action": "press 'Return' -- take the fast healing for two points",
-      "commentary": "Fast healer, two points. Five liabilities and boons between them, three points spent against eight earned, and I am five to the good with the skills page still to pay for."
+      "commentary": "Fast healer. Five things named honestly, and I am still to the good.",
+      "amended": true
     },
     {
       "frame": 143,
@@ -2878,7 +3032,8 @@
       "cue_start": 35.5,
       "cue_end": 35.75,
       "action": "press 'shift+Tab' -- go back a tab",
-      "commentary": "Five points left over from being honest about myself. Now what I did with my evenings."
+      "commentary": "Owning up to myself left me something over. Now my evenings.",
+      "amended": true
     },
     {
       "frame": 144,
@@ -2898,7 +3053,8 @@
       "cue_start": 35.75,
       "cue_end": 36.0,
       "action": "press 'shift+Tab' -- go back again, to the background",
-      "commentary": "Because a working life is not the only place a person learns anything."
+      "commentary": "Because a working life is not the only place a person learns anything.",
+      "amended": false
     },
     {
       "frame": 145,
@@ -2918,7 +3074,8 @@
       "cue_start": 36.0,
       "cue_end": 36.25,
       "action": "press 'slash' -- open the filter on the background list",
-      "commentary": "The honest one first, again."
+      "commentary": "The honest one first, again.",
+      "amended": false
     },
     {
       "frame": 146,
@@ -2938,7 +3095,8 @@
       "cue_start": 36.25,
       "cue_end": 36.5,
       "action": "press 'N' -- type the habit I have and cannot put down",
-      "commentary": "There is nothing in my shirt pocket but the pocket."
+      "commentary": "There is nothing in my shirt pocket but the pocket.",
+      "amended": false
     },
     {
       "frame": 147,
@@ -2958,7 +3116,8 @@
       "cue_start": 36.5,
       "cue_end": 36.75,
       "action": "press 'i' -- type the habit",
-      "commentary": "I quit twice in my thirties and failed twice."
+      "commentary": "I quit twice in my thirties and failed twice.",
+      "amended": false
     },
     {
       "frame": 148,
@@ -2978,7 +3137,8 @@
       "cue_start": 36.75,
       "cue_end": 37.0,
       "action": "press 'c' -- type the habit",
-      "commentary": "One hour without and I am mean. Two and I cannot hold a thought in a straight line."
+      "commentary": "One hour without and I am mean. Two and I cannot hold a thought in a straight line.",
+      "amended": false
     },
     {
       "frame": 149,
@@ -2998,7 +3158,8 @@
       "cue_start": 37.0,
       "cue_end": 37.25,
       "action": "press 'o' -- type the habit",
-      "commentary": "I know precisely how the rest of that goes, and there is no shop between here and the river that has not already been emptied."
+      "commentary": "I know how the rest of that goes, and every shop here is emptied.",
+      "amended": true
     },
     {
       "frame": 150,
@@ -3018,7 +3179,8 @@
       "cue_start": 37.25,
       "cue_end": 37.5,
       "action": "press 't' -- finish typing the habit",
-      "commentary": "So it is going to be a hard day, and none of it will be the day's fault."
+      "commentary": "So it is going to be a hard day, and none of it will be the day's fault.",
+      "amended": false
     },
     {
       "frame": 151,
@@ -3038,7 +3200,8 @@
       "cue_start": 37.5,
       "cue_end": 37.75,
       "action": "press 'Return' -- apply the filter",
-      "commentary": "Find it."
+      "commentary": "Find it.",
+      "amended": false
     },
     {
       "frame": 152,
@@ -3058,7 +3221,8 @@
       "cue_start": 37.75,
       "cue_end": 38.0,
       "action": "press 'Return' -- take the nicotine dependence, which earns a point back",
-      "commentary": "Nicotine dependence. It earns me a point, which is the only good thing the habit has ever done for me."
+      "commentary": "Nicotine. I would not write that down if it were not true.",
+      "amended": true
     },
     {
       "frame": 153,
@@ -3078,7 +3242,8 @@
       "cue_start": 38.0,
       "cue_end": 38.25,
       "action": "press 'slash' -- open the filter for the first aid",
-      "commentary": "Now the useful evenings."
+      "commentary": "Now the useful evenings.",
+      "amended": false
     },
     {
       "frame": 154,
@@ -3098,7 +3263,8 @@
       "cue_start": 38.25,
       "cue_end": 38.5,
       "action": "press 'F' -- type the first useful thing",
-      "commentary": "The mill sent us to the first-aid refresher every spring."
+      "commentary": "The mill sent us to the first-aid refresher every spring.",
+      "amended": false
     },
     {
       "frame": 155,
@@ -3118,7 +3284,8 @@
       "cue_start": 38.5,
       "cue_end": 38.75,
       "action": "press 'i' -- type the first useful thing",
-      "commentary": "Most people slept through it. I paid attention every single year."
+      "commentary": "Most people slept through it. I paid attention every single year.",
+      "amended": false
     },
     {
       "frame": 156,
@@ -3138,7 +3305,8 @@
       "cue_start": 38.75,
       "cue_end": 39.0,
       "action": "press 'r' -- type the first useful thing",
-      "commentary": "Because a man went into a nip point on the third floor in ninety-nine and nobody on that shift knew what to do with him."
+      "commentary": "Because a man went into a nip point in ninety-nine and nobody knew what to do.",
+      "amended": true
     },
     {
       "frame": 157,
@@ -3158,7 +3326,8 @@
       "cue_start": 39.0,
       "cue_end": 39.25,
       "action": "press 's' -- type the first useful thing",
-      "commentary": "I can stop a bleed, splint a wrist, and tell the difference between a wound that is frightening and one that is killing you."
+      "commentary": "I can stop a bleed, splint a wrist, and tell frightening from fatal.",
+      "amended": true
     },
     {
       "frame": 158,
@@ -3178,7 +3347,8 @@
       "cue_start": 39.25,
       "cue_end": 39.5,
       "action": "press 't' -- finish typing the first useful thing",
-      "commentary": "Today that is worth more than anything else I know."
+      "commentary": "Today that is worth more than anything else I know.",
+      "amended": false
     },
     {
       "frame": 159,
@@ -3198,7 +3368,8 @@
       "cue_start": 39.5,
       "cue_end": 39.75,
       "action": "press 'Return' -- apply the filter",
-      "commentary": "Find it."
+      "commentary": "Find it.",
+      "amended": false
     },
     {
       "frame": 160,
@@ -3218,7 +3389,8 @@
       "cue_start": 39.75,
       "cue_end": 40.0,
       "action": "press 'Return' -- take the first aid for one point",
-      "commentary": "First aid, one point. I would pay five."
+      "commentary": "First aid. I would give up a great deal more than this for it.",
+      "amended": true
     },
     {
       "frame": 161,
@@ -3238,7 +3410,8 @@
       "cue_start": 40.0,
       "cue_end": 40.25,
       "action": "press 'slash' -- open the filter for the river",
-      "commentary": "And the river."
+      "commentary": "And the river.",
+      "amended": false
     },
     {
       "frame": 162,
@@ -3258,7 +3431,8 @@
       "cue_start": 40.25,
       "cue_end": 40.5,
       "action": "press 'F' -- type the second useful thing",
-      "commentary": "My father taught me to fish it in April."
+      "commentary": "My father taught me to fish it in April.",
+      "amended": false
     },
     {
       "frame": 163,
@@ -3278,7 +3452,8 @@
       "cue_start": 40.5,
       "cue_end": 40.75,
       "action": "press 'i' -- type the second useful thing",
-      "commentary": "Which sounds like sentiment and is not: it is how you find water and read weather coming up a valley."
+      "commentary": "It sounds like sentiment. It is how you find water and read weather.",
+      "amended": true
     },
     {
       "frame": 164,
@@ -3298,7 +3473,8 @@
       "cue_start": 40.75,
       "cue_end": 41.0,
       "action": "press 's' -- type the second useful thing",
-      "commentary": "And how you learn not to eat something stupid because it looked all right."
+      "commentary": "And how you learn not to eat something stupid because it looked all right.",
+      "amended": false
     },
     {
       "frame": 165,
@@ -3318,7 +3494,8 @@
       "cue_start": 41.0,
       "cue_end": 41.25,
       "action": "press 'h' -- finish typing the second useful thing",
-      "commentary": "There is a creek in this town and I am going to need it before the day is out."
+      "commentary": "There is a creek in this town and I am going to need it before the day is out.",
+      "amended": false
     },
     {
       "frame": 166,
@@ -3338,7 +3515,8 @@
       "cue_start": 41.25,
       "cue_end": 41.5,
       "action": "press 'Return' -- apply the filter",
-      "commentary": "Find it."
+      "commentary": "Find it.",
+      "amended": false
     },
     {
       "frame": 167,
@@ -3358,7 +3536,8 @@
       "cue_start": 41.5,
       "cue_end": 41.75,
       "action": "press 'Return' -- take the fishing for one point",
-      "commentary": "Fishing, one point, and the outdoorsman that comes free with it. Being wet is going to be part of today."
+      "commentary": "Fishing, and the outdoor sense with it. Today I will be wet.",
+      "amended": true
     },
     {
       "frame": 168,
@@ -3378,7 +3557,8 @@
       "cue_start": 41.75,
       "cue_end": 42.0,
       "action": "press 'slash' -- open the filter for the bench work",
-      "commentary": "One more that is really just the day job spilling over."
+      "commentary": "One more that is really just the day job spilling over.",
+      "amended": false
     },
     {
       "frame": 169,
@@ -3398,7 +3578,8 @@
       "cue_start": 42.0,
       "cue_end": 42.25,
       "action": "press 'M' -- type the third useful thing",
-      "commentary": "Machinist."
+      "commentary": "Machinist.",
+      "amended": false
     },
     {
       "frame": 170,
@@ -3418,7 +3599,8 @@
       "cue_start": 42.25,
       "cue_end": 42.5,
       "action": "press 'a' -- type the third useful thing",
-      "commentary": "Half the work in an old plant is that the part you want is not in the crib."
+      "commentary": "Half the work in an old plant is that the part you want is not in the crib.",
+      "amended": false
     },
     {
       "frame": 171,
@@ -3438,7 +3620,8 @@
       "cue_start": 42.5,
       "cue_end": 42.75,
       "action": "press 'c' -- type the third useful thing",
-      "commentary": "So you build one out of whatever is on the bench."
+      "commentary": "So you build one out of whatever is on the bench.",
+      "amended": false
     },
     {
       "frame": 172,
@@ -3458,7 +3641,8 @@
       "cue_start": 42.75,
       "cue_end": 43.0,
       "action": "press 'h' -- type the third useful thing",
-      "commentary": "A bracket, a wedge, a handle, a length of stock jammed across the inside of a window."
+      "commentary": "A bracket, a wedge, a handle, a length of stock across a window.",
+      "amended": true
     },
     {
       "frame": 173,
@@ -3478,7 +3662,8 @@
       "cue_start": 43.0,
       "cue_end": 43.25,
       "action": "press 'i' -- finish typing the third useful thing",
-      "commentary": "That last one I am going to want tonight."
+      "commentary": "That last one I am going to want tonight.",
+      "amended": false
     },
     {
       "frame": 174,
@@ -3498,7 +3683,8 @@
       "cue_start": 43.25,
       "cue_end": 43.5,
       "action": "press 'Return' -- apply the filter",
-      "commentary": "Find it."
+      "commentary": "Find it.",
+      "amended": false
     },
     {
       "frame": 175,
@@ -3518,7 +3704,8 @@
       "cue_start": 43.5,
       "cue_end": 43.75,
       "action": "press 'Return' -- take the beginner machinist for two points",
-      "commentary": "Machinist, beginner, two points. Fabrication and a bit more mechanics on top of what the job already gave me."
+      "commentary": "Machinist, beginner. Fabrication, and more mechanics than the job gave.",
+      "amended": true
     },
     {
       "frame": 176,
@@ -3538,7 +3725,8 @@
       "cue_start": 43.75,
       "cue_end": 44.0,
       "action": "press 'slash' -- open the filter for the licence",
-      "commentary": "And the last one, which is only on here because it is true."
+      "commentary": "And the last one, which is only on here because it is true.",
+      "amended": false
     },
     {
       "frame": 177,
@@ -3558,7 +3746,8 @@
       "cue_start": 44.0,
       "cue_end": 44.25,
       "action": "press 'D' -- type the last background",
-      "commentary": "I drive. Or I did."
+      "commentary": "I drive. Or I did.",
+      "amended": false
     },
     {
       "frame": 178,
@@ -3578,7 +3767,8 @@
       "cue_start": 44.25,
       "cue_end": 44.5,
       "action": "press 'r' -- type the last background",
-      "commentary": "Down through a dead town at three in the morning more times than I can count, with the heater going and nobody on the road."
+      "commentary": "Down through a dead town at three in the morning, more times than I can count.",
+      "amended": true
     },
     {
       "frame": 179,
@@ -3598,7 +3788,8 @@
       "cue_start": 44.5,
       "cue_end": 44.75,
       "action": "press 'i' -- type the last background",
-      "commentary": "My truck is in the lot at work and I am not going to see it again."
+      "commentary": "My truck is in the lot at work and I am not going to see it again.",
+      "amended": false
     },
     {
       "frame": 180,
@@ -3618,7 +3809,8 @@
       "cue_start": 44.75,
       "cue_end": 45.0,
       "action": "press 'v' -- finish typing the last background",
-      "commentary": "But if I find something with keys in it and a clear road, I can move it, and that costs nothing to write down."
+      "commentary": "Give me something with keys in it and a clear road and I can move it.",
+      "amended": true
     },
     {
       "frame": 181,
@@ -3638,7 +3830,8 @@
       "cue_start": 45.0,
       "cue_end": 45.25,
       "action": "press 'Return' -- apply the filter",
-      "commentary": "Find it."
+      "commentary": "Find it.",
+      "amended": false
     },
     {
       "frame": 182,
@@ -3658,7 +3851,8 @@
       "cue_start": 45.25,
       "cue_end": 45.5,
       "action": "press 'Tab' -- leave the verified licence selected and move toward skills",
-      "commentary": "The licence is already there. Leave it alone and keep going."
+      "commentary": "The licence is already there. Leave it alone and keep going.",
+      "amended": false
     },
     {
       "frame": 183,
@@ -3678,7 +3872,8 @@
       "cue_start": 45.5,
       "cue_end": 45.75,
       "action": "press 'Tab' -- cross the traits tab toward skills",
-      "commentary": "The bad back, the sleeplessness, and the slow feet are all debts I already know."
+      "commentary": "The bad back, the sleeplessness, and the slow feet are all debts I already know.",
+      "amended": false
     },
     {
       "frame": 184,
@@ -3698,7 +3893,8 @@
       "cue_start": 45.75,
       "cue_end": 46.0,
       "action": "press 'Tab' -- open the skills tab",
-      "commentary": "Last, the things I can still do when somebody gets close enough that a tool is not enough."
+      "commentary": "Last, what I can still do when a tool is not enough and they are close.",
+      "amended": true
     },
     {
       "frame": 185,
@@ -3718,7 +3914,8 @@
       "cue_start": 46.0,
       "cue_end": 46.25,
       "action": "press 'plus' -- buy the highlighted bashing skill increase",
-      "commentary": "A hammer, a crowbar, a length of pipe—if I have to swing one, I need to know where the weight goes."
+      "commentary": "A hammer, a crowbar, a length of pipe. I need to know where the weight goes.",
+      "amended": true
     },
     {
       "frame": 186,
@@ -3738,7 +3935,8 @@
       "cue_start": 46.25,
       "cue_end": 46.5,
       "action": "press 'Down' -- move from bashing toward melee",
-      "commentary": "An edge can cut clean, but I have spent my life with blunt steel and handles."
+      "commentary": "An edge can cut clean, but I have spent my life with blunt steel and handles.",
+      "amended": false
     },
     {
       "frame": 187,
@@ -3758,7 +3956,8 @@
       "cue_start": 46.5,
       "cue_end": 46.75,
       "action": "press 'Down' -- move from cutting toward melee",
-      "commentary": "Getting out of the way matters more than looking brave."
+      "commentary": "Getting out of the way matters more than looking brave.",
+      "amended": false
     },
     {
       "frame": 188,
@@ -3778,7 +3977,8 @@
       "cue_start": 46.75,
       "cue_end": 47.0,
       "action": "press 'Down' -- highlight melee",
-      "commentary": "Any of it starts with footing, distance, and not freezing."
+      "commentary": "Any of it starts with footing, distance, and not freezing.",
+      "amended": false
     },
     {
       "frame": 189,
@@ -3798,7 +3998,8 @@
       "cue_start": 47.0,
       "cue_end": 47.25,
       "action": "press 'plus' -- buy the verified two-level melee increase",
-      "commentary": "Two hard lessons: keep my balance, and strike only when I mean it."
+      "commentary": "Two hard lessons: keep my balance, and strike only when I mean it.",
+      "amended": false
     },
     {
       "frame": 190,
@@ -3818,7 +4019,8 @@
       "cue_start": 47.25,
       "cue_end": 47.5,
       "action": "press 'Tab' -- open the summary after spending the final skill point",
-      "commentary": "That is enough. I know what I know, and there is nothing left to pretend."
+      "commentary": "That is enough. I know what I know, and there is nothing left to pretend.",
+      "amended": false
     },
     {
       "frame": 191,
@@ -3838,7 +4040,8 @@
       "cue_start": 47.5,
       "cue_end": 47.75,
       "action": "press 'Tab' -- advance from the verified summary to the finish confirmation",
-      "commentary": "The numbers close. The life on the page is mine, debts and all. I am done choosing."
+      "commentary": "The numbers close. The life on the page is mine, debts and all. I am done choosing.",
+      "amended": false
     },
     {
       "frame": 192,
@@ -3858,7 +4061,8 @@
       "cue_start": 47.75,
       "cue_end": 48.0,
       "action": "press 'Y' -- confirm the finished custom character and wait for the world to appear",
-      "commentary": "Yes. This is me. Find a door that closes, find water, find one good wrench, and keep breathing."
+      "commentary": "Yes. This is me. A door that closes, water, one good wrench.",
+      "amended": true
     },
     {
       "frame": 193,
@@ -3878,7 +4082,8 @@
       "cue_start": 48.0,
       "cue_end": 48.25,
       "action": "press 'Escape' -- open the in-game main menu before the first move",
-      "commentary": "Before I take a single step, I need one quiet breath and a clear beginning."
+      "commentary": "Before I take a single step, I need one quiet breath and a clear beginning.",
+      "amended": false
     },
     {
       "frame": 194,
@@ -3898,7 +4103,8 @@
       "cue_start": 48.25,
       "cue_end": 48.5,
       "action": "press 'e' -- invoke the verified Quicksave menu item without quitting",
-      "commentary": "Restaurant. Eight in the morning. Too many dead to the west. I fix that in my head before I move."
+      "commentary": "Restaurant, eight in the morning, too many dead west. Fix that in my head.",
+      "amended": true
     },
     {
       "frame": 195,
@@ -3918,7 +4124,8 @@
       "cue_start": 48.5,
       "cue_end": 48.75,
       "action": "press '1' -- select English on the resumed launch language screen",
-      "commentary": "English again. Then I can return to the life waiting here."
+      "commentary": "English again. Then I can return to the life waiting here.",
+      "amended": false
     },
     {
       "frame": 196,
@@ -3938,7 +4145,8 @@
       "cue_start": 48.75,
       "cue_end": 49.0,
       "action": "press 'Return' -- open the selected Fern Creek load entry",
-      "commentary": "Fern Creek. Open the only life I have here."
+      "commentary": "Fern Creek. Open the only life I have here.",
+      "amended": false
     },
     {
       "frame": 197,
@@ -3958,7 +4166,8 @@
       "cue_start": 49.0,
       "cue_end": 49.25,
       "action": "press 'Return' -- load the selected Delphine Ouellette save",
-      "commentary": "Delphine Ouellette. Back into it."
+      "commentary": "Delphine Ouellette. Back into it.",
+      "amended": false
     },
     {
       "frame": 198,
@@ -3978,7 +4187,8 @@
       "cue_start": 49.25,
       "cue_end": 49.5,
       "action": "press 'Right' -- resume by moving east through the restaurant away from the surrounding dead",
-      "commentary": "East through the restaurant. Move before they close in."
+      "commentary": "East through the restaurant. Move before they close in.",
+      "amended": false
     },
     {
       "frame": 199,
@@ -3998,7 +4208,8 @@
       "cue_start": 49.5,
       "cue_end": 50.5,
       "action": "press 'apostrophe' -- acknowledge the distant surrounding zombies while keeping safe mode armed",
-      "commentary": "I see them around the building. East is still my way through."
+      "commentary": "I see them around the building. East is still my way through.",
+      "amended": false
     },
     {
       "frame": 200,
@@ -4018,7 +4229,8 @@
       "cue_start": 50.5,
       "cue_end": 50.75,
       "action": "press 'Right' -- move east after acknowledging the safe-mode alert",
-      "commentary": "Go east now. Tables and booths are better than the street."
+      "commentary": "Go east now. Tables and booths are better than the street.",
+      "amended": false
     },
     {
       "frame": 201,
@@ -4038,7 +4250,8 @@
       "cue_start": 50.75,
       "cue_end": 51.0,
       "action": "press 'Right' -- continue east across the restaurant seating",
-      "commentary": "Another step east, over the seating if I must."
+      "commentary": "Another step east, over the seating if I must.",
+      "amended": false
     },
     {
       "frame": 202,
@@ -4058,7 +4271,8 @@
       "cue_start": 51.0,
       "cue_end": 52.0,
       "action": "press 'apostrophe' -- acknowledge newly seen distant zombies after climbing onto the bench",
-      "commentary": "More of them come into view, still distant. I cannot stop on this bench."
+      "commentary": "More of them come into view, still distant. I cannot stop on this bench.",
+      "amended": false
     },
     {
       "frame": 203,
@@ -4078,7 +4292,8 @@
       "cue_start": 52.0,
       "cue_end": 52.25,
       "action": "press 'Right' -- step east off the bench after acknowledging the alert",
-      "commentary": "Off the bench and east. Keep the tables between me and the doors."
+      "commentary": "Off the bench and east. Keep the tables between me and the doors.",
+      "amended": false
     },
     {
       "frame": 204,
@@ -4098,7 +4313,8 @@
       "cue_start": 52.25,
       "cue_end": 54.25,
       "action": "press 'Right' -- continue east across the restaurant floor",
-      "commentary": "East across the floor. Do not waste the distance I have."
+      "commentary": "East across the floor. Do not waste the distance I have.",
+      "amended": false
     },
     {
       "frame": 205,
@@ -4118,7 +4334,8 @@
       "cue_start": 54.25,
       "cue_end": 54.5,
       "action": "press 'Return' -- confirm the AUTOPEEK and keep the eastward step already taken",
-      "commentary": "Keep the ground I gained. The distant dead can stay behind me."
+      "commentary": "Keep the ground I gained. The distant dead can stay behind me.",
+      "amended": false
     },
     {
       "frame": 206,
@@ -4138,7 +4355,8 @@
       "cue_start": 54.5,
       "cue_end": 55.5,
       "action": "press 'Right' -- continue east through the dining room after closing AUTOPEEK",
-      "commentary": "Keep east through the dining room. The noise stays behind me."
+      "commentary": "Keep east through the dining room. The noise stays behind me.",
+      "amended": false
     },
     {
       "frame": 207,
@@ -4158,7 +4376,8 @@
       "cue_start": 55.5,
       "cue_end": 55.75,
       "action": "press 'Return' -- confirm AUTOPEEK and retain the completed eastward step",
-      "commentary": "Keep the step. Distant movement is no reason to turn back."
+      "commentary": "Keep the step. Distant movement is no reason to turn back.",
+      "amended": false
     },
     {
       "frame": 208,
@@ -4178,7 +4397,8 @@
       "cue_start": 55.75,
       "cue_end": 56.75,
       "action": "press 'Right' -- take the next eastward tile across the restaurant",
-      "commentary": "Another step east. Keep the walls and furniture working for me."
+      "commentary": "Another step east. Keep the walls and furniture working for me.",
+      "amended": false
     },
     {
       "frame": 209,
@@ -4198,7 +4418,8 @@
       "cue_start": 56.75,
       "cue_end": 57.0,
       "action": "press 'Return' -- confirm AUTOPEEK and keep the latest eastward move",
-      "commentary": "Keep moving. What I can see is still far enough away."
+      "commentary": "Keep moving. What I can see is still far enough away.",
+      "amended": false
     },
     {
       "frame": 210,
@@ -4218,7 +4439,8 @@
       "cue_start": 57.0,
       "cue_end": 59.0,
       "action": "press 'Right' -- continue the eastward crossing through the restaurant",
-      "commentary": "East again. I need the far side of this room."
+      "commentary": "East again. I need the far side of this room.",
+      "amended": false
     },
     {
       "frame": 211,
@@ -4238,7 +4460,8 @@
       "cue_start": 59.0,
       "cue_end": 59.25,
       "action": "press 'Return' -- confirm AUTOPEEK and retain the eastward tile",
-      "commentary": "Keep the step. Nothing near me is worth turning around for."
+      "commentary": "Keep the step. Nothing near me is worth turning around for.",
+      "amended": false
     },
     {
       "frame": 212,
@@ -4258,7 +4481,8 @@
       "cue_start": 59.25,
       "cue_end": 60.25,
       "action": "press 'Right' -- continue east with no adjacent hostile markers",
-      "commentary": "Keep east. The open floor is buying me time."
+      "commentary": "Keep east. The open floor is buying me time.",
+      "amended": false
     },
     {
       "frame": 213,
@@ -4278,7 +4502,8 @@
       "cue_start": 60.25,
       "cue_end": 61.25,
       "action": "press 'Return' -- confirm AUTOPEEK and keep the completed eastward step",
-      "commentary": "Stay on this ground. Keep the retreat moving east."
+      "commentary": "Stay on this ground. Keep the retreat moving east.",
+      "amended": false
     },
     {
       "frame": 214,
@@ -4298,7 +4523,8 @@
       "cue_start": 61.25,
       "cue_end": 62.25,
       "action": "press 'Right' -- take the next verified open floor tile to the east",
-      "commentary": "The next tile is clear. Keep east."
+      "commentary": "The next tile is clear. Keep east.",
+      "amended": false
     },
     {
       "frame": 215,
@@ -4318,7 +4544,8 @@
       "cue_start": 62.25,
       "cue_end": 63.25,
       "action": "press 'Right' -- continue east across another verified floor tile",
-      "commentary": "Another clear tile east. Keep going."
+      "commentary": "Another clear tile east. Keep going.",
+      "amended": false
     },
     {
       "frame": 216,
@@ -4338,7 +4565,8 @@
       "cue_start": 63.25,
       "cue_end": 65.25,
       "action": "press 'Right' -- continue east toward the shop-front side of the restaurant",
-      "commentary": "Keep east toward the far wall."
+      "commentary": "Keep east toward the far wall.",
+      "amended": false
     },
     {
       "frame": 217,
@@ -4358,7 +4586,8 @@
       "cue_start": 65.25,
       "cue_end": 65.5,
       "action": "press 'Right' -- continue east toward the glass-fronted side",
-      "commentary": "East again. The far wall is close now."
+      "commentary": "East again. The far wall is close now.",
+      "amended": false
     },
     {
       "frame": 218,
@@ -4378,7 +4607,8 @@
       "cue_start": 65.5,
       "cue_end": 65.75,
       "action": "press 'Right' -- move east off the bench despite the alarm sounding ahead",
-      "commentary": "An alarm is sounding east. Stopping on this bench would be worse."
+      "commentary": "An alarm is sounding east. Stopping on this bench would be worse.",
+      "amended": false
     },
     {
       "frame": 219,
@@ -4398,7 +4628,8 @@
       "cue_start": 65.75,
       "cue_end": 66.75,
       "action": "press 'apostrophe' -- acknowledge the newly seen distant northeast and southwest zombies",
-      "commentary": "More shapes northeast and southwest, still distant. Keep moving."
+      "commentary": "More shapes northeast and southwest, still distant. Keep moving.",
+      "amended": false
     },
     {
       "frame": 220,
@@ -4418,7 +4649,8 @@
       "cue_start": 66.75,
       "cue_end": 67.0,
       "action": "press 'Right' -- resume eastward after acknowledging the distant threat",
-      "commentary": "East again. Keep the noise and the crowd behind me."
+      "commentary": "East again. Keep the noise and the crowd behind me.",
+      "amended": false
     },
     {
       "frame": 221,
@@ -4438,7 +4670,8 @@
       "cue_start": 67.0,
       "cue_end": 68.0,
       "action": "press 'Right' -- step east onto the glass-strewn floor near the shop front",
-      "commentary": "Glass is breaking ahead. A damaged way out is still a way out."
+      "commentary": "Glass is breaking ahead. A damaged way out is still a way out.",
+      "amended": false
     },
     {
       "frame": 222,
@@ -4458,7 +4691,8 @@
       "cue_start": 68.0,
       "cue_end": 70.0,
       "action": "press 'Return' -- confirm AUTOPEEK and retain the move onto the glass-strewn floor",
-      "commentary": "Keep this step. Whatever is north is not close enough to make me retreat."
+      "commentary": "Keep this step. Whatever is north is not close enough to make me retreat.",
+      "amended": false
     },
     {
       "frame": 223,
@@ -4478,7 +4712,8 @@
       "cue_start": 70.0,
       "cue_end": 70.25,
       "action": "press 'Right' -- continue east over verified open floor",
-      "commentary": "The floor ahead is open. Keep east."
+      "commentary": "The floor ahead is open. Keep east.",
+      "amended": false
     },
     {
       "frame": 224,
@@ -4498,7 +4733,8 @@
       "cue_start": 70.25,
       "cue_end": 70.5,
       "action": "press 'Right' -- continue east while the nearest visible zombie remains several tiles north-west",
-      "commentary": "The glass is crunching east of me. Keep moving toward it."
+      "commentary": "The glass is crunching east of me. Keep moving toward it.",
+      "amended": false
     },
     {
       "frame": 225,
@@ -4518,7 +4754,8 @@
       "cue_start": 70.5,
       "cue_end": 71.5,
       "action": "press 'apostrophe' -- acknowledge the latest safe-mode sighting before continuing east",
-      "commentary": "More of them are visible, but none are beside me. Keep moving."
+      "commentary": "More of them are visible, but none are beside me. Keep moving.",
+      "amended": false
     },
     {
       "frame": 226,
@@ -4538,7 +4775,8 @@
       "cue_start": 71.5,
       "cue_end": 72.5,
       "action": "press 'Right' -- resume the eastward move after acknowledging safe mode",
-      "commentary": "East now. I still have room to move."
+      "commentary": "East now. I still have room to move.",
+      "amended": false
     },
     {
       "frame": 227,
@@ -4558,7 +4796,8 @@
       "cue_start": 72.5,
       "cue_end": 74.5,
       "action": "press 'Right' -- continue east while the nearest threat remains north-west",
-      "commentary": "Keep east. The nearest one is still across the room."
+      "commentary": "Keep east. The nearest one is still across the room.",
+      "amended": false
     },
     {
       "frame": 228,
@@ -4578,7 +4817,8 @@
       "cue_start": 74.5,
       "cue_end": 75.5,
       "action": "press 'Right' -- test the next eastward tile near the shop front",
-      "commentary": "Try the next tile east. I need the outer wall."
+      "commentary": "Try the next tile east. I need the outer wall.",
+      "amended": false
     },
     {
       "frame": 229,
@@ -4598,7 +4838,8 @@
       "cue_start": 75.5,
       "cue_end": 76.5,
       "action": "press 'Right' -- move east off the latest bench toward the glass-front wall",
-      "commentary": "Off this bench. The glass wall is close."
+      "commentary": "Off this bench. The glass wall is close.",
+      "amended": false
     },
     {
       "frame": 230,
@@ -4618,7 +4859,8 @@
       "cue_start": 76.5,
       "cue_end": 76.75,
       "action": "press 'Right' -- continue east after moving off the bench",
-      "commentary": "East again. The crashes are closer, but the path is still open."
+      "commentary": "East again. The crashes are closer, but the path is still open.",
+      "amended": false
     },
     {
       "frame": 231,
@@ -4638,7 +4880,8 @@
       "cue_start": 76.75,
       "cue_end": 77.75,
       "action": "press 's' -- prepare to smash the curtained shop window blocking the east exit",
-      "commentary": "Curtains and glass block the east wall. I need a hole."
+      "commentary": "Curtains and glass block the east wall. I need a hole.",
+      "amended": false
     },
     {
       "frame": 232,
@@ -4658,7 +4901,8 @@
       "cue_start": 77.75,
       "cue_end": 78.0,
       "action": "press 'Right' -- smash the curtained shop window to create an east exit",
-      "commentary": "Drive a knee through the glass. Make the opening."
+      "commentary": "Drive a knee through the glass. Make the opening.",
+      "amended": false
     },
     {
       "frame": 233,
@@ -4678,7 +4922,8 @@
       "cue_start": 78.0,
       "cue_end": 78.25,
       "action": "press 'Right' -- step toward the now-empty east window frame",
-      "commentary": "The glass is gone. Step into the window."
+      "commentary": "The glass is gone. Step into the window.",
+      "amended": true
     },
     {
       "frame": 234,
@@ -4698,7 +4943,8 @@
       "cue_start": 78.25,
       "cue_end": 78.5,
       "action": "press 'apostrophe' -- acknowledge the safe-mode warning before retrying the smashed window",
-      "commentary": "I see them. Keep safe mode on, but let me use the opening."
+      "commentary": "I see them. I stay careful, and I still use the opening.",
+      "amended": true
     },
     {
       "frame": 235,
@@ -4718,7 +4964,8 @@
       "cue_start": 78.5,
       "cue_end": 82.5,
       "action": "press 'Right' -- retry stepping east into the smashed window after acknowledging safe mode",
-      "commentary": "Now step into the smashed window."
+      "commentary": "Now step into the smashed window.",
+      "amended": true
     },
     {
       "frame": 236,
@@ -4738,7 +4985,8 @@
       "cue_start": 82.5,
       "cue_end": 82.75,
       "action": "press 'Y' -- confirm stepping through the sharp empty window frame",
-      "commentary": "Yes. Through before they close the distance."
+      "commentary": "Yes. Through before they close the distance.",
+      "amended": false
     },
     {
       "frame": 237,
@@ -4758,7 +5006,8 @@
       "cue_start": 82.75,
       "cue_end": 87.75,
       "action": "press 'Right' -- move east out of the window frame while the nearest threat is northeast",
-      "commentary": "Something is close to the northeast. Out through the window, then away."
+      "commentary": "Something is close to the northeast. Out through the window, then away.",
+      "amended": true
     },
     {
       "frame": 238,
@@ -4778,7 +5027,8 @@
       "cue_start": 87.75,
       "cue_end": 88.0,
       "action": "press 'Return' -- confirm AUTOPEEK and keep the move east out of the window",
-      "commentary": "Keep the step. The warning is west, not in front of me."
+      "commentary": "Keep the step. The warning is west, not in front of me.",
+      "amended": false
     },
     {
       "frame": 239,
@@ -4798,7 +5048,8 @@
       "cue_start": 88.0,
       "cue_end": 88.25,
       "action": "press 'Down' -- move south down the alley because a hostile is immediately north",
-      "commentary": "One is right above me. South, down the alley."
+      "commentary": "One is right above me. South, down the alley.",
+      "amended": false
     },
     {
       "frame": 240,
@@ -4818,7 +5069,8 @@
       "cue_start": 88.25,
       "cue_end": 89.25,
       "action": "press 'apostrophe' -- acknowledge the adjacent safe-mode threat before moving south",
-      "commentary": "I see the one beside the alley. I need the south step."
+      "commentary": "I see the one beside the alley. I need the south step.",
+      "amended": false
     },
     {
       "frame": 241,
@@ -4838,7 +5090,8 @@
       "cue_start": 89.25,
       "cue_end": 89.5,
       "action": "press 'Down' -- move south down the alley after acknowledging the adjacent threat",
-      "commentary": "South now. Put the wall between me and that reach."
+      "commentary": "South now. Put the wall between me and that reach.",
+      "amended": false
     },
     {
       "frame": 242,
@@ -4858,7 +5111,8 @@
       "cue_start": 89.5,
       "cue_end": 90.5,
       "action": "press 'Down' -- continue one more tile south toward the house opening",
-      "commentary": "Growling behind me. One more step south."
+      "commentary": "Growling behind me. One more step south.",
+      "amended": false
     },
     {
       "frame": 243,
@@ -4878,7 +5132,8 @@
       "cue_start": 90.5,
       "cue_end": 90.75,
       "action": "press 'Return' -- confirm AUTOPEEK and keep the second southward step",
-      "commentary": "Keep the south step. The tougher one is northwest, not in my path."
+      "commentary": "Keep the south step. The tougher one is northwest, not in my path.",
+      "amended": false
     },
     {
       "frame": 244,
@@ -4898,7 +5153,8 @@
       "cue_start": 90.75,
       "cue_end": 91.75,
       "action": "press 'Down' -- move south toward the passable east-wall window two tiles below",
-      "commentary": "The brick east of me is solid. One more step south toward the open window."
+      "commentary": "The brick east of me is solid. One more step south toward the open window.",
+      "amended": false
     },
     {
       "frame": 245,
@@ -4918,7 +5174,8 @@
       "cue_start": 91.75,
       "cue_end": 92.0,
       "action": "press 'Return' -- confirm AUTOPEEK and keep the southward step beside the open window",
-      "commentary": "Keep the south step. The open window is southeast of me now."
+      "commentary": "Keep the south step. The open window is southeast of me now.",
+      "amended": false
     },
     {
       "frame": 246,
@@ -4938,7 +5195,8 @@
       "cue_start": 92.0,
       "cue_end": 95.0,
       "action": "press 'n' -- move southeast through the verified open east-wall window",
-      "commentary": "There it is, open to the southeast. Through."
+      "commentary": "There it is, open to the southeast. Through.",
+      "amended": false
     },
     {
       "frame": 247,
@@ -4958,7 +5216,8 @@
       "cue_start": 95.0,
       "cue_end": 95.25,
       "action": "press 'Return' -- confirm AUTOPEEK and keep the move onto the open window",
-      "commentary": "Keep the window step. The house is still safer than the alley."
+      "commentary": "Keep the window step. The house is still safer than the alley.",
+      "amended": false
     },
     {
       "frame": 248,
@@ -4978,7 +5237,8 @@
       "cue_start": 95.25,
       "cue_end": 99.25,
       "action": "press 'n' -- move southeast into the house away from the adjacent northeast hostile",
-      "commentary": "One is northeast of me. Cut southeast into the room."
+      "commentary": "One is northeast of me. Cut southeast into the room.",
+      "amended": false
     },
     {
       "frame": 249,
@@ -4998,7 +5258,8 @@
       "cue_start": 99.25,
       "cue_end": 99.5,
       "action": "press 'Return' -- confirm AUTOPEEK and keep the southeast move inside the house",
-      "commentary": "Keep the step. Going back would put me in the window again."
+      "commentary": "Keep the step. Going back would put me in the window again.",
+      "amended": false
     },
     {
       "frame": 250,
@@ -5018,7 +5279,8 @@
       "cue_start": 99.5,
       "cue_end": 99.75,
       "action": "press 'Return' -- open the action menu because two zombies are adjacent",
-      "commentary": "Two of them are beside me. I need to run now."
+      "commentary": "Two of them are beside me. I need to run now.",
+      "amended": false
     },
     {
       "frame": 251,
@@ -5038,7 +5300,8 @@
       "cue_start": 99.75,
       "cue_end": 100.0,
       "action": "press '3' -- cycle movement mode from walk to run",
-      "commentary": "Run. Put the room between us."
+      "commentary": "Run. Put the room between us.",
+      "amended": false
     },
     {
       "frame": 252,
@@ -5058,7 +5321,8 @@
       "cue_start": 100.0,
       "cue_end": 100.25,
       "action": "press 'n' -- run southeast onto the clear row-17 floor lane",
-      "commentary": "Run southeast onto the clear floor. Do not let them close around me."
+      "commentary": "Run southeast onto the clear floor. Do not let them close around me.",
+      "amended": false
     },
     {
       "frame": 253,
@@ -5078,7 +5342,8 @@
       "cue_start": 100.25,
       "cue_end": 101.25,
       "action": "press 'apostrophe' -- acknowledge the safe-mode block after run mode engaged",
-      "commentary": "I am running now, but safe mode caught the step. I see them. Southeast."
+      "commentary": "Running now, and something pulled me up short. I see them. Southeast.",
+      "amended": true
     },
     {
       "frame": 254,
@@ -5098,7 +5363,8 @@
       "cue_start": 101.25,
       "cue_end": 102.25,
       "action": "press 'n' -- retry the southeast run after acknowledging safe mode",
-      "commentary": "Southeast now. Use the open lane."
+      "commentary": "Southeast now. Use the open lane.",
+      "amended": false
     },
     {
       "frame": 255,
@@ -5118,7 +5384,8 @@
       "cue_start": 102.25,
       "cue_end": 102.5,
       "action": "press 'Right' -- run east along the clear row-17 lane away from adjacent north-side zombies",
-      "commentary": "They are north of me. Run east along the open floor."
+      "commentary": "They are north of me. Run east along the open floor.",
+      "amended": false
     },
     {
       "frame": 256,
@@ -5138,7 +5405,8 @@
       "cue_start": 102.5,
       "cue_end": 103.5,
       "action": "press 'Right' -- continue running east with one zombie adjacent northwest",
-      "commentary": "One is just northwest of me. Keep running east."
+      "commentary": "One is just northwest of me. Keep running east.",
+      "amended": false
     },
     {
       "frame": 257,
@@ -5158,7 +5426,8 @@
       "cue_start": 103.5,
       "cue_end": 103.75,
       "action": "press 'Right' -- keep running east now that the nearest zombie is two tiles back",
-      "commentary": "The gap is opening. Keep east while I still have breath."
+      "commentary": "The gap is opening. Keep east while I still have breath.",
+      "amended": false
     },
     {
       "frame": 258,
@@ -5178,7 +5447,8 @@
       "cue_start": 103.75,
       "cue_end": 104.75,
       "action": "press 'Right' -- continue running east along the verified clear floor lane",
-      "commentary": "The floor stays clear. Keep running east."
+      "commentary": "The floor stays clear. Keep running east.",
+      "amended": false
     },
     {
       "frame": 259,
@@ -5198,7 +5468,8 @@
       "cue_start": 104.75,
       "cue_end": 105.0,
       "action": "press 'Right' -- continue east along the open lane while threats remain several tiles away",
-      "commentary": "Grunting on both sides, but the lane east is still open."
+      "commentary": "Grunting on both sides, but the lane east is still open.",
+      "amended": false
     },
     {
       "frame": 260,
@@ -5218,7 +5489,8 @@
       "cue_start": 105.0,
       "cue_end": 105.25,
       "action": "press 'Right' -- keep running east between threats three tiles northeast and southeast",
-      "commentary": "They are closing from above and below. Keep east between them."
+      "commentary": "They are closing from above and below. Keep east between them.",
+      "amended": false
     },
     {
       "frame": 261,
@@ -5238,7 +5510,8 @@
       "cue_start": 105.25,
       "cue_end": 106.25,
       "action": "press 'apostrophe' -- acknowledge the safe-mode block from nearby threats before continuing east",
-      "commentary": "I see the ones around me. The floor east is still clear."
+      "commentary": "I see the ones around me. The floor east is still clear.",
+      "amended": false
     },
     {
       "frame": 262,
@@ -5258,7 +5531,8 @@
       "cue_start": 106.25,
       "cue_end": 106.5,
       "action": "press 'Right' -- retry the eastward run after acknowledging safe mode",
-      "commentary": "East again. Thread the gap before it closes."
+      "commentary": "East again. Thread the gap before it closes.",
+      "amended": false
     },
     {
       "frame": 263,
@@ -5278,7 +5552,8 @@
       "cue_start": 106.5,
       "cue_end": 107.5,
       "action": "press 'Right' -- keep running east with threats two tiles northwest and southeast",
-      "commentary": "They are flanking me, but the next tile east is clear."
+      "commentary": "They are flanking me, but the next tile east is clear.",
+      "amended": false
     },
     {
       "frame": 264,
@@ -5298,7 +5573,8 @@
       "cue_start": 107.5,
       "cue_end": 107.75,
       "action": "press 'u' -- run northeast around the chair onto verified clear floor",
-      "commentary": "A chair blocks the straight lane. Cut northeast onto clear floor."
+      "commentary": "A chair blocks the straight lane. Cut northeast onto clear floor.",
+      "amended": false
     },
     {
       "frame": 265,
@@ -5318,7 +5594,8 @@
       "cue_start": 107.75,
       "cue_end": 108.0,
       "action": "press 'u' -- run northeast onto clear floor away from the adjacent southeast zombie",
-      "commentary": "One is southeast beside me. Cut northeast again."
+      "commentary": "One is southeast beside me. Cut northeast again.",
+      "amended": false
     },
     {
       "frame": 266,
@@ -5338,7 +5615,8 @@
       "cue_start": 108.0,
       "cue_end": 109.0,
       "action": "press 'apostrophe' -- acknowledge the safe-mode block before retrying northeast",
-      "commentary": "Safe mode caught the step. I see them. Northeast is still clear."
+      "commentary": "Caution pulled me up short. I see them. Northeast is still clear.",
+      "amended": true
     },
     {
       "frame": 267,
@@ -5358,7 +5636,8 @@
       "cue_start": 109.0,
       "cue_end": 110.0,
       "action": "press 'u' -- retry the northeast run after acknowledging safe mode",
-      "commentary": "Northeast now. Keep the space open."
+      "commentary": "Northeast now. Keep the space open.",
+      "amended": false
     },
     {
       "frame": 268,
@@ -5378,7 +5657,8 @@
       "cue_start": 110.0,
       "cue_end": 110.25,
       "action": "press 'Up' -- run north toward the visible basement stairs while threats trail south and west",
-      "commentary": "Stairs ahead. Run north; the dead are south and west."
+      "commentary": "Stairs ahead. Run north; the dead are south and west.",
+      "amended": false
     },
     {
       "frame": 269,
@@ -5398,7 +5678,8 @@
       "cue_start": 110.25,
       "cue_end": 110.5,
       "action": "press 'y' -- run northwest onto the visible basement stair tile",
-      "commentary": "The stair edge is northwest. Get onto it."
+      "commentary": "The stair edge is northwest. Get onto it.",
+      "amended": false
     },
     {
       "frame": 270,
@@ -5418,7 +5699,8 @@
       "cue_start": 110.5,
       "cue_end": 111.5,
       "action": "press 'apostrophe' -- acknowledge the safe-mode block before stepping onto the basement stairs",
-      "commentary": "I see them. The stairs are still my way out."
+      "commentary": "I see them. The stairs are still my way out.",
+      "amended": false
     },
     {
       "frame": 271,
@@ -5438,7 +5720,8 @@
       "cue_start": 111.5,
       "cue_end": 112.5,
       "action": "press 'y' -- retry the northwest step onto the basement stairs",
-      "commentary": "Onto the stairs now."
+      "commentary": "Onto the stairs now.",
+      "amended": false
     },
     {
       "frame": 272,
@@ -5458,7 +5741,8 @@
       "cue_start": 112.5,
       "cue_end": 113.5,
       "action": "press 'shift+period' -- descend the basement stairs",
-      "commentary": "Down into the basement. One narrow stair is better than this open room."
+      "commentary": "Down into the basement. One narrow stair is better than this open room.",
+      "amended": false
     },
     {
       "frame": 273,
@@ -5478,7 +5762,8 @@
       "cue_start": 113.5,
       "cue_end": 113.75,
       "action": "press 'b' -- run southwest off the stair line onto verified empty basement floor",
-      "commentary": "Fire is spreading across the basement. First, get away from the stairs."
+      "commentary": "Fire is spreading across the basement. First, get away from the stairs.",
+      "amended": false
     },
     {
       "frame": 274,
@@ -5498,7 +5783,8 @@
       "cue_start": 113.75,
       "cue_end": 114.0,
       "action": "press 'Return' -- open the action menu to stop running now that the basement is clear",
-      "commentary": "No one is below with me yet. Walk now and save the lungs."
+      "commentary": "No one is below with me yet. Walk now and save the lungs.",
+      "amended": false
     },
     {
       "frame": 275,
@@ -5518,7 +5804,8 @@
       "cue_start": 114.0,
       "cue_end": 115.0,
       "action": "press '1' -- cycle movement mode in reverse from run to walk",
-      "commentary": "Back to a walk. Breathe and listen."
+      "commentary": "Back to a walk. Breathe and listen.",
+      "amended": false
     },
     {
       "frame": 276,
@@ -5538,7 +5825,8 @@
       "cue_start": 115.0,
       "cue_end": 116.0,
       "action": "press 'Down' -- walk south deeper into the basement away from the stairs and fire",
-      "commentary": "South, away from the stairs and away from the flames."
+      "commentary": "South, away from the stairs and away from the flames.",
+      "amended": false
     },
     {
       "frame": 277,
@@ -5558,7 +5846,8 @@
       "cue_start": 116.0,
       "cue_end": 118.0,
       "action": "press 'Down' -- walk farther south through the dark basement",
-      "commentary": "No footsteps down here. Keep south through the dark."
+      "commentary": "No footsteps down here. Keep south through the dark.",
+      "amended": false
     },
     {
       "frame": 278,
@@ -5578,7 +5867,8 @@
       "cue_start": 118.0,
       "cue_end": 119.0,
       "action": "press 'Down' -- continue south toward the west end of the basement sofa",
-      "commentary": "Keep south. The sofa is ahead, and the fire is far to the east."
+      "commentary": "Keep south. The sofa is ahead, and the fire is far to the east.",
+      "amended": false
     },
     {
       "frame": 279,
@@ -5598,7 +5888,8 @@
       "cue_start": 119.0,
       "cue_end": 120.0,
       "action": "press 'Down' -- continue south through the clear basement",
-      "commentary": "Another quiet step south."
+      "commentary": "Another quiet step south.",
+      "amended": false
     },
     {
       "frame": 280,
@@ -5618,7 +5909,8 @@
       "cue_start": 120.0,
       "cue_end": 120.25,
       "action": "press 'Down' -- move south to the floor immediately north of the sofa",
-      "commentary": "One more step south. Stop short of the sofa until I judge the fire."
+      "commentary": "One more step south. Stop short of the sofa until I judge the fire.",
+      "amended": false
     },
     {
       "frame": 281,
@@ -5638,7 +5930,8 @@
       "cue_start": 120.25,
       "cue_end": 120.5,
       "action": "press 'x' -- enter look mode to inspect the dark floor west of the sofa",
-      "commentary": "Look west before I step into the dark."
+      "commentary": "Look west before I step into the dark.",
+      "amended": false
     },
     {
       "frame": 282,
@@ -5658,7 +5951,8 @@
       "cue_start": 120.5,
       "cue_end": 120.75,
       "action": "press 'Left' -- move the look cursor one tile west",
-      "commentary": "Check the tile immediately west."
+      "commentary": "Check the tile immediately west.",
+      "amended": false
     },
     {
       "frame": 283,
@@ -5678,7 +5972,8 @@
       "cue_start": 120.75,
       "cue_end": 122.75,
       "action": "press 'Escape' -- leave look mode after identifying the west tile as bare green carpet",
-      "commentary": "The carpet west is clear but offers no cover. Stop looking."
+      "commentary": "The carpet west is clear but offers no cover. Stop looking.",
+      "amended": false
     },
     {
       "frame": 284,
@@ -5698,7 +5993,8 @@
       "cue_start": 122.75,
       "cue_end": 123.75,
       "action": "press 'Left' -- move west onto the verified clear carpet away from the stairs and fire",
-      "commentary": "One shape north can see me. Move west, away from the stairs and fire."
+      "commentary": "One shape north can see me. Move west, away from the stairs and fire.",
+      "amended": false
     },
     {
       "frame": 285,
@@ -5718,7 +6014,8 @@
       "cue_start": 123.75,
       "cue_end": 124.75,
       "action": "press 'Left' -- continue west away from moaning to the south and the fire to the east",
-      "commentary": "Moaning south and southwest. Keep west into the dark."
+      "commentary": "Moaning south and southwest. Keep west into the dark.",
+      "amended": false
     },
     {
       "frame": 286,
@@ -5738,7 +6035,8 @@
       "cue_start": 124.75,
       "cue_end": 125.75,
       "action": "press 'Left' -- move west to the wall-backed strip away from the visible zombie and fire",
-      "commentary": "A zombie northeast has found me. Move west against the wall."
+      "commentary": "A zombie northeast has found me. Move west against the wall.",
+      "amended": false
     },
     {
       "frame": 287,
@@ -5758,7 +6056,8 @@
       "cue_start": 125.75,
       "cue_end": 127.75,
       "action": "press 'Down' -- move one tile south along the wall-backed strip after breaking visual contact",
-      "commentary": "The marker is gone. One careful step south along the wall."
+      "commentary": "The marker is gone. One careful step south along the wall.",
+      "amended": false
     },
     {
       "frame": 288,
@@ -5778,7 +6077,8 @@
       "cue_start": 127.75,
       "cue_end": 128.0,
       "action": "press 'Down' -- move to the selected wall-backed wait tile two rows south",
-      "commentary": "One more step south. Keep the wall at my back."
+      "commentary": "One more step south. Keep the wall at my back.",
+      "amended": false
     },
     {
       "frame": 289,
@@ -5798,7 +6098,8 @@
       "cue_start": 128.0,
       "cue_end": 128.25,
       "action": "press 'shift+backslash' -- open the wait menu from the wall-backed basement tile",
-      "commentary": "No eyes on me. Wait quietly and listen before I try to sleep."
+      "commentary": "No eyes on me. Wait quietly and listen before I try to sleep.",
+      "amended": false
     },
     {
       "frame": 290,
@@ -5818,7 +6119,8 @@
       "cue_start": 128.25,
       "cue_end": 128.5,
       "action": "press 'w' -- choose the ordinary wait options rather than setting an alarm",
-      "commentary": "No alarm. Just wait and listen."
+      "commentary": "No alarm. Just wait and listen.",
+      "amended": false
     },
     {
       "frame": 291,
@@ -5838,7 +6140,8 @@
       "cue_start": 128.5,
       "cue_end": 128.75,
       "action": "press '4' -- wait thirty minutes in the wall-backed basement position",
-      "commentary": "Half an hour. Long enough to breathe, short enough to hear trouble."
+      "commentary": "Half an hour. Long enough to breathe, short enough to hear trouble.",
+      "amended": false
     },
     {
       "frame": 292,
@@ -5858,7 +6161,8 @@
       "cue_start": 128.75,
       "cue_end": 129.0,
       "action": "press 'period' -- interrupt the stalled thirty-minute wait because nearby moaning makes it unsafe; nothing on the screen changed",
-      "commentary": "The moaning is too close to sit still. Stop waiting."
+      "commentary": "The moaning is too close to sit still. Stop waiting.",
+      "amended": true
     },
     {
       "frame": 293,
@@ -5878,7 +6182,8 @@
       "cue_start": 129.0,
       "cue_end": 131.0,
       "action": "press '5' -- interrupt the active wait with its alternate bound key; nothing on the screen changed",
-      "commentary": "Stop waiting now. Move before that thing reaches me."
+      "commentary": "Stop waiting now. Move before that thing reaches me.",
+      "amended": true
     },
     {
       "frame": 294,
@@ -5898,7 +6203,8 @@
       "cue_start": 131.0,
       "cue_end": 132.0,
       "action": "press 'Y' -- confirm stopping the wait because a zombie is dangerously close",
-      "commentary": "Yes. Stop waiting. The zombie is too close."
+      "commentary": "Yes. Stop waiting. The zombie is too close.",
+      "amended": false
     },
     {
       "frame": 295,
@@ -5918,7 +6224,8 @@
       "cue_start": 132.0,
       "cue_end": 132.25,
       "action": "press 'Down' -- move south along the concrete wall away from the close northeast zombie",
-      "commentary": "The wall holds west. Move south onto the concrete."
+      "commentary": "The wall holds west. Move south onto the concrete.",
+      "amended": false
     },
     {
       "frame": 296,
@@ -5938,7 +6245,8 @@
       "cue_start": 132.25,
       "cue_end": 132.5,
       "action": "press 'Return' -- open the action menu because the basement zombie is adjacent northeast",
-      "commentary": "It has closed to my northeast. Run again."
+      "commentary": "It has closed to my northeast. Run again.",
+      "amended": false
     },
     {
       "frame": 297,
@@ -5958,7 +6266,8 @@
       "cue_start": 132.5,
       "cue_end": 132.75,
       "action": "press '3' -- cycle movement mode from walk to run again",
-      "commentary": "Run south before it can grab me."
+      "commentary": "Run south before it can grab me.",
+      "amended": false
     },
     {
       "frame": 298,
@@ -5978,7 +6287,8 @@
       "cue_start": 132.75,
       "cue_end": 133.75,
       "action": "press 'Down' -- run south along the west concrete wall away from the adjacent zombie",
-      "commentary": "South along the wall. Make it chase instead of grab."
+      "commentary": "South along the wall. Make it chase instead of grab.",
+      "amended": false
     },
     {
       "frame": 299,
@@ -5998,7 +6308,8 @@
       "cue_start": 133.75,
       "cue_end": 134.75,
       "action": "press 'o' -- prepare to open the closed door immediately west",
-      "commentary": "A closed door is at my left. Open it and get through."
+      "commentary": "A closed door is at my left. Open it and get through.",
+      "amended": false
     },
     {
       "frame": 300,
@@ -6018,7 +6329,8 @@
       "cue_start": 134.75,
       "cue_end": 135.75,
       "action": "press 'Left' -- open the west door",
-      "commentary": "Open it west."
+      "commentary": "Open it west.",
+      "amended": false
     },
     {
       "frame": 301,
@@ -6038,7 +6350,8 @@
       "cue_start": 135.75,
       "cue_end": 136.75,
       "action": "press 'Left' -- move west over the passable desk to clear the doorway",
-      "commentary": "Climb over the desk. Get west of the door."
+      "commentary": "Climb over the desk. Get west of the door.",
+      "amended": false
     },
     {
       "frame": 302,
@@ -6058,7 +6371,8 @@
       "cue_start": 136.75,
       "cue_end": 137.0,
       "action": "press 'c' -- close the open east door behind Delphine",
-      "commentary": "Shut the door behind me."
+      "commentary": "Shut the door behind me.",
+      "amended": false
     },
     {
       "frame": 303,
@@ -6078,7 +6392,8 @@
       "cue_start": 137.0,
       "cue_end": 137.25,
       "action": "press 'Return' -- open the action menu to stop running behind the closed door",
-      "commentary": "The door is shut and no eyes are on me. Walk."
+      "commentary": "The door is shut and no eyes are on me. Walk.",
+      "amended": false
     },
     {
       "frame": 304,
@@ -6098,7 +6413,8 @@
       "cue_start": 137.25,
       "cue_end": 138.25,
       "action": "press '1' -- cycle movement mode in reverse from run to walk",
-      "commentary": "Back to a walk. Listen at the door."
+      "commentary": "Back to a walk. Listen at the door.",
+      "amended": false
     },
     {
       "frame": 305,
@@ -6118,7 +6434,8 @@
       "cue_start": 138.25,
       "cue_end": 140.25,
       "action": "press 'Left' -- walk west off the desk into the newly opened room",
-      "commentary": "Move west off the desk. See what this wall was hiding."
+      "commentary": "Move west off the desk. See what this wall was hiding.",
+      "amended": false
     },
     {
       "frame": 306,
@@ -6138,7 +6455,8 @@
       "cue_start": 140.25,
       "cue_end": 142.25,
       "action": "press 'Left' -- walk west toward the far end of the bed and away from the bashed door",
-      "commentary": "The door is taking blows. Move west toward the bed."
+      "commentary": "The door is taking blows. Move west toward the bed.",
+      "amended": false
     },
     {
       "frame": 307,
@@ -6158,7 +6476,8 @@
       "cue_start": 142.25,
       "cue_end": 142.5,
       "action": "press 'y' -- move northwest onto the far end of the bed",
-      "commentary": "More blows on the door. Get to the far end of the bed."
+      "commentary": "More blows on the door. Get to the far end of the bed.",
+      "amended": false
     },
     {
       "frame": 308,
@@ -6178,7 +6497,8 @@
       "cue_start": 142.5,
       "cue_end": 142.75,
       "action": "press 'shift+backslash' -- open the wait menu from the far end of the bed",
-      "commentary": "On the bed, wait only a few breaths and listen to the door."
+      "commentary": "On the bed, wait only a few breaths and listen to the door.",
+      "amended": false
     },
     {
       "frame": 309,
@@ -6198,7 +6518,8 @@
       "cue_start": 142.75,
       "cue_end": 143.0,
       "action": "press 'w' -- choose the ordinary wait options",
-      "commentary": "Just a short wait, no alarm."
+      "commentary": "Just a short wait, no alarm.",
+      "amended": false
     },
     {
       "frame": 310,
@@ -6218,7 +6539,8 @@
       "cue_start": 143.0,
       "cue_end": 145.0,
       "action": "press '1' -- wait twenty-four seconds on the bed",
-      "commentary": "Twenty-four seconds. No more than that."
+      "commentary": "Twenty-four seconds. No more than that.",
+      "amended": false
     },
     {
       "frame": 311,
@@ -6238,7 +6560,8 @@
       "cue_start": 145.0,
       "cue_end": 145.25,
       "action": "press 'Y' -- stop the short wait when another whump hits the closed door",
-      "commentary": "Yes. One more blow on the door is enough."
+      "commentary": "Yes. One more blow on the door is enough.",
+      "amended": false
     },
     {
       "frame": 312,
@@ -6258,7 +6581,8 @@
       "cue_start": 145.25,
       "cue_end": 145.5,
       "action": "press 'shift+backslash' -- open the wait menu again from the bed while the door remains closed",
-      "commentary": "The door still holds. Wait again, but ignore the noise only, not real danger."
+      "commentary": "The door still holds. Wait again, but ignore the noise only, not real danger.",
+      "amended": false
     },
     {
       "frame": 313,
@@ -6278,7 +6602,8 @@
       "cue_start": 145.5,
       "cue_end": 145.75,
       "action": "press 'w' -- choose ordinary wait options",
-      "commentary": "Wait, without setting an alarm."
+      "commentary": "Wait, without setting an alarm.",
+      "amended": false
     },
     {
       "frame": 314,
@@ -6298,7 +6623,8 @@
       "cue_start": 145.75,
       "cue_end": 146.75,
       "action": "press '4' -- begin a thirty-minute wait on the bed",
-      "commentary": "Thirty minutes, if the door keeps holding."
+      "commentary": "Thirty minutes, if the door keeps holding.",
+      "amended": false
     },
     {
       "frame": 315,
@@ -6318,7 +6644,8 @@
       "cue_start": 146.75,
       "cue_end": 156.75,
       "action": "press 'shift+i' -- ignore repeated whump noise for this wait while keeping other distractions active",
-      "commentary": "The door is still shut. Ignore the sound for now, but stay ready."
+      "commentary": "The door is still shut. Ignore the sound for now, but stay ready.",
+      "amended": false
     },
     {
       "frame": 316,
@@ -6338,7 +6665,8 @@
       "cue_start": 157.75,
       "cue_end": 167.75,
       "action": "press 'space' -- dismiss the runtime error report and continue",
-      "commentary": "Do not freeze here. Keep going."
+      "commentary": "Do not freeze here. Keep going.",
+      "amended": false
     },
     {
       "frame": 317,
@@ -6358,7 +6686,8 @@
       "cue_start": 168.75,
       "cue_end": 169.0,
       "action": "press 'Y' -- stop the wait because multiple zombies entered through the destroyed east door",
-      "commentary": "Yes. Stop waiting. The door is gone and they are inside."
+      "commentary": "Yes. Stop waiting. The door is gone and they are inside.",
+      "amended": false
     },
     {
       "frame": 318,
@@ -6378,7 +6707,8 @@
       "cue_start": 169.0,
       "cue_end": 169.25,
       "action": "press 'x' -- enter look mode to inspect the destroyed east doorway and approach lane",
-      "commentary": "Look east through the breach before I move."
+      "commentary": "Look east through the breach before I move.",
+      "amended": false
     },
     {
       "frame": 319,
@@ -6398,7 +6728,8 @@
       "cue_start": 169.25,
       "cue_end": 169.5,
       "action": "press 'Right' -- move the look cursor one tile east across the bed",
-      "commentary": "Check the bed tile east."
+      "commentary": "Check the bed tile east.",
+      "amended": false
     },
     {
       "frame": 320,
@@ -6418,7 +6749,8 @@
       "cue_start": 169.5,
       "cue_end": 169.75,
       "action": "press 'Right' -- move the look cursor a second tile east",
-      "commentary": "Check the next tile east."
+      "commentary": "Check the next tile east.",
+      "amended": false
     },
     {
       "frame": 321,
@@ -6438,7 +6770,8 @@
       "cue_start": 169.75,
       "cue_end": 170.0,
       "action": "press 'Right' -- move the look cursor a third tile east toward the breach",
-      "commentary": "Look farther east, toward the breach."
+      "commentary": "Look farther east, toward the breach.",
+      "amended": false
     },
     {
       "frame": 322,
@@ -6458,7 +6791,8 @@
       "cue_start": 170.0,
       "cue_end": 170.25,
       "action": "press 'Right' -- move the look cursor to the wall immediately north of the breach",
-      "commentary": "Check the wall just north of the breach."
+      "commentary": "Check the wall just north of the breach.",
+      "amended": false
     },
     {
       "frame": 323,
@@ -6478,7 +6812,8 @@
       "cue_start": 170.25,
       "cue_end": 170.5,
       "action": "press 'Down' -- move the look cursor down onto the destroyed doorway",
-      "commentary": "Look down into the breach."
+      "commentary": "Look down into the breach.",
+      "amended": false
     },
     {
       "frame": 324,
@@ -6498,7 +6833,8 @@
       "cue_start": 170.5,
       "cue_end": 170.75,
       "action": "press 'Escape' -- leave look mode after inspecting the smoky doorway zombie",
-      "commentary": "Smoke fills the doorway, and the slower one cannot see me. Stop looking."
+      "commentary": "Smoke fills the doorway, and the slower one cannot see me. Stop looking.",
+      "amended": false
     },
     {
       "frame": 325,
@@ -6518,7 +6854,8 @@
       "cue_start": 170.75,
       "cue_end": 171.0,
       "action": "press 'Return' -- open the action menu to run toward the unexplored south side",
-      "commentary": "The smoke hides me for now. Run south and find another way out."
+      "commentary": "The smoke hides me for now. Run south and find another way out.",
+      "amended": false
     },
     {
       "frame": 326,
@@ -6538,7 +6875,8 @@
       "cue_start": 171.0,
       "cue_end": 171.25,
       "action": "press '3' -- cycle movement mode from walk to run",
-      "commentary": "Run before the smoke thins."
+      "commentary": "Run before the smoke thins.",
+      "amended": false
     },
     {
       "frame": 327,
@@ -6558,7 +6896,8 @@
       "cue_start": 171.25,
       "cue_end": 171.5,
       "action": "press 'Down' -- run south onto the stove tile toward the unexplored lower room",
-      "commentary": "South over the stove, then around the wardrobe."
+      "commentary": "South over the stove, then around the wardrobe.",
+      "amended": false
     },
     {
       "frame": 328,
@@ -6578,7 +6917,8 @@
       "cue_start": 171.5,
       "cue_end": 172.5,
       "action": "press 'apostrophe' -- acknowledge the eastward safe-mode sighting before running south",
-      "commentary": "I see the one east through the smoke. South is still the path."
+      "commentary": "I see the one east through the smoke. South is still the path.",
+      "amended": false
     },
     {
       "frame": 329,
@@ -6598,7 +6938,8 @@
       "cue_start": 172.5,
       "cue_end": 172.75,
       "action": "press 'Down' -- retry the southward run after acknowledging safe mode",
-      "commentary": "South now, while the smoke still buys distance."
+      "commentary": "South now, while the smoke still buys distance.",
+      "amended": false
     },
     {
       "frame": 330,
@@ -6618,7 +6959,8 @@
       "cue_start": 172.75,
       "cue_end": 173.0,
       "action": "press 'Down' -- run south off the stove toward the wardrobe row",
-      "commentary": "Off the stove, farther south."
+      "commentary": "Off the stove, farther south.",
+      "amended": false
     },
     {
       "frame": 331,
@@ -6638,7 +6980,8 @@
       "cue_start": 173.0,
       "cue_end": 173.25,
       "action": "press 'apostrophe' -- acknowledge the renewed eastward safe-mode sighting",
-      "commentary": "Still east of me. I need the south step."
+      "commentary": "Still east of me. I need the south step.",
+      "amended": false
     },
     {
       "frame": 332,
@@ -6658,7 +7001,8 @@
       "cue_start": 173.25,
       "cue_end": 175.25,
       "action": "press 'Down' -- retry running south after acknowledging safe mode",
-      "commentary": "South now. Keep the wall between us as long as I can."
+      "commentary": "South now. Keep the wall between us as long as I can.",
+      "amended": false
     },
     {
       "frame": 333,
@@ -6678,7 +7022,8 @@
       "cue_start": 175.25,
       "cue_end": 176.25,
       "action": "press 'n' -- run southeast around the impassable wardrobe",
-      "commentary": "The wardrobe blocks south. Cut southeast around it."
+      "commentary": "The wardrobe blocks south. Cut southeast around it.",
+      "amended": false
     },
     {
       "frame": 334,
@@ -6698,7 +7043,8 @@
       "cue_start": 176.25,
       "cue_end": 176.5,
       "action": "press 'y' -- run northwest away from the sealed south wall and breach",
-      "commentary": "South is sealed concrete. Turn northwest, back toward the bed."
+      "commentary": "South is sealed concrete. Turn northwest, back toward the bed.",
+      "amended": false
     },
     {
       "frame": 335,
@@ -6718,7 +7064,8 @@
       "cue_start": 176.5,
       "cue_end": 178.5,
       "action": "press 'Up' -- run north through the only open lane away from the east zombie",
-      "commentary": "One is east again. North is the only open lane."
+      "commentary": "One is east again. North is the only open lane.",
+      "amended": false
     },
     {
       "frame": 336,
@@ -6738,7 +7085,8 @@
       "cue_start": 178.5,
       "cue_end": 179.5,
       "action": "press 'Up' -- run north onto the bed to continue circling the room",
-      "commentary": "North onto the bed. Keep the furniture between us."
+      "commentary": "North onto the bed. Keep the furniture between us.",
+      "amended": false
     },
     {
       "frame": 337,
@@ -6758,7 +7106,8 @@
       "cue_start": 179.5,
       "cue_end": 180.5,
       "action": "press 'Down' -- run south from the bed to keep circling away from the southeast zombie",
-      "commentary": "It is close southeast. Drop south and keep circling."
+      "commentary": "It is close southeast. Drop south and keep circling.",
+      "amended": false
     },
     {
       "frame": 338,
@@ -6778,7 +7127,8 @@
       "cue_start": 180.5,
       "cue_end": 181.5,
       "action": "press 'Down' -- run south with the zombie immediately east",
-      "commentary": "It is beside me to the east. South before it grabs."
+      "commentary": "It is beside me to the east. South before it grabs.",
+      "amended": false
     },
     {
       "frame": 339,
@@ -6798,7 +7148,8 @@
       "cue_start": 181.5,
       "cue_end": 181.75,
       "action": "press 'Left' -- attempt to break the right-arm grab by moving into the west wall",
-      "commentary": "It has my right arm. Pull west against the wall and tear free."
+      "commentary": "It has my right arm. Pull west against the wall and tear free.",
+      "amended": false
     },
     {
       "frame": 340,
@@ -6818,7 +7169,8 @@
       "cue_start": 181.75,
       "cue_end": 182.0,
       "action": "press 'Left' -- retry breaking the right-arm grab against the west wall",
-      "commentary": "Again. Tear the arm free."
+      "commentary": "Again. Tear the arm free.",
+      "amended": false
     },
     {
       "frame": 341,
@@ -6838,7 +7190,8 @@
       "cue_start": 182.0,
       "cue_end": 182.25,
       "action": "press 'apostrophe' -- acknowledge the new east and northeast safe-mode sighting while grabbed",
-      "commentary": "More are east and northeast. I see them. Keep pulling free."
+      "commentary": "More are east and northeast. I see them. Keep pulling free.",
+      "amended": false
     },
     {
       "frame": 342,
@@ -6858,7 +7211,8 @@
       "cue_start": 182.25,
       "cue_end": 183.25,
       "action": "press 'Left' -- retry breaking the right-arm grab after acknowledging safe mode",
-      "commentary": "Pull west again. Get the arm loose."
+      "commentary": "Pull west again. Get the arm loose.",
+      "amended": false
     },
     {
       "frame": 343,
@@ -6878,7 +7232,8 @@
       "cue_start": 183.25,
       "cue_end": 184.25,
       "action": "press 'n' -- run southeast away from the zombie after breaking the grab",
-      "commentary": "Arm free. Cut southeast before it grabs again."
+      "commentary": "Arm free. Cut southeast before it grabs again.",
+      "amended": false
     },
     {
       "frame": 344,
@@ -6898,7 +7253,8 @@
       "cue_start": 184.25,
       "cue_end": 184.5,
       "action": "press 'Right' -- run east along the sealed south wall while the zombie stays north",
-      "commentary": "It is north of me. Run east along the south wall."
+      "commentary": "It is north of me. Run east along the south wall.",
+      "amended": false
     },
     {
       "frame": 345,
@@ -6918,7 +7274,8 @@
       "cue_start": 184.5,
       "cue_end": 184.75,
       "action": "press 'Up' -- run north through the gap between zombies to escape the south-wall pocket",
-      "commentary": "Two flank me northwest and northeast. Run between them before the gap closes."
+      "commentary": "Two flank me northwest and northeast. Run between them before the gap closes.",
+      "amended": false
     },
     {
       "frame": 346,
@@ -6938,7 +7295,8 @@
       "cue_start": 184.75,
       "cue_end": 185.0,
       "action": "press 'apostrophe' -- acknowledge both flanking zombies before retrying north",
-      "commentary": "I see both of them. Keep the north gap."
+      "commentary": "I see both of them. Keep the north gap.",
+      "amended": false
     },
     {
       "frame": 347,
@@ -6958,7 +7316,8 @@
       "cue_start": 185.0,
       "cue_end": 186.0,
       "action": "press 'Up' -- retry running north through the gap after acknowledging safe mode",
-      "commentary": "North now. Slip between them."
+      "commentary": "North now. Slip between them.",
+      "amended": false
     },
     {
       "frame": 348,
@@ -6978,7 +7337,8 @@
       "cue_start": 186.0,
       "cue_end": 187.0,
       "action": "press 'Up' -- continue running north with zombies immediately west and east",
-      "commentary": "They are on both sides. Keep north."
+      "commentary": "They are on both sides. Keep north.",
+      "amended": false
     },
     {
       "frame": 349,
@@ -6998,7 +7358,8 @@
       "cue_start": 187.0,
       "cue_end": 188.0,
       "action": "press 'Up' -- continue north after dodging the grab between the two zombies",
-      "commentary": "Its hands miss. Keep north."
+      "commentary": "Its hands miss. Keep north.",
+      "amended": false
     },
     {
       "frame": 350,
@@ -7018,7 +7379,8 @@
       "cue_start": 188.0,
       "cue_end": 189.0,
       "action": "press 'Left' -- run west across the bed because north is wall and a zombie is immediately south",
-      "commentary": "North is wall and one is south. Cut west across the bed."
+      "commentary": "North is wall and one is south. Cut west across the bed.",
+      "amended": false
     },
     {
       "frame": 351,
@@ -7038,7 +7400,8 @@
       "cue_start": 189.0,
       "cue_end": 191.0,
       "action": "press 'Left' -- continue west across the bed to open distance from the southeast zombies",
-      "commentary": "The bed slows me, but west opens space."
+      "commentary": "The bed slows me, but west opens space.",
+      "amended": false
     },
     {
       "frame": 352,
@@ -7058,7 +7421,8 @@
       "cue_start": 191.0,
       "cue_end": 192.0,
       "action": "press 'Down' -- run south from the far bed while the remaining visible zombie is southeast",
-      "commentary": "A groan comes from the east. Drop south and keep circling."
+      "commentary": "A groan comes from the east. Drop south and keep circling.",
+      "amended": false
     },
     {
       "frame": 353,
@@ -7078,7 +7442,8 @@
       "cue_start": 192.0,
       "cue_end": 193.0,
       "action": "press 'Down' -- run south with a zombie immediately east again",
-      "commentary": "One is beside me east again. South before the grab."
+      "commentary": "One is beside me east again. South before the grab.",
+      "amended": false
     },
     {
       "frame": 354,
@@ -7098,7 +7463,8 @@
       "cue_start": 193.0,
       "cue_end": 194.0,
       "action": "press 'Left' -- attempt to break the tough zombie's torso grab against the west wall",
-      "commentary": "The tough one has my torso. Pull west against the wall."
+      "commentary": "The tough one has my torso. Pull west against the wall.",
+      "amended": false
     },
     {
       "frame": 355,
@@ -7118,7 +7484,8 @@
       "cue_start": 194.0,
       "cue_end": 195.0,
       "action": "press 'Left' -- retry breaking the tough zombie's torso grab against the wall",
-      "commentary": "Again. Tear free of the tough one."
+      "commentary": "Again. Tear free of the tough one.",
+      "amended": false
     },
     {
       "frame": 356,
@@ -7138,7 +7505,8 @@
       "cue_start": 195.0,
       "cue_end": 195.25,
       "action": "press 'Left' -- retry the torso grab break while the tough zombie is down",
-      "commentary": "It fell. Pull free once more."
+      "commentary": "It fell. Pull free once more.",
+      "amended": false
     },
     {
       "frame": 357,
@@ -7158,7 +7526,8 @@
       "cue_start": 195.25,
       "cue_end": 196.25,
       "action": "press 'Left' -- continue attempting to break the tough zombie's torso grab",
-      "commentary": "Keep pulling. Do not let it stand with hold of me."
+      "commentary": "Keep pulling. Do not let it stand with hold of me.",
+      "amended": false
     },
     {
       "frame": 358,
@@ -7178,7 +7547,8 @@
       "cue_start": 196.25,
       "cue_end": 196.5,
       "action": "press 'n' -- run southeast after breaking the torso grab",
-      "commentary": "Free. Cut southeast before both of them stand over me."
+      "commentary": "Free. Cut southeast before both of them stand over me.",
+      "amended": false
     },
     {
       "frame": 359,
@@ -7198,7 +7568,8 @@
       "cue_start": 196.5,
       "cue_end": 196.75,
       "action": "press 'Right' -- run east along the south wall with zombies north and northeast",
-      "commentary": "One is north, one northeast. East along the wall."
+      "commentary": "One is north, one northeast. East along the wall.",
+      "amended": false
     },
     {
       "frame": 360,
@@ -7218,7 +7589,8 @@
       "cue_start": 196.75,
       "cue_end": 197.75,
       "action": "press 'apostrophe' -- acknowledge the newly identified swimmer zombie northeast",
-      "commentary": "A swimmer zombie is northeast. I see it. East remains."
+      "commentary": "A swimmer zombie is northeast. I see it. East remains.",
+      "amended": false
     },
     {
       "frame": 361,
@@ -7238,7 +7610,8 @@
       "cue_start": 197.75,
       "cue_end": 198.75,
       "action": "press 'Right' -- retry running east along the south wall after acknowledging safe mode",
-      "commentary": "East now, before it closes the step."
+      "commentary": "East now, before it closes the step.",
+      "amended": false
     },
     {
       "frame": 362,
@@ -7258,7 +7631,8 @@
       "cue_start": 198.75,
       "cue_end": 199.0,
       "action": "press 'Right' -- run one more tile east after dodging the grab",
-      "commentary": "It misses the grab. One step east."
+      "commentary": "It misses the grab. One step east.",
+      "amended": false
     },
     {
       "frame": 363,
@@ -7278,7 +7652,8 @@
       "cue_start": 199.0,
       "cue_end": 199.25,
       "action": "press 'Up' -- run north out of the southeast corner because the east wall blocks further movement",
-      "commentary": "East is wall now. Turn north past the one northwest."
+      "commentary": "East is wall now. Turn north past the one northwest.",
+      "amended": false
     },
     {
       "frame": 364,
@@ -7298,7 +7673,8 @@
       "cue_start": 199.25,
       "cue_end": 200.25,
       "action": "press 'x' -- enter look mode to identify what blocked the north move; nothing on the screen changed",
-      "commentary": "North did not move me. Look at what blocks it."
+      "commentary": "North did not move me. Look at what blocks it.",
+      "amended": true
     },
     {
       "frame": 365,
@@ -7318,7 +7694,8 @@
       "cue_start": 200.25,
       "cue_end": 201.25,
       "action": "press 'Y' -- confirm stepping north into thin smoke to escape the corner",
-      "commentary": "Yes. Through the thin smoke. Standing still is worse."
+      "commentary": "Yes. Through the thin smoke. Standing still is worse.",
+      "amended": false
     },
     {
       "frame": 366,
@@ -7338,7 +7715,8 @@
       "cue_start": 201.25,
       "cue_end": 201.5,
       "action": "press 'u' -- run northeast through the destroyed doorway while the nearest zombie is west",
-      "commentary": "The nearest one is west. Cut northeast through the broken doorway."
+      "commentary": "The nearest one is west. Cut northeast through the broken doorway.",
+      "amended": false
     },
     {
       "frame": 367,
@@ -7358,7 +7736,8 @@
       "cue_start": 201.5,
       "cue_end": 201.75,
       "action": "press 'Right' -- run east out of the smoky breach into the larger basement room",
-      "commentary": "Smoke is filling my lungs, and one is west. East into the open room."
+      "commentary": "Smoke is filling my lungs, and one is west. East into the open room.",
+      "amended": false
     },
     {
       "frame": 368,
@@ -7378,7 +7757,8 @@
       "cue_start": 201.75,
       "cue_end": 202.75,
       "action": "press 'apostrophe' -- acknowledge the safe-mode sighting through the smoke",
-      "commentary": "I see the shapes through the tears. East is still the only way out."
+      "commentary": "I see the shapes through the tears. East is still the only way out.",
+      "amended": false
     },
     {
       "frame": 369,
@@ -7398,7 +7778,8 @@
       "cue_start": 202.75,
       "cue_end": 203.0,
       "action": "press 'Right' -- retry running east out of the smoke after acknowledging safe mode",
-      "commentary": "East now. Get out of the smoke."
+      "commentary": "East now. Get out of the smoke.",
+      "amended": false
     },
     {
       "frame": 370,
@@ -7418,7 +7799,8 @@
       "cue_start": 203.0,
       "cue_end": 203.25,
       "action": "press 'Up' -- run north along the east-room corridor toward the intact north door",
-      "commentary": "The smoke is behind me. Run north toward the closed door before the stairs."
+      "commentary": "The smoke is behind me. Run north toward the closed door before the stairs.",
+      "amended": false
     },
     {
       "frame": 371,
@@ -7438,7 +7820,8 @@
       "cue_start": 203.25,
       "cue_end": 204.25,
       "action": "press 'apostrophe' -- acknowledge the new east and north safe-mode sighting",
-      "commentary": "I see them east and north, still distant. North to the door."
+      "commentary": "I see them east and north, still distant. North to the door.",
+      "amended": false
     },
     {
       "frame": 372,
@@ -7458,7 +7841,8 @@
       "cue_start": 204.25,
       "cue_end": 205.25,
       "action": "press 'Up' -- retry running north toward the closed door after acknowledging safe mode",
-      "commentary": "North now. Reach the door before they reach the corridor."
+      "commentary": "North now. Reach the door before they reach the corridor.",
+      "amended": false
     },
     {
       "frame": 373,
@@ -7478,7 +7862,8 @@
       "cue_start": 205.25,
       "cue_end": 205.5,
       "action": "press 'Up' -- continue running north along the corridor",
-      "commentary": "North again through the corridor."
+      "commentary": "North again through the corridor.",
+      "amended": false
     },
     {
       "frame": 374,
@@ -7498,7 +7883,8 @@
       "cue_start": 205.5,
       "cue_end": 205.75,
       "action": "press 'Up' -- continue north toward the intact door",
-      "commentary": "Keep north. The intact door is close."
+      "commentary": "Keep north. The intact door is close.",
+      "amended": false
     },
     {
       "frame": 375,
@@ -7518,7 +7904,8 @@
       "cue_start": 205.75,
       "cue_end": 206.75,
       "action": "press 'apostrophe' -- acknowledge the renewed east and north safe-mode sighting",
-      "commentary": "I see them east and north. The door is still north."
+      "commentary": "I see them east and north. The door is still north.",
+      "amended": false
     },
     {
       "frame": 376,
@@ -7538,7 +7925,8 @@
       "cue_start": 206.75,
       "cue_end": 208.75,
       "action": "press 'Up' -- retry running north toward the intact door",
-      "commentary": "North now. Reach the intact door."
+      "commentary": "North now. Reach the intact door.",
+      "amended": false
     },
     {
       "frame": 377,
@@ -7558,7 +7946,8 @@
       "cue_start": 208.75,
       "cue_end": 209.75,
       "action": "press 'Up' -- run north toward the intact door with a zombie immediately west",
-      "commentary": "One is beside me west. Keep north for the door."
+      "commentary": "One is beside me west. Keep north for the door.",
+      "amended": false
     },
     {
       "frame": 378,
@@ -7578,7 +7967,8 @@
       "cue_start": 209.75,
       "cue_end": 210.75,
       "action": "press 'Left' -- attempt to break the tough zombie's right-leg grab against the west wall",
-      "commentary": "The tough one has my right leg and the wall is crushing me. Pull west."
+      "commentary": "The tough one has my right leg and the wall is crushing me. Pull west.",
+      "amended": false
     },
     {
       "frame": 379,
@@ -7598,7 +7988,8 @@
       "cue_start": 210.75,
       "cue_end": 211.75,
       "action": "press 'y' -- attempt to break the right-leg grab against the empty northwest concrete wall",
-      "commentary": "The northwest wall is empty. Brace against it and wrench the leg free."
+      "commentary": "The northwest wall is empty. Brace against it and wrench the leg free.",
+      "amended": false
     },
     {
       "frame": 380,
@@ -7618,7 +8009,8 @@
       "cue_start": 211.75,
       "cue_end": 212.75,
       "action": "press 'y' -- retry breaking all grabs against the empty northwest wall",
-      "commentary": "Three holds on me. Brace against the northwest wall and tear at all of them."
+      "commentary": "Three holds on me. Brace against the northwest wall and tear at all of them.",
+      "amended": false
     },
     {
       "frame": 381,
@@ -7638,7 +8030,8 @@
       "cue_start": 212.75,
       "cue_end": 213.75,
       "action": "press 'y' -- continue breaking the torso, right-arm, and right-leg grabs against the northwest wall",
-      "commentary": "All three still hold. Pull again."
+      "commentary": "All three still hold. Pull again.",
+      "amended": false
     },
     {
       "frame": 382,
@@ -7658,7 +8051,8 @@
       "cue_start": 213.75,
       "cue_end": 214.75,
       "action": "press 'y' -- retry all active grab breaks while the tough zombie is down",
-      "commentary": "The tough one fell. Pull against the wall again."
+      "commentary": "The tough one fell. Pull against the wall again.",
+      "amended": false
     },
     {
       "frame": 383,
@@ -7678,7 +8072,8 @@
       "cue_start": 214.75,
       "cue_end": 215.75,
       "action": "press 'y' -- continue breaking the remaining right-arm and right-leg grabs",
-      "commentary": "My torso is free. The arm and leg are still held. Pull again."
+      "commentary": "My torso is free. The arm and leg are still held. Pull again.",
+      "amended": false
     },
     {
       "frame": 384,
@@ -7698,7 +8093,8 @@
       "cue_start": 215.75,
       "cue_end": 216.75,
       "action": "press 'y' -- break the zombie medic's torso grab and tough zombie's right-leg grab against the northwest wall",
-      "commentary": "My arm is free. The medic has my torso and the tough one has my leg. Pull again."
+      "commentary": "My arm is free. The medic has my torso and the tough one has my leg. Pull again.",
+      "amended": false
     },
     {
       "frame": 385,
@@ -7718,7 +8114,8 @@
       "cue_start": 216.75,
       "cue_end": 217.75,
       "action": "press 'y' -- continue breaking the remaining grabs after a zombie grabs the left leg",
-      "commentary": "Another one has my left leg. Keep wrenching against the wall."
+      "commentary": "Another one has my left leg. Keep wrenching against the wall.",
+      "amended": false
     },
     {
       "frame": 386,
@@ -7738,7 +8135,8 @@
       "cue_start": 217.75,
       "cue_end": 218.75,
       "action": "press 'y' -- retry breaking the medic torso grab, zombie left-leg grab, and tough-zombie right-leg grab",
-      "commentary": "My torso and both legs are held. Pull again."
+      "commentary": "My torso and both legs are held. Pull again.",
+      "amended": false
     },
     {
       "frame": 387,
@@ -7758,7 +8156,8 @@
       "cue_start": 218.75,
       "cue_end": 219.75,
       "action": "press 'y' -- retry breaking the remaining medic torso grab and tough-zombie right-leg grab",
-      "commentary": "My breath is giving out. The medic has my torso and the tough one has my right leg. Pull."
+      "commentary": "My breath is giving out. Torso and right leg still held. Pull.",
+      "amended": true
     },
     {
       "frame": 388,
@@ -7778,7 +8177,8 @@
       "cue_start": 219.75,
       "cue_end": 220.75,
       "action": "press 'y' -- break the remaining zombie medic torso grab against the northwest wall",
-      "commentary": "My right leg is free. The medic still has my torso. Pull again."
+      "commentary": "My right leg is free. The medic still has my torso. Pull again.",
+      "amended": false
     },
     {
       "frame": 389,
@@ -7798,7 +8198,8 @@
       "cue_start": 220.75,
       "cue_end": 221.75,
       "action": "press 'y' -- continue breaking the zombie medic's torso grab against the northwest wall",
-      "commentary": "The smoke is dense and the medic still holds my torso. Pull again."
+      "commentary": "The smoke is dense and the medic still holds my torso. Pull again.",
+      "amended": false
     },
     {
       "frame": 390,
@@ -7818,7 +8219,8 @@
       "cue_start": 221.75,
       "cue_end": 222.75,
       "action": "press 'y' -- retry breaking the zombie medic's torso grab against the northwest wall",
-      "commentary": "The medic still has me. Pull again through the smoke."
+      "commentary": "The medic still has me. Pull again through the smoke.",
+      "amended": false
     },
     {
       "frame": 391,
@@ -7838,7 +8240,8 @@
       "cue_start": 222.75,
       "cue_end": 223.75,
       "action": "press 'y' -- continue breaking the medic torso grab while bleeding and short of breath",
-      "commentary": "I am bleeding and losing breath. The medic still holds me. Pull."
+      "commentary": "I am bleeding and losing breath. The medic still holds me. Pull.",
+      "amended": false
     },
     {
       "frame": 392,
@@ -7858,7 +8261,8 @@
       "cue_start": 223.75,
       "cue_end": 224.75,
       "action": "press 'y' -- retry breaking the zombie medic's torso grab under crowd pressure",
-      "commentary": "Still held, still breathing. Pull again."
+      "commentary": "Still held, still breathing. Pull again.",
+      "amended": false
     },
     {
       "frame": 393,
@@ -7878,7 +8282,8 @@
       "cue_start": 224.75,
       "cue_end": 225.75,
       "action": "press 'y' -- continue attempting to break the zombie medic's torso grab",
-      "commentary": "The medic still holds me. Pull again."
+      "commentary": "The medic still holds me. Pull again.",
+      "amended": false
     },
     {
       "frame": 394,
@@ -7898,7 +8303,8 @@
       "cue_start": 225.75,
       "cue_end": 226.75,
       "action": "press 'y' -- retry breaking the medic torso grab while oxygen and health decline",
-      "commentary": "My breath is fading, but the medic still holds me. Pull again."
+      "commentary": "My breath is fading, but the medic still holds me. Pull again.",
+      "amended": false
     },
     {
       "frame": 395,
@@ -7918,7 +8324,8 @@
       "cue_start": 226.75,
       "cue_end": 227.0,
       "action": "press 'y' -- break the medic torso grab and new zombie right-leg grab against the northwest wall",
-      "commentary": "The medic has my torso and another has my right leg. Pull again."
+      "commentary": "The medic has my torso and another has my right leg. Pull again.",
+      "amended": false
     },
     {
       "frame": 396,
@@ -7938,7 +8345,8 @@
       "cue_start": 227.0,
       "cue_end": 227.25,
       "action": "press 'y' -- break the new zombie torso grab and persistent right-leg grab against the northwest wall",
-      "commentary": "The medic let go. Another has my torso and right leg. Pull again."
+      "commentary": "The medic let go. Another has my torso and right leg. Pull again.",
+      "amended": false
     },
     {
       "frame": 397,
@@ -7958,7 +8366,8 @@
       "cue_start": 227.25,
       "cue_end": 227.5,
       "action": "press 'y' -- continue breaking the tough-zombie torso grab and zombie right-leg grab after catastrophic injuries",
-      "commentary": "My body is breaking. The torso and right leg are still held. Pull."
+      "commentary": "My body is breaking. The torso and right leg are still held. Pull.",
+      "amended": false
     },
     {
       "frame": 398,
@@ -7978,7 +8387,8 @@
       "cue_start": 227.5,
       "cue_end": 227.75,
       "action": "press 'o' -- enter 'o' in Delphine's last words",
-      "commentary": "The yes I meant for the pull is sitting there as the start of a word. All right. I will finish it."
+      "commentary": "The yes I meant for the pull begins a word. All right. Finish it.",
+      "amended": true
     },
     {
       "frame": 399,
@@ -7998,7 +8408,8 @@
       "cue_start": 227.75,
       "cue_end": 228.0,
       "action": "press 'u' -- enter 'u' in Delphine's last words",
-      "commentary": "You. I am not going to name anything down here, so let whoever reads it decide who I meant."
+      "commentary": "You. I name nobody down here; let whoever reads it decide.",
+      "amended": true
     },
     {
       "frame": 400,
@@ -8018,7 +8429,8 @@
       "cue_start": 228.0,
       "cue_end": 228.25,
       "action": "press 'space' -- enter a space in Delphine's last words",
-      "commentary": "A space, because twenty-two years of writing up repairs did not teach me to run words together at the end."
+      "commentary": "A space. Twenty-two years of write-ups taught me that much.",
+      "amended": true
     },
     {
       "frame": 401,
@@ -8038,7 +8450,8 @@
       "cue_start": 228.25,
       "cue_end": 228.5,
       "action": "press 'm' -- enter 'm' in Delphine's last words",
-      "commentary": "My hands are still steady. That was always the best thing about them and this is the last of it."
+      "commentary": "My hands are steady still. The best of them, and the last of it.",
+      "amended": true
     },
     {
       "frame": 402,
@@ -8058,7 +8471,8 @@
       "cue_start": 228.5,
       "cue_end": 228.75,
       "action": "press 'a' -- enter 'a' in Delphine's last words",
-      "commentary": "Slower than I would like. I was never quick and I am not going to be quick now."
+      "commentary": "Slower than I would like. I was never quick and I am not going to be quick now.",
+      "amended": true
     },
     {
       "frame": 403,
@@ -8078,7 +8492,8 @@
       "cue_start": 228.75,
       "cue_end": 229.0,
       "action": "press 'd' -- enter 'd' in Delphine's last words",
-      "commentary": "Nearly a word. Keep going; a line you stop halfway through is worse than no line at all."
+      "commentary": "Nearly a word. A line stopped halfway is worse than none.",
+      "amended": true
     },
     {
       "frame": 404,
@@ -8098,7 +8513,8 @@
       "cue_start": 229.0,
       "cue_end": 229.25,
       "action": "press 'e' -- enter 'e' in Delphine's last words",
-      "commentary": "Made. Not asked, not chose — made. That is the whole of my complaint and I want the right word on it."
+      "commentary": "Made. Not asked, not chose — made. The right word matters.",
+      "amended": true
     },
     {
       "frame": 405,
@@ -8118,7 +8534,8 @@
       "cue_start": 229.25,
       "cue_end": 229.5,
       "action": "press 'space' -- enter a space in Delphine's last words",
-      "commentary": "Another space. Say it plainly or do not say it at all."
+      "commentary": "Another space. Say it plainly or do not say it at all.",
+      "amended": true
     },
     {
       "frame": 406,
@@ -8138,7 +8555,8 @@
       "cue_start": 229.5,
       "cue_end": 229.75,
       "action": "press 'm' -- enter 'm' in Delphine's last words",
-      "commentary": "Two words left. I can still count, so I will count them down."
+      "commentary": "Two words left. I can still count, so I will count them down.",
+      "amended": true
     },
     {
       "frame": 407,
@@ -8158,7 +8576,8 @@
       "cue_start": 229.75,
       "cue_end": 230.0,
       "action": "press 'e' -- enter 'e' in Delphine's last words",
-      "commentary": "Me. Not somebody braver or quicker. Me, with this back and nothing in my shirt pocket but the pocket."
+      "commentary": "Me. Not somebody braver or quicker. Me, with this back.",
+      "amended": true
     },
     {
       "frame": 408,
@@ -8178,7 +8597,8 @@
       "cue_start": 230.0,
       "cue_end": 230.25,
       "action": "press 'space' -- enter a space in Delphine's last words; nothing on the screen changed",
-      "commentary": "A space before the last word. My grandmother did not cry in kitchens and I am not going to start in a basement."
+      "commentary": "A space. My grandmother never cried in a kitchen; I will not here.",
+      "amended": true
     },
     {
       "frame": 409,
@@ -8198,7 +8618,8 @@
       "cue_start": 230.25,
       "cue_end": 230.5,
       "action": "press 'f' -- enter 'f' in Delphine's last words",
-      "commentary": "Now the word. Five days of deciding what I would not do, and this is the one thing I did."
+      "commentary": "Now the word. Five days of what I would not do; this I did.",
+      "amended": true
     },
     {
       "frame": 410,
@@ -8218,7 +8639,8 @@
       "cue_start": 230.5,
       "cue_end": 230.75,
       "action": "press 'i' -- enter 'i' in Delphine's last words",
-      "commentary": "I did not go looking for any of it. That matters to me, so it goes in."
+      "commentary": "I did not go looking for any of it. That matters to me, so it goes in.",
+      "amended": true
     },
     {
       "frame": 411,
@@ -8238,7 +8660,8 @@
       "cue_start": 230.75,
       "cue_end": 231.0,
       "action": "press 'g' -- enter 'g' in Delphine's last words",
-      "commentary": "Three letters. My father wrote the time in the log and so did I, every repair, twenty-two years of them."
+      "commentary": "Three letters. My father wrote his time in the log; so did I.",
+      "amended": true
     },
     {
       "frame": 412,
@@ -8258,7 +8681,8 @@
       "cue_start": 231.0,
       "cue_end": 231.25,
       "action": "press 'h' -- enter 'h' in Delphine's last words",
-      "commentary": "Two. Steady."
+      "commentary": "Two. Steady.",
+      "amended": true
     },
     {
       "frame": 413,
@@ -8278,7 +8702,8 @@
       "cue_start": 231.25,
       "cue_end": 231.5,
       "action": "press 't' -- enter 't' in Delphine's last words",
-      "commentary": "Fight. There it is, and it is the true part — I did not lie down for it."
+      "commentary": "Fight. There it is, and it is the true part — I did not lie down for it.",
+      "amended": true
     },
     {
       "frame": 414,
@@ -8298,7 +8723,8 @@
       "cue_start": 231.5,
       "cue_end": 231.75,
       "action": "press 'Return' -- submit Delphine's last words: you made me fight",
-      "commentary": "Leave it there: you made me fight."
+      "commentary": "Leave it there: you made me fight.",
+      "amended": false
     },
     {
       "frame": 415,
@@ -8318,7 +8744,8 @@
       "cue_start": 231.75,
       "cue_end": 232.0,
       "action": "press 'N' -- decline watching the post-death deathcam",
-      "commentary": "There is nothing more for me to see."
+      "commentary": "There is nothing more for me to see.",
+      "amended": false
     },
     {
       "frame": 416,
@@ -8338,7 +8765,8 @@
       "cue_start": 232.0,
       "cue_end": 232.25,
       "action": "press 'Escape' -- exit the post-death message log",
-      "commentary": "Let the messages rest."
+      "commentary": "Let the messages rest.",
+      "amended": false
     },
     {
       "frame": 417,
@@ -8358,7 +8786,8 @@
       "cue_start": 232.25,
       "cue_end": 232.5,
       "action": "press 'N' -- decline opening the diary after death",
-      "commentary": "No. My last words are enough."
+      "commentary": "No. My last words are enough.",
+      "amended": false
     },
     {
       "frame": 418,
@@ -8378,7 +8807,8 @@
       "cue_start": 232.5,
       "cue_end": 232.75,
       "action": "press 'Escape' -- exit the post-death scores screen",
-      "commentary": "Scores do not change what happened."
+      "commentary": "None of that changes what happened.",
+      "amended": true
     },
     {
       "frame": 419,
@@ -8398,7 +8828,8 @@
       "cue_start": 232.75,
       "cue_end": 233.0,
       "action": "press 'Escape' -- exit the follower epilogue",
-      "commentary": "No one followed me. Let it end."
+      "commentary": "No one followed me. Let it end.",
+      "amended": false
     }
   ]
 }

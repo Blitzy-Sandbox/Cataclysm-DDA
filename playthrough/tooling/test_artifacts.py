@@ -89,7 +89,9 @@ REPO_ROOT = os.path.dirname(PLAYTHROUGH)
 
 # The artifacts, by the paths the producers publish them to.
 MANIFEST = os.path.join(PLAYTHROUGH, "manifest.jsonl")
+AMENDMENTS = os.path.join(PLAYTHROUGH, manifest.AMENDMENTS_NAME)
 TIMELINE = os.path.join(PLAYTHROUGH, "timeline.json")
+DIGESTS = os.path.join(PLAYTHROUGH, *manifest.DIGESTS_REL_PARTS)
 FRAMES_DIR = os.path.join(PLAYTHROUGH, "frames")
 TRANSCRIPT_SRT = os.path.join(PLAYTHROUGH, "transcript.srt")
 TRANSCRIPT_MD = os.path.join(PLAYTHROUGH, "transcript.md")
@@ -220,6 +222,17 @@ class ArtifactFixture(unittest.TestCase):
                 "artifacts a session produced, and there has been no "
                 "session in this checkout" % MANIFEST)
         cls.rows = manifest.read_rows(MANIFEST)
+        # THE RECORD AND THE PUBLISHED NARRATION ARE TWO THINGS.
+        # manifest.jsonl is immutable evidence; a correction to a row's
+        # action or commentary lives in playthrough/amendments.jsonl and
+        # is applied by manifest.resolve_rows() when a derivative is
+        # computed.  So the suite carries both: `rows` for every check
+        # about the record, and `resolved` for every check about what a
+        # derivative should say.
+        cls.amendments = manifest.read_amendments(AMENDMENTS)
+        cls.digests = manifest.read_frame_digests(DIGESTS)
+        cls.resolved, cls.amended = manifest.resolve_rows(
+            cls.rows, cls.amendments)
         cls.document = timeline.read_timeline(TIMELINE)
         cls.entries = cls.document["frames"]
         cls.frame_names = sorted(os.listdir(FRAMES_DIR))
@@ -319,8 +332,24 @@ class TestTheManifestContract(ArtifactFixture):
 
     def test_the_producer_validator_finds_no_problem(self):
         # The gate a WRITE passes, applied to the committed record: a
-        # standard the producer holds one new row to, held to all 560.
-        self.assertEqual(manifest.row_problems(self.rows), [])
+        # standard the producer holds one new row to, held to every row.
+        #
+        # IN TWO HALVES, BECAUSE THE RECORD AND THE PUBLISHED NARRATION
+        # ARE TWO THINGS.  The structural half -- the six fields in
+        # order, the index inside its range, the `file` that index
+        # formats to, the canonical real_ts, the clock that is a reading
+        # or null -- describes the capture and is held against the
+        # RECORDED rows, which are immutable.  The voice gate and the
+        # placeholder sentinels describe the two amendable narrations,
+        # and a captured row is never edited to satisfy them: the remedy
+        # is an amendment bound to that row's digest, so they are held
+        # against the RESOLVED rows, which are what the transcript and
+        # the caption track actually carry.  Both halves are the same
+        # function, and nothing is skipped -- an unamended meta word is
+        # still reported, because resolving leaves it where it was.
+        self.assertEqual(
+            manifest.row_problems(self.rows, narration=False), [])
+        self.assertEqual(manifest.row_problems(self.resolved), [])
 
     def test_the_sequence_validator_finds_no_problem(self):
         self.assertEqual(manifest.sequence_problems(self.rows), [])
@@ -391,11 +420,72 @@ class TestTheTimelineContract(ArtifactFixture):
 
     def test_every_entry_agrees_with_its_manifest_row(self):
         # Same order, nothing dropped, merged or reordered -- asserted
-        # position by position rather than by counting.
-        for entry, row in zip(self.entries, self.rows):
+        # position by position rather than by counting.  The narration is
+        # compared against the RESOLVED rows, because that is what a
+        # derivative is computed from; the `amended` flag on each entry
+        # is then held to the ledger itself below.
+        for entry, row in zip(self.entries, self.resolved):
             with self.subTest(frame=row["frame"]):
                 self.assertEqual(entry["frame"], row["frame"])
                 self.assertEqual(entry["file"], row["file"])
+                self.assertEqual(entry["action"], row["action"])
+                self.assertEqual(entry["commentary"], row["commentary"])
+
+    def test_every_amended_entry_is_marked_and_only_those(self):
+        marked = tuple(entry["frame"] for entry in self.entries
+                       if entry["amended"])
+        self.assertEqual(marked, self.amended)
+
+    def test_the_amendment_attestation_matches_the_ledger(self):
+        attestation = self.document["amendments"]
+        if not self.amendments:
+            self.assertIsNone(attestation)
+            return
+        self.assertEqual(list(attestation),
+                         list(timeline.AMENDMENT_ATTESTATION_FIELDS))
+        self.assertEqual(attestation["rows"], len(self.amendments))
+        self.assertEqual(attestation["applied"], len(self.amendments))
+        self.assertEqual(attestation["sha256"],
+                         timeline.file_digest(AMENDMENTS))
+        self.assertEqual(
+            timeline.amendment_attestation_problems(self.document), [])
+
+    def test_the_capture_attestation_matches_the_ledger(self):
+        """The document names the ledger its frames were verified from.
+
+        THE DEFECT THIS TEST EXISTS FOR.  Until this attestation existed
+        the timeline said nothing whatever about the PIXELS it paced, so a
+        same-sized replacement frame passed every check in the chain.  The
+        document now carries the ledger's own digest and row count, and
+        capture_attestation_problems() re-hashes every frame against it.
+        """
+        attestation = self.document["captures"]
+        self.assertIsNotNone(
+            attestation,
+            msg=("the committed timeline paces committed frames, so it "
+                 "must name the ledger they were verified against"))
+        self.assertEqual(list(attestation),
+                         list(timeline.CAPTURE_ATTESTATION_FIELDS))
+        self.assertEqual(attestation["sha256"],
+                         timeline.file_digest(DIGESTS))
+        self.assertEqual(attestation["rows"], len(self.digests))
+        self.assertEqual(attestation["verified"],
+                         self.document["frame_count"])
+        self.assertEqual(
+            timeline.capture_attestation_problems(self.document), [])
+
+    def test_every_paced_frame_still_hashes_to_its_attestation(self):
+        """The frames on disk are the frames that were captured."""
+        self.assertEqual(
+            manifest.verify_frame_digests(self.rows, self.digests), [])
+
+    def test_an_unamended_entry_reads_exactly_as_recorded(self):
+        by_frame = {row["frame"]: row for row in self.rows}
+        for entry in self.entries:
+            if entry["amended"]:
+                continue
+            with self.subTest(frame=entry["frame"]):
+                row = by_frame[entry["frame"]]
                 self.assertEqual(entry["action"], row["action"])
                 self.assertEqual(entry["commentary"], row["commentary"])
 
@@ -549,10 +639,23 @@ class TestTheTimelineContract(ArtifactFixture):
         report drift on a file that is correct.
         """
         rows = manifest.read_rows(MANIFEST)
+        resolved, amended = manifest.resolve_rows(
+            rows, manifest.read_amendments(AMENDMENTS))
         return timeline.build_timeline(
-            rows, timeline.load_observations(),
+            resolved, timeline.load_observations(),
             timeline.date_lines_for_rows(rows),
-            timeline.attest_manifest(MANIFEST))
+            timeline.attest_manifest(MANIFEST),
+            timeline.attest_amendments(
+                AMENDMENTS, applied=len(self.amendments)),
+            amended,
+            # AND THE CAPTURE ATTESTATION, for the same reason as the
+            # manifest's: it is part of the document the encoder writes.
+            # It names the ledger the frames were re-hashed against and
+            # how many of them were checked, and rebuilding without it
+            # would compare a document carrying that provenance against
+            # one carrying none.
+            timeline.attest_captures(
+                DIGESTS, verified=len(rows)))
 
     def test_the_file_has_no_byte_order_mark(self):
         self.assertFalse(_read_bytes(TIMELINE).startswith(
@@ -724,38 +827,46 @@ class TestTheTranscriptContract(ArtifactFixture):
                 self.assertEqual(line, line.rstrip())
 
     def test_every_cue_line_is_wrapped_to_the_caption_width(self):
-        # THE CUE CONTRACT: wrapped to about forty-two columns, and NOT
-        # capped in line count.  The width keeps a line inside the
-        # picture; the absence of a cap is what makes the next test
-        # possible.
+        # THE CUE CONTRACT: at most CUE_MAX_LINES lines of about
+        # forty-two columns.  The width keeps a line inside the picture;
+        # the line count keeps a cue readable inside a window that can be
+        # as short as the 0.25 s floor.
         for cue in self.cues:
             with self.subTest(frame=cue.frame):
                 self.assertGreaterEqual(len(cue.lines), 1)
+                self.assertLessEqual(len(cue.lines),
+                                     make_srt.CUE_MAX_LINES)
                 for line in cue.lines:
                     self.assertLessEqual(len(line),
                                          make_srt.CUE_LINE_WIDTH)
 
     def test_every_cue_carries_the_whole_sentence(self):
-        # THE DEFECT THIS TEST EXISTS FOR IS A REAL ONE.  A caption used
-        # to be truncated to two lines of forty-two columns with an
-        # elision mark, which cut the REASON off the end of every long
-        # sentence -- and the reason is the requirement: a viewer with the
-        # caption track selected is the audience for the in-character
-        # record, and "...so I go at first light" was exactly the clause
-        # that got dropped.  A soft track costs nothing per byte, so the
-        # whole sentence goes in every cue and the film says what the
-        # transcript says.
+        # TWO REAL DEFECTS MEET HERE, and the committed record has to be
+        # clear of both.  A caption used to be TRUNCATED to two lines
+        # with an elision mark, which cut the REASON off the end of every
+        # long sentence -- and the reason is the requirement: a viewer
+        # with the caption track selected is the audience for the
+        # in-character record, and "...so I go at first light" was
+        # exactly the clause that got dropped.  Then the cap was removed
+        # outright and a long cue merely advised about, which shipped 88
+        # cues of three to six lines, one of them inside a 250 ms window.
+        # So: every cue is the sentence word for word (nothing is cut),
+        # AND the sentence was written short enough to fit the geometry
+        # (the previous test), which is a property of the SOURCE
+        # commentary rather than of any transformation here.
         for cue in self.cues:
             with self.subTest(frame=cue.frame):
                 self.assertEqual(
                     " ".join(cue.lines).split(), cue.commentary.split(),
                     msg="the cue is the sentence, word for word")
+        self.assertEqual(
+            make_srt.CUE_MAX_LINES, 2,
+            msg="the caption contract is at most two lines")
         self.assertFalse(
-            hasattr(make_srt, "CUE_MAX_LINES"),
-            msg=("and there is no line cap left to reintroduce it: a "
-                 "constant nobody reads is a truncation waiting to "
-                 "happen"))
-        self.assertFalse(hasattr(make_srt, "CUE_ELISION"))
+            hasattr(make_srt, "CUE_ELISION"),
+            msg=("and there is no elision mark left to reintroduce the "
+                 "truncation: a cue that will not fit is refused at "
+                 "generation, never shortened"))
 
     def test_the_markdown_carries_every_sentence_entire(self):
         # Where the reason for an action always is, whatever its caption

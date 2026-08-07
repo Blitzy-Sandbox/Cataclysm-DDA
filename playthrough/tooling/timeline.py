@@ -484,6 +484,16 @@ ENTRY_FIELDS = (
     "cue_end",
     "action",
     "commentary",
+    # Whether an AMENDMENT supplied this entry's narration.  The record
+    # is append-only and is never edited, so a correction to a row's
+    # action or commentary lives in playthrough/amendments.jsonl and is
+    # applied by manifest.resolve_rows() when a derivative is computed.
+    # A reader of this artifact can therefore see, per frame, whether
+    # the text above came straight off the manifest line or through a
+    # digest-bound amendment -- which is the difference between "the
+    # record says this" and "the record says something the ledger
+    # corrects", and it must not be invisible.
+    "amended",
 )
 
 # The top-level keys, in the order they are written.  The constants
@@ -496,6 +506,21 @@ DOCUMENT_FIELDS = (
     # against the evidence rather than believed.  See
     # MANIFEST_ATTESTATION_FIELDS and manifest_attestation_problems().
     "manifest",
+    # AND WHICH CORRECTIONS WERE APPLIED TO IT.  null when no amendment
+    # ledger exists, which is the ordinary case; otherwise the ledger's
+    # path, the sha256 of its exact bytes and its row count, checked
+    # against the file on disk by the same gate the manifest
+    # attestation passes.  Without it a document carrying amended
+    # narration could not be told from one carrying recorded narration.
+    "amendments",
+    # AND WHICH CAPTURES IT PACED, by the digest of each one's bytes.
+    # null only where no attestation ledger exists; otherwise the
+    # ledger's path, the sha256 of its exact bytes, its row count and how
+    # many frames were verified against it.  Timing a film from frames
+    # whose bytes nothing attests is the gap this closes: the ORDERED
+    # SET is bound into the document, so the movie and the caption track
+    # inherit the binding through assert_timeline_document().
+    "captures",
     "floor",
     "ceil",
     "transition",
@@ -543,6 +568,22 @@ DOCUMENT_FIELDS = (
 # ---------------------------------------------------------------------
 
 MANIFEST_ATTESTATION_FIELDS = ("path", "sha256", "rows")
+
+# The amendment ledger's attestation, in the same shape and for the same
+# reason.  `rows` is the number of amendments in the ledger, and
+# `applied` is how many of them reached this document -- equal in
+# practice, and separate because a ledger row that amends a frame these
+# rows do not carry is a refusal rather than a silent difference, so a
+# reader who sees them differ knows something is wrong without having
+# to recompute anything.
+AMENDMENT_ATTESTATION_FIELDS = ("path", "sha256", "rows", "applied")
+
+# The capture attestation ledger's own attestation.  `rows` is the number
+# of attestation rows and `verified` is how many frames were re-hashed
+# and matched when this document was computed; they differ when a frame
+# was captured twice at one index, which the ledger records and
+# manifest.verify_frame_digests() reports.
+CAPTURE_ATTESTATION_FIELDS = ("path", "sha256", "rows", "verified")
 
 # 64 lowercase hex digits.  Pinned as a shape so a truncated, uppercase
 # or algorithm-swapped digest is a reported problem rather than a
@@ -1340,6 +1381,14 @@ def _anchor_leading_readings(
 
 AUDIT_FRAME_FIELD = "frame"
 AUDIT_DATE_FIELD = "date"
+# The capture digest an audit row is BOUND to, when it carries one.  A
+# row written by a capture that took place after the attestation ledger
+# existed names the sha256 of the frame it read, which is what makes the
+# corroboration a statement about THOSE pixels rather than about
+# whatever file now occupies that index.  Rows written before the ledger
+# existed have no such field, and are accepted as unbound and counted as
+# such -- never silently treated as though they had been checked.
+AUDIT_SHA256_FIELD = "frame_sha256"
 ENV_DATE_AUDIT = "PLAYTHROUGH_DATE_AUDIT"
 
 
@@ -1366,6 +1415,7 @@ def default_date_audit_path(root: Optional[str] = None) -> str:
 def read_date_audit(
     audit_path: Optional[str] = None,
     root: Optional[str] = None,
+    digests: Optional[Mapping[int, Any]] = None,
 ) -> Dict[int, Optional[str]]:
     """Return {frame index: date line} from the sidecar.  Read-only.
 
@@ -1377,11 +1427,38 @@ def read_date_audit(
     and nothing is invented -- which is the correct outcome, not a
     silent downgrade.
 
-    THE LAST RECORD FOR AN INDEX WINS.  A recapture appends a second
-    record for the same frame, and the last one describes the frame that
-    is actually on disk now.  Two records that DISAGREE about the date
-    are reported and the date is treated as unobserved, because a
-    contradiction is not evidence.
+    UNANIMITY OR UNOBSERVED.  This used to take the LAST record for an
+    index, and a security review named both consequences.  Two records
+    that disagreed about the date were warned about and the later value
+    was returned anyway, so a contradiction still decided a day.  And a
+    later record whose date was ``null`` -- the ordinary shape of an
+    unreadable reading -- ERASED a date that had been read successfully,
+    silently, with no warning at all, because null is not a conflict.
+
+    So every record for a frame is collected and the frame's date is:
+
+      * the agreed value, when every reading that HAS one agrees.  A
+        recapture within one step legitimately appends a second record,
+        and two readings of the same screen are corroboration rather
+        than conflict;
+      * unobserved (``None``) when two readings disagree.  A
+        contradiction is not evidence, and there is no rule by which
+        being written later makes one of two contradictory observations
+        the true one;
+      * unobserved when nothing was read, which it already was.
+
+    A ``null`` reading is an ABSENCE of evidence and not counter-evidence
+    to a reading that succeeded, so it neither erases nor contradicts
+    one.  Every disagreement is reported by frame.
+
+    BOUND TO THE PIXELS, WHEN THE ROW SAYS WHICH.  `digests` maps a frame
+    index to its attestation (as :func:`manifest.attested_digests`
+    returns, or to a bare sha256 string).  A row carrying a
+    ``frame_sha256`` that does not match is a reading of a frame that is
+    no longer there -- a withdrawn capture, or a re-photographed index --
+    and it is discarded rather than attributed to the frame that now
+    holds the index.  A row with no such field predates the ledger; it is
+    used, and the fact that nothing binds it is reported once.
 
     A malformed line is reported and skipped rather than raising: this
     is corroborating evidence, and losing one frame's worth of it
@@ -1396,7 +1473,10 @@ def read_date_audit(
     dates: Dict[int, Optional[str]] = {}
     if not os.path.isfile(resolved):
         return dates
-    conflicting: List[int] = []
+    # frame -> every well-formed reading recorded for it, in file order.
+    readings: Dict[int, List[Optional[str]]] = {}
+    unbound: List[int] = []
+    superseded: List[int] = []
     with _open_evidence(resolved, "date audit") as handle:
         for number, raw in enumerate(handle, start=1):
             text = raw.strip()
@@ -1425,17 +1505,80 @@ def read_date_audit(
                 _warn("%s line %d records %r as its date; the record "
                       "is skipped" % (resolved, number, value))
                 continue
-            if index in dates and dates[index] is not None and \
-                    value is not None and \
-                    normalise_date(value) != normalise_date(
-                        dates[index]):
-                conflicting.append(index)
-            dates[index] = value
-    for index in sorted(set(conflicting)):
-        _warn("the date audit records two different dates for frame "
-              "%d; the later record is used, but a contradiction is "
-              "not evidence, so verify the recapture" % index)
+            bound = record.get(AUDIT_SHA256_FIELD)
+            if digests is not None:
+                attested = _attested_sha256(digests, index)
+                if isinstance(bound, str) and bound.strip():
+                    if attested is not None and bound != attested:
+                        superseded.append(index)
+                        continue
+                elif attested is not None:
+                    unbound.append(index)
+            readings.setdefault(index, []).append(value)
+    conflicting: List[int] = []
+    for index, values in readings.items():
+        observed = {normalise_date(one): one
+                    for one in values if one is not None}
+        if len(observed) > 1:
+            conflicting.append(index)
+            dates[index] = None
+            continue
+        dates[index] = next(iter(observed.values()), None)
+    if superseded:
+        _warn("the date audit holds record(s) for %d frame(s) whose "
+              "frame_sha256 is not the digest attested for that frame "
+              "(%s); they describe pixels that are no longer at those "
+              "indexes, so they are discarded rather than read as those "
+              "frames' dates"
+              % (len(set(superseded)), _bounded(sorted(set(superseded)))))
+    if unbound:
+        _warn("%d frame(s) have date-audit record(s) that name no "
+              "frame_sha256 (%s), so nothing binds the reading to the "
+              "pixels it was taken from.  Every row written before the "
+              "capture attestation ledger existed is in this state; the "
+              "dates are used and the fact is reported rather than "
+              "presented as checked"
+              % (len(set(unbound)), _bounded(sorted(set(unbound)))))
+    if conflicting:
+        _warn("the date audit records two different dates for %d "
+              "frame(s) (%s); a contradiction is not evidence and "
+              "neither reading is preferred for having been written "
+              "later, so those frames' dates are treated as UNOBSERVED"
+              % (len(set(conflicting)),
+                 _bounded(sorted(set(conflicting)))))
     return dates
+
+
+def _bounded(indices: Sequence[int], limit: int = 10) -> str:
+    """Render frame indexes for a diagnostic, bounded but not rounded.
+
+    Three affected frames should be named; four hundred should not print
+    four hundred numbers into a terminal.  The remainder is COUNTED
+    rather than dropped, because "and 409 more" still states the true
+    size of what is being reported.
+    """
+    shown = ", ".join(str(index) for index in indices[:limit])
+    if len(indices) > limit:
+        return "%s and %d more" % (shown, len(indices) - limit)
+    return shown
+
+
+def _attested_sha256(
+    digests: Mapping[int, Any],
+    index: int,
+) -> Optional[str]:
+    """Return the sha256 attested for `index`, or None.
+
+    Accepts either the mapping :func:`manifest.attested_digests` returns
+    -- frame index to attestation row -- or a plain index-to-digest
+    mapping, so a caller may bind against whichever it already holds.
+    """
+    entry = digests.get(index)
+    if isinstance(entry, Mapping):
+        entry = entry.get("sha256")
+    if isinstance(entry, str) and entry.strip():
+        return entry
+    return None
 
 
 def date_lines_for_rows(
@@ -1443,6 +1586,7 @@ def date_lines_for_rows(
     dates: Optional[Dict[int, Optional[str]]] = None,
     audit_path: Optional[str] = None,
     root: Optional[str] = None,
+    digests: Optional[Mapping[int, Any]] = None,
 ) -> List[Optional[str]]:
     """Line the date evidence up with the manifest rows.  Pure.
 
@@ -1455,8 +1599,8 @@ def date_lines_for_rows(
     frame later took that index.  The returned list is always the same
     length as `rows`, with None wherever nothing was observed.
     """
-    resolved = (read_date_audit(audit_path, root) if dates is None
-                else dates)
+    resolved = (read_date_audit(audit_path, root, digests)
+                if dates is None else dates)
     out: List[Optional[str]] = []
     for position, row in enumerate(rows, start=1):
         index = position
@@ -1694,6 +1838,7 @@ def _entry(
     duration: float,
     flagged: bool,
     window: Tuple[float, float],
+    amended: bool = False,
 ) -> Dict[str, Any]:
     """Assemble one entry of the frames array, keys in fixed order."""
     index = _row_index(row, position)
@@ -1725,6 +1870,7 @@ def _entry(
         "cue_end": round_seconds(window[1]),
         "action": _row_text(row, "action"),
         "commentary": _row_text(row, "commentary"),
+        "amended": bool(amended),
     }
     return {name: entry[name] for name in ENTRY_FIELDS}
 
@@ -1734,6 +1880,9 @@ def build_timeline(
     observations: Optional[Dict[int, Dict[str, Any]]] = None,
     dates: Optional[Sequence[Any]] = None,
     manifest_attestation: Optional[Dict[str, Any]] = None,
+    amendment_attestation: Optional[Dict[str, Any]] = None,
+    amended: Sequence[int] = (),
+    capture_attestation: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Compute the whole timeline from manifest rows.  Pure.
 
@@ -1817,10 +1966,18 @@ def build_timeline(
     durations = clamp_durations(deltas)
     flags = transition_flags(deltas)
     windows, cursor_total = cue_windows(durations, flags)
+    # The frames an amendment reached, as manifest.resolve_rows() reports
+    # them.  The ROWS handed to this function already carry the amended
+    # text -- resolution happens before the arithmetic, so a correction
+    # to prose cannot change a duration -- and this set is what lets each
+    # entry say so.
+    touched = {index for index in amended
+               if not isinstance(index, bool) and isinstance(index, int)}
     entries = [
         _entry(row, position, readings[position - 1],
                deltas[position - 1], durations[position - 1],
-               flags[position - 1], windows[position - 1])
+               flags[position - 1], windows[position - 1],
+               _row_index(row, position) in touched)
         for position, row in enumerate(materialised, start=1)
     ]
     total_duration = round_seconds(math.fsum(durations))
@@ -1838,6 +1995,16 @@ def build_timeline(
         "manifest": (dict(manifest_attestation)
                      if isinstance(manifest_attestation, dict)
                      else manifest_attestation),
+        # The corrections applied, on the same terms: supplied by the
+        # caller because only the caller read the ledger, and null when
+        # there is none.
+        "amendments": (dict(amendment_attestation)
+                       if isinstance(amendment_attestation, dict)
+                       else amendment_attestation),
+        # The captures this timeline paced, on the same terms.
+        "captures": (dict(capture_attestation)
+                     if isinstance(capture_attestation, dict)
+                     else capture_attestation),
         # The clamp travels with the data, so a reader can verify every
         # duration against the constants it was produced under without
         # opening this file.
@@ -1948,6 +2115,23 @@ PROBLEM_MANIFEST_DIGEST = "manifest-attestation-digest"
 PROBLEM_MANIFEST_ROWS_NOT_INT = "manifest-attestation-rows-not-integer"
 PROBLEM_MANIFEST_ROWS_NEGATIVE = "manifest-attestation-rows-negative"
 PROBLEM_MANIFEST_ROWS_MISMATCH = "manifest-attestation-rows-mismatch"
+PROBLEM_AMENDMENTS_NOT_OBJECT = "amendment-attestation-not-object"
+PROBLEM_AMENDMENTS_MISSING_FIELD = "amendment-attestation-missing-field"
+PROBLEM_AMENDMENTS_EXTRA_FIELD = "amendment-attestation-extra-field"
+PROBLEM_AMENDMENTS_PATH_NOT_TEXT = "amendment-attestation-path-not-text"
+PROBLEM_AMENDMENTS_PATH_UNSAFE = "amendment-attestation-path-unsafe"
+PROBLEM_AMENDMENTS_DIGEST = "amendment-attestation-digest"
+PROBLEM_AMENDMENTS_ROWS = "amendment-attestation-rows"
+PROBLEM_AMENDMENTS_APPLIED = "amendment-attestation-applied"
+PROBLEM_AMENDMENTS_APPLIED_EXCEEDS = "amendment-attestation-applied-high"
+PROBLEM_CAPTURES_NOT_OBJECT = "capture-attestation-not-object"
+PROBLEM_CAPTURES_MISSING_FIELD = "capture-attestation-missing-field"
+PROBLEM_CAPTURES_EXTRA_FIELD = "capture-attestation-extra-field"
+PROBLEM_CAPTURES_PATH_NOT_TEXT = "capture-attestation-path-not-text"
+PROBLEM_CAPTURES_PATH_UNSAFE = "capture-attestation-path-unsafe"
+PROBLEM_CAPTURES_DIGEST = "capture-attestation-digest"
+PROBLEM_CAPTURES_ROWS = "capture-attestation-rows"
+PROBLEM_CAPTURES_VERIFIED = "capture-attestation-verified"
 PROBLEM_FRAMES_NOT_ARRAY = "frames-not-array"
 PROBLEM_DOCUMENT_COUNT_NOT_INT = "document-count-not-integer"
 PROBLEM_DOCUMENT_NOT_NUMBER = "document-field-not-number"
@@ -1976,6 +2160,7 @@ PROBLEM_FIELD_NOT_TEXT_OR_NULL = "entry-field-not-text-or-null"
 PROBLEM_RECONCILED_NOT_BOOL = "reconciled-not-boolean"
 PROBLEM_RECONCILED_NO_REASON = "reconciled-without-reason"
 PROBLEM_REASON_NOT_RECONCILED = "reason-without-reconciled"
+PROBLEM_AMENDED_NOT_BOOL = "amended-not-boolean"
 
 # Properties that only exist across entries.
 PROBLEM_FIRST_CUE = "first-cue-not-zero"
@@ -2008,6 +2193,23 @@ PROBLEM_CODES = (
     PROBLEM_MANIFEST_ROWS_NOT_INT,
     PROBLEM_MANIFEST_ROWS_NEGATIVE,
     PROBLEM_MANIFEST_ROWS_MISMATCH,
+    PROBLEM_AMENDMENTS_NOT_OBJECT,
+    PROBLEM_AMENDMENTS_MISSING_FIELD,
+    PROBLEM_AMENDMENTS_EXTRA_FIELD,
+    PROBLEM_AMENDMENTS_PATH_NOT_TEXT,
+    PROBLEM_AMENDMENTS_PATH_UNSAFE,
+    PROBLEM_AMENDMENTS_DIGEST,
+    PROBLEM_AMENDMENTS_ROWS,
+    PROBLEM_AMENDMENTS_APPLIED,
+    PROBLEM_AMENDMENTS_APPLIED_EXCEEDS,
+    PROBLEM_CAPTURES_NOT_OBJECT,
+    PROBLEM_CAPTURES_MISSING_FIELD,
+    PROBLEM_CAPTURES_EXTRA_FIELD,
+    PROBLEM_CAPTURES_PATH_NOT_TEXT,
+    PROBLEM_CAPTURES_PATH_UNSAFE,
+    PROBLEM_CAPTURES_DIGEST,
+    PROBLEM_CAPTURES_ROWS,
+    PROBLEM_CAPTURES_VERIFIED,
     PROBLEM_FRAMES_NOT_ARRAY,
     PROBLEM_DOCUMENT_COUNT_NOT_INT,
     PROBLEM_DOCUMENT_NOT_NUMBER,
@@ -2034,6 +2236,7 @@ PROBLEM_CODES = (
     PROBLEM_RECONCILED_NOT_BOOL,
     PROBLEM_RECONCILED_NO_REASON,
     PROBLEM_REASON_NOT_RECONCILED,
+    PROBLEM_AMENDED_NOT_BOOL,
     PROBLEM_FIRST_CUE,
     PROBLEM_CUE_START,
     PROBLEM_CLOCK_BACKWARDS,
@@ -2179,6 +2382,14 @@ def _entry_problems(
                 PROBLEM_FIELD_NOT_TEXT_OR_NULL,
                 "entry %d %s is %r (%s); it is text or JSON null"
                 % (position, name, value, type(value).__name__)))
+    if not isinstance(entry["amended"], bool):
+        problems.append(Problem(
+            PROBLEM_AMENDED_NOT_BOOL,
+            "entry %d amended is %r (%s), which is not a JSON boolean; "
+            "whether an amendment supplied this narration is a fact "
+            "about the evidence and may not be absent or approximate"
+            % (position, entry["amended"],
+               type(entry["amended"]).__name__)))
     reconciled = entry["reconciled"]
     if not isinstance(reconciled, bool):
         problems.append(Problem(
@@ -2247,6 +2458,12 @@ def timeline_problems(
     # document that cannot say what it was computed from is not made
     # trustworthy by its totals adding up.
     attested = _document_manifest_problems(document)
+    if attested:
+        return attested
+    attested = _document_amendment_problems(document)
+    if attested:
+        return attested
+    attested = _document_capture_problems(document)
     if attested:
         return attested
     problems = []
@@ -3148,6 +3365,67 @@ def attest_manifest(
     }
 
 
+def attest_amendments(
+    amendments_path: Optional[str] = None,
+    root: Optional[str] = None,
+    applied: int = 0,
+) -> Optional[Dict[str, Any]]:
+    """Describe the amendment ledger this timeline resolved through.
+
+    Returns the attestation that travels in the document -- the
+    repository-relative path, the sha256 of the ledger's exact bytes, its
+    row count and how many of those rows reached this document -- or
+    ``None`` when there is no ledger, which is the ordinary case for a
+    session with nothing to amend.
+
+    Read-only, and the path goes through manifest.py's own containment
+    gate for the same reason :func:`attest_manifest` does: an attestation
+    may only ever name a file this pipeline was allowed to read.
+    """
+    if amendments_path is None:
+        amendments_path = manifest.default_amendments_path()
+    try:
+        resolved = manifest._validated_amendments_target(
+            amendments_path, root)
+    except manifest.ManifestError as err:
+        raise TimelineError(str(err)) from err
+    if not os.path.isfile(resolved):
+        return None
+    return {
+        "path": _attested_relpath(resolved, root),
+        "sha256": file_digest(resolved),
+        "rows": count_manifest_lines(resolved),
+        "applied": int(applied),
+    }
+
+
+def attest_captures(
+    digests_path: Optional[str] = None,
+    root: Optional[str] = None,
+    verified: int = 0,
+) -> Optional[Dict[str, Any]]:
+    """Describe the capture attestation ledger the frames were checked
+    against, or ``None`` when there is none.
+
+    Read-only, and the path goes through manifest.py's own containment
+    gate for the same reason the other two attestations do.
+    """
+    if digests_path is None:
+        digests_path = manifest.default_digests_path()
+    try:
+        resolved = manifest._validated_digests_target(digests_path, root)
+    except manifest.ManifestError as err:
+        raise TimelineError(str(err)) from err
+    if not os.path.isfile(resolved):
+        return None
+    return {
+        "path": _attested_relpath(resolved, root),
+        "sha256": file_digest(resolved),
+        "rows": count_manifest_lines(resolved),
+        "verified": int(verified),
+    }
+
+
 def _attested_relpath(resolved: str, root: Optional[str] = None) -> str:
     """Express a path relative to the parent of the approved root.
 
@@ -3254,6 +3532,340 @@ def _document_manifest_problems(
     return problems
 
 
+def _document_amendment_problems(document: Any) -> List[Problem]:
+    """Check the amendment attestation's SHAPE.  Pure.
+
+    ``None`` is valid and is the ordinary case: a session with nothing to
+    amend has no ledger, and requiring one would make an honest document
+    fail.  What is not valid is a value of the wrong shape, a digest that
+    is not a digest, or an `applied` count larger than the ledger it
+    claims to have read -- each of which would let a document assert a
+    provenance nothing could check.
+    """
+    attestation = document.get("amendments")
+    if attestation is None:
+        return []
+    if not isinstance(attestation, dict):
+        return [Problem(
+            PROBLEM_AMENDMENTS_NOT_OBJECT,
+            "the timeline's amendment attestation is a %s, not an "
+            "object naming the ledger it resolved through"
+            % type(attestation).__name__)]
+    missing = [name for name in AMENDMENT_ATTESTATION_FIELDS
+               if name not in attestation]
+    if missing:
+        return [Problem(
+            PROBLEM_AMENDMENTS_MISSING_FIELD,
+            "the timeline's amendment attestation is missing %s"
+            % ", ".join(missing))]
+    extra = sorted(set(attestation) - set(AMENDMENT_ATTESTATION_FIELDS))
+    if extra:
+        return [Problem(
+            PROBLEM_AMENDMENTS_EXTRA_FIELD,
+            "the timeline's amendment attestation carries unexpected "
+            "field(s) %s; it is exactly %s"
+            % (", ".join(extra),
+               ", ".join(AMENDMENT_ATTESTATION_FIELDS)))]
+    problems = []
+    stated = attestation["path"]
+    if not isinstance(stated, str) or not stated.strip():
+        problems.append(Problem(
+            PROBLEM_AMENDMENTS_PATH_NOT_TEXT,
+            "the attested amendment ledger path is %r, not a path"
+            % (stated,)))
+    elif (os.path.isabs(stated) or stated.startswith("~") or
+            ".." in stated.replace("\\", "/").split("/")):
+        problems.append(Problem(
+            PROBLEM_AMENDMENTS_PATH_UNSAFE,
+            "the attested amendment ledger path %r is absolute or "
+            "walks upwards; it is stored relative to the repository"
+            % stated))
+    digest = attestation["sha256"]
+    if not isinstance(digest, str) or not SHA256_RE.match(digest):
+        problems.append(Problem(
+            PROBLEM_AMENDMENTS_DIGEST,
+            "the attested amendment ledger digest %r is not 64 "
+            "lowercase hex digits" % (digest,)))
+    rows = attestation["rows"]
+    if isinstance(rows, bool) or not isinstance(rows, int) or rows < 1:
+        problems.append(Problem(
+            PROBLEM_AMENDMENTS_ROWS,
+            "the attested amendment count is %r; an attestation exists "
+            "only when the ledger does, so it holds at least one row"
+            % (rows,)))
+    applied = attestation["applied"]
+    if isinstance(applied, bool) or not isinstance(applied, int) \
+            or applied < 0:
+        problems.append(Problem(
+            PROBLEM_AMENDMENTS_APPLIED,
+            "the attested applied-amendment count is %r, not a "
+            "non-negative integer" % (applied,)))
+    elif isinstance(rows, int) and not isinstance(rows, bool) \
+            and applied > rows:
+        problems.append(Problem(
+            PROBLEM_AMENDMENTS_APPLIED_EXCEEDS,
+            "the attestation says %d amendment(s) were applied out of "
+            "a ledger of %d; more corrections cannot be applied than "
+            "were recorded" % (applied, rows)))
+    return problems
+
+
+def _document_capture_problems(document: Any) -> List[Problem]:
+    """Check the capture attestation's SHAPE.  Pure.
+
+    ``None`` is valid only in the sense that this validator is about
+    shape: a document that paces frames nothing attests is refused by
+    :func:`capture_attestation_problems`, which can see the ledger on
+    disk, and by assert_timeline_document() through it.
+    """
+    attestation = document.get("captures")
+    if attestation is None:
+        return []
+    if not isinstance(attestation, dict):
+        return [Problem(
+            PROBLEM_CAPTURES_NOT_OBJECT,
+            "the timeline's capture attestation is a %s, not an object "
+            "naming the ledger its frames were verified against"
+            % type(attestation).__name__)]
+    missing = [name for name in CAPTURE_ATTESTATION_FIELDS
+               if name not in attestation]
+    if missing:
+        return [Problem(
+            PROBLEM_CAPTURES_MISSING_FIELD,
+            "the timeline's capture attestation is missing %s"
+            % ", ".join(missing))]
+    extra = sorted(set(attestation) - set(CAPTURE_ATTESTATION_FIELDS))
+    if extra:
+        return [Problem(
+            PROBLEM_CAPTURES_EXTRA_FIELD,
+            "the timeline's capture attestation carries unexpected "
+            "field(s) %s; it is exactly %s"
+            % (", ".join(extra),
+               ", ".join(CAPTURE_ATTESTATION_FIELDS)))]
+    problems = []
+    stated = attestation["path"]
+    if not isinstance(stated, str) or not stated.strip():
+        problems.append(Problem(
+            PROBLEM_CAPTURES_PATH_NOT_TEXT,
+            "the attested capture ledger path is %r, not a path"
+            % (stated,)))
+    elif (os.path.isabs(stated) or stated.startswith("~") or
+            ".." in stated.replace("\\", "/").split("/")):
+        problems.append(Problem(
+            PROBLEM_CAPTURES_PATH_UNSAFE,
+            "the attested capture ledger path %r is absolute or walks "
+            "upwards; it is stored relative to the repository"
+            % stated))
+    digest = attestation["sha256"]
+    if not isinstance(digest, str) or not SHA256_RE.match(digest):
+        problems.append(Problem(
+            PROBLEM_CAPTURES_DIGEST,
+            "the attested capture ledger digest %r is not 64 lowercase "
+            "hex digits" % (digest,)))
+    rows = attestation["rows"]
+    if isinstance(rows, bool) or not isinstance(rows, int) or rows < 1:
+        problems.append(Problem(
+            PROBLEM_CAPTURES_ROWS,
+            "the attested capture-attestation count is %r; an "
+            "attestation exists only when the ledger does, so it holds "
+            "at least one row" % (rows,)))
+    verified = attestation["verified"]
+    if isinstance(verified, bool) or not isinstance(verified, int) \
+            or verified != document.get("frame_count"):
+        problems.append(Problem(
+            PROBLEM_CAPTURES_VERIFIED,
+            "the attestation says %r frame(s) were verified against the "
+            "ledger but the timeline paces %r; every frame a timeline "
+            "paces has its bytes checked, or the pacing rests on files "
+            "nothing attests"
+            % (verified, document.get("frame_count"))))
+    return problems
+
+
+def capture_attestation_problems(
+    document: Any,
+    root: Optional[str] = None,
+    frames_dir: Optional[str] = None,
+) -> List[str]:
+    """Check the capture attestation against the frames ON DISK.
+
+    THE ORDERED SET, BOUND.  A timeline is the single source of truth for
+    the film's pacing and its caption timings, and until now it named the
+    manifest it was computed from and said nothing whatever about the
+    PIXELS it paced.  A security review named the consequence: a
+    same-sized, non-blank replacement frame passed the entire chain.  So
+    this re-reads the attestation ledger, re-hashes every frame the
+    document paces, and reports any difference -- and because
+    assert_timeline_document() runs it, the transition composer, the
+    encoder and the caption generator all inherit the check rather than
+    each having to remember it.
+
+    An absent attestation is checked in the other direction too: a
+    document that attests none while a ledger exists on disk was computed
+    before the frames were sealed, and is not the document that paces
+    them.
+    """
+    if not isinstance(document, dict):
+        return ["the timeline is a %s, not an object"
+                % type(document).__name__]
+    shape = _document_capture_problems(document)
+    if shape:
+        return [problem.message for problem in shape]
+    attestation = document.get("captures")
+    canonical = (manifest.default_digests_path() if root is None
+                 else os.path.join(approved_root(root),
+                                   *manifest.DIGESTS_REL_PARTS))
+    if attestation is None:
+        try:
+            ledger = manifest._validated_digests_target(canonical, root)
+        except manifest.ManifestError as err:
+            return ["the capture attestation ledger cannot be located: "
+                    "%s" % err]
+        if os.path.isfile(ledger):
+            return ["%s exists but this timeline attests no capture "
+                    "ledger, so it was computed before the frames were "
+                    "sealed; recompute it rather than pacing frames "
+                    "whose bytes it never checked"
+                    % _attested_relpath(ledger, root)]
+        return []
+    stated = attestation["path"]
+    base = os.path.dirname(approved_root(root))
+    try:
+        resolved = manifest._validated_digests_target(
+            os.path.join(base, stated), root)
+    except manifest.ManifestError as err:
+        return ["the attested capture ledger %s cannot be read: %s"
+                % (stated, err)]
+    if not os.path.isfile(resolved):
+        return ["the timeline attests the capture ledger %s, which does "
+                "not exist: the digests its frames were verified "
+                "against cannot be read" % stated]
+    problems = []
+    try:
+        observed_digest = file_digest(resolved)
+        observed_rows = count_manifest_lines(resolved)
+    except TimelineError as err:
+        return [str(err)]
+    if observed_digest != attestation["sha256"]:
+        problems.append(
+            "the timeline attests capture ledger %s with sha256 %s, but "
+            "that file now hashes to %s: the digests its frames were "
+            "checked against are not the digests on disk"
+            % (stated, attestation["sha256"], observed_digest))
+    if observed_rows != attestation["rows"]:
+        problems.append(
+            "the timeline attests %d capture attestation(s) in %s, but "
+            "that file now holds %d"
+            % (attestation["rows"], stated, observed_rows))
+    if problems:
+        return problems
+    # And the frames themselves, re-hashed against that ledger.  The
+    # entries carry the frame indices, so the check is over exactly the
+    # set this document paces.
+    entries = document.get("frames")
+    if not isinstance(entries, list):
+        return problems
+    rows = [{"frame": entry.get("frame")} for entry in entries
+            if isinstance(entry, dict)]
+    try:
+        return manifest.verify_frame_digests(
+            rows, manifest.read_frame_digests(resolved, root),
+            frames_dir=frames_dir, root=root, require_all=True)
+    except manifest.ManifestError as err:
+        return ["the frames could not be verified against %s: %s"
+                % (stated, err)]
+
+
+def amendment_attestation_problems(
+    document: Any,
+    root: Optional[str] = None,
+) -> List[str]:
+    """Check the amendment attestation against the ledger ON DISK.
+
+    The counterpart of :func:`manifest_attestation_problems`, and it
+    matters for the same reason: the entries of this document may carry
+    narration an amendment supplied, so a reader has to be able to prove
+    WHICH ledger supplied it.  A document attesting a ledger that has
+    since grown, shrunk or changed is refused rather than trusted.
+
+    An absent attestation is checked in the other direction too: a
+    document that claims no ledger while entries are marked `amended` is
+    a contradiction, and a document that claims none while a ledger
+    exists on disk is a stale document -- the amendments were recorded
+    after it was computed, and its narration is therefore not the
+    published one.
+    """
+    if not isinstance(document, dict):
+        return ["the timeline is a %s, not an object"
+                % type(document).__name__]
+    shape = _document_amendment_problems(document)
+    if shape:
+        return [problem.message for problem in shape]
+    frames = document.get("frames")
+    marked = sum(1 for entry in frames
+                 if isinstance(entry, dict) and entry.get("amended")) \
+        if isinstance(frames, list) else 0
+    attestation = document.get("amendments")
+    if attestation is None:
+        problems = []
+        if marked:
+            problems.append(
+                "%d entr(ies) are marked as amended but the timeline "
+                "attests no amendment ledger, so nothing says where "
+                "that narration came from" % marked)
+        try:
+            ledger = manifest._validated_amendments_target(
+                manifest.default_amendments_path()
+                if root is None
+                else os.path.join(approved_root(root),
+                                  manifest.AMENDMENTS_NAME), root)
+        except manifest.ManifestError as err:
+            return problems + [
+                "the amendment ledger cannot be located: %s" % err]
+        if os.path.isfile(ledger):
+            problems.append(
+                "%s exists but this timeline attests no ledger, so it "
+                "was computed before the corrections were recorded; "
+                "recompute it rather than publishing narration the "
+                "ledger has superseded"
+                % _attested_relpath(ledger, root))
+        return problems
+    stated = attestation["path"]
+    base = os.path.dirname(approved_root(root))
+    try:
+        resolved = manifest._validated_amendments_target(
+            os.path.join(base, stated), root)
+    except manifest.ManifestError as err:
+        return ["the attested amendment ledger %s cannot be read: %s"
+                % (stated, err)]
+    if not os.path.isfile(resolved):
+        return ["the timeline attests the amendment ledger %s, which "
+                "does not exist: the corrections its narration rests "
+                "on cannot be read" % stated]
+    problems = []
+    try:
+        observed_digest = file_digest(resolved)
+        observed_rows = count_manifest_lines(resolved)
+    except TimelineError as err:
+        return [str(err)]
+    if observed_digest != attestation["sha256"]:
+        problems.append(
+            "the timeline attests amendment ledger %s with sha256 %s, "
+            "but that file now hashes to %s.  The corrections it "
+            "applied are not the corrections on disk: recompute it"
+            % (stated, attestation["sha256"], observed_digest))
+    if observed_rows != attestation["rows"]:
+        problems.append(
+            "the timeline attests %d amendment(s) in %s, but that file "
+            "now holds %d"
+            % (attestation["rows"], stated, observed_rows))
+    if marked and not attestation["applied"]:
+        problems.append(
+            "%d entr(ies) are marked as amended but the attestation "
+            "says none was applied" % marked)
+    return problems
+
+
 def manifest_attestation_problems(
     document: Any,
     root: Optional[str] = None,
@@ -3348,6 +3960,8 @@ def assert_timeline_document(
             "paced" % (label, type(document).__name__))
     problems = validate_timeline(document, allow_index_gaps)
     problems.extend(manifest_attestation_problems(document, root))
+    problems.extend(amendment_attestation_problems(document, root))
+    problems.extend(capture_attestation_problems(document, root))
     if problems:
         raise TimelineError(
             "refusing to use a %s that fails its own checks: %s"
@@ -3673,6 +4287,7 @@ def read_timeline(
 def manifest_row_problems(
     rows: Sequence[Any],
     allow_index_gaps: bool = False,
+    narration: bool = True,
 ) -> List[str]:
     """Report rows that are not a complete manifest row.  Pure.
 
@@ -3699,8 +4314,15 @@ def manifest_row_problems(
     shape -- LF endings, one trailing newline -- and is run by
     verify_artifacts.sh; reproducing that here would report every
     schema defect twice and read the file a second time to do it.
+
+    `narration` is manifest.row_field_problems()' own argument, passed
+    straight through.  _load_rows() gates the RECORDED rows with it
+    false and _resolved_rows() applies the full gate to the rows the
+    amendment ledger resolves, because a recorded narration is not
+    editable and the sentence that reaches the transcript and the
+    caption track is the resolved one.
     """
-    return manifest.row_problems(rows, allow_index_gaps)
+    return manifest.row_problems(rows, allow_index_gaps, narration)
 
 
 # ---------------------------------------------------------------------
@@ -3753,6 +4375,18 @@ def build_parser() -> argparse.ArgumentParser:
               "is cross-checked against; defaults to "
               "PLAYTHROUGH_OBSERVATIONS or "
               "<repository>/playthrough/build/observations.jsonl"))
+    parser.add_argument(
+        "--frames-dir", default=None, metavar="DIR",
+        help=("the captures to verify against the attestation ledger "
+              "before they are timed; defaults to "
+              "PLAYTHROUGH_FRAMES_DIR or "
+              "<repository>/playthrough/frames"))
+    parser.add_argument(
+        "--allow-unattested-frames", action="store_true",
+        help=("pace a session whose frames have no capture-time digest "
+              "-- one recorded before the attestation ledger existed.  "
+              "A DIAGNOSTIC override that announces itself, and it "
+              "never suppresses a digest MISMATCH: only an absence"))
     parser.add_argument(
         "--require-date", action="store_true",
         help=("fail rather than pace the film from the clock alone: "
@@ -3831,6 +4465,21 @@ def _load_rows(
     make_srt.py, which read it as the single source of truth and never
     see the warning.
 
+    WHAT THIS GATE DOES NOT DECIDE IS THE NARRATION, and the split is
+    deliberate.  The structural half -- the six fields in order, the
+    index inside its range, the `file` that index formats to, the
+    canonical real_ts, the clock that is a reading or null -- describes
+    the capture, cannot be amended by anything, and is refused here on
+    the recorded rows.  The voice gate and the placeholder sentinels
+    describe the two AMENDABLE narrations, and refusing the record for
+    one of those would leave a recorded session with no honest way
+    forward: a captured row is never edited, so the only remedy is an
+    amendment, and the sentence that actually reaches the transcript and
+    the caption track is the resolved one.  So `narration=False` here,
+    and _resolved_rows() applies the full gate -- the same function, the
+    same words -- to what manifest.resolve_rows() returns.  Nothing is
+    skipped; it is checked one step later, on the text a reader sees.
+
     The two overrides exist ONLY as diagnostics and neither is ever
     implicit.  --ignore-manifest-problems and --allow-index-gaps each
     report every problem they pass over AND announce themselves by name
@@ -3846,7 +4495,7 @@ def _load_rows(
             "Pass --allow-empty if an empty timeline really is what "
             "is wanted")
     problems = manifest_row_problems(
-        rows, allow_index_gaps=args.allow_index_gaps)
+        rows, allow_index_gaps=args.allow_index_gaps, narration=False)
     if problems:
         _report(problems)
         if not args.ignore_manifest_problems:
@@ -3951,10 +4600,185 @@ def _audit_evidence(
     record that observed nothing is reported as no record.
     """
     lines = date_lines_for_rows(
-        rows, audit_path=args.date_audit, root=root)
+        rows, audit_path=args.date_audit, root=root,
+        digests=_attested_frames(root))
     if any(line is not None for line in lines):
         return lines
     return None
+
+
+def _attested_frames(root: Optional[str] = None) -> Dict[int, Any]:
+    """Return the capture attestations, for binding the date audit.
+
+    Read-only and non-fatal: an unreadable or absent ledger yields an
+    empty mapping, which leaves every audit row UNBOUND rather than
+    discarded.  The ledger's own enforcement lives in
+    :func:`_verified_captures`, which refuses the run; this is the
+    corroborating half and must not raise a second, later error about the
+    same file.
+    """
+    path = (manifest.default_digests_path() if root is None
+            else os.path.join(approved_root(root),
+                              *manifest.DIGESTS_REL_PARTS))
+    try:
+        return manifest.attested_digests(
+            manifest.read_frame_digests(path, root))
+    except manifest.ManifestError:
+        return {}
+
+
+def _verified_captures(
+    rows: List[Dict[str, Any]],
+    args: argparse.Namespace,
+    root: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Verify every recorded frame's bytes and attest the ledger.
+
+    THE CHECK THAT MUST HAPPEN BEFORE THE TIMING, not after it.  A
+    duration is derived from a clock READ OFF A FRAME, so a timeline
+    computed over frames whose bytes nothing attests is a claim about
+    files rather than about a session.  Returns the attestation to travel
+    in the document, or None when no ledger exists.
+
+    A ledger that exists is authoritative: a frame missing from it, or a
+    frame whose bytes have moved, stops the run.  --allow-unattested-
+    frames exists for the one honest case -- a session captured before
+    the ledger did -- announces itself, and never suppresses a MISMATCH,
+    only an absence.
+    """
+    path = (manifest.default_digests_path() if root is None
+            else os.path.join(approved_root(root),
+                              *manifest.DIGESTS_REL_PARTS))
+    try:
+        ledger = manifest.read_frame_digests(path, root)
+    except manifest.ManifestError as err:
+        raise TimelineError(
+            "the capture attestation ledger could not be read: %s.  A "
+            "film is not paced from frames whose digests are "
+            "unreadable" % err) from err
+    if not ledger:
+        if not rows:
+            # NOTHING WAS CAPTURED, so an absent ledger is not a gap in
+            # the evidence -- it is the accurate state of a record with
+            # no rows in it.  (A ledger that DOES exist beside an empty
+            # record is a real inconsistency, and falls through to
+            # verify_frame_digests() below, which reports every
+            # attestation the record does not carry.)
+            return None
+        if not args.allow_unattested_frames:
+            raise TimelineError(
+                "no capture attestation ledger at %s, so nothing "
+                "establishes that the frames on disk are the frames "
+                "that were captured.  Pass "
+                "--allow-unattested-frames to pace a session recorded "
+                "before the ledger existed; it is a DIAGNOSTIC "
+                "override and says so on stderr"
+                % manifest.relative_to_repo(path))
+        _warn(
+            "--allow-unattested-frames was given and there is no "
+            "capture attestation ledger, so the frames this timeline "
+            "paces are not proven to be the frames that were captured")
+        return None
+    problems = manifest.verify_frame_digests(
+        rows, ledger, frames_dir=args.frames_dir, root=root,
+        require_all=not args.allow_unattested_frames)
+    if problems:
+        _report(problems)
+        raise TimelineError(
+            "%d problem(s) verifying the captures against %s; refusing "
+            "to pace a film from frames whose bytes are not the bytes "
+            "that were captured"
+            % (len(problems), manifest.relative_to_repo(path)))
+    return attest_captures(path, root, verified=len(rows))
+
+
+def _resolved_rows(
+    rows: List[Dict[str, Any]],
+    args: argparse.Namespace,
+    root: Optional[str] = None,
+) -> Tuple[List[Dict[str, Any]], Optional[Dict[str, Any]],
+           Tuple[int, ...]]:
+    """Apply the amendment ledger to the rows a derivative will use.
+
+    THE ONE PLACE THE LEDGER IS READ, so generation and verification
+    cannot differ about which narration the film and the captions carry.
+    Returns the resolved rows, the attestation to travel in the document,
+    and the frames an amendment reached.
+
+    The record itself is untouched -- manifest.resolve_rows() works on a
+    copy -- and it FAILS CLOSED: a digest that has moved, a quoted value
+    that no longer matches or a frame the rows do not carry raises rather
+    than being skipped, because a derivative computed past a broken
+    binding would look correct and mean nothing.  With no ledger the rows
+    pass through unchanged and the attestation is None.
+    """
+    path = (manifest.default_amendments_path() if root is None
+            else os.path.join(approved_root(root),
+                              manifest.AMENDMENTS_NAME))
+    try:
+        ledger = manifest.read_amendments(path, root)
+    except manifest.ManifestError as err:
+        raise TimelineError(
+            "the amendment ledger could not be read: %s.  A derivative "
+            "is not computed while the corrections it must apply are "
+            "unreadable" % err) from err
+    if not ledger:
+        _assert_resolved_narration(rows, args)
+        return rows, None, ()
+    problems = manifest.verify_amendments(path, args.manifest, root=root)
+    if problems:
+        _report(problems)
+        raise TimelineError(
+            "%d problem(s) in the amendment ledger; refusing to pace a "
+            "film or caption it from corrections that do not bind to "
+            "the record" % len(problems))
+    try:
+        resolved, amended = manifest.resolve_rows(rows, ledger)
+    except manifest.ManifestError as err:
+        raise TimelineError(
+            "the amendment ledger does not apply to this record: %s"
+            % err) from err
+    _assert_resolved_narration(resolved, args)
+    attestation = attest_amendments(path, root, applied=len(ledger))
+    return resolved, attestation, amended
+
+
+def _assert_resolved_narration(
+    rows: Sequence[Any],
+    args: argparse.Namespace,
+) -> None:
+    """Refuse narration the transcript and the captions may not carry.
+
+    THE OTHER HALF OF _load_rows()' GATE, applied where it can honestly
+    be applied: to the rows an amendment has already reached.  A recorded
+    narration is evidence and is never edited, so a meta word or a
+    placeholder sentinel in one is corrected by
+    playthrough/amendments.jsonl -- but the corrected sentence is what
+    goes verbatim into playthrough/transcript.md and onto the film, so it
+    is held to the same gate, in the same words, from the same function.
+    An uncorrected one is refused here exactly as it used to be refused
+    on the recorded rows.
+
+    manifest.verify_amendments() already applies this to the resolved
+    rows when a ledger exists, so in practice this is what catches a
+    session with NO ledger and a defended second reading for one with.
+    """
+    problems = manifest_row_problems(
+        rows, allow_index_gaps=True, narration=True)
+    if not problems:
+        return
+    _report(problems)
+    if not args.ignore_manifest_problems:
+        raise TimelineError(
+            "%d problem(s) in the narration the transcript and the "
+            "caption track would carry; refusing to pace a film from "
+            "it.  A recorded row is not edited: record the correction "
+            "in playthrough/amendments.jsonl, where it is bound to the "
+            "row's own digest, and regenerate" % len(problems))
+    _warn(
+        "--ignore-manifest-problems was given, so this timeline carries "
+        "%d reported narration problem(s).  It is a DIAGNOSTIC artifact"
+        % len(problems))
 
 
 def _verify(
@@ -3989,9 +4813,13 @@ def _verify(
     rows = _load_rows(args, root)
     observations = load_observations(
         args.observations, required=args.require_date, root=root)
+    dates = _audit_evidence(args, rows, root)
+    resolved, amendments, amended = _resolved_rows(rows, args, root)
+    captures = _verified_captures(rows, args, root)
     fresh = build_timeline(
-        rows, observations, _audit_evidence(args, rows, root),
-        attest_manifest(args.manifest, root))
+        resolved, observations, dates,
+        attest_manifest(args.manifest, root), amendments, amended,
+        captures)
     destination = args.output or default_timeline_path()
     path = _validated_timeline_target(destination, root)
     stored = read_timeline(path, root)
@@ -4002,6 +4830,11 @@ def _verify(
     # the two computations matching.
     if not problems:
         problems.extend(manifest_attestation_problems(stored, root))
+    if not problems:
+        problems.extend(amendment_attestation_problems(stored, root))
+    if not problems:
+        problems.extend(capture_attestation_problems(
+            stored, root, args.frames_dir))
     if not problems:
         problems.extend(
             _drift_problems(stored, fresh, path, args.manifest))
@@ -4084,11 +4917,23 @@ def main(
         rows = _load_rows(args, root)
         observations = load_observations(
             args.observations, required=args.require_date, root=root)
+        dates = _audit_evidence(args, rows, root)
+        # THE CORRECTIONS ARE APPLIED BEFORE THE ARITHMETIC, to a copy of
+        # the rows, so that a correction to prose can never move a
+        # duration -- and the document then attests which ledger supplied
+        # them.
+        resolved, amendments, amended = _resolved_rows(rows, args, root)
+        # AND THE FRAMES ARE VERIFIED BEFORE THEY ARE TIMED.
+        captures = _verified_captures(rows, args, root)
         document = build_timeline(
-            rows, observations, _audit_evidence(args, rows, root),
-            attest_manifest(args.manifest, root))
+            resolved, observations, dates,
+            attest_manifest(args.manifest, root), amendments, amended,
+            captures)
         problems = validate_timeline(document, args.allow_index_gaps)
         problems.extend(manifest_attestation_problems(document, root))
+        problems.extend(amendment_attestation_problems(document, root))
+        problems.extend(capture_attestation_problems(
+            document, root, args.frames_dir))
         if args.require_date:
             problems.extend(_date_evidence_problems(document))
         if problems:

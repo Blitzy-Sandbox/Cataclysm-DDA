@@ -3130,8 +3130,35 @@ def read_date_line(
 # test_timeline.py against a sidecar this writer produced.
 # ---------------------------------------------------------------------
 
+# frame_sha256 is LAST on purpose: the six fields before it are the
+# original contract and their order is unchanged, so a row written before
+# this field existed and a row written after it line up column for column
+# in a diff of the committed sidecar.
 DATE_AUDIT_FIELDS = ("frame", "file", "clock", "phrase", "date",
-                     "agreement")
+                     "agreement", "frame_sha256")
+
+# WHERE THAT SIDECAR LIVES, RELATIVE TO THE APPROVED ROOT, and why the
+# location is a constant rather than a parameter.
+#
+# A security review reproduced this exactly: `--audit` accepted ANY
+# regular file under playthrough/, and appending an audit-shaped line to
+# a chosen one succeeded.  The containment check below was doing its job
+# -- the target was inside the tree, and no component was a symlink --
+# but containment is the wrong question for an append.  Every artifact of
+# this pipeline is inside that tree, so "inside the tree" includes the
+# manifest, the transcripts, a save file, a PNG and both MP4s.
+#
+# So the destination is now pinned to one relative name.  A caller may
+# still relocate the whole TREE (see approved_artifact_root's `root`
+# argument, which is a call-site seam for a test that owns a temporary
+# directory), and inside whatever tree that is, the sidecar has exactly
+# one place it can be.  The command line cannot even relocate the tree.
+DATE_AUDIT_REL_PARTS = ("build", "frame_dates.jsonl")
+
+# A capture digest, pinned as a SHAPE so that a truncated, upper-cased or
+# decorated reading is refused rather than written into the sidecar as
+# though it bound anything.
+AUDIT_SHA256_RE = re.compile(r"\A[0-9a-f]{64}\Z")
 
 # The frame index bounds manifest.py enforces, restated rather than
 # imported for the same reason the clock vocabulary is: this module's
@@ -3183,6 +3210,24 @@ def approved_artifact_root(root: Optional[str] = None) -> str:
     return resolved
 
 
+def canonical_audit_path(root: Optional[str] = None) -> str:
+    """Return the ONE path the date audit may be appended to.
+
+    Derived from :func:`approved_artifact_root` and
+    :data:`DATE_AUDIT_REL_PARTS`, so no environment variable and no
+    argument participates.  ``root`` is the same call-site-only seam
+    approved_artifact_root documents: a test relocates the whole tree,
+    and the sidecar's place inside it does not move.
+
+    env.sh exports the same value as ``$PLAYTHROUGH_DATE_AUDIT`` for the
+    shell half of the pipeline; it is not READ here, because a variable
+    that could move the destination is exactly what this function exists
+    to remove.
+    """
+    return os.path.join(approved_artifact_root(root),
+                        *DATE_AUDIT_REL_PARTS)
+
+
 def _validated_audit_path(path: object,
                           root: Optional[str] = None) -> str:
     """Return an absolute audit path that is safe to append to.
@@ -3214,6 +3259,18 @@ def _validated_audit_path(path: object,
     if "\x00" in path:
         raise AuditError("the audit path must not contain a NUL byte")
     resolved = os.path.abspath(path)
+    # THE EXACT DESTINATION, not merely a contained one.  See
+    # DATE_AUDIT_REL_PARTS: containment is satisfied by every artifact in
+    # the tree, so it cannot be what decides where an APPEND lands.
+    expected = canonical_audit_path(root)
+    if resolved != expected:
+        raise AuditError(
+            "the date audit is appended to %s and to nothing else, but "
+            "%s was given.  Every artifact of this pipeline lives inside "
+            "the same tree, so a contained path is not a safe one: a "
+            "line of audit-shaped JSON appended to the manifest, a "
+            "transcript, a save or a frame would be growing evidence "
+            "nobody wrote" % (expected, resolved))
     if os.path.isdir(resolved):
         raise AuditError(
             "the audit path names a directory, not a file: %s"
@@ -3264,12 +3321,23 @@ def _audit_scalar(value: Optional[str]) -> Optional[str]:
 
 
 def date_audit_record(frame: int,
-                      reading: SidebarReading) -> Dict[str, object]:
+                      reading: SidebarReading,
+                      frame_sha256: Optional[str] = None
+                      ) -> Dict[str, object]:
     """Build the audit record for one frame's reading.
 
     Pure: it touches no file, so a caller can inspect exactly what
     would be written.  The frame index is the caller's -- session.py
     owns the counter and this module never generates one.
+
+    `frame_sha256` BINDS the reading to the pixels it was taken from.
+    capture.sh hashes the PNG the instant it is published and passes that
+    digest here, so a consumer can tell a reading of THIS frame from a
+    reading of whatever file later occupied the same index -- a
+    withdrawn capture, or a re-photographed step.  It is optional
+    because a row written before the attestation ledger existed
+    genuinely has none, and ``null`` is the honest way to say so rather
+    than a digest measured now and presented as one taken then.
     """
     index = _validated_audit_frame(frame)
     return {
@@ -3279,12 +3347,41 @@ def date_audit_record(frame: int,
         "phrase": _audit_scalar(reading.phrase),
         "date": _audit_scalar(reading.date),
         "agreement": bool(reading.agreement),
+        "frame_sha256": _validated_audit_digest(frame_sha256),
     }
+
+
+def _validated_audit_digest(value: object) -> Optional[str]:
+    """Return a sha256 in canonical form, or None.  Never a guess.
+
+    A malformed digest is REFUSED rather than dropped to null: it would
+    otherwise be indistinguishable from a row that honestly had none,
+    and the difference between "not bound" and "bound to something
+    unreadable" is exactly what a reader needs.
+    """
+    if value is None:
+        return None
+    if isinstance(value, os.PathLike):
+        value = os.fspath(value)
+    if not isinstance(value, str):
+        raise AuditError(
+            "the capture digest must be a string, got %s"
+            % type(value).__name__)
+    text = value.strip()
+    if not text:
+        return None
+    if not AUDIT_SHA256_RE.match(text):
+        raise AuditError(
+            "the capture digest %r is not 64 lowercase hex digits; a "
+            "reading bound to an unreadable digest is worse than one "
+            "that says plainly it is unbound" % (value,))
+    return text
 
 
 def append_date_audit(path: str, frame: int,
                       reading: SidebarReading,
-                      root: Optional[str] = None
+                      root: Optional[str] = None,
+                      frame_sha256: Optional[str] = None
                       ) -> Dict[str, object]:
     """Append one frame's date evidence to the sidecar.
 
@@ -3293,15 +3390,15 @@ def append_date_audit(path: str, frame: int,
     rewritten nor reported as stored until it is.  A repeated frame
     index is NOT an error here -- a recapture legitimately produces a
     second record for the same frame -- and resolving that is the
-    consumer's job, which takes the last record for an index and warns
-    when two disagree.
+    consumer's job, which requires the readings for a frame to AGREE and
+    treats the date as unobserved when they do not.
 
     :returns: the record exactly as written.
     :raises AuditError: for a bad path, a bad index, or a write this
         module could not complete.
     """
     resolved = _validated_audit_path(path, root)
-    record = date_audit_record(frame, reading)
+    record = date_audit_record(frame, reading, frame_sha256)
     line = json.dumps(record, ensure_ascii=False) + "\n"
     # O_NOFOLLOW as well as the check above: the check reads the path
     # and the open acts on it, and a link planted between the two
@@ -3458,14 +3555,26 @@ def build_parser() -> argparse.ArgumentParser:
               "needs all three; parse with IFS='=' read, never eval"))
     parser.add_argument(
         "--audit", metavar="PATH",
-        help=("append this frame's date evidence to an append-only "
-              "JSONL sidecar (the pipeline passes "
-              "$%s); requires --audit-frame" % ENV_DATE_AUDIT))
+        help=("append this frame's date evidence to the append-only "
+              "JSONL sidecar at build/frame_dates.jsonl (the pipeline "
+              "passes $%s, which is that path); requires --audit-frame. "
+              "NO OTHER DESTINATION IS ACCEPTED: every artifact of this "
+              "pipeline is inside the same tree, so a merely contained "
+              "path could append audit-shaped JSON to the manifest, a "
+              "transcript, a save or a frame" % ENV_DATE_AUDIT))
     parser.add_argument(
         "--audit-frame", type=int, metavar="N",
         help=("the frame index to record in the audit sidecar; "
               "session.py owns this counter, so it is never derived "
               "from the file name"))
+    parser.add_argument(
+        "--audit-sha256", metavar="HEX",
+        help=("the sha256 capture.sh took of this frame the instant it "
+              "was published, recorded in the audit row so the reading "
+              "is bound to the pixels it came from rather than to "
+              "whatever file later occupies that index.  Omitted only "
+              "for a frame that predates the attestation ledger, where "
+              "the row says plainly that it is unbound"))
     parser.add_argument(
         "--cross-check", action="store_true",
         help=("run every pass even after one succeeds and report the "
@@ -3581,6 +3690,41 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.audit_frame is not None and not args.audit:
         parser.error(
             "--audit-frame is only meaningful with --audit PATH")
+    if args.audit_sha256 is not None and not args.audit:
+        parser.error(
+            "--audit-sha256 is only meaningful with --audit PATH")
+    if args.audit_sha256 is not None and \
+            not AUDIT_SHA256_RE.match(args.audit_sha256.strip()):
+        parser.error(
+            "--audit-sha256 %r is not 64 lowercase hex digits; a "
+            "reading bound to an unreadable digest is worse than one "
+            "that says plainly it is unbound" % args.audit_sha256)
+    # AND THE DESTINATION IS THE CANONICAL SIDECAR OR NOTHING.
+    #
+    # A security review reproduced the alternative: `--audit
+    # playthrough/manifest.jsonl` appended an audit-shaped line to the
+    # record itself and exited reporting success.  The containment check
+    # inside the writer was satisfied -- the manifest is inside the tree
+    # -- which is precisely why containment cannot be the rule for an
+    # append: every artifact this pipeline produces is inside that tree.
+    #
+    # Relocating the tree stays available to a CALL SITE (see
+    # approved_artifact_root's `root` argument, which is how a test holds
+    # this writer to a directory it owns).  It is deliberately NOT
+    # available here: argparse never produces a root, and the one thing
+    # the command line may do is name the sidecar it already knows.
+    if args.audit:
+        try:
+            expected = canonical_audit_path()
+        except OcrClockError as exc:
+            parser.error(str(exc))
+        if os.path.abspath(args.audit) != expected:
+            parser.error(
+                "--audit accepts only %s, the sidecar timeline.py reads. "
+                "%r is somewhere else, and a date record written "
+                "somewhere else is either evidence nothing consults or a "
+                "line of JSON appended to another artifact"
+                % (expected, args.audit))
     if args.json and args.kv:
         parser.error(
             "--json and --kv are two different output shapes; ask for "
@@ -3613,7 +3757,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     # lost.
     if args.audit:
         try:
-            append_date_audit(args.audit, args.audit_frame, reading)
+            append_date_audit(args.audit, args.audit_frame, reading,
+                              frame_sha256=args.audit_sha256)
         except OcrClockError as exc:
             LOG.error("%s", exc)
             return EXIT_FAULT

@@ -70,6 +70,7 @@ written: the reject directory is redirected into it, and the only path
 inside the sandbox checkout a capture writes is its own frame.
 """
 
+import hashlib
 import json
 import os
 import shutil
@@ -218,14 +219,20 @@ PAYLOAD_KEYS = (
     "CAPTURE_MODE",
     "FRAME_INDEX", "FRAME_NAME", "FRAME_FILE", "FRAME_PATH",
     "DIAGNOSTIC_PATH",
-    "FRAME_BYTES", "FRAME_FORMAT", "FRAME_GEOMETRY", "REAL_TS",
+    # FRAME_SHA256 is the digest of the published PNG, taken the instant
+    # the atomic rename made it visible and before anything reads it.  It
+    # sits beside FRAME_BYTES because the two are one measurement of the
+    # same file, and it is EMPTY in diagnostic mode -- a look is not a
+    # capture and there is nothing to attest.
+    "FRAME_BYTES", "FRAME_SHA256", "FRAME_FORMAT", "FRAME_GEOMETRY",
+    "REAL_TS",
     "CAPTURE_TOOL", "LUMA_MEAN", "LUMA_STDDEV", "CLOCK_RECT",
     "CLOCK_RECT_FROM", "CLOCK_SOURCE", "CLOCK_STATUS", "CLOCK",
     "TIME_PHRASE", "CLOCK_DATE", "DATE", "DATE_STATUS", "DATE_AUDIT",
     "OBSERVATIONS",
 )
 
-# The fifteen fields the telemetry row must carry, each mapped to the
+# The sixteen fields the telemetry row must carry, each mapped to the
 # payload key that DELIVERS it.
 #
 # capture.sh no longer appends that row: it reports every field and
@@ -237,6 +244,7 @@ PAYLOAD_KEYS = (
 OBSERVATION_FIELDS = {
     "frame": "FRAME_INDEX",
     "file": "FRAME_FILE",
+    "frame_sha256": "FRAME_SHA256",
     "real_ts": "REAL_TS",
     "ingame_clock": "CLOCK",
     "clock_status": "CLOCK_STATUS",
@@ -271,6 +279,12 @@ REAL_TOOLS = (
     # it is renamed into place, so an interrupted grab can never leave a
     # half-written PNG at a frame path.  Also coreutils.
     "mktemp",
+    # sha256sum takes the capture's digest the instant the atomic rename
+    # publishes it, which is the one measurement that establishes the
+    # PNG on disk holds the pixels that were photographed.  A capture
+    # whose digest cannot be taken is withdrawn, so this tool is a hard
+    # prerequisite and not an enhancement.  Also coreutils.
+    "sha256sum",
 )
 
 
@@ -319,6 +333,13 @@ class CaptureFixture(unittest.TestCase):
         self.observations = os.path.join(
             self.build, "observations.jsonl")
         self.stub_log = os.path.join(self.root, "stub.log")
+        # A supported release for the platform gate to read, so the
+        # gate passes on its own terms rather than being waived.
+        self.os_release = os.path.join(self.root, "os-release")
+        with open(self.os_release, "w", encoding="utf-8") as handle:
+            handle.write('ID=ubuntu\n'
+                         'VERSION_ID="26.04"\n'
+                         'PRETTY_NAME="Ubuntu 26.04 LTS"\n')
         self.bin = os.path.join(self.root, "bin")
         os.makedirs(self.bin)
         self.link_real_tools()
@@ -549,6 +570,23 @@ class CaptureFixture(unittest.TestCase):
 
     # -- running it --------------------------------------------------
 
+    def supported_os_release(self):
+        """Write, and name, an os-release the support table accepts.
+
+        Ubuntu 24.04 LTS -- a real release, genuinely in support until
+        2029-04 by env.sh's own dated table -- so the platform check
+        passes because it PASSES, not because anything was relaxed.  The
+        file lives in the sandbox, and env.sh honours the nomination only
+        because this tree is not a git working tree.
+        """
+        path = os.path.join(self.root, "os-release")
+        if not os.path.isfile(path):
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write('ID=ubuntu\n'
+                             'VERSION_ID="24.04"\n'
+                             'PRETTY_NAME="Ubuntu 24.04.3 LTS"\n')
+        return path
+
     def run_capture(self, index="1", args=(), stderr_to=None,
                     **environment):
         """Run capture.sh in the sandbox and report the result.
@@ -561,20 +599,28 @@ class CaptureFixture(unittest.TestCase):
         env = {
             "PATH": self.bin,
             "PLAYTHROUGH_STUB_LOG": self.stub_log,
-            # THE PLATFORM GATE IS SATISFIED, NOT SWITCHED OFF.
-            # playthrough_check_platform REFUSES an out-of-support or
-            # untabulated release by default, and the host this suite
-            # runs on may well be one -- so without a waiver every test
-            # here would exercise the prerequisite refusal and assert
-            # nothing about the subject.  The waiver takes a REASON,
-            # which is what makes declaring it in a fixture honest: it
-            # says why, in the same words a run on this host would.  It
-            # is not a trust bypass, so the enforced production path is
-            # unaffected, and the gate itself has its own tests in
-            # test_env.py.
-            "PLAYTHROUGH_ALLOW_EOL_PLATFORM":
-                "test fixture; the platform gate has its own coverage "
-                "in test_env.py",
+            # THE PLATFORM GATE IS SATISFIED, NOT WAIVED -- AND THE
+            # DIFFERENCE IS THE WHOLE POINT.  This fixture used to set
+            # PLAYTHROUGH_ALLOW_EOL_PLATFORM with a reason, on the
+            # grounds that the waiver was not a trust bypass.  A
+            # security review was right that it had to become one: an
+            # end-of-life release means the ImageMagick, ffmpeg and
+            # Xorg/Xvfb packages that photograph, decode and encode
+            # every frame receive no further security fixes, and
+            # recording that in a summary does not stop the next command
+            # from producing evidence under it.  It is registered now,
+            # so it forces the diagnostic state and this suite's own
+            # subject would refuse.
+            #
+            # So the sandbox NOMINATES its platform facts instead, which
+            # relaxes nothing: playthrough_check_platform runs in full
+            # against the nominated file and still refuses an
+            # out-of-support or untabulated release.  env.sh honours a
+            # nomination ONLY in a tree git does not track -- a verified
+            # property, not a declared one -- and this sandbox is such a
+            # tree, while a real checkout is not.  The gate and the
+            # nomination both have their own coverage in test_env.py.
+            "PLAYTHROUGH_OS_RELEASE": self.supported_os_release(),
             "PLAYTHROUGH_PYTHON": self.python_stub,
             "PLAYTHROUGH_CAPTURE_REJECT_DIR": self.reject,
             # THE TELEMETRY DESTINATION IS NOT NOMINATED HERE.  There is
@@ -776,7 +822,7 @@ class TestTheHappyPath(CaptureFixture):
         self.assertEqual(status, EX_OK)
         for line in out.splitlines():
             with self.subTest(line=line):
-                self.assertRegex(line, r"^[A-Z_]+=")
+                self.assertRegex(line, r"^[A-Z][A-Z0-9_]*=")
 
     def test_the_reading_and_its_evidence_reach_the_payload(self):
         payload, _ = self.capture(
@@ -1118,6 +1164,124 @@ class TestThePrerequisites(CaptureFixture):
         os.unlink(os.path.join(self.bin, "convert"))
         _, _, err = self.run_capture("1")
         self.assertIn("imagemagick", err)
+
+    def test_a_missing_sha256sum_is_a_prerequisite_failure(self):
+        """No digest, no capture -- checked before anything is grabbed.
+
+        A frame whose bytes cannot be attested is a frame nobody can
+        establish as the one that was photographed, so the tool that
+        measures it is a prerequisite exactly like the one that grabs it.
+        """
+        os.unlink(os.path.join(self.bin, "sha256sum"))
+        status, _, err = self.run_capture("1")
+        self.assertEqual(status, EX_PREREQ)
+        self.assertIn("sha256sum", err)
+        self.assertIn("coreutils", err)
+        self.assertEqual(self.frame_files(), [])
+
+
+class TestTheCaptureDigest(CaptureFixture):
+    """The bytes that were published, measured where they were published.
+
+    THE DEFECT THIS CLASS EXISTS FOR.  A security review observed that
+    capture.sh measured a frame's geometry, its format, its byte length
+    and its luminance and never once its CONTENT -- so a same-sized,
+    non-blank, correctly-named replacement PNG passed every downstream
+    check into the film and into the commit.  The digest is taken between
+    the atomic rename that publishes the frame and the first read of it,
+    which is the only point at which the measurement can be said to be of
+    the captured bytes rather than of whatever is at that path later.
+    """
+
+    def digest_of(self, name="frame_00001.png"):
+        """The sha256 of one file in the sandbox frames directory."""
+        with open(os.path.join(self.frames, name), "rb") as handle:
+            return hashlib.sha256(handle.read()).hexdigest()
+
+    def test_the_payload_carries_the_digest_of_the_published_frame(self):
+        payload, _ = self.capture("1")
+        self.assertRegex(payload["FRAME_SHA256"], r"^[0-9a-f]{64}$")
+        self.assertEqual(
+            payload["FRAME_SHA256"], self.digest_of(),
+            msg=("the reported digest must be a measurement of the file "
+                 "on disk, not of the temporary the grab wrote"))
+
+    def test_the_digest_agrees_with_the_reported_byte_count(self):
+        payload, _ = self.capture("1")
+        path = os.path.join(self.frames, "frame_00001.png")
+        self.assertEqual(payload["FRAME_BYTES"],
+                         str(os.path.getsize(path)))
+
+    def test_two_captures_of_different_pixels_differ(self):
+        """A digest that did not depend on the pixels would prove nothing.
+
+        The stub capturer's payload is parameterised, so this compares
+        two genuinely different frames rather than two runs of the same
+        one.
+        """
+        first, _ = self.capture("1")
+        second, _ = self.capture(
+            "2", STUB_PNG="\\x89PNG a visibly different frame")
+        self.assertNotEqual(first["FRAME_SHA256"],
+                            second["FRAME_SHA256"])
+        self.assertEqual(second["FRAME_SHA256"],
+                         self.digest_of("frame_00002.png"))
+
+    def test_a_diagnostic_capture_attests_nothing(self):
+        """A look is not a capture, so there is nothing to seal.
+
+        The key is still present -- the payload contract is one fixed set
+        of keys in one fixed order -- and it is EMPTY, which is the
+        honest statement that no frame joined the record.
+        """
+        payload, _ = self.diagnostic("1")
+        self.assertIn("FRAME_SHA256", payload)
+        self.assertEqual(payload["FRAME_SHA256"], "")
+
+    def test_a_digest_that_cannot_be_taken_withdraws_the_frame(self):
+        """The capture FAILS rather than reporting an empty digest.
+
+        An unattested frame that reached the record would be
+        indistinguishable from an attested one to every count-based check
+        downstream, so the frame is removed and the run is refused.
+        """
+        self.write(
+            os.path.join(self.bin, "sha256sum"),
+            "#!/bin/sh\nexit 1\n", mode=0o755)
+        status, out, err = self.run_capture("1")
+        self.assertEqual(status, EX_CAPTURE)
+        self.assertIn("cannot hash", err)
+        self.assertIn("withdrawn rather than recorded", err)
+        self.assertEqual(
+            self.rejected(), ["frame_00001.png"],
+            msg=("the frame is kept for inspection, outside the "
+                 "directory the record is counted from"))
+        self.assertEqual(
+            self.frame_files(), [],
+            msg=("a frame whose bytes were never attested must not be "
+                 "left where session.py would count it"))
+        for line in out.splitlines():
+            self.assertFalse(
+                line.startswith("FRAME_SHA256="),
+                msg=("a withdrawn capture reports no digest at all; %r "
+                     "would be a claim about a frame that is gone"
+                     % line))
+
+    def test_a_digest_that_is_not_a_sha256_withdraws_the_frame(self):
+        """Malformed output is refused, not passed along.
+
+        A truncated or decorated reading would travel into the ledger and
+        fail verification later, at a point where the frame it described
+        can no longer be re-taken.
+        """
+        self.write(
+            os.path.join(self.bin, "sha256sum"),
+            "#!/bin/sh\nprintf 'not-a-digest  -\\n'\n", mode=0o755)
+        status, _, err = self.run_capture("1")
+        self.assertEqual(status, EX_CAPTURE)
+        self.assertIn("not 64 lowercase hex digits", err)
+        self.assertEqual(self.frame_files(), [])
+        self.assertEqual(self.rejected(), ["frame_00001.png"])
 
 
 class TestTheDisplayGate(CaptureFixture):
@@ -1533,24 +1697,42 @@ class TestTheClockRead(CaptureFixture):
         self.assertEqual(payload["CLOCK"], "")
 
     def test_the_inline_chain_has_no_date_extraction_and_says_so(self):
-        # The audit is asked for EXPLICITLY here, because this assertion
-        # is about the inline chain rather than about the mode: a
-        # diagnostic capture now defaults the audit off (a withdrawn
-        # frame owes no row), and "off" would say nothing about whether
-        # the fallback records a date when one is wanted.  "no" does.
+        """The fallback reads a clock and cannot read a date.
+
+        The inline chain is only reachable when the delegate's preflight
+        fails without that being fatal, which is diagnostic mode -- and a
+        diagnostic capture may no longer ask for an audit at all, so the
+        assertion here is about the READER's capability, stated
+        unconditionally, and about the mode's own DATE_AUDIT=off.
+        """
         payload, err = self.diagnostic(
             "1", STUB_PREFLIGHT_RC="2",
             PLAYTHROUGH_CAPTURE_STRICT_CLOCK=0,
-            PLAYTHROUGH_CAPTURE_AUDIT="on",
             STUB_TESSERACT=CLOCK)
         self.assertEqual(payload["DATE_STATUS"], "unavailable")
         self.assertEqual(
-            payload["DATE_AUDIT"], "no",
-            msg=("and the missing evidence is reported as missing: a "
-                 "frame with no date record must be reconciled, never "
-                 "read as a day that did not turn"))
+            payload["DATE_AUDIT"], "off",
+            msg=("a withdrawn frame owes no row, and off says that "
+                 "plainly rather than looking like a failed write"))
         self.assertIn("no date extraction", err)
-        self.assertIn("must reconcile", err)
+
+    def test_a_kept_frame_with_no_date_still_records_the_row(self):
+        """An honest null is a record, and is not the same as no record.
+
+        The delegate ran and read no date -- the survivor underground, or
+        a sidebar the OCR could not resolve -- so the row exists and its
+        date is null.  timeline.py then treats the frame's date as
+        UNKNOWN and reconciles rather than reading it as a day that did
+        not turn, which is what the null is there to say.
+        """
+        payload, _ = self.capture("1", STUB_DATE="", STUB_DATE_RC="1")
+        self.assertEqual(payload["DATE_STATUS"], "unreadable")
+        self.assertEqual(payload["DATE"], "")
+        self.assertEqual(
+            payload["DATE_AUDIT"], "yes",
+            msg=("the ROW was written -- what was looked at is recorded "
+                 "even when nothing was legible, which is not the same "
+                 "as no record at all"))
 
 
 class TestTheCropResolution(CaptureFixture):
@@ -1795,14 +1977,20 @@ class TestTheTelemetryHandoff(CaptureFixture):
                 for call in self.calls("python")),
             msg="the delegate was asked for the canonical destination")
 
-    def test_a_production_audit_elsewhere_is_refused(self):
-        """The one destination a capture still nominates is fixed.
+    def test_an_audit_elsewhere_is_refused_in_every_mode(self):
+        """THE DEFECT THIS TEST EXISTS FOR.
 
-        A frame's date evidence filed where timeline.py does not look is
-        evidence nothing consults, and its absence reads as
-        DATE_AUDIT=no rather than as an error -- so every count would
-        still tally while the rollover guard treated the frame's date as
-        unknown.  Nominating another path is a diagnostic action.
+        This check used to live in the production-only block, so "which
+        file does this append to" was a question only a production
+        capture had to answer -- and a security review reproduced the
+        consequence: a DIAGNOSTIC capture could append audit-shaped JSON
+        to any regular file under playthrough/ while its own photograph
+        was withdrawn, leaving a written line with nothing to account for
+        it.  The reproduction it published named the manifest.
+
+        Every artifact of this pipeline is inside that tree, so a merely
+        contained path is not a safe one.  There is now no mode in which
+        another destination is accepted.
         """
         elsewhere = os.path.join(self.build, "audit-elsewhere.jsonl")
         status, _, err = self.run_capture(
@@ -1810,18 +1998,42 @@ class TestTheTelemetryHandoff(CaptureFixture):
         self.assertEqual(status, EX_USAGE)
         self.assertIn("PLAYTHROUGH_CAPTURE_AUDIT_PATH", err)
         self.assertIn(self.audit, err)
-        self.assertIn("PLAYTHROUGH_CAPTURE_MODE=diagnostic", err)
+        self.assertIn("no other destination is accepted", err)
         self.assertFalse(
             os.path.exists(elsewhere),
             msg="the refusal precedes the display and every write")
         self.assertEqual(self.frame_files(), [])
-        payload, _ = self.diagnostic(
+        status, _, err = self.run_diagnostic(
             "1", PLAYTHROUGH_CAPTURE_AUDIT_PATH=elsewhere)
         self.assertEqual(
-            payload["DATE_AUDIT"], "yes",
-            msg=("a diagnostic capture may file it elsewhere, and its "
-                 "frame is withdrawn out of the working tree in "
-                 "exchange"))
+            status, EX_USAGE,
+            msg=("and the diagnostic mode is not the way past it: a "
+                 "capture that writes evidence while withdrawing its "
+                 "own frame is a contradiction in terms"))
+        self.assertIn("cannot be used with", err)
+        self.assertFalse(os.path.exists(elsewhere))
+        self.assertEqual(self.frame_files(), [])
+
+    def test_the_manifest_cannot_be_named_as_the_audit(self):
+        """The report's own reproduction, run as a test.
+
+            PLAYTHROUGH_CAPTURE_MODE=diagnostic \
+            PLAYTHROUGH_CAPTURE_AUDIT=on \
+            PLAYTHROUGH_CAPTURE_AUDIT_PATH=playthrough/manifest.jsonl \
+            FRAME_INDEX=99999 playthrough/tooling/capture.sh
+        """
+        victim = os.path.join(os.path.dirname(self.build),
+                              "manifest.jsonl")
+        self.write(victim, '{"frame": 1}\n')
+        status, _, err = self.run_diagnostic(
+            "99999", PLAYTHROUGH_CAPTURE_AUDIT="on",
+            PLAYTHROUGH_CAPTURE_AUDIT_PATH=victim)
+        self.assertEqual(status, EX_USAGE)
+        self.assertIn("cannot be used with", err)
+        with open(victim, encoding="utf-8") as handle:
+            self.assertEqual(
+                handle.read(), '{"frame": 1}\n',
+                msg="not one byte was appended to the record")
 
     def test_a_diagnostic_capture_leaves_no_row_in_the_audit(self):
         """Runtime QA finding: three rows for a frame that never existed.
@@ -1846,20 +2058,43 @@ class TestTheTelemetryHandoff(CaptureFixture):
         # is the whole point of looking at the screen this way.
         self.assertEqual(payload["DATE"], DATE_LINE)
 
-    def test_a_diagnostic_capture_may_still_ask_for_the_audit(self):
-        """The relaxation is a default, not a prohibition.
+    def test_a_diagnostic_capture_may_not_ask_for_the_audit(self):
+        """The prohibition replaced a default, and that is the fix.
 
-        An explicit PLAYTHROUGH_CAPTURE_AUDIT=on still records the row,
-        so a caller diagnosing the audit path itself keeps the one tool
-        that shows it working.
+        Defaulting the audit off was not enough: PLAYTHROUGH_CAPTURE_AUDIT
+        =on remained permitted in diagnostic mode, which is how a
+        withdrawn frame could still write a row into the sidecar
+        timeline.py reads.  Both overrides are refused now, and the
+        reading a caller wanted is in the payload either way.
         """
-        payload, _ = self.diagnostic(
-            "1", PLAYTHROUGH_CAPTURE_AUDIT="on",
-            STUB_DATE=DATE_LINE, STUB_DATE_RC="0")
-        self.assertEqual(payload["DATE_AUDIT"], "yes")
-        rows = self.audit_rows()
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["frame"], 1)
+        for override in ({"PLAYTHROUGH_CAPTURE_AUDIT": "on"},
+                         {"PLAYTHROUGH_CAPTURE_AUDIT": "off"},
+                         {"PLAYTHROUGH_CAPTURE_AUDIT_PATH":
+                          self.audit}):
+            with self.subTest(**override):
+                status, _, err = self.run_diagnostic("1", **override)
+                self.assertEqual(status, EX_USAGE)
+                self.assertIn("cannot be used with", err)
+                self.assertIn("withdrawn", err)
+                self.assertEqual(self.audit_rows(), [])
+                self.assertEqual(self.frame_files(), [])
+
+    def test_the_bound_digest_reaches_the_delegate(self):
+        """The audit row names the pixels the reading came from.
+
+        Without it a row keyed on frame 42 is a claim about "whatever
+        frame 42 is", so a withdrawn capture or a re-photographed index
+        leaves a reading of one screen describing another -- and the date
+        line is what a rollover of game time is reconciled against.
+        """
+        payload, _ = self.capture(
+            "1", STUB_DATE=DATE_LINE, STUB_DATE_RC="0")
+        self.assertRegex(payload["FRAME_SHA256"], r"^[0-9a-f]{64}$")
+        self.assertTrue(
+            any("--audit-sha256 %s" % payload["FRAME_SHA256"] in call
+                for call in self.calls("python")),
+            msg=("the delegate is given the digest capture.sh took at "
+                 "publication, not one measured later"))
 
     def test_a_production_capture_still_records_every_frame_s_date(self):
         """The default change is confined to the diagnostic mode.
@@ -1974,6 +2209,16 @@ class TestTheTrustState(CaptureFixture):
         "PLAYTHROUGH_ALLOW_TILESET_FALLBACK",
         "PLAYTHROUGH_ALLOW_VULNERABLE_PILLOW",
         "PLAYTHROUGH_ALLOW_ANY_COMPILER",
+        # ADDED BY A SECURITY REVIEW, and it was right.  The end-of-life
+        # platform waiver was deliberately kept out of this registry, on
+        # the argument that an unmaintained release makes no reading
+        # WRONG.  But the packages it leaves unpatched are the three that
+        # photograph, decode and encode every frame -- ImageMagick's
+        # `import`, ffmpeg and Xorg/Xvfb -- and recording a waiver in a
+        # summary does not stop the next command from producing evidence
+        # under it.  It forces the diagnostic state now, and the four
+        # stages that make production media refuse under it.
+        "PLAYTHROUGH_ALLOW_EOL_PLATFORM",
     )
 
     def test_the_registry_is_the_one_env_sh_publishes(self):

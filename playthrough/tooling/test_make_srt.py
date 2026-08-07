@@ -635,12 +635,25 @@ class TestTheSubRipContract(unittest.TestCase):
         with self.assertRaises(make_srt.TranscriptError):
             make_srt.render_srt(cues)
 
-    def test_a_cue_of_many_lines_is_accepted(self):
-        """mov_text carries multi-line cues, so the sentence is whole."""
-        cues = [self.cues[0]._replace(lines=("a", "b", "c", "d", "e"))]
+    def test_a_cue_of_two_lines_is_accepted(self):
+        """Two lines is the contract, and mov_text carries them."""
+        cues = [self.cues[0]._replace(lines=("a", "b"))]
         rendered = make_srt.render_srt(cues)
-        for line in ("a", "b", "c", "d", "e"):
+        for line in ("a", "b"):
             self.assertIn("\n%s" % line, rendered)
+
+    def test_a_cue_of_more_lines_than_the_geometry_is_refused(self):
+        """The renderer itself says no, whatever assembled the cue.
+
+        A caller that builds cues by hand bypasses
+        caption_length_problems(); it does not bypass this, so no path
+        writes an unreadable caption into the file.
+        """
+        cues = [self.cues[0]._replace(lines=("a", "b", "c"))]
+        with self.assertRaises(make_srt.TranscriptError) as caught:
+            make_srt.render_srt(cues)
+        self.assertIn("3 lines", str(caught.exception))
+        self.assertIn("not cut to fit", str(caught.exception))
 
     def test_a_cue_with_no_text_is_refused(self):
         with self.assertRaises(make_srt.TranscriptError):
@@ -805,7 +818,12 @@ class TestTheOutOfCharacterGate(unittest.TestCase):
         self.assertEqual(len(problems), 1)
         self.assertIn("sidebar", problems[0])
         self.assertIn("move counter", problems[0])
-        self.assertIn("re-recorded", problems[0])
+        self.assertIn("playthrough/manifest.jsonl", problems[0],
+                      msg="the refusal names the source to amend")
+        self.assertIn("TECHNICAL_NOTES.md", problems[0],
+                      msg="and where the amendment is recorded")
+        self.assertIn("never edited by hand", problems[0],
+                      msg="and that this file is not the place to fix it")
         self.assertIn(words[0], markdown,
                       msg="nothing is rewritten; publication is refused")
 
@@ -851,7 +869,8 @@ class TestTheOutOfCharacterGate(unittest.TestCase):
 
     def test_a_clean_record_reports_nothing(self):
         srt, markdown, cues = make_srt.build_transcripts(build())
-        self.assertEqual(make_srt.commentary_advisories(cues), [])
+        self.assertEqual(make_srt.voice_problems(cues), [])
+        self.assertEqual(make_srt.caption_length_problems(cues), [])
 
     def test_the_gate_matches_the_meta_sense_and_not_the_other(self):
         self.assertEqual(make_srt.meta_gate_words("a framework"), [])
@@ -939,35 +958,83 @@ class TestTheTwoArtifactsAgree(unittest.TestCase):
 class TestTheCaptionIsTheOnlyTransformation(unittest.TestCase):
     """Wrapping is the ONLY transformation, and it drops nothing.
 
-    The module used to cap a caption at two lines and mark the cut with a
-    bracketed elision; 168 of the 395 cues in the first re-recorded
-    session ended that way, and many lost the survivor's actual reason
-    for acting.  The requirement is that the timestamped transcript IS the
-    caption track, so these tests hold the cue to the whole sentence.
+    Two defects meet in this class and the tests hold both ends of the
+    contract at once.  The module once capped a caption at two lines and
+    marked the cut with a bracketed elision -- 168 of the 395 cues in the
+    first re-recorded session ended that way, many of them losing the
+    survivor's actual reason for acting -- so nothing here may shorten a
+    sentence.  Then the cap was removed altogether and a long cue merely
+    ADVISED about, which is how 88 of 419 shipped cues came to carry
+    three to six lines, one of them inside a 250 ms window -- so a cue
+    that does not fit the geometry must be REFUSED.  Wrapping keeps every
+    word; publication is what says no.
     """
 
-    def test_a_long_sentence_reaches_the_caption_entire(self):
-        words = (A_LONG_SENTENCE,) + REFERENCE_WORDS[1:]
-        srt, markdown, cues = make_srt.build_transcripts(
-            build(words=words))
-        self.assertGreater(len(cues[0].lines), 2,
+    def test_a_long_sentence_is_wrapped_whole_not_shortened(self):
+        lines = make_srt.wrap_cue_text(A_LONG_SENTENCE)
+        self.assertGreater(len(lines), make_srt.CUE_MAX_LINES,
                            msg="this sentence needs more than two lines")
-        joined = " ".join(cues[0].lines)
-        self.assertEqual(joined, " ".join(A_LONG_SENTENCE.split()),
-                         msg="every word, in order, in the cue itself")
-        self.assertNotIn("[...]", srt)
-        self.assertIn(A_LONG_SENTENCE, markdown,
-                      msg="the record keeps the whole sentence")
+        self.assertEqual(" ".join(lines), " ".join(A_LONG_SENTENCE.split()),
+                         msg="every word, in order, in the result")
+        self.assertNotIn("[...]", " ".join(lines))
 
-    def test_a_long_caption_is_reported_but_not_cut(self):
+    def test_a_long_sentence_is_refused_rather_than_captioned(self):
+        words = (A_LONG_SENTENCE,) + REFERENCE_WORDS[1:]
+        with self.assertRaises(make_srt.TranscriptError) as caught:
+            make_srt.build_transcripts(build(words=words))
+        message = str(caught.exception)
+        self.assertIn("entry 1", message)
+        self.assertIn("frame 1", message)
+        self.assertIn("never cut to fit", message)
+        self.assertIn(A_LONG_SENTENCE, message,
+                      msg="the refusal quotes the sentence to shorten")
+
+    def test_every_offending_cue_is_named_not_just_the_first(self):
         long_enough = " ".join(["one two three four five"] * 12)
-        words = (long_enough,) + REFERENCE_WORDS[1:]
-        srt, markdown, cues = make_srt.build_transcripts(
-            build(words=words))
-        advisories = make_srt.length_advisories(cues)
-        self.assertEqual(len(advisories), 1)
-        self.assertIn("nothing is shortened", advisories[0])
-        self.assertIn(long_enough, srt.replace("\n", " "))
+        words = (A_LONG_SENTENCE, long_enough) + REFERENCE_WORDS[2:]
+        document = build(words=words)
+        entries = make_srt.timeline_entries(document)
+        cues = make_srt.build_cues(
+            entries, make_srt.transition_gap(document))
+        problems = make_srt.caption_length_problems(cues)
+        self.assertEqual(len(problems), 2,
+                         msg="one problem per offending cue")
+        self.assertIn("entry 1", problems[0])
+        self.assertIn("entry 2", problems[1])
+        self.assertEqual(make_srt.overlong_entries(cues), [1, 2])
+
+    def test_a_caption_that_fits_is_not_reported_at_all(self):
+        document = build()
+        entries = make_srt.timeline_entries(document)
+        cues = make_srt.build_cues(
+            entries, make_srt.transition_gap(document))
+        self.assertEqual(make_srt.caption_length_problems(cues), [])
+        self.assertEqual(make_srt.overlong_entries(cues), [])
+
+    def test_every_cue_of_a_published_file_is_at_most_two_lines(self):
+        """The geometry, measured on the RENDERED file and not the cues.
+
+        The refusal above proves an over-long sentence cannot be
+        published; this proves the other half -- that what IS published
+        satisfies the contract in the bytes a player parses, where each
+        cue is a sequence number, a timing line and its text.  A wrap
+        that produced a third line, or a renderer that emitted one, would
+        both be caught here even if the cue list looked right.
+        """
+        srt, _markdown, cues = make_srt.build_transcripts(build())
+        for cue in cues:
+            with self.subTest(cue=cue.index):
+                self.assertLessEqual(len(cue.lines),
+                                     make_srt.CUE_MAX_LINES)
+        for block in srt.strip().split("\n\n"):
+            lines = block.split("\n")
+            with self.subTest(block=lines[0]):
+                self.assertGreaterEqual(len(lines) - 2, 1)
+                self.assertLessEqual(len(lines) - 2,
+                                     make_srt.CUE_MAX_LINES)
+                for line in lines[2:]:
+                    self.assertLessEqual(len(line),
+                                         make_srt.CUE_LINE_WIDTH)
 
     def test_no_word_is_ever_broken_through(self):
         long_word = "supercalifragilisticexpialidocious" * 2

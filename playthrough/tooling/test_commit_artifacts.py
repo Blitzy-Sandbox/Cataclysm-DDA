@@ -68,6 +68,7 @@ Standard library only.  Nothing outside the temporary directory is
 written.
 """
 
+import hashlib
 import json
 import os
 import re
@@ -260,6 +261,9 @@ class CheckpointFixture(unittest.TestCase):
         self.manifest = os.path.join(self.dir, "manifest.jsonl")
         self.observations = os.path.join(self.build_dir,
                                          "observations.jsonl")
+        self.amendments = os.path.join(self.dir, "amendments.jsonl")
+        self.digests = os.path.join(self.build_dir,
+                                    "frame_digests.jsonl")
         self.gitignore = os.path.join(self.checkout, ".gitignore")
         self.write(self.gitignore, SANDBOX_GITIGNORE)
         self.write(os.path.join(self.checkout, ".gitattributes"),
@@ -333,8 +337,31 @@ class CheckpointFixture(unittest.TestCase):
             "key": "j",
         }
 
+    def digest_row(self, index):
+        """The attestation session.py appends for one capture.
+
+        Hashed off the file this fixture just wrote, so the ledger is a
+        real measurement of real bytes rather than a constant that
+        happens to satisfy the gate.  `attested` is "capture", which is
+        what the running pipeline records: the fixture's frame IS
+        published at the moment it is written.
+        """
+        path = os.path.join(self.frames_dir, "frame_%05d.png" % index)
+        with open(path, "rb") as handle:
+            payload = handle.read()
+        return {
+            "frame": index,
+            "file": "playthrough/frames/frame_%05d.png" % index,
+            "sha256": hashlib.sha256(payload).hexdigest(),
+            "bytes": len(payload),
+            "attested": "capture",
+            "attested_ts": "2026-08-04T06:53:%02d.429Z" % (index % 60),
+            "git_blob": None,
+            "git_commit": None,
+        }
+
     def write_evidence(self, count):
-        """Write `count` frames, rows and observation rows."""
+        """Write `count` frames, rows, sidecar rows and attestations."""
         for index in range(1, count + 1):
             self.write(
                 os.path.join(self.frames_dir,
@@ -347,6 +374,14 @@ class CheckpointFixture(unittest.TestCase):
             for index in range(1, count + 1):
                 handle.write(
                     json.dumps(self.observation(index)) + "\n")
+        self.write_digests(count)
+        return count
+
+    def write_digests(self, count):
+        """Seal `count` frames into the capture attestation ledger."""
+        with open(self.digests, "w", encoding="utf-8") as handle:
+            for index in range(1, count + 1):
+                handle.write(json.dumps(self.digest_row(index)) + "\n")
         return count
 
     def write_save(self):
@@ -480,13 +515,16 @@ class CheckpointFixture(unittest.TestCase):
         """Run the real commit_artifacts.sh in the sandbox."""
         env = {
             "PATH": self.bin,
-            # THE PLATFORM GATE IS SATISFIED, NOT SWITCHED OFF.  The
-            # waiver takes a reason, which is what makes declaring it in
-            # a fixture honest; the gate has its own coverage in
-            # test_env.py and the production path is unaffected.
-            "PLAYTHROUGH_ALLOW_EOL_PLATFORM":
-                "test fixture; the platform gate has its own coverage "
-                "in test_env.py",
+            # NO PLATFORM WAIVER, DELIBERATELY.  This fixture used to
+            # set PLAYTHROUGH_ALLOW_EOL_PLATFORM; that variable is a
+            # registered trust bypass now (a security review was right
+            # that an end-of-life capture and encode stack cannot be
+            # merely recorded), and this script needs no waiver: it
+            # publishes artifacts that already exist and calls neither
+            # playthrough_check_platform nor playthrough_assert_trusted.
+            # Committing is deliberately not gated on the platform --
+            # gating it would leave an out-of-support host unable to
+            # commit the very disclosure that records the residual.
             "PLAYTHROUGH_PYTHON": INTERPRETER,
             "GIT_CONFIG_GLOBAL": "/dev/null",
             "GIT_CONFIG_NOSYSTEM": "1",
@@ -1140,6 +1178,140 @@ class TestTheEvidenceGate(CheckpointFixture):
         fields, _ = self.take_creation()
         self.assertEqual(fields["FRAMES"], str(self.CREATION_ROWS))
         self.assertEqual(fields["ROWS"], str(self.CREATION_ROWS))
+
+
+class TestTheLedgerGate(CheckpointFixture):
+    """The two out-of-band ledgers, held before anything is staged.
+
+    Every other evidence check in this script is STRUCTURAL -- the counts
+    agree, the file exists, the sequence is unbroken -- and a same-sized
+    replacement image passes all of them.  These two are the checks that
+    read the bytes and the digests, so they are the ones a substitution
+    has to get past.
+    """
+
+    def test_an_absent_attestation_ledger_is_refused(self):
+        """A frame with no attestation is a frame nobody sealed."""
+        self.write_save()
+        self.write_evidence(self.CREATION_ROWS)
+        os.unlink(self.digests)
+        message = self.refuse(EX_EVIDENCE, ("creation",))
+        self.assertIn("no capture attestation ledger", message)
+        self.assertIn("same-sized image", message)
+
+    def test_an_empty_attestation_ledger_is_refused(self):
+        """Present but empty is the same claim as absent."""
+        self.write_save()
+        self.write_evidence(self.CREATION_ROWS)
+        self.write(self.digests, "")
+        message = self.refuse(EX_EVIDENCE, ("creation",))
+        self.assertIn("no capture attestation ledger", message)
+
+    def test_a_replaced_frame_is_refused(self):
+        """THE SUBSTITUTION EVERY OTHER GATE PASSES.
+
+        The replacement is a real file at the right name, so the count
+        identity holds, the sequence is unbroken and every row still
+        names a capture that exists.  Only the digest disagrees.
+        """
+        self.write_save()
+        self.write_evidence(self.CREATION_ROWS)
+        self.write(os.path.join(self.frames_dir, "frame_00002.png"),
+                   "a different file at the same name\n")
+        message = self.refuse(EX_EVIDENCE, ("creation",))
+        self.assertIn("manifest.py refused the captures", message)
+        self.assertIn("frame 2 is attested as sha256", message)
+
+    def test_an_unattested_frame_is_refused(self):
+        """A row whose bytes nothing sealed."""
+        self.write_save()
+        self.write_evidence(self.CREATION_ROWS)
+        self.write_digests(self.CREATION_ROWS - 1)
+        message = self.refuse(EX_EVIDENCE, ("creation",))
+        self.assertIn("bytes are not attested", message)
+
+    def test_the_refusal_says_restore_rather_than_re_attest(self):
+        """The remedy may not be "seal whatever is there now".
+
+        Re-attesting the file on disk would make every future run pass
+        while publishing bytes nobody captured -- the exact move the
+        ledger exists to prevent.
+        """
+        self.write_save()
+        self.write_evidence(self.CREATION_ROWS)
+        self.write(os.path.join(self.frames_dir, "frame_00001.png"),
+                   "substituted after the fact\n")
+        message = self.refuse(EX_EVIDENCE, ("creation",))
+        self.assertIn("restoring the captured bytes", message)
+        self.assertIn("never by re-attesting", message)
+
+    def test_an_amendment_bound_to_its_line_passes(self):
+        """A well-formed correction does not obstruct a checkpoint."""
+        self.write_save()
+        self.write_evidence(self.CREATION_ROWS)
+        row = self.row(2)
+        line = json.dumps(row) + "\n"
+        self.write(self.amendments, json.dumps({
+            "amendment": 1,
+            "amended_ts": "2026-08-05T09:14:02.000Z",
+            "frame": 2,
+            "field": "commentary",
+            "source_sha256": hashlib.sha256(
+                line.encode("utf-8")).hexdigest(),
+            "recorded": row["commentary"],
+            "amended": ("The door at the end is shut and I would "
+                        "rather know what is behind it than stand out "
+                        "here guessing at it."),
+            "basis": ("the capture shows the door still shut, so "
+                      "'wondering' overstated what I could see"),
+            "reason": "commentary overstated the capture",
+        }) + "\n")
+        fields, _ = self.checkpoint("creation")
+        self.assertEqual(fields["COMMITTED"], "yes")
+
+    def test_an_amendment_whose_digest_no_longer_matches_is_refused(self):
+        """The binding is the whole mechanism.
+
+        An amendment names the sha256 of the exact line it corrects.  If
+        that digest does not match, the correction describes a line that
+        is not there, and applying it to whatever now occupies the row
+        would be guessing.
+        """
+        self.write_save()
+        self.write_evidence(self.CREATION_ROWS)
+        self.write(self.amendments, json.dumps({
+            "amendment": 1,
+            "amended_ts": "2026-08-05T09:14:02.000Z",
+            "frame": 2,
+            "field": "commentary",
+            "source_sha256": "0" * 64,
+            "recorded": self.row(2)["commentary"],
+            "amended": ("The door at the end is shut and I would "
+                        "rather know what is behind it than stand out "
+                        "here guessing at it."),
+            "basis": ("the capture shows the door still shut, so "
+                      "'wondering' overstated what I could see"),
+            "reason": "commentary overstated the capture",
+        }) + "\n")
+        message = self.refuse(EX_EVIDENCE, ("creation",))
+        self.assertIn("refused the amendment ledger", message)
+        self.assertIn("NEW amendment", message)
+
+    def test_no_amendment_ledger_is_not_a_problem(self):
+        """A session with nothing to correct has nothing to carry."""
+        self.write_save()
+        self.write_evidence(self.CREATION_ROWS)
+        self.assertFalse(os.path.exists(self.amendments))
+        fields, _ = self.checkpoint("creation")
+        self.assertEqual(fields["COMMITTED"], "yes")
+
+    def test_the_attestation_ledger_is_committed(self):
+        """It is evidence, so it is published with the frames."""
+        self.take_creation()
+        self.assertTrue(
+            self.is_tracked("playthrough/build/frame_digests.jsonl"),
+            msg="the attestation ledger must be committed; a digest "
+                "nobody can read afterwards attests nothing")
 
 
 class TestTheNoCheatingGate(CheckpointFixture):

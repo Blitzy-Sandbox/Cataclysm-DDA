@@ -1241,6 +1241,27 @@ export PLAYTHROUGH_KEYBINDINGS_JSON="${_playthrough_kbjson}"
 export PLAYTHROUGH_MANIFEST="${PLAYTHROUGH_DIR}/manifest.jsonl"
 export PLAYTHROUGH_TIMELINE="${PLAYTHROUGH_DIR}/timeline.json"
 
+# The AMENDMENT LEDGER, and why a correction lives outside the record it
+# corrects.
+#
+# The manifest is append-only, which means a row that was written is the
+# row that stays: there is no editor, no read-modify-write, no "w" mode
+# anywhere in manifest.py.  That rule has a cost -- a commentary sentence
+# that turns out to overstate what its own capture shows cannot be fixed
+# in place -- and paying that cost in the wrong direction is what a
+# security review found here: rows HAD been rewritten after capture, and
+# every derivative was regenerated to agree with the altered history, so
+# the record and the film were perfectly consistent with each other and
+# both disagreed with what was captured.
+#
+# So a correction is a NEW, SEPARATE, APPEND-ONLY record that names the
+# sha256 of the exact manifest line it amends.  A reader sees the
+# original sentence, the corrected sentence, the reason, and the digest
+# proving which line was meant; a consumer applies an amendment only when
+# that digest still matches, and refuses to resolve the record at all
+# when it does not.  Nothing is erased, and a divergence cannot hide.
+export PLAYTHROUGH_AMENDMENTS="${PLAYTHROUGH_DIR}/amendments.jsonl"
+
 # The capture telemetry sidecar, and why it exists SEPARATELY from the
 # manifest rather than as extra manifest columns.
 #
@@ -1259,10 +1280,21 @@ export PLAYTHROUGH_TIMELINE="${PLAYTHROUGH_DIR}/timeline.json"
 # JSON object per line, append-only.  capture.sh REPORTS the row on its
 # machine payload and names this path in it; the row is appended by
 # session.py, which already owns the frame counter and the manifest row
-# for the same frame, so one logical record has one writer.  A frame
-# that was captured twice therefore has two rows and the LAST one wins,
-# which is the same last-occurrence rule the engine itself applies to
-# duplicated option entries.
+# for the same frame, so one logical record has one writer.
+#
+# A FRAME CAPTURED TWICE HAS TWO ROWS, AND THEY MUST AGREE.  This used to
+# be a last-occurrence rule, borrowed from the engine's own handling of
+# duplicated option entries, and a security review named both things
+# wrong with it here.  Two rows that DISAGREED about the date still
+# decided a day, on nothing better than which was written later.  And a
+# later row whose date was `null` -- the ordinary shape of an unreadable
+# reading -- silently ERASED a date that had been read successfully.
+# timeline.py now requires unanimity: readings that agree corroborate
+# each other, a `null` is an absence of evidence rather than
+# counter-evidence, and a genuine disagreement makes that frame's date
+# UNOBSERVED and is reported.  Each row also names the sha256 of the
+# frame it was read from, so a reading cannot be attributed to a
+# different photograph that later took the same index.
 #
 # It lives under playthrough/build/ because it is an intermediate,
 # recomputable observation record rather than a delivered artifact,
@@ -1288,6 +1320,33 @@ export PLAYTHROUGH_CONCAT_LIST="${PLAYTHROUGH_BUILD_DIR}/concat.txt"
 # timeline.py consumes it.  It lives in build/ because it is derived
 # evidence rather than a narrative artifact.
 export PLAYTHROUGH_DATE_AUDIT="${PLAYTHROUGH_BUILD_DIR}/frame_dates.jsonl"
+
+# The CAPTURE ATTESTATION LEDGER.  One append-only row per published
+# frame, naming its sha256 and its byte length.
+#
+# Until this existed, nothing in the pipeline ever recorded what a
+# capture's BYTES were.  Every downstream check was structural -- the
+# frame count equals the row count, the file exists, it is 1920x1080, it
+# is not blank -- and a security review named the consequence exactly: a
+# same-sized, non-blank, correctly-named replacement PNG dropped into
+# playthrough/frames/ passed the whole chain, and the recovery path
+# actively trusted the pixels it found on disk plus an mtime any writer
+# can set.
+#
+# capture.sh hashes the file immediately after the atomic publication
+# that makes it visible and fails the capture if it cannot; session.py
+# re-hashes the published bytes before a manifest row exists and appends
+# the attestation for the frame it just took; timeline.py verifies the
+# whole ordered set before it times anything, and the transition
+# composer, the encoder and the caption generator inherit that check
+# through assert_timeline_document().
+#
+# It lives under build/ because it is derived evidence about the frames
+# rather than a narrative artifact, and it is append-only for the same
+# reason the manifest is: an attestation that can be rewritten attests
+# nothing.
+export PLAYTHROUGH_FRAME_DIGESTS="${PLAYTHROUGH_BUILD_DIR}/\
+frame_digests.jsonl"
 export PLAYTHROUGH_MOVIE="${PLAYTHROUGH_DIR}/cata-play.mp4"
 export PLAYTHROUGH_MOVIE_CC="${PLAYTHROUGH_DIR}/cata-play-cc.mp4"
 export PLAYTHROUGH_TRANSCRIPT_MD="${PLAYTHROUGH_DIR}/transcript.md"
@@ -1481,6 +1540,33 @@ export PLAYTHROUGH_SIDEBAR_LAYOUT="legacy_labels_sidebar"
 # just as strictly; nothing is substituted behind their back.
 export PLAYTHROUGH_TILESET="MshockXottoplus"
 
+# AND WHICH BYTES IT MUST BE, stated OUTSIDE the artwork itself.
+# gfx/ is git-ignored (.gitignore:52) with four negations, and this
+# tileset is not one of them -- so the artwork every frame of the film is
+# rendered in is the one substantive input git does not carry.  A
+# security review found the launcher accepting an installed gfx/*
+# directory on nothing more than the NAME:/VIEW: line in its own
+# tileset.txt: a replaced payload with a regenerated in-pack SHA256SUMS
+# was accepted, and so was gfx/MShockXotto+ replaced by a symlink to a
+# directory outside the checkout.
+#
+# An in-pack manifest cannot be the anchor, because it travels with the
+# payload: whoever can write the artwork writes the digest list in the
+# same command.  So the anchor is TRACKED and outside the tree it
+# describes -- playthrough/tooling/tileset_provenance.json, whose
+# integrity is git's, exactly like every script in this directory -- and
+# it names the upstream repository and exact commit, the compose recipe,
+# the id and view, and the size and SHA-256 of every file plus a digest
+# over that whole ordered list.  tileset_provenance.py compares the
+# COMPLETE installed tree against it and launch_game.sh calls that before
+# the tileset is used, on every launch.
+#
+# THE ANCHOR'S LOCATION IS NOT A TUNABLE, deliberately, and no variable
+# below relaxes it: an anchor a caller can point elsewhere is not an
+# anchor.  Where the artwork legitimately changes, the anchor is
+# regenerated with `tileset_provenance.py generate` and committed as a
+# reviewed change.
+
 # Every name the required pack is known by, so a lookup can match the
 # id, the view label, or the directory the pack ships as.  This is a
 # spelling aid for ONE tileset, not a list of acceptable alternatives.
@@ -1665,11 +1751,12 @@ playthrough_assert_video_driver() {
 # interpreter or tool that cannot be verified, a display this pipeline
 # did not start and cannot prove is authenticated, a tileset pack on a
 # world-writable path, artwork other than the required MSXotto+, a
-# Pillow older than the pin, a compiler the project does not sanction.
-# Each of those exists for a real reason -- without them this pipeline
-# cannot be debugged on a host it does not own -- and each was, until
-# now, enforced only by a WARNING that said not to record a session
-# under it.
+# Pillow older than the pin, a compiler the project does not sanction,
+# and a host whose release no longer receives security fixes.  Each of
+# those exists for a real reason -- without them this pipeline cannot be
+# debugged on a host it does not own -- and each was, until now,
+# enforced only by a WARNING that said not to record a session under
+# it.
 #
 # THAT IS NOT A CONTROL.  A warning on stderr does not stop the very
 # next command from capturing a frame, committing it, and presenting it
@@ -1696,7 +1783,7 @@ playthrough_assert_video_driver() {
 # RECOMPUTED AT EVERY CALL, never memoised.  A caller can export one of
 # these variables after sourcing this file -- a test harness does
 # exactly that -- so an answer cached at source time would be a
-# statement about the past.  The cost is a loop over six names.
+# statement about the past.  The cost is a loop over seven names.
 #
 # ANY VALUE OTHER THAN EMPTY OR "0" COUNTS AS ACTIVE, which is stricter
 # than the individual check sites (they act only on "1").  That is
@@ -1712,7 +1799,8 @@ PLAYTHROUGH_ALLOW_UNAUTHENTICATED_X \
 PLAYTHROUGH_ALLOW_UNVERIFIED_TILESET_PACK \
 PLAYTHROUGH_ALLOW_TILESET_FALLBACK \
 PLAYTHROUGH_ALLOW_VULNERABLE_PILLOW \
-PLAYTHROUGH_ALLOW_ANY_COMPILER"
+PLAYTHROUGH_ALLOW_ANY_COMPILER \
+PLAYTHROUGH_ALLOW_EOL_PLATFORM"
 
 # playthrough_trust_reason NAME
 #   What NAME endangers, in one sentence, so a refusal explains itself
@@ -1742,6 +1830,11 @@ the pinned, reviewed one"
         PLAYTHROUGH_ALLOW_ANY_COMPILER)
             printf '%s' "the binary may have been built by a compiler \
 the project does not sanction"
+            ;;
+        PLAYTHROUGH_ALLOW_EOL_PLATFORM)
+            printf '%s' "the ImageMagick, ffmpeg and Xorg/Xvfb \
+packages that capture, decode and encode every frame receive no \
+further security fixes on this release"
             ;;
         *)
             printf '%s' "an unrecognised trust override is set"
@@ -2850,8 +2943,18 @@ playthrough_release_lock() {
     return 0
 }
 
+# The platform source has exactly ONE reader, and it is
+# playthrough_os_release_source below.  An earlier pass added a
+# second, `playthrough_os_release_path`, which returned
+# $PLAYTHROUGH_OS_RELEASE whenever it was set; it is deleted rather
+# than left unused, because the two differed in the one respect that
+# matters -- the survivor honours a nomination ONLY in a tree git
+# does not track, so a real checkout reads its own host and cannot
+# be told otherwise, and a caller reaching for the weaker twin would
+# have silently undone that.
+
 # playthrough_os_release KEY
-#   Read one KEY=value out of /etc/os-release, unquoted, or print
+#   Read one KEY=value out of the platform source, unquoted, or print
 #   nothing.  The file is PARSED rather than sourced: sourcing executes
 #   it, and a check whose whole purpose is to reduce risk should not add
 #   an execution path of its own.  KEY is restricted to the shape the
@@ -2860,10 +2963,76 @@ playthrough_os_release() {
     case "${1-}" in
         ''|*[!A-Z_]*) return 1 ;;
     esac
-    [ -r /etc/os-release ] || return 0
-    sed -n "s/^${1}=//p" /etc/os-release |
+    local source
+    source="$(playthrough_os_release_source)"
+    [ -r "${source}" ] || return 0
+    sed -n "s/^${1}=//p" "${source}" |
         head -n 1 |
         tr -d '\042\047'
+}
+
+# playthrough_os_release_source
+#   Which file the platform facts are read from, and the ONE case in
+#   which it is not /etc/os-release.
+#
+#   WHY A NOMINATION EXISTS AT ALL.  This pipeline's own regression
+#   suites run the real scripts against a FABRICATED checkout in a
+#   temporary directory, with stub tools and a fake engine, and they have
+#   to exercise the production paths -- a suite that could only reach the
+#   prerequisite refusal would assert nothing about its subject.  Those
+#   runs are not claims about a host, so they need to be able to say
+#   which host the check should believe.
+#
+#   AND WHY IT IS NOT A HOLE.  Two conditions, both verified rather than
+#   declared.  The file is read only if it is a REGULAR FILE and NOT a
+#   symbolic link -- a link can be repointed between this resolution and
+#   the read, so what the gate measured would not be what was nominated
+#   -- and anything else falls back to the host's own file, warned once.
+#   Second: the nomination is honoured ONLY when the repository root is
+#   NOT a git working tree.  That is a VERIFIED
+#   property, not a declared one, and it is the property that matters: a
+#   tree git does not track cannot commit anything, and this pipeline's
+#   entire integrity claim is about COMMITTED artifacts (R1, R3).  In a
+#   real checkout `.git` is present, so the nomination is ignored and
+#   said to be ignored, and the platform facts are the host's own with no
+#   way around them.  Deleting `.git` to reach the nomination would leave
+#   a record that can never be published, which is not a bypass but a
+#   self-defeating act.
+#
+#   The answer is exported as PLAYTHROUGH_PLATFORM_SOURCE and printed in
+#   the environment summary, so what a run believed about its platform is
+#   part of its contract either way.
+#   PURE ON PURPOSE: it prints and nothing else.  Every caller reaches it
+#   through $(...), which is a subshell, so an export or a warn-once flag
+#   set in here would die with that subshell -- which is exactly the
+#   defect this function was written with the first time.
+#   playthrough_check_platform does the exporting and the warning, in the
+#   caller's own shell, where both stick.
+playthrough_os_release_source() {
+    local default="/etc/os-release"
+    local nominated="${PLAYTHROUGH_OS_RELEASE-}"
+    if [ -z "${nominated}" ] || [ "${nominated}" = "${default}" ]; then
+        printf '%s' "${default}"
+        return 0
+    fi
+    if [ -e "${PLAYTHROUGH_REPO_ROOT:-.}/.git" ]; then
+        printf '%s' "${default}"
+        return 0
+    fi
+    if [ -L "${nominated}" ]; then
+        # A SYMLINK IS NOT EVIDENCE, even here.  The verdict is read a
+        # moment after this resolves, and a link can be repointed in
+        # between: what the gate then measures is not what was nominated.
+        # `-f` alone would follow it, so this is checked before it.
+        printf '%s' "${default}"
+        return 0
+    fi
+    if [ ! -f "${nominated}" ] || [ ! -r "${nominated}" ]; then
+        printf '%s' "${default}"
+        return 0
+    fi
+    printf '%s' "${nominated}"
+    return 0
 }
 
 # playthrough_check_platform
@@ -2909,22 +3078,44 @@ playthrough_os_release() {
 #   -- which is the record of what a session ran under -- so a film
 #   recorded under a waiver says so in its own contract.
 #
-#   IT IS DELIBERATELY *NOT* IN THE TRUST-BYPASS REGISTRY, and that is a
-#   judgement worth writing down rather than leaving to be rediscovered.
-#   A bypass in that registry means "a check that establishes the
-#   evidence was relaxed, so a reading might be wrong" -- an
-#   unauthenticated X server, for instance, means another local account
-#   could have injected keystrokes into the session, which falsifies the
-#   record directly.  An end-of-life platform makes no reading wrong: it
-#   raises the risk that a parser has an unfixed defect, which requires
-#   hostile input to matter, and the only images this pipeline decodes
-#   are the PNGs it captured itself on a host that opens no network
-#   connection.  Putting it in the registry would refuse every recorded
-#   session on such a host -- capture.sh refuses production capture
-#   while any bypass is active -- while adding nothing the summary does
-#   not already carry.  The two claims are different, and conflating
-#   them would trade a real, documented residual risk for an
-#   undeliverable pipeline.
+#   AND IT IS IN THE TRUST-BYPASS REGISTRY.  It was deliberately kept
+#   out of it, on the argument that an end-of-life platform makes no
+#   reading WRONG -- it raises the risk that a parser has an unfixed
+#   defect, which needs hostile input to matter, and the only images this
+#   pipeline decodes are PNGs it captured itself on a host that opens no
+#   network connection -- so recording the waiver in the summary was
+#   treated as sufficient.
+#
+#   A SECURITY REVIEW WAS RIGHT THAT THIS WAS THE WRONG CALL, and its
+#   reasoning is the same reasoning this file already applies to every
+#   other relaxable check: "a warning on stderr does not stop the very
+#   next command from capturing a frame, committing it, and presenting it
+#   as evidence".  Recording is not a control.  The specifics were also
+#   concrete rather than theoretical -- ImageMagick's own advisory names
+#   a heap-buffer-overflow in the X11 `import` command, which is this
+#   pipeline's capture utility, for versions before 7.1.2-26; X.Org
+#   published client-triggerable memory-safety fixes after the installed
+#   Xvfb; and the distribution is marked vulnerable to an ffmpeg CVE.
+#   Those are the three programs that photograph, decode and encode
+#   every frame of the film.
+#
+#   So the waiver now forces the state to `diagnostic`, exactly like
+#   every other entry, and the four stages that produce production media
+#   refuse under it: launch_game.sh (the captured instance), capture.sh
+#   (a kept frame), render_movie.py (the film) and embed_captions.sh (the
+#   captioned film).  Diagnosis stays fully available -- capture.sh's
+#   diagnostic mode withdraws its frame out of the working tree and never
+#   exits 0 -- so a run on an out-of-support host can still be debugged;
+#   it simply cannot manufacture evidence.  Reproducing the derivatives
+#   on a supported, fully patched release is the remedy, and the residual
+#   for anything that genuinely cannot be reproduced is recorded in
+#   playthrough/TECHNICAL_NOTES.md rather than hidden.
+#
+#   COMMITTING IS DELIBERATELY NOT GATED ON IT.  Publishing artifacts
+#   that already exist neither captures nor encodes anything, and gating
+#   it would make an EOL host unable to commit the very disclosure that
+#   records the residual -- a rule that destroys the evidence trail it
+#   was meant to protect.
 #
 #   PLAYTHROUGH_REQUIRE_SUPPORTED_PLATFORM IS RETIRED, and it is
 #   recognised rather than ignored: =1 is now the default and says so,
@@ -2950,11 +3141,50 @@ playthrough_platform_waiver() {
 }
 
 playthrough_check_platform() {
-    # The CLASSIFICATION is memoised -- it reads /etc/os-release and
-    # cannot change during a run.  The VERDICT is recomputed every call,
-    # because the waiver can be set after this file was sourced and an
-    # answer cached then would be a statement about the past.
-    if [ -z "${PLAYTHROUGH_PLATFORM_CHECKED:-}" ]; then
+    # NOTHING HERE IS MEMOISED, AND THAT IS A FIX RATHER THAN A COST.
+    # The classification used to be cached in exported variables behind a
+    # PLAYTHROUGH_PLATFORM_CHECKED flag, on the reasonable-sounding
+    # grounds that /etc/os-release cannot change during a run.  But this
+    # file is SOURCED into the caller's shell, so every one of those
+    # variables was an INPUT as well as an output, and
+    #
+    #     PLAYTHROUGH_PLATFORM_CHECKED=1 PLAYTHROUGH_PLATFORM_SUPPORTED=yes
+    #
+    # made this function return 0 on an end-of-life host with no waiver,
+    # no warning and PLAYTHROUGH_TRUST_STATE=trusted.  Measured, not
+    # theorised.  That is a silent forgery of the very verdict the
+    # trust-bypass registry now depends on, so the classification is
+    # recomputed on every call and whatever the caller set is discarded:
+    # these variables are outputs only.  The cost is one `sed` over a
+    # small file and one `date` per call.
+    local platform_source
+    platform_source="$(playthrough_os_release_source)"
+    export PLAYTHROUGH_PLATFORM_SOURCE="${platform_source}"
+    if [ -n "${PLAYTHROUGH_OS_RELEASE-}" ] &&
+       [ "${PLAYTHROUGH_OS_RELEASE}" != "${platform_source}" ] &&
+       [ -z "${PLAYTHROUGH_OS_RELEASE_WARNED:-}" ]; then
+        export PLAYTHROUGH_OS_RELEASE_WARNED=1
+        if [ -e "${PLAYTHROUGH_REPO_ROOT:-.}/.git" ]; then
+            playthrough_warn \
+                "PLAYTHROUGH_OS_RELEASE='${PLAYTHROUGH_OS_RELEASE}' is" \
+                "IGNORED: this repository root is a git working tree," \
+                "so it can publish artifacts, and the platform facts" \
+                "for a run that can publish are the host's own." \
+                "Reading ${platform_source} instead.  If this host is" \
+                "genuinely out of support, the only way past this check" \
+                "is PLAYTHROUGH_ALLOW_EOL_PLATFORM=<reason>, which is a" \
+                "registered trust bypass and refuses production" \
+                "capture, render and mux."
+        else
+            playthrough_warn \
+                "PLAYTHROUGH_OS_RELEASE='${PLAYTHROUGH_OS_RELEASE}' is" \
+                "not a readable regular file, or is a symbolic link" \
+                "(which can be repointed between this check and the" \
+                "read, so it is never followed); reading" \
+                "${platform_source} instead."
+        fi
+    fi
+    {
         local id version pretty eol=""
         id="$(playthrough_os_release ID)"
         version="$(playthrough_os_release VERSION_ID)"
@@ -2987,8 +3217,7 @@ playthrough_check_platform() {
                 export PLAYTHROUGH_PLATFORM_SUPPORTED="yes"
             fi
         fi
-        export PLAYTHROUGH_PLATFORM_CHECKED=1
-    fi
+    }
 
     # The retired knob, answered rather than ignored.
     case "${PLAYTHROUGH_REQUIRE_SUPPORTED_PLATFORM-}" in
@@ -3049,7 +3278,12 @@ fully patched and record that in the waiver."
         playthrough_warn "PROCEEDING UNDER A PLATFORM WAIVER:" \
             "${what}  The reason given is '${waiver}'.  ${remedy}" \
             "This is recorded in the environment summary and travels" \
-            "with the session's contract."
+            "with the session's contract.  The waiver is a" \
+            "TRUST BYPASS: it moves the trust state to diagnostic, so" \
+            "launch_game.sh will not start an instance to be captured" \
+            "and capture.sh will not take a production frame.  It buys" \
+            "diagnosis on this host, not evidence -- a compliant" \
+            "capture has to run on a supported release."
     fi
     return 0
 }
@@ -3067,8 +3301,9 @@ playthrough_python() {
 #   execution path below and worth logging at the head of a session,
 #   because it is the record of what the capture actually ran under.
 playthrough_env_summary() {
-    # Resolve the platform verdict so the record carries it.  It is
-    # memoised and warns at most once, and a strict-mode refusal is the
+    # Resolve the platform verdict so the record carries it.  Nothing in
+    # it is memoised -- the classification is recomputed on every call so
+    # that no inherited variable can forge it -- and a refusal is the
     # caller's business rather than the summary's, hence `|| true`.
     # The pairs are collected in an ARRAY rather than written straight
     # into printf's argument list, and that is a correctness decision
@@ -3106,8 +3341,23 @@ playthrough_env_summary() {
         "PLAYTHROUGH_XAUTHORITY_ORIGIN"
         "${PLAYTHROUGH_XAUTHORITY_ORIGIN}"
         "PLAYTHROUGH_PLATFORM" "${PLAYTHROUGH_PLATFORM:-<unchecked>}"
+        # WHICH FILE the platform facts came from.  Normally
+        # /etc/os-release; a harness may nominate another through
+        # PLAYTHROUGH_OS_RELEASE to emulate a host it is not running on,
+        # and that nomination is honoured only in a tree git does not
+        # track (see playthrough_os_release_source).  So this line is
+        # what says whether the verdict beside it is about THIS host, and
+        # a verdict that came from elsewhere is still one the record
+        # carries.  Printed ONCE: the summary's own test refuses a
+        # repeated label, which is the signature of a copied line.
+        "PLAYTHROUGH_PLATFORM_SOURCE"
+        "${PLAYTHROUGH_PLATFORM_SOURCE:-<unchecked>}"
         "PLAYTHROUGH_PLATFORM_SUPPORTED"
         "${PLAYTHROUGH_PLATFORM_SUPPORTED:-<unchecked>}"
+        # The end-of-life date and the waiver reason travel with the
+        # record because the platform gate is a REFUSAL by default: a
+        # session that ran on an out-of-support host did so under a named
+        # waiver, and the contract is where that has to be readable.
         "PLAYTHROUGH_PLATFORM_EOL"
         "${PLAYTHROUGH_PLATFORM_EOL:-<unchecked>}"
         "PLAYTHROUGH_PLATFORM_WAIVER"
@@ -3125,8 +3375,10 @@ playthrough_env_summary() {
         "PLAYTHROUGH_USERDIR" "${PLAYTHROUGH_USERDIR}"
         "PLAYTHROUGH_USERDIR_ARG" "${PLAYTHROUGH_USERDIR_ARG}"
         "PLAYTHROUGH_MANIFEST" "${PLAYTHROUGH_MANIFEST}"
+        "PLAYTHROUGH_AMENDMENTS" "${PLAYTHROUGH_AMENDMENTS}"
         "PLAYTHROUGH_OBSERVATIONS" "${PLAYTHROUGH_OBSERVATIONS}"
         "PLAYTHROUGH_DATE_AUDIT" "${PLAYTHROUGH_DATE_AUDIT}"
+        "PLAYTHROUGH_FRAME_DIGESTS" "${PLAYTHROUGH_FRAME_DIGESTS}"
         "PLAYTHROUGH_TIMELINE" "${PLAYTHROUGH_TIMELINE}"
         "PLAYTHROUGH_MOVIE" "${PLAYTHROUGH_MOVIE}"
         "PLAYTHROUGH_MOVIE_CC" "${PLAYTHROUGH_MOVIE_CC}"

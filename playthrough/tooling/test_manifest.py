@@ -62,9 +62,11 @@ provisioned.
 import contextlib
 import datetime
 import errno
+import hashlib
 import io
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -818,6 +820,106 @@ class TestTheNarrativeColumns(ManifestFixture):
         self.assertEqual(
             manifest.find_meta_vocabulary(None), [],
             msg="a non-string is not a text to search")
+
+    def test_the_interface_and_the_character_sheet_are_refused(self):
+        """The second class of meta wording a review found shipped.
+
+        Every string below is the wording of a row that actually reached
+        playthrough/transcript.md and became a caption on the film: the
+        input device and the screen furniture she was looking at, and her
+        own body accounted for in the numbers the creator prices it in.
+        None of it is a survivor's sentence, so the gate names it.
+        """
+        for meta, concept in (
+                ("Stat money goes downhill into the other two",
+                 "character sheet"),
+                ("it pays me three points for being honest",
+                 "character sheet"),
+                ("what I cannot do comes later on the trait page",
+                 "character sheet"),
+                ("the first key I tried did nothing", "keyboard"),
+                ("it was moving the cursor down the list", "cursor"),
+                ("there is a tab for what I did with my evenings",
+                 "form control"),
+                ("leave the sex field for a moment", "form control"),
+                ("thirty-five per cent off what I can carry",
+                 "percentage"),
+                ("keep safe mode on and use the opening", "game mode"),
+                ("Scores do not change what happened", "game mode")):
+            with self.subTest(text=meta):
+                self.assertIn(
+                    concept, manifest.find_meta_vocabulary(meta),
+                    msg="the meta sense is caught by concept name")
+
+    def test_the_survivors_own_numbers_and_keys_are_not_refused(self):
+        """The precision half, held against the record's own prose.
+
+        Each sentence below is in the committed record and is hers: a set
+        of car keys, the idiom "no point", a nip point on a mill floor,
+        and hours of sleep counted in an ordinary way.
+        """
+        for honest in ("Give me something with keys in it and a road.",
+                       "No point being coy about my back.",
+                       "A man went into a nip point in ninety-nine.",
+                       "Two hours a night. Two more if I am owed one.",
+                       "Half an hour. Long enough to breathe.",
+                       "I keep the boarded window at my back."):
+            with self.subTest(text=honest):
+                self.assertEqual(
+                    manifest.find_meta_vocabulary(honest), [],
+                    msg="in-character prose is not refused")
+
+    def test_the_published_narration_passes_the_voice_gate(self):
+        """The evidence in this checkout is held to the gate as well.
+
+        HELD AGAINST THE RESOLVED ROWS, WHICH IS WHERE IT BELONGS.  This
+        used to read the recorded commentaries directly, from a tree
+        whose record had been rewritten to satisfy it.  A captured row is
+        not editable -- rewriting one is the defect the amendment ledger
+        exists to replace -- so the sentence held to the voice gate is
+        the one a reader actually meets: the resolved sentence, which is
+        what goes verbatim into playthrough/transcript.md and onto the
+        caption track.  Nothing is thereby excused: a recorded meta word
+        with no amendment behind it survives resolution unchanged and is
+        reported by the same assertion, and the second check below is the
+        stronger statement that every offender has a correction bound to
+        its own digest rather than merely being tolerated.
+
+        Read-only, and skipped rather than failed where the record is
+        absent, so the suite still runs in a checkout without it.
+        """
+        tree = os.path.join(
+            os.path.dirname(os.path.abspath(manifest.__file__)),
+            os.pardir)
+        real = os.path.join(tree, "manifest.jsonl")
+        if not os.path.exists(real):
+            self.skipTest("no captured record in this checkout")
+        rows = manifest.read_rows(real)
+        ledger = os.path.join(tree, manifest.AMENDMENTS_NAME)
+        amendments = (manifest.read_amendments(ledger)
+                      if os.path.exists(ledger) else ())
+        resolved, _amended = manifest.resolve_rows(rows, amendments)
+        offenders = [
+            (row["frame"], manifest.find_meta_vocabulary(
+                row["commentary"]))
+            for row in resolved
+            if manifest.find_meta_vocabulary(row["commentary"])]
+        self.assertEqual(
+            offenders, [],
+            msg=("every published commentary is in the survivor's own "
+                 "voice; a hit here is a row to amend in "
+                 "playthrough/amendments.jsonl"))
+        # And every recorded row the gate does name carries an
+        # amendment, so none of them is simply being lived with.
+        amended = {(one["frame"], one["field"]) for one in amendments}
+        for row in rows:
+            if manifest.find_meta_vocabulary(row["commentary"]):
+                with self.subTest(frame=row["frame"]):
+                    self.assertIn(
+                        (row["frame"], "commentary"), amended,
+                        msg=("a recorded commentary the voice gate "
+                             "names must be corrected by an "
+                             "amendment, not left to the reader"))
 
     def test_every_concept_is_named_in_the_declared_order(self):
         """A refusal reads the same way every time it is produced."""
@@ -2684,6 +2786,772 @@ class TestTheCapturePayloadContract(ManifestFixture):
             manifest.encode_row(
                 dict(self.row_from_payload(dict(self.PAYLOAD)),
                      date=self.PAYLOAD["DATE"]))
+
+
+class TestTheRecordHasNoWriterButAppend(ManifestFixture):
+    """Code review finding: 26 captured rows were rewritten.
+
+    This module once carried a narrow rewrite facility so that the
+    observed-effect marker could be added to rows captured before the
+    live guard existed.  The review found the facility itself to be the
+    defect: a captured row is evidence, the correction belongs in
+    playthrough/TECHNICAL_NOTES.md, and the file's own contract says so
+    in as many words.  Every rewrite entry point was removed, and these
+    tests hold that removal against both the API and the source, because
+    a re-introduction would be a one-function change.
+    """
+
+    RETIRED = (
+        "extend_action",
+        "extend_actions",
+        "plan_action_extensions",
+        "publish_action_extensions",
+        "ActionExtensionPlan",
+        "open_staging",
+        "_rewrite_rows",
+        "STAGING_NAME",
+    )
+
+    def test_no_rewrite_entry_point_is_exposed(self):
+        for name in self.RETIRED:
+            self.assertFalse(
+                hasattr(manifest, name),
+                "%s is a rewrite surface this module must not have" % name)
+
+    def test_the_source_opens_nothing_for_writing(self):
+        """The append path uses os.open with O_APPEND, never "w"."""
+        pattern = re.compile(
+            r"""open\([^)]*['"]w|\.truncate\(|\.seek\(""")
+        with open(manifest.__file__, "r", encoding="utf-8") as handle:
+            offenders = [
+                (number, line.rstrip())
+                for number, line in enumerate(handle, 1)
+                if pattern.search(line)]
+        self.assertEqual(offenders, [])
+
+    def test_the_only_write_flags_are_append_flags(self):
+        with open(manifest.__file__, "r", encoding="utf-8") as handle:
+            source = handle.read()
+        self.assertIn("os.O_APPEND", source)
+        self.assertNotIn("os.O_TRUNC", source)
+
+    def test_reading_hands_back_copies_the_caller_cannot_write_through(
+            self):
+        self.append_many(2)
+        rows = manifest.read_rows(self.manifest, root=self.directory)
+        rows[0]["action"] = "press 'q' -- something else entirely"
+        again = manifest.read_rows(self.manifest, root=self.directory)
+        self.assertEqual(again[0]["action"], "press '5'")
+
+    def test_a_second_append_leaves_the_first_row_byte_identical(self):
+        self.append(frame=1)
+        first = self.lines()[0]
+        self.append(frame=2)
+        self.assertEqual(self.lines()[0], first)
+
+
+class TestStagingSiblingsCannotAccumulate(ManifestFixture):
+    """Performance QA finding: hard-kill leftovers in a tracked tree.
+
+    The retired rewrite wrote a sibling and renamed it; a SIGKILL left
+    the sibling behind, and .gitignore re-includes everything under
+    playthrough/ with its terminal negation, so a leftover is an
+    untracked file `git add -A playthrough/` would commit.  Unique
+    temporary names let them accumulate without bound and nothing swept
+    them.
+
+    Nothing writes one any more, which makes the sweep the ONLY thing
+    that can still clear a survivor -- so it is kept, and these tests
+    exercise it directly rather than through a writer that no longer
+    exists.
+    """
+
+    def staging(self, name=".manifest-staging.jsonl"):
+        """Return a path in the record's directory."""
+        return os.path.join(self.directory, name)
+
+    def sweep(self):
+        """Sweep the record's directory, returning (removed, stderr)."""
+        return self.capture_stderr(
+            manifest.sweep_staging, self.directory,
+            manifest.STAGING_PREFIX, manifest.STAGING_SUFFIX,
+            manifest.STAGING_OF)
+
+    def test_the_staging_prefix_is_private_and_dot_leading(self):
+        self.assertTrue(manifest.STAGING_PREFIX.startswith("."))
+        self.assertEqual(manifest.STAGING_SUFFIX, ".jsonl")
+
+    def test_leftovers_from_interrupted_rewrites_are_swept(self):
+        self.append_many(2)
+        for name in (".manifest-staging.jsonl",
+                     ".manifest-abc123.jsonl",
+                     ".manifest-def456.jsonl"):
+            _write_lines(self.staging(name), ['{"frame": 1}'])
+        self.assertEqual(
+            len(manifest.staging_candidates(
+                self.directory, manifest.STAGING_PREFIX,
+                manifest.STAGING_SUFFIX)), 3)
+        removed, noise = self.sweep()
+        self.assertEqual(len(removed), 3)
+        self.assertIn("interrupted rewrite", noise)
+        self.assertEqual(
+            manifest.staging_candidates(
+                self.directory, manifest.STAGING_PREFIX,
+                manifest.STAGING_SUFFIX),
+            ())
+        self.assertEqual(
+            len(manifest.read_rows(self.manifest, root=self.directory)),
+            2)
+
+    def test_a_name_that_is_not_a_staging_name_is_left_alone(self):
+        keep = os.path.join(self.directory, "manifest.jsonl.bak")
+        other = os.path.join(self.directory, ".manifest-.jsonl")
+        for path in (keep, other):
+            _write_lines(path, ["{}"])
+        manifest.sweep_staging(
+            self.directory, manifest.STAGING_PREFIX,
+            manifest.STAGING_SUFFIX, manifest.STAGING_OF)
+        self.assertTrue(os.path.exists(keep))
+        self.assertTrue(os.path.exists(other))
+
+    def test_a_symlink_at_a_staging_name_is_left_not_followed(self):
+        self.append_many(2)
+        before = _read_bytes(self.manifest)
+        elsewhere = os.path.join(self.directory, "elsewhere.jsonl")
+        _write_lines(elsewhere, ["{}"])
+        os.symlink(elsewhere, self.staging())
+        removed, noise = self.sweep()
+        self.assertEqual(removed, ())
+        self.assertIn("not a regular file", noise)
+        self.assertTrue(os.path.islink(self.staging()))
+        self.assertEqual(_read_bytes(self.manifest), before)
+        self.assertEqual(_read_bytes(elsewhere), b"{}\n")
+
+    def test_a_directory_at_a_staging_name_is_left_alone(self):
+        self.append_many(2)
+        before = _read_bytes(self.manifest)
+        os.mkdir(self.staging())
+        removed, noise = self.sweep()
+        self.assertEqual(removed, ())
+        self.assertIn("not a regular file", noise)
+        self.assertTrue(os.path.isdir(self.staging()))
+        self.assertEqual(_read_bytes(self.manifest), before)
+
+    def test_a_leftover_owned_by_another_account_is_left_alone(self):
+        if os.getuid() != 0:  # pragma: no cover - depends on the host
+            self.skipTest("changing a file's owner requires privilege")
+        self.append_many(2)
+        before = _read_bytes(self.manifest)
+        _write_lines(self.staging(), ["{}"])
+        os.chown(self.staging(), 12345, -1)
+        removed, noise = self.sweep()
+        self.assertEqual(removed, ())
+        self.assertIn("owned by uid 12345", noise)
+        self.assertTrue(os.path.exists(self.staging()))
+        self.assertEqual(_read_bytes(self.manifest), before)
+
+
+class TestTheAmendmentLedger(ManifestFixture):
+    """A correction is an append to a second file, never an edit.
+
+    THE DEFECT THIS SUITE EXISTS FOR.  A security review found that a
+    row of the committed record had been rewritten after capture -- a
+    narration corrected in place by a function built for the purpose --
+    and named the consequence precisely: once evidence can be rewritten,
+    every artifact derived from it is deniable.  The function is gone,
+    and this ledger is what replaced it: the manifest keeps the bytes
+    the session wrote, and each later correction is one append-only row
+    bound to the sha256 of the line it concerns.
+
+    So the assertions below hold three separate things.  That the
+    WRITER validates an amendment as strictly as a row (an amendable
+    field, a changed value, a stated basis and reason, a real digest).
+    That the RESOLVER fails CLOSED -- a digest that has moved, a
+    `recorded` value that no longer matches, a frame the rows do not
+    carry and a doubly-amended narration are all refusals, never skips.
+    And that the record itself is never touched on any path.
+    """
+
+    def ledger_path(self):
+        """The one path the ledger may live at in this tree."""
+        return os.path.join(self.directory, manifest.AMENDMENTS_NAME)
+
+    MARKER = "nothing on the screen changed"
+
+    def amend(self, frame=2, field="action",
+              recorded=None, amended=None, number=1, digest=None,
+              basis="the two captures were compared and are identical.",
+              reason="the note claims an effect the capture contradicts."):
+        """Append one amendment against this tree's manifest."""
+        rows = {row["frame"]: row for row in
+                manifest.read_rows(self.manifest, root=self.directory)}
+        digests = manifest.row_digests(self.manifest,
+                                       root=self.directory)
+        if recorded is None:
+            recorded = rows[frame][field]
+        if amended is None:
+            # Joined exactly as session.annotate_action() joins it: the
+            # marker becomes the note when the action has none.
+            joiner = (manifest.ACTION_SEPARATOR
+                      if manifest.ACTION_SEPARATOR not in recorded
+                      else "; ")
+            amended = recorded + joiner + self.MARKER
+        return manifest.append_amendment(
+            self.ledger_path(), number, FIXED_REAL_TS, frame, field,
+            digests[frame] if digest is None else digest,
+            recorded, amended, basis, reason, root=self.directory)
+
+    def ledger(self):
+        """Every amendment written so far."""
+        return manifest.read_amendments(self.ledger_path(),
+                                        self.directory)
+
+    def test_the_declared_schema_is_the_nine_fields(self):
+        self.assertEqual(
+            manifest.AMENDMENT_FIELDS,
+            ("amendment", "amended_ts", "frame", "field",
+             "source_sha256", "recorded", "amended", "basis", "reason"))
+        self.assertEqual(manifest.AMENDABLE_FIELDS,
+                         ("action", "commentary"))
+
+    def test_an_amendment_is_appended_and_the_record_is_not_touched(self):
+        self.append_many(2)
+        before = _read_bytes(self.manifest)
+        row = self.amend()
+        self.assertEqual(_read_bytes(self.manifest), before)
+        self.assertEqual(list(row), list(manifest.AMENDMENT_FIELDS))
+        self.assertEqual(len(self.ledger()), 1)
+        self.assertEqual(
+            manifest.verify_amendments(
+                self.ledger_path(), self.manifest, root=self.directory),
+            [])
+
+    def test_the_ledger_is_append_only(self):
+        self.append_many(3)
+        self.amend(frame=2, number=1)
+        first = _read_bytes(self.ledger_path())
+        self.amend(frame=3, number=2)
+        grown = _read_bytes(self.ledger_path())
+        self.assertTrue(grown.startswith(first))
+        self.assertEqual(len(self.ledger()), 2)
+
+    def test_only_the_two_narrations_may_be_amended(self):
+        self.append_many(2)
+        for field in ("frame", "file", "real_ts", "ingame_clock",
+                      "made up"):
+            with self.subTest(field=field):
+                with self.assertRaises(manifest.ManifestError):
+                    self.amend(field=field, recorded="a", amended="b")
+        self.assertEqual(self.ledger(), ())
+
+    def test_an_amendment_that_changes_nothing_is_refused(self):
+        self.append_many(2)
+        rows = manifest.read_rows(self.manifest, root=self.directory)
+        with self.assertRaises(manifest.ManifestError):
+            self.amend(amended=rows[1]["action"])
+        self.assertEqual(self.ledger(), ())
+
+    def test_a_basis_and_a_reason_are_mandatory(self):
+        self.append_many(2)
+        for missing in ("basis", "reason"):
+            with self.subTest(field=missing):
+                with self.assertRaises(manifest.ManifestError):
+                    self.amend(**{missing: "   "})
+        self.assertEqual(self.ledger(), ())
+
+    def test_a_digest_that_is_not_a_sha256_is_refused(self):
+        self.append_many(2)
+        for value in ("", "not-a-digest", "AB" * 32, "ab" * 31):
+            with self.subTest(digest=value):
+                with self.assertRaises(manifest.ManifestError):
+                    self.amend(digest=value)
+        self.assertEqual(self.ledger(), ())
+
+    def test_an_amended_commentary_is_held_to_the_voice_gate(self):
+        self.append_many(2)
+        with self.assertRaises(manifest.ManifestError):
+            self.amend(field="commentary",
+                       amended="I check the tileset and the manifest.")
+        self.assertEqual(self.ledger(), ())
+
+    def test_an_amended_action_keeps_the_derived_shape(self):
+        self.append_many(2)
+        with self.assertRaises(manifest.ManifestError):
+            self.amend(amended="something else entirely")
+        self.assertEqual(self.ledger(), ())
+
+    def test_the_ledger_may_not_be_pointed_at_another_artifact(self):
+        """The exploit this closes is a write, not a read.
+
+        Every artifact of this pipeline lives inside playthrough/, so
+        containment alone would let a path name the manifest, a frame or
+        the movie and have amendment rows appended onto the end of it.
+        """
+        self.append_many(2)
+        for name in ("manifest.jsonl", "timeline.json",
+                     os.path.join("frames", "frame_00001.png")):
+            with self.subTest(target=name):
+                with self.assertRaises(manifest.ManifestError):
+                    manifest.append_amendment(
+                        os.path.join(self.directory, name), 1,
+                        FIXED_REAL_TS, 1, "action", "ab" * 32,
+                        "press '5'", "press '5' -- x", "b", "r",
+                        root=self.directory)
+
+    def test_resolution_applies_only_the_named_narration(self):
+        self.append_many(3)
+        self.amend(frame=2)
+        rows = manifest.read_rows(self.manifest, root=self.directory)
+        resolved, touched = manifest.resolve_rows(rows, self.ledger())
+        self.assertEqual(touched, (2,))
+        self.assertTrue(resolved[1]["action"].endswith(self.MARKER))
+        self.assertEqual(resolved[0], rows[0])
+        self.assertEqual(resolved[2], rows[2])
+        # And the input rows were not mutated in place.
+        self.assertNotIn(self.MARKER, rows[1]["action"])
+
+    def test_a_digest_that_has_moved_is_a_refusal_not_a_skip(self):
+        self.append_many(2)
+        self.amend(frame=2)
+        ledger = [dict(one) for one in self.ledger()]
+        ledger[0]["source_sha256"] = "ab" * 32
+        rows = manifest.read_rows(self.manifest, root=self.directory)
+        with self.assertRaises(manifest.ManifestError):
+            manifest.resolve_rows(rows, ledger)
+        # The LEDGER ON DISK is untouched by the tampering above, so it
+        # still verifies: the refusal came from the altered copy.
+        self.assertEqual(
+            manifest.verify_amendments(
+                self.ledger_path(), self.manifest, root=self.directory),
+            [])
+
+    def test_a_recorded_value_that_no_longer_matches_is_refused(self):
+        self.append_many(2)
+        self.amend(frame=2)
+        ledger = [dict(one) for one in self.ledger()]
+        ledger[0]["recorded"] = "press '5' -- something else"
+        rows = manifest.read_rows(self.manifest, root=self.directory)
+        with self.assertRaises(manifest.ManifestError):
+            manifest.resolve_rows(rows, ledger)
+
+    def test_a_frame_the_rows_do_not_carry_is_refused(self):
+        self.append_many(2)
+        self.amend(frame=2)
+        ledger = [dict(one) for one in self.ledger()]
+        ledger[0]["frame"] = 9
+        rows = manifest.read_rows(self.manifest, root=self.directory)
+        with self.assertRaises(manifest.ManifestError):
+            manifest.resolve_rows(rows, ledger)
+
+    def test_one_narration_may_not_be_amended_twice(self):
+        self.append_many(2)
+        self.amend(frame=2, number=1)
+        rows = manifest.read_rows(self.manifest, root=self.directory)
+        digests = manifest.row_digests(self.manifest,
+                                       root=self.directory)
+        manifest.append_amendment(
+            self.ledger_path(), 2, FIXED_REAL_TS, 2, "action",
+            digests[2], rows[1]["action"],
+            rows[1]["action"] + manifest.ACTION_SEPARATOR +
+            "nothing in the map column changed",
+            "a second measurement", "a second reason",
+            root=self.directory)
+        problems = manifest.verify_amendments(
+            self.ledger_path(), self.manifest, root=self.directory)
+        self.assertTrue(any("amended by rows" in one
+                            for one in problems), problems)
+        with self.assertRaises(manifest.ManifestError):
+            manifest.resolve_rows(rows, self.ledger())
+
+    def test_the_numbering_runs_one_to_n(self):
+        self.append_many(2)
+        self.amend(frame=2, number=7)
+        problems = manifest.verify_amendments(
+            self.ledger_path(), self.manifest, root=self.directory)
+        self.assertTrue(any("numbered 7" in one for one in problems),
+                        problems)
+
+    def test_an_amendment_naming_an_unrecorded_frame_is_reported(self):
+        self.append_many(2)
+        rows = manifest.read_rows(self.manifest, root=self.directory)
+        digests = manifest.row_digests(self.manifest,
+                                       root=self.directory)
+        manifest.append_amendment(
+            self.ledger_path(), 1, FIXED_REAL_TS, 2, "action",
+            digests[2], rows[1]["action"],
+            rows[1]["action"] + manifest.ACTION_SEPARATOR + self.MARKER,
+            "basis", "reason", root=self.directory)
+        # Now the record grows a row, which moves nothing -- the
+        # amendment still names the same bytes -- so the ledger stays
+        # verifiable.  This is the property that makes the ledger usable
+        # during a session rather than only after one.
+        self.append(frame=3)
+        self.assertEqual(
+            manifest.verify_amendments(
+                self.ledger_path(), self.manifest, root=self.directory),
+            [])
+
+    def test_an_absent_ledger_is_the_ordinary_case(self):
+        self.append_many(2)
+        self.assertEqual(self.ledger(), ())
+        self.assertEqual(
+            manifest.verify_amendments(
+                self.ledger_path(), self.manifest, root=self.directory),
+            [])
+        rows = manifest.read_rows(self.manifest, root=self.directory)
+        resolved, touched = manifest.resolve_rows(rows, ())
+        self.assertEqual(resolved, rows)
+        self.assertEqual(touched, ())
+
+    def test_the_digest_is_of_the_line_the_writer_wrote(self):
+        self.append_many(1)
+        line = self.lines()[0]
+        row = manifest.read_rows(self.manifest, root=self.directory)[0]
+        self.assertEqual(manifest.line_digest(line),
+                         manifest.line_digest(row))
+        self.assertEqual(
+            manifest.row_digests(self.manifest,
+                                 root=self.directory)[1],
+            manifest.line_digest(line))
+
+    def test_no_rewriting_function_survives_in_the_module(self):
+        for name in ("extend_action", "_rewrite_rows"):
+            with self.subTest(function=name):
+                self.assertFalse(
+                    hasattr(manifest, name),
+                    msg=("%s could rewrite captured evidence; it was "
+                         "deleted rather than guarded" % name))
+
+
+class TestTheCaptureAttestationLedger(ManifestFixture):
+    """What the frames' BYTES were, recorded when they were published.
+
+    THE DEFECT THIS SUITE EXISTS FOR.  A security review observed that
+    nothing anywhere in this pipeline had ever recorded a capture's
+    digest: every check on a frame was structural -- the count identity,
+    the file exists, it is 1920x1080, it is not blank -- and a
+    same-sized, non-blank, correctly-named replacement PNG dropped into
+    playthrough/frames/ therefore passed the entire chain, all the way
+    into the film and the commit.
+
+    So the assertions below hold four things.  That an attestation is
+    validated as strictly as a row.  That the STRENGTH of the claim is
+    part of the row -- "capture" at publication, "recovery" when an
+    interrupted step was completed, "commit" when a session captured
+    before this ledger existed was sealed afterwards from its own
+    committed blob -- and that a post-hoc seal must name the git objects
+    it rests on rather than asserting a digest nobody can re-derive.
+    That the ledger is APPEND-ONLY, like the record it describes.  And
+    that verification is a real re-hash of the file on disk, so the one
+    substitution every other gate passes is refused here.
+    """
+
+    PAYLOAD = b"\x89PNG\r\n\x1a\n" + b"pretend pixels, but real bytes\n"
+
+    def setUp(self):
+        """The ledger lives under build/, so the tree needs one."""
+        super().setUp()
+        os.mkdir(os.path.join(self.directory, "build"))
+
+    def ledger_path(self):
+        """The one path the attestation ledger may live at."""
+        return os.path.join(self.directory,
+                            *manifest.DIGESTS_REL_PARTS)
+
+    def frame_bytes(self, index, payload=None):
+        """Write one frame and return (path, sha256, length)."""
+        path = os.path.join(self.frames,
+                            manifest.FRAME_NAME_FORMAT % index)
+        body = self.PAYLOAD if payload is None else payload
+        with open(path, "wb") as handle:
+            handle.write(body)
+        return path, hashlib.sha256(body).hexdigest(), len(body)
+
+    def attest(self, index=1, attested="capture", payload=None,
+               sha256=None, byte_count=None, git_blob=None,
+               git_commit=None):
+        """Seal one frame into the ledger and return the row."""
+        _, digest, size = self.frame_bytes(index, payload)
+        return manifest.append_frame_digest(
+            self.ledger_path(), index, manifest.frame_file(index),
+            digest if sha256 is None else sha256,
+            size if byte_count is None else byte_count,
+            attested, FIXED_REAL_TS, git_blob, git_commit,
+            root=self.directory)
+
+    def ledger(self):
+        """Every attestation written so far."""
+        return manifest.read_frame_digests(self.ledger_path(),
+                                           self.directory)
+
+    def problems(self, require_all=True):
+        """Verify the tree's rows against its ledger."""
+        return manifest.verify_frame_digests(
+            manifest.read_rows(self.manifest, root=self.directory),
+            self.ledger(), frames_dir=self.frames,
+            root=self.directory, require_all=require_all)
+
+    def test_the_declared_schema_is_the_eight_fields(self):
+        self.assertEqual(
+            manifest.DIGEST_FIELDS,
+            ("frame", "file", "sha256", "bytes", "attested",
+             "attested_ts", "git_blob", "git_commit"))
+        self.assertEqual(
+            manifest.DIGEST_ATTESTATIONS,
+            ("capture", "recovery", "commit"))
+
+    def test_the_ledger_lives_under_build(self):
+        """It is derived evidence, not a narrative artifact."""
+        self.assertEqual(manifest.DIGESTS_REL_PARTS,
+                         ("build", "frame_digests.jsonl"))
+
+    def test_an_attestation_is_appended_in_declared_order(self):
+        self.append_many(1)
+        row = self.attest(1)
+        self.assertEqual(list(row), list(manifest.DIGEST_FIELDS))
+        self.assertEqual(len(self.ledger()), 1)
+        self.assertEqual(self.problems(), [])
+
+    def test_a_frame_that_still_hashes_the_same_verifies(self):
+        self.append_many(3)
+        for index in (1, 2, 3):
+            self.attest(index)
+        self.assertEqual(self.problems(), [])
+
+    def test_a_replaced_frame_is_reported(self):
+        """THE SUBSTITUTION EVERY STRUCTURAL CHECK PASSES."""
+        self.append_many(1)
+        self.attest(1)
+        self.frame_bytes(1, b"\x89PNG\r\n\x1a\na different image\n")
+        problems = self.problems()
+        self.assertEqual(len(problems), 1, msg=problems)
+        self.assertIn("frame 1 is attested as sha256", problems[0])
+        self.assertIn("these are not the bytes that were captured",
+                      problems[0])
+
+    def test_a_missing_frame_is_reported(self):
+        self.append_many(1)
+        self.attest(1)
+        os.unlink(os.path.join(self.frames,
+                               manifest.FRAME_NAME_FORMAT % 1))
+        problems = self.problems()
+        self.assertEqual(len(problems), 1, msg=problems)
+        self.assertIn("frame 1 is attested but", problems[0])
+
+    def test_a_recorded_frame_with_no_attestation_is_reported(self):
+        self.append_many(2)
+        self.attest(1)
+        self.frame_bytes(2)
+        problems = self.problems()
+        self.assertEqual(len(problems), 1, msg=problems)
+        self.assertIn("frame 2 is recorded but its bytes are not "
+                      "attested", problems[0])
+
+    def test_an_unattested_frame_can_be_tolerated_explicitly(self):
+        """The one honest case: a session captured before the ledger.
+
+        It is never the default, and the consumers that must not proceed
+        without attestation leave it off.
+        """
+        self.append_many(2)
+        self.attest(1)
+        self.frame_bytes(2)
+        self.assertEqual(self.problems(require_all=False), [])
+
+    def test_an_attestation_for_an_unrecorded_frame_is_reported(self):
+        """The other direction: a digest with no row behind it."""
+        self.append_many(1)
+        self.attest(1)
+        self.attest(2)
+        problems = self.problems()
+        self.assertEqual(len(problems), 1, msg=problems)
+        self.assertIn("attests frame 2, which the record does not "
+                      "carry", problems[0])
+
+    def test_a_byte_count_that_disagrees_is_reported(self):
+        """Length is checked as well as content.
+
+        A digest and a length are cheap to record together and the pair
+        makes a truncation report itself even in the impossible case that
+        a collision were found.
+        """
+        self.append_many(1)
+        _, digest, size = self.frame_bytes(1)
+        manifest.append_frame_digest(
+            self.ledger_path(), 1, manifest.frame_file(1), digest,
+            size + 1, "capture", FIXED_REAL_TS, root=self.directory)
+        problems = self.problems()
+        self.assertTrue(
+            any("byte(s) but" in problem for problem in problems),
+            msg=problems)
+
+    def test_a_second_attestation_for_one_frame_is_the_last_one(self):
+        """A retry at one index legitimately produces two rows.
+
+        The LAST is the capture on disk, exactly as the sidecar's
+        last-row rule works -- and the repeat is reported rather than
+        being silent.
+        """
+        self.append_many(1)
+        self.attest(1)
+        self.attest(1, payload=b"\x89PNG\r\n\x1a\nthe retry's bytes\n")
+        latest = manifest.attested_digests(self.ledger())
+        _, digest, _ = self.frame_bytes(
+            1, b"\x89PNG\r\n\x1a\nthe retry's bytes\n")
+        self.assertEqual(latest[1]["sha256"], digest)
+        problems = self.problems()
+        self.assertTrue(
+            any("attested by rows 1 and 2" in problem
+                for problem in problems), msg=problems)
+
+    def test_an_unknown_attestation_strength_is_refused(self):
+        with self.assertRaises(manifest.ManifestError) as caught:
+            self.attest(1, attested="eyeballed")
+        self.assertIn("eyeballed", str(caught.exception))
+
+    def test_a_commit_attestation_must_name_its_git_objects(self):
+        """A post-hoc seal that names nothing is an assertion.
+
+        The whole reason for recording the weaker claim is that a reader
+        can re-derive it from content-addressed evidence.
+        """
+        with self.assertRaises(manifest.ManifestError) as caught:
+            self.attest(1, attested="commit")
+        self.assertIn("must name the blob and the commit",
+                      str(caught.exception))
+
+    def test_a_commit_attestation_with_its_objects_is_accepted(self):
+        row = self.attest(1, attested="commit", git_blob="a" * 40,
+                          git_commit="b" * 40)
+        self.assertEqual(row["attested"], "commit")
+        self.assertEqual(row["git_blob"], "a" * 40)
+
+    def test_a_capture_attestation_may_not_name_a_git_object(self):
+        """It came from the running pipeline; a blob would be invented."""
+        for field in ("git_blob", "git_commit"):
+            with self.subTest(field=field):
+                with self.assertRaises(manifest.ManifestError) as caught:
+                    self.attest(1, **{field: "c" * 40})
+                self.assertIn("may not name a git object",
+                              str(caught.exception))
+
+    def test_a_git_object_that_is_not_an_object_name_is_refused(self):
+        for value in ("", "nope", "a" * 39, "A" * 40, "a" * 41):
+            with self.subTest(value=value):
+                with self.assertRaises(manifest.ManifestError):
+                    self.attest(1, attested="commit", git_blob=value,
+                                git_commit="b" * 40)
+
+    def test_a_digest_that_is_not_a_sha256_is_refused(self):
+        for value in ("", "not-a-digest", "AB" * 32, "ab" * 31):
+            with self.subTest(sha256=value):
+                with self.assertRaises(manifest.ManifestError):
+                    self.attest(1, sha256=value)
+
+    def test_an_empty_frame_is_refused(self):
+        """A published frame is not zero bytes long."""
+        for value in (0, -1):
+            with self.subTest(bytes=value):
+                with self.assertRaises(manifest.ManifestError):
+                    self.attest(1, byte_count=value)
+
+    def test_a_byte_count_that_is_not_an_integer_is_refused(self):
+        """Held against the builder, so None is covered too.
+
+        The fixture reads a missing byte count as "measure the file",
+        which is what a caller means by omitting it; the builder is where
+        an explicitly wrong value has to be refused.
+        """
+        for value in (True, 12.0, "12", None, [4]):
+            with self.subTest(bytes=value):
+                with self.assertRaises(manifest.ManifestError):
+                    manifest.build_digest_row(
+                        1, manifest.frame_file(1), "a" * 64, value,
+                        "capture", FIXED_REAL_TS)
+
+    def test_the_ledger_is_append_only(self):
+        """Every row written stays written, byte for byte."""
+        self.append_many(2)
+        self.attest(1)
+        before = _read_bytes(self.ledger_path())
+        self.attest(2)
+        after = _read_bytes(self.ledger_path())
+        self.assertTrue(after.startswith(before))
+        self.assertGreater(len(after), len(before))
+
+    def test_the_module_has_no_way_to_edit_the_ledger(self):
+        """Asserted against the SOURCE, not against a run.
+
+        An attestation that can be rewritten attests nothing, so the
+        property is that no truncating writer EXISTS in this module --
+        not merely that no test happened to reach one.
+        """
+        source = _read_bytes(manifest.__file__).decode("utf-8")
+        for pattern in (', "w"', ", 'w'", 'mode="w"', "os.replace",
+                        "mkstemp", "shutil.copy"):
+            with self.subTest(pattern=pattern):
+                self.assertNotIn(
+                    pattern, source,
+                    msg=("manifest.py writes by APPEND only; %r is a "
+                         "way to rewrite what was recorded" % pattern))
+        self.assertEqual(
+            source.count("os.ftruncate("), 1,
+            msg=("the ONE truncate in this module is the rollback that "
+                 "removes a PARTIAL append's own bytes and can only "
+                 "ever shorten the file back to where that append "
+                 "began; a second call site would be a way to shorten "
+                 "a ledger that was already complete"))
+
+    def test_the_ledger_path_is_locked_to_its_canonical_name(self):
+        """An export may not point the appends at another artifact."""
+        with self.assertRaises(manifest.ManifestError):
+            manifest._validated_digests_target(
+                os.path.join(self.directory, "manifest.jsonl"),
+                self.directory)
+
+    def test_the_ledger_path_must_stay_inside_the_tree(self):
+        with self.assertRaises(manifest.ManifestError):
+            manifest._validated_digests_target(
+                os.path.join(os.path.dirname(self.directory),
+                             "build", "frame_digests.jsonl"),
+                self.directory)
+
+    def test_a_malformed_ledger_line_is_reported_by_position(self):
+        self.append_many(1)
+        self.attest(1)
+        with open(self.ledger_path(), "a", encoding="utf-8") as handle:
+            handle.write("{not json}\n")
+        with self.assertRaises(manifest.ManifestError) as caught:
+            self.ledger()
+        self.assertIn("line 2", str(caught.exception))
+
+    def test_a_row_out_of_field_order_is_reported(self):
+        rows = [{name: value for name, value in
+                 reversed(list(self.attest(1).items()))}]
+        problems = manifest.digest_row_problems(rows)
+        self.assertTrue(
+            any("writes its fields in the order" in problem
+                for problem in problems), msg=problems)
+
+    def test_the_command_line_verifies_the_captures(self):
+        self.append_many(2)
+        self.attest(1)
+        self.attest(2)
+        status = manifest.main(
+            ["--manifest", self.manifest, "digests",
+             "--ledger", self.ledger_path(),
+             "--frames-dir", self.frames], root=self.directory)
+        self.assertEqual(status, 0)
+
+    def test_the_command_line_fails_on_a_replaced_frame(self):
+        self.append_many(1)
+        self.attest(1)
+        self.frame_bytes(1, b"\x89PNG\r\n\x1a\nsubstituted\n")
+        status = manifest.main(
+            ["--manifest", self.manifest, "digests",
+             "--ledger", self.ledger_path(),
+             "--frames-dir", self.frames], root=self.directory)
+        self.assertEqual(status, 1)
 
 
 class TestTheSuiteTouchesNoEvidence(unittest.TestCase):

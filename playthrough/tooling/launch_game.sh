@@ -75,8 +75,9 @@
 #
 # Every line on stdout is `KEY=value` and nothing else, because
 # seed_options.py reads PLAYTHROUGH_TILESET_RESOLVED and session.py
-# reads PLAYTHROUGH_WINDOW_ID and PLAYTHROUGH_SESSION_MODE with
-# `grep '^KEY='`; logging and diagnostics go to stderr.
+# reads PLAYTHROUGH_WINDOW_ID, PLAYTHROUGH_SESSION_MODE and
+# PLAYTHROUGH_INITIAL_UI_STATE with `grep '^KEY='`; logging and
+# diagnostics go to stderr.
 #
 # `launch` detaches the game so it survives this shell, but not the
 # container nor a platform that reaps a whole process tree, and nothing
@@ -320,6 +321,7 @@ COMPILER_MAJOR=""
 BUILD_RUNNING_PID=""
 GAME_VERSION=""
 GAME_VERSION_ALL=""
+TILESET_LINKS_SKIPPED=0
 TILESET_ID=""
 TILESET_VIEW=""
 TILESET_DIR=""
@@ -1608,15 +1610,42 @@ tileset_field() {
 # arrays.  The glob's variable part is quoted and only the pattern
 # itself is bare; a directory with no tileset.txt is skipped rather
 # than assumed.
+#
+# A SYMLINKED ENTRY IS NAMED AND SKIPPED, never followed.  `[ -d ]` and
+# `[ -f ]` both dereference, so gfx/MShockXotto+ pointing at a directory
+# outside the checkout used to be inventoried as an installed tileset and
+# accepted on the NAME: line it found there -- reproduced, exit 0.  The
+# link is reported here rather than silently dropped, because "the
+# required tileset is not installed" would be a confusing diagnosis for a
+# directory that is plainly present; verify_tileset_provenance refuses it
+# again, from the anchor, if anything reaches that far.
 scan_installed_tilesets() {
     TILESET_NAMES=()
     TILESET_VIEWS=()
     TILESET_DIRS=()
+    TILESET_LINKS_SKIPPED=0
     local dir conf name view
     for dir in "${PLAYTHROUGH_REPO_ROOT}/gfx"/*/; do
         [ -d "${dir}" ] || continue
+        if [ -L "${dir%/}" ]; then
+            playthrough_warn "gfx/$(basename "${dir%/}") is a" \
+                "symbolic link, so it is not an installed tileset of" \
+                "this checkout: artwork reached through a link can be" \
+                "replaced without anything under gfx/ changing.  It is" \
+                "skipped rather than followed."
+            TILESET_LINKS_SKIPPED=$(( TILESET_LINKS_SKIPPED + 1 ))
+            continue
+        fi
         conf="${dir}tileset.txt"
         [ -f "${conf}" ] || continue
+        if [ -L "${conf}" ]; then
+            playthrough_warn "gfx/$(basename "${dir%/}")/tileset.txt" \
+                "is a symbolic link, so the id it declares is read" \
+                "from somewhere this checkout cannot account for; the" \
+                "directory is skipped."
+            TILESET_LINKS_SKIPPED=$(( TILESET_LINKS_SKIPPED + 1 ))
+            continue
+        fi
         name="$(tileset_field "${conf}" NAME || true)"
         [ -n "${name}" ] || continue
         view="$(tileset_field "${conf}" VIEW || true)"
@@ -1931,6 +1960,101 @@ find_required_tileset() {
     return 1
 }
 
+# verify_tileset_provenance -- prove WHICH BYTES the artwork is, from a
+# tracked anchor outside it, before the tileset is used.
+#
+# THE GAP THIS CLOSES.  Everything above verifies an INGESTION: a pack
+# staged somewhere, its path walked for ownership and permissions, its
+# own SHA256SUMS checked, the copy re-checked for links.  None of it runs
+# for a tileset that is ALREADY installed under gfx/ -- the normal case
+# on a provisioned host -- and that path accepted a directory on nothing
+# more than the NAME:/VIEW: line in its own tileset.txt.  A security
+# review named it, and all three consequences were reproduced before this
+# was written: a replaced payload with a regenerated in-pack SHA256SUMS
+# was accepted (exit 0, origin=required-installed); gfx/MShockXotto+
+# replaced by a symlink to a directory outside the checkout was accepted
+# (exit 0); and nothing anywhere named the upstream commit, so "the
+# reviewed artwork" was not a checkable claim.
+#
+# AN IN-PACK MANIFEST CANNOT BE THE ANCHOR.  It travels with the payload:
+# whoever can write the artwork can write the list of its digests in the
+# same command.  The anchor has to be OUTSIDE the thing it describes and
+# under a different trust root, which here means TRACKED --
+# playthrough/tooling/tileset_provenance.json, whose integrity is git's,
+# exactly like every script in this directory.
+#
+# WHAT THE ANCHOR STATES: the upstream repository and exact commit, the
+# compose recipe, the tileset's id and view, and the size and SHA-256 of
+# every file of the composed tree plus a digest over that ordered list.
+# tileset_provenance.py compares the COMPLETE installed tree against it
+# -- missing file, extra file, wrong size, wrong digest, symlinked
+# directory, symlink or special file inside, or a canonical path outside
+# <repo>/gfx/ -- and every one of those is a refusal, as is any failure
+# to READ the anchor at all.  Unestablished provenance is the finding.
+#
+# WHY THE FALLBACK IS EXEMPT.  PLAYTHROUGH_ALLOW_TILESET_FALLBACK is a
+# registered trust bypass: a run that took it is already diagnostic,
+# capture.sh already refuses to produce a production frame under it, and
+# the fallback artwork (ASCIITiles) is TRACKED, so git already says which
+# bytes it is.  The exemption is logged, never silent.
+verify_tileset_provenance() {
+    local dir="$1"
+    local ident="$2"
+    local view="$3"
+    local checker="${PLAYTHROUGH_TOOLING_DIR}/tileset_provenance.py"
+    if [ "${TILESET_ORIGIN}" = "fallback" ]; then
+        playthrough_log "the resolved tileset is the DIAGNOSTIC" \
+            "fallback '${ident}', which is tracked in git and already" \
+            "refuses a production capture; the provenance anchor" \
+            "describes the required MSXotto+ and is not applied to it"
+        return 0
+    fi
+    if [ ! -f "${checker}" ]; then
+        die "${EX_PREREQ}" "no ${checker}, so the artwork under" \
+            "'${dir}' cannot be verified against the tracked" \
+            "provenance anchor.  gfx/ is git-ignored, so that anchor" \
+            "is the only statement of which bytes the tileset must" \
+            "be; restore it before launching."
+    fi
+    if [ -z "${PLAYTHROUGH_PYTHON}" ] || \
+       [ ! -x "${PLAYTHROUGH_PYTHON}" ]; then
+        die "${EX_PREREQ}" "the interpreter" \
+            "'${PLAYTHROUGH_PYTHON:-<unset>}' is not executable, so" \
+            "the tileset provenance check cannot run.  It is not" \
+            "skipped: unverified artwork decides what every frame of" \
+            "the film looks like."
+    fi
+    local observed=""
+    if ! observed="$(
+        "${PLAYTHROUGH_PYTHON}" -B "${checker}" \
+            --root "${PLAYTHROUGH_REPO_ROOT}" verify \
+            --directory "${dir}" --id "${ident}" --view "${view}" \
+            2>&1 1>/dev/null
+    )"; then
+        playthrough_warn "${observed}"
+        die "${EX_TILESET}" "the installed tileset '${ident}' does" \
+            "NOT match the tracked provenance anchor" \
+            "'$(playthrough_rel \
+                "${PLAYTHROUGH_TOOLING_DIR}/tileset_provenance.json")'" \
+            "(details above).  The artwork every frame is rendered in" \
+            "is git-ignored, so this anchor is the only thing that" \
+            "says which bytes it may be, and a run that renders" \
+            "unverified artwork produces a film nobody can attest to." \
+            "Re-provision the tileset from the anchored upstream" \
+            "commit, or -- if the artwork legitimately changed --" \
+            "regenerate the anchor with" \
+            "'${PLAYTHROUGH_PYTHON} ${checker} generate' and commit it" \
+            "as a reviewed change."
+    fi
+    playthrough_log "tileset provenance VERIFIED against the tracked" \
+        "anchor: $(
+            "${PLAYTHROUGH_PYTHON}" -B "${checker}" \
+                --root "${PLAYTHROUGH_REPO_ROOT}" show 2>/dev/null |
+                tr '\n' ' '
+        )"
+    return 0
+}
+
 resolve_tileset() {
     assert_repo_root
     local required="${PLAYTHROUGH_TILESET}"
@@ -1964,6 +2088,27 @@ resolve_tileset() {
                 "do not record a session under it."
         else
             report_installed_tilesets
+            if [ "${TILESET_LINKS_SKIPPED}" -gt 0 ]; then
+                # THE PRECISE DIAGNOSIS, not the symptom.  A symlinked
+                # entry under gfx/ is skipped rather than followed, so
+                # the required tileset reads as absent -- which would be
+                # a baffling message for a directory that is plainly
+                # there.  Say which it was.
+                die "${EX_TILESET}" "the required tileset" \
+                    "'${required}' is not installed under gfx/ AS A" \
+                    "DIRECTORY OF THIS CHECKOUT:" \
+                    "${TILESET_LINKS_SKIPPED} entr(y|ies) under gfx/" \
+                    "are symbolic links and were skipped rather than" \
+                    "followed (named above).  Artwork reached through" \
+                    "a link can be replaced without anything under" \
+                    "gfx/ changing, and gfx/ is git-ignored, so a link" \
+                    "there is outside everything this repository can" \
+                    "attest to.  Install the tileset as a real" \
+                    "directory -- gfx/ is git-ignored at" \
+                    ".gitignore:52, so nothing tracked changes -- and" \
+                    "make sure it matches" \
+                    "playthrough/tooling/tileset_provenance.json."
+            fi
             # FAIL CLOSED: an absent MSXotto+ stops the run rather than
             # producing a compliant-looking movie in the wrong artwork.
             die "${EX_TILESET}" "the required tileset '${required}'" \
@@ -1986,6 +2131,14 @@ resolve_tileset() {
 
     playthrough_log "tileset resolved: id='${TILESET_ID}'" \
         "view='${TILESET_VIEW}' origin=${TILESET_ORIGIN}"
+    # AND PROVEN, before a single consumer hears about it.  Resolution
+    # answers "which directory declares the required id"; this answers
+    # "and are those the bytes it is supposed to be".  It runs for both
+    # the already-installed and the freshly-ingested origin, because a
+    # freshly-ingested tree was verified against a manifest that
+    # travelled inside it.
+    verify_tileset_provenance "${TILESET_DIR}" "${TILESET_ID}" \
+        "${TILESET_VIEW}"
     # The id is the value seed_options.py writes to the TILES option,
     # which is why it is the NAME: field and not the VIEW: label.
     emit PLAYTHROUGH_TILESET_RESOLVED "${TILESET_ID}"
@@ -2922,8 +3075,20 @@ stop_instance() {
 # [New Game], READING the capture to see which submenu row carries the
 # selection bar -- its opening position is not guaranteed -- moving with
 # Up/Down onto "Custom Character", and only then pressing Return.
-# session.py's MENU_CUSTOM_CHARACTER_ROUTE is that sequence, and it warns
-# when either letter is sent for that entry.
+# session.py's MENU_CUSTOM_CHARACTER_ROUTE is that sequence.
+#
+# AND IT IS A REFUSAL, NOT A WARNING.  This used to say that session.py
+# "warns when either letter is sent for that entry", and a security
+# review was right that a control which establishes a violation and then
+# permits it is not a control: the code proved from the engine's own
+# declarations that the keystroke lands on a forbidden entry, printed the
+# proof, and delivered the key anyway.  session.py now REFUSES it --
+# KeyRejected, raised before the journal and before delivery, so nothing
+# happened and the session stays usable -- whenever all three of these
+# hold: the key is "u" or "U", the caller's own action or commentary says
+# it is meant for the custom sheet, and the observed UI phase is `menu`.
+# The phase is read from the sidebar in the record rather than asserted,
+# so an in-world "u" (the north-east step) is never refused.
 #
 # FIRST LAUNCH MAY ALSO NOT BE FULL SIZE.
 # The requested window size derives from TERMINAL_WIDTH * fontwidth by
@@ -3207,7 +3372,12 @@ running and could NOT be stopped"
 #   * a save exists to load, and which world and character it is;
 #   * PLAYTHROUGH_INITIAL_UI_STATE is emitted so session.py's own
 #     mode-aware refusal and the operator are working from the same
-#     declared state rather than from two assumptions.
+#     declared state rather than from two assumptions.  session.py READS
+#     it (_assert_launch_state) and refuses to open a session whose
+#     declared state contradicts its own probe of the save tree -- a
+#     coupling a security review found this comment had been claiming
+#     without it existing.  It can only refuse: no refusal there is
+#     relaxed by any value published here, including "unverified".
 verify_resume_ui_state() {
     local payload status clock phrase date_text
     INITIAL_UI_STATE="main-menu-load-required"

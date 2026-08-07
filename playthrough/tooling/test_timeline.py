@@ -114,6 +114,17 @@ except ImportError:  # pragma: no cover - flat sibling, as tools/ does
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import timeline
 
+# The writer of the record and of the amendment ledger.  Imported here
+# rather than reached through timeline.manifest so that the suite states
+# its own dependency: the amendment tests below WRITE evidence through
+# the production writer, which is the only way to prove that what this
+# module resolves is what the writer produced.
+try:
+    import manifest
+except ImportError:  # pragma: no cover - flat sibling, as tools/ does
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import manifest
+
 
 # ---------------------------------------------------------------------
 # The reference sequence.
@@ -442,6 +453,67 @@ def rederive_document(document):
     return document
 
 
+def seal_captures(root, indexes):
+    """Create one capture per index inside `root` and attest its bytes.
+
+    THE FIXTURES HAVE TO PRODUCE FRAMES NOW.  timeline.py verifies the
+    pixels it is about to time against the append-only attestation ledger
+    BEFORE it computes a duration, because a duration is derived from a
+    clock read off a frame and a timeline over frames nothing attests is a
+    claim about files rather than about a session.  A fixture that wrote
+    only a manifest would therefore exercise that refusal instead of the
+    run it means to test.
+
+    Each body is derived from the index, so no two frames share a digest
+    and a substitution is detectable.  Returns the ledger's path.
+    """
+    frames = os.path.join(root, "frames")
+    if not os.path.isdir(frames):
+        os.mkdir(frames)
+    build = os.path.join(root, "build")
+    if not os.path.isdir(build):
+        os.mkdir(build)
+    ledger = os.path.join(root, *manifest.DIGESTS_REL_PARTS)
+    for index in indexes:
+        payload = b"\x89PNG\r\n\x1a\nframe %d\n" % index
+        with open(os.path.join(frames, "frame_%05d.png" % index),
+                  "wb") as handle:
+            handle.write(payload)
+        manifest.append_frame_digest(
+            ledger, index, "playthrough/frames/frame_%05d.png" % index,
+            hashlib.sha256(payload).hexdigest(), len(payload),
+            manifest.DIGEST_AT_CAPTURE,
+            "2026-08-03T17:56:%02d.400Z" % (index % 60), root=root)
+    return ledger
+
+
+def reseal_captures(root, indexes):
+    """Start `root`'s capture ledger over for a different frame set.
+
+    THE LEDGER IS APPEND-ONLY IN PRODUCTION, and that property is
+    asserted where it belongs -- in test_manifest.py, against the writer.
+    This is a FIXTURE's scratch file rather than evidence, and a test
+    whose subject is a differently-shaped record needs the frames and the
+    attestations THAT record describes, not the ones setUp happened to
+    write first.
+    """
+    ledger = os.path.join(root, *manifest.DIGESTS_REL_PARTS)
+    if os.path.isfile(ledger):
+        os.unlink(ledger)
+    frames = os.path.join(root, "frames")
+    if os.path.isdir(frames):
+        for name in os.listdir(frames):
+            os.unlink(os.path.join(frames, name))
+    return seal_captures(root, indexes)
+
+
+def frame_indexes(rows):
+    """The frame indexes a sequence of manifest rows names."""
+    return [row["frame"] for row in rows
+            if isinstance(row.get("frame"), int) and
+            not isinstance(row.get("frame"), bool)]
+
+
 def broken_document(**updates):
     """Return the reference timeline with top-level fields replaced."""
     document = reference_document()
@@ -469,6 +541,52 @@ def broken_attestation(**updates):
     attestation = reference_attestation()
     attestation.update(updates)
     return broken_document(manifest=attestation)
+
+
+def reference_amendment_attestation():
+    """A well-formed amendment attestation for the reference document.
+
+    Same discipline as reference_attestation(): the digest is the right
+    SHAPE, because the pure validator's subject is shape and whether the
+    bytes match belongs to amendment_attestation_problems(), which needs
+    a file on disk to answer.
+    """
+    return {
+        "path": "playthrough/amendments.jsonl",
+        "sha256": "1" * 64,
+        "rows": 2,
+        "applied": 2,
+    }
+
+
+def broken_amendments(**updates):
+    """Return the reference timeline with a mutated ledger attestation."""
+    attestation = reference_amendment_attestation()
+    attestation.update(updates)
+    return broken_document(amendments=attestation)
+
+
+def reference_capture_attestation():
+    """A well-formed capture attestation for the reference document.
+
+    Same discipline again: the digest is the right SHAPE.  Whether the
+    ledger on disk hashes to it -- and whether every frame the document
+    paces still hashes to the digest sealed for it -- belongs to
+    capture_attestation_problems(), which needs the files to answer.
+    """
+    return {
+        "path": "playthrough/build/frame_digests.jsonl",
+        "sha256": "2" * 64,
+        "rows": len(REFERENCE_CLOCKS),
+        "verified": len(REFERENCE_CLOCKS),
+    }
+
+
+def broken_captures(**updates):
+    """Return the reference timeline with a mutated capture attestation."""
+    attestation = reference_capture_attestation()
+    attestation.update(updates)
+    return broken_document(captures=attestation)
 
 
 def broken_entry(index, **updates):
@@ -3288,6 +3406,76 @@ class TestValidatorBranchIsolation(unittest.TestCase):
         ("an attested row count that disagrees with the entries",
          lambda: broken_attestation(rows=99),
          timeline.PROBLEM_MANIFEST_ROWS_MISMATCH),
+        # THE AMENDMENT-PROVENANCE BRANCHES.  A null ledger attestation
+        # is the ordinary case -- most sessions have nothing to amend --
+        # but a present one has to be well formed, because the entries it
+        # accompanies may carry narration a correction supplied and a
+        # reader has to be able to prove which ledger supplied it.
+        ("a ledger attestation that is not an object",
+         lambda: broken_document(
+             amendments="playthrough/amendments.jsonl"),
+         timeline.PROBLEM_AMENDMENTS_NOT_OBJECT),
+        ("a ledger attestation missing a field",
+         lambda: broken_document(
+             amendments={"path": "playthrough/amendments.jsonl"}),
+         timeline.PROBLEM_AMENDMENTS_MISSING_FIELD),
+        ("a ledger attestation with an unexpected field",
+         lambda: broken_amendments(mtime=1),
+         timeline.PROBLEM_AMENDMENTS_EXTRA_FIELD),
+        ("an attested ledger path that is not a path",
+         lambda: broken_amendments(path=None),
+         timeline.PROBLEM_AMENDMENTS_PATH_NOT_TEXT),
+        ("an attested ledger path that walks upwards",
+         lambda: broken_amendments(path="../amendments.jsonl"),
+         timeline.PROBLEM_AMENDMENTS_PATH_UNSAFE),
+        ("an attested ledger digest that is not sha256",
+         lambda: broken_amendments(sha256="deadbeef"),
+         timeline.PROBLEM_AMENDMENTS_DIGEST),
+        ("an attested ledger holding no rows",
+         lambda: broken_amendments(rows=0),
+         timeline.PROBLEM_AMENDMENTS_ROWS),
+        ("an applied count that is not an integer",
+         lambda: broken_amendments(applied="2"),
+         timeline.PROBLEM_AMENDMENTS_APPLIED),
+        ("more amendments applied than the ledger holds",
+         lambda: broken_amendments(rows=1, applied=2),
+         timeline.PROBLEM_AMENDMENTS_APPLIED_EXCEEDS),
+        ("an amended flag that is not a boolean",
+         lambda: broken_entry(0, amended="yes"),
+         timeline.PROBLEM_AMENDED_NOT_BOOL),
+        # THE CAPTURE-PROVENANCE BRANCHES.  A null capture attestation is
+        # shape-valid here for the same reason a null ledger is -- a
+        # session captured before the digest ledger existed has none, and
+        # whether one OUGHT to be present is a question only
+        # capture_attestation_problems() can answer, because it needs the
+        # ledger on disk.  A present one has to be well formed, since it
+        # is the only statement in the document about the PIXELS it paces.
+        ("a capture attestation that is not an object",
+         lambda: broken_document(
+             captures="playthrough/build/frame_digests.jsonl"),
+         timeline.PROBLEM_CAPTURES_NOT_OBJECT),
+        ("a capture attestation missing a field",
+         lambda: broken_document(captures={
+             "path": "playthrough/build/frame_digests.jsonl"}),
+         timeline.PROBLEM_CAPTURES_MISSING_FIELD),
+        ("a capture attestation with an unexpected field",
+         lambda: broken_captures(mtime=1),
+         timeline.PROBLEM_CAPTURES_EXTRA_FIELD),
+        ("an attested capture ledger path that is not a path",
+         lambda: broken_captures(path=None),
+         timeline.PROBLEM_CAPTURES_PATH_NOT_TEXT),
+        ("an attested capture ledger path that walks upwards",
+         lambda: broken_captures(path="../frame_digests.jsonl"),
+         timeline.PROBLEM_CAPTURES_PATH_UNSAFE),
+        ("an attested capture ledger digest that is not sha256",
+         lambda: broken_captures(sha256="deadbeef"),
+         timeline.PROBLEM_CAPTURES_DIGEST),
+        ("an attested capture ledger holding no rows",
+         lambda: broken_captures(rows=0),
+         timeline.PROBLEM_CAPTURES_ROWS),
+        ("fewer frames verified than the timeline paces",
+         lambda: broken_captures(verified=1),
+         timeline.PROBLEM_CAPTURES_VERIFIED),
     )
 
     def test_every_case_is_caught_by_the_check_it_names(self):
@@ -3406,7 +3594,11 @@ class TestTimelineCliAndIo(unittest.TestCase):
         self.observations = os.path.join(
             self.directory, "observations.jsonl")
         self.audit = os.path.join(self.directory, "frame_dates.jsonl")
+        self.frames = os.path.join(self.directory, "frames")
+        self.digests = os.path.join(self.directory,
+                                    *manifest.DIGESTS_REL_PARTS)
         self.write_manifest(REFERENCE_CLOCKS)
+        self.seal(len(REFERENCE_CLOCKS))
         # Redirect the module's defaults into the temporary directory so
         # that even a bug in this suite cannot reach the committed
         # manifest or timeline.
@@ -3425,6 +3617,39 @@ class TestTimelineCliAndIo(unittest.TestCase):
             path or self.manifest,
             [json.dumps(row) for row in make_rows(clocks)])
 
+    def seal(self, count, indexes=None):
+        """Create `count` captures and attest each one's bytes.
+
+        THE FIXTURE HAS TO PRODUCE FRAMES NOW, because the CLI verifies
+        the pixels it is about to time against the attestation ledger
+        before it computes a single duration.  A fixture that wrote only
+        a manifest would exercise that refusal rather than the run.
+
+        Each frame's body is derived from its index, so two frames never
+        share a digest and a substitution is detectable.
+        """
+        return seal_captures(
+            self.directory,
+            range(1, count + 1) if indexes is None else indexes)
+
+    def reseal(self, indexes):
+        """Start the fixture's ledger over for a different frame set.
+
+        THE LEDGER IS APPEND-ONLY IN PRODUCTION and that property is
+        asserted where it belongs, in test_manifest.py.  This is a
+        FIXTURE's scratch file, not evidence, and a test whose subject is
+        a differently-numbered record needs the frames and the
+        attestations that record describes rather than the ones setUp
+        happened to write.
+        """
+        return reseal_captures(self.directory, indexes)
+
+    def attest_frames(self, count=None):
+        """The capture attestation the CLI records for this tree."""
+        return timeline.attest_captures(
+            self.digests, self.directory,
+            verified=len(REFERENCE_CLOCKS) if count is None else count)
+
     def expected_document(self, clocks=None, manifest=None):
         """The document the CLI writes for a manifest on disk.
 
@@ -3435,11 +3660,12 @@ class TestTimelineCliAndIo(unittest.TestCase):
         provenance -- which is the state the three producers now refuse,
         so it would be asserting the wrong thing.
         """
+        rows = make_rows(REFERENCE_CLOCKS if clocks is None else clocks)
         return timeline.build_timeline(
-            make_rows(REFERENCE_CLOCKS if clocks is None else clocks),
-            None, None,
+            rows, None, None,
             timeline.attest_manifest(manifest or self.manifest,
-                                     self.directory))
+                                     self.directory),
+            capture_attestation=self.attest_frames(len(rows)))
 
     def write_observations(self, dates, status=None, path=None):
         """Write one telemetry row per frame and return the path."""
@@ -3558,6 +3784,11 @@ class TestTimelineCliAndIo(unittest.TestCase):
 
     def test_an_empty_manifest_may_be_accepted_explicitly(self):
         _write_lines(self.manifest, [])
+        # A record with no rows describes a session in which nothing was
+        # captured, so it has no frames and no attestations either.  A
+        # ledger left standing beside it would be a real inconsistency,
+        # and is reported as one.
+        self.reseal([])
         status, out, _ = self.run_main("--allow-empty")
         self.assertEqual(status, 0)
         document = timeline.read_timeline(self.output, root=self.directory)
@@ -3625,6 +3856,11 @@ class TestTimelineCliAndIo(unittest.TestCase):
         rows[2]["file"] = FRAME_FILE_FORMAT % 99
         _write_lines(self.manifest,
                      [json.dumps(row) for row in rows])
+        # The frames follow the record: the gapped session photographed
+        # frame 99 and never photographed frame 3, so that is what is on
+        # disk and what is attested.  Otherwise the capture gate would
+        # refuse first and this test would prove nothing about the gap.
+        self.reseal([1, 2, 99, 4, 5, 6, 7])
         status, _, err = self.run_main()
         self.assertEqual(status, 1)
         self.assertIn("no gap, no repeat and no reordering", err)
@@ -3804,6 +4040,10 @@ class TestTimelineCliAndIo(unittest.TestCase):
         # The session grew by one frame after the timeline was written,
         # which is exactly the drift --verify exists to catch.
         self.write_manifest(REFERENCE_CLOCKS + ("00:00:06",))
+        # The eighth keystroke took an eighth photograph and sealed it,
+        # so the drift under test is the TIMELINE's -- it was computed
+        # before that step and describes a session that has since grown.
+        self.seal(0, indexes=[8])
         status, _, err = self.run_main("--verify")
         self.assertEqual(status, 1)
         # THE ATTESTATION CATCHES IT FIRST, and says something sharper
@@ -3820,6 +4060,10 @@ class TestTimelineCliAndIo(unittest.TestCase):
         self.assertIn(
             "now holds 8", err,
             msg="and what the manifest holds now")
+        # AND ONLY THOSE TWO.  --verify checks the evidence before the
+        # claim and stops at the first layer that objects, so an operator
+        # is told "the record has grown" rather than being handed the
+        # consequences of that in four more forms.
         self.assertIn(
             "2 problem(s) found", err,
             msg="the count of problems is reported, not just the list")
@@ -4215,9 +4459,14 @@ class TestDateEvidenceSidecar(unittest.TestCase):
     def setUp(self):
         self.tmp = os.path.realpath(
             tempfile.mkdtemp(prefix="blitzy_tl_audit_"))
-        self.audit = os.path.join(self.tmp, "frame_dates.jsonl")
+        # build/frame_dates.jsonl inside the nominated root: ocr_clock.py
+        # now appends to exactly that relative name, so the round-trip
+        # test below has to write where the real writer writes.
+        os.mkdir(os.path.join(self.tmp, "build"))
+        self.audit = os.path.join(self.tmp, "build",
+                                  "frame_dates.jsonl")
 
-    def read(self, path=None):
+    def read(self, path=None, digests=None):
         """Read the sidecar, holding the module to THIS directory.
 
         `root=` is the call-site-only seam every filesystem entry point
@@ -4226,7 +4475,8 @@ class TestDateEvidenceSidecar(unittest.TestCase):
         rather than being exempted from the confinement.
         """
         return timeline.read_date_audit(
-            self.audit if path is None else path, root=self.tmp)
+            self.audit if path is None else path, root=self.tmp,
+            digests=digests)
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
@@ -4236,11 +4486,14 @@ class TestDateEvidenceSidecar(unittest.TestCase):
             for record in records:
                 handle.write(json.dumps(record) + "\n")
 
-    def record(self, index, date):
-        return {"frame": index,
-                "file": FRAME_FILE_FORMAT % index,
-                "clock": None, "phrase": None,
-                "date": date, "agreement": True}
+    def record(self, index, date, frame_sha256=None):
+        row = {"frame": index,
+               "file": FRAME_FILE_FORMAT % index,
+               "clock": None, "phrase": None,
+               "date": date, "agreement": True}
+        if frame_sha256 is not None:
+            row["frame_sha256"] = frame_sha256
+        return row
 
     def test_an_absent_sidecar_is_not_an_error(self):
         missing = os.path.join(self.tmp, "nope.jsonl")
@@ -4255,14 +4508,81 @@ class TestDateEvidenceSidecar(unittest.TestCase):
             self.read(),
             {1: "Spring, day 3"})
 
-    def test_the_last_record_for_a_frame_wins(self):
-        # A recapture appends a second record; the later one describes
-        # the frame that is actually on disk now.
+    def test_two_readings_that_disagree_leave_the_date_unobserved(self):
+        """THE DEFECT THIS TEST EXISTS FOR.
+
+        This used to be a last-occurrence rule: two records that
+        contradicted each other about the date were warned about and the
+        LATER value was returned anyway, so a contradiction still decided
+        a day of game time on nothing but write order.  There is no rule
+        by which being written second makes one of two contradictory
+        observations the true one.
+        """
         self.write([self.record(1, "Spring, day 3"),
                     self.record(1, "Spring, day 4")])
         self.assertEqual(
-            self.read(),
-            {1: "Spring, day 4"})
+            self.read(), {1: None},
+            msg=("a contradiction is not evidence, so the frame's date "
+                 "is unobserved and the rollover guard falls back to "
+                 "the bounded rule"))
+
+    def test_two_readings_that_agree_corroborate_each_other(self):
+        """A retry within one step legitimately appends a second row."""
+        self.write([self.record(1, "Spring, day 3"),
+                    self.record(1, "Spring, day 3")])
+        self.assertEqual(self.read(), {1: "Spring, day 3"})
+
+    def test_a_later_null_does_not_erase_a_reading(self):
+        """THE OTHER HALF OF THE SAME DEFECT, and it was silent.
+
+        `null` is the ordinary shape of an unreadable reading, and under
+        the last-occurrence rule a later null ERASED a date that had been
+        read successfully -- with no warning at all, because a null is
+        not a conflict.  An absence of evidence is not counter-evidence.
+        """
+        self.write([self.record(1, "Spring, day 3"),
+                    self.record(1, None)])
+        self.assertEqual(self.read(), {1: "Spring, day 3"})
+
+    def test_an_earlier_null_does_not_suppress_a_later_reading(self):
+        self.write([self.record(1, None),
+                    self.record(1, "Spring, day 3")])
+        self.assertEqual(self.read(), {1: "Spring, day 3"})
+
+    def test_a_row_bound_to_other_pixels_is_discarded(self):
+        """A reading of a frame that is no longer at that index.
+
+        A withdrawn capture, or a re-photographed step, leaves a row
+        describing pixels the frame no longer holds.  Attributing that
+        date to whatever now occupies the index is exactly the
+        misattribution the binding exists to prevent.
+        """
+        self.write([self.record(1, "Spring, day 9",
+                                frame_sha256="b" * 64)])
+        self.assertEqual(
+            self.read(digests={1: "a" * 64}), {})
+
+    def test_a_row_bound_to_the_attested_pixels_is_read(self):
+        self.write([self.record(1, "Spring, day 3",
+                                frame_sha256="a" * 64)])
+        for digests in ({1: "a" * 64},
+                        {1: {"sha256": "a" * 64, "frame": 1}}):
+            with self.subTest(shape=type(digests[1]).__name__):
+                self.assertEqual(
+                    self.read(digests=digests),
+                    {1: "Spring, day 3"})
+
+    def test_an_unbound_row_is_used_and_reported(self):
+        """Every row written before the ledger existed is in this state.
+
+        Discarding them would throw away the whole captured session's
+        date evidence; presenting them as checked would be a false
+        claim.  They are used, and the fact is reported.
+        """
+        self.write([self.record(1, "Spring, day 3")])
+        self.assertEqual(
+            self.read(digests={1: "a" * 64}),
+            {1: "Spring, day 3"})
 
     def test_a_malformed_line_is_skipped_not_fatal(self):
         with open(self.audit, "w", encoding="utf-8") as handle:
@@ -4405,10 +4725,16 @@ class TestDateEvidenceSidecar(unittest.TestCase):
                 if isinstance(element, ast.Constant))
         self.assertEqual(
             declared,
-            ("frame", "file", "clock", "phrase", "date", "agreement"),
+            ("frame", "file", "clock", "phrase", "date", "agreement",
+             "frame_sha256"),
             msg=("ocr_clock.DATE_AUDIT_FIELDS is the sidecar's shape "
                  "and timeline.py reads it by name; a change here is a "
                  "change to a cross-module contract"))
+        self.assertIn(
+            timeline.AUDIT_SHA256_FIELD, declared,
+            msg=("timeline.py binds a row to the pixels it was read "
+                 "from through %r, which the writer must emit"
+                 % timeline.AUDIT_SHA256_FIELD))
         self.assertIn(
             timeline.AUDIT_FRAME_FIELD, declared,
             msg=("timeline.py keys the sidecar off %r, which the writer "
@@ -4502,9 +4828,16 @@ class TestNoWriteBypassRemains(unittest.TestCase):
         self.addCleanup(self.env.__exit__, None, None, None)
 
     def write_manifest(self, rows):
+        """Write the rows AND seal the captures they name.
+
+        The frames follow the record here, because the subject of this
+        suite is which manifests produce a write -- so every manifest it
+        writes has to arrive with the captures it describes, attested.
+        """
         with open(self.manifest, "w", encoding="utf-8") as handle:
             for row in rows:
                 handle.write(json.dumps(row) + "\n")
+        reseal_captures(self.tmp, frame_indexes(rows))
 
     def run_cli(self, *args):
         return timeline.main(
@@ -5087,6 +5420,11 @@ class TestTheCommandLineGatesTheManifest(unittest.TestCase):
                 self.root, "frame_dates.jsonl"))
         self.env.__enter__()
         self.addCleanup(self.env.__exit__, None, None, None)
+        # Two captures, sealed.  Every manifest this suite writes has two
+        # rows; the defects under test are in the ROWS, so the frames they
+        # name have to exist and be attested or the capture gate would
+        # refuse before the row gate is reached.
+        seal_captures(self.root, (1, 2))
 
     def malformed_rows(self):
         """Return rows the canonical gate must refuse."""
@@ -5108,6 +5446,11 @@ class TestTheCommandLineGatesTheManifest(unittest.TestCase):
         with open(path, "w", encoding="utf-8", newline="\n") as handle:
             for row in rows:
                 handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+        # The captures the rows name, sealed, so that the capture gate is
+        # satisfied and the ROW gate is the one under test.  A malformed
+        # row still names a frame index, and that frame is what a session
+        # with this record would have photographed.
+        reseal_captures(self.root, frame_indexes(rows))
         return path
 
     def store_timeline(self, document, name="timeline.json"):
@@ -5127,7 +5470,10 @@ class TestTheCommandLineGatesTheManifest(unittest.TestCase):
         """
         return timeline.build_timeline(
             rows, None, None,
-            timeline.attest_manifest(manifest_path, self.root))
+            timeline.attest_manifest(manifest_path, self.root),
+            capture_attestation=timeline.attest_captures(
+                os.path.join(self.root, *manifest.DIGESTS_REL_PARTS),
+                self.root, verified=len(rows)))
 
     def run_cli(self, argv):
         """Return (exit status, stdout, stderr) of the real main()."""
@@ -5248,6 +5594,14 @@ class TestTheCommandLineGatesTheManifest(unittest.TestCase):
                        "08:20:41", "23:59:59", "00:00:05"))
         other["manifest"] = timeline.attest_manifest(
             manifest_path, self.root)
+        # The capture attestation is truthful too, for the same reason:
+        # the frames on disk ARE the seven this document paces, and their
+        # digests match.  A different session with the same frames and
+        # different CLOCKS is precisely the drift no provenance can see,
+        # which is what leaves the byte diff a job to do.
+        other["captures"] = timeline.attest_captures(
+            os.path.join(self.root, *manifest.DIGESTS_REL_PARTS),
+            self.root, verified=len(rows))
         timeline_path = self.store_timeline(other)
         status, _, err = self.run_cli(
             ["--verify", "--manifest", manifest_path,
@@ -5328,6 +5682,415 @@ class TestTheCommandLineGatesTheManifest(unittest.TestCase):
         self.assertIn(
             "timeline ok", out,
             msg="the successful path still summarises")
+
+
+class TestTheAmendmentLedgerReachesTheDerivative(unittest.TestCase):
+    """A correction is applied to a copy, attested, and provable.
+
+    THE DEFECT BEHIND THIS SUITE.  A security review found that the
+    committed record had been edited after capture to correct two
+    narrations, and that every derivative -- this timeline, both
+    transcripts, the captioned film -- had then been regenerated to agree
+    with the altered history.  The record is now restored and immutable,
+    the corrections live in playthrough/amendments.jsonl, and THIS module
+    is where they enter the derived chain.
+
+    So the assertions are: the ledger reaches the entries; the document
+    says which ledger it reached them through; the pacing is untouched by
+    a correction to prose; a ledger that no longer binds to the record is
+    a refusal rather than a silent skip; and a document computed before
+    the corrections were recorded is caught rather than published.
+    """
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = os.path.realpath(self.temporary.name)
+        self.addCleanup(self.temporary.cleanup)
+        self.manifest = os.path.join(self.root, "manifest.jsonl")
+        self.ledger = os.path.join(self.root, "amendments.jsonl")
+        self.env = _environment(
+            PLAYTHROUGH_MANIFEST=self.manifest,
+            PLAYTHROUGH_TIMELINE=os.path.join(self.root,
+                                              "timeline.json"),
+            PLAYTHROUGH_AMENDMENTS=self.ledger,
+            PLAYTHROUGH_OBSERVATIONS=os.path.join(
+                self.root, "observations.jsonl"),
+            PLAYTHROUGH_DATE_AUDIT=os.path.join(
+                self.root, "frame_dates.jsonl"))
+        self.env.__enter__()
+        self.addCleanup(self.env.__exit__, None, None, None)
+        for index, clock in enumerate(("08:15:33", "08:15:34"), start=1):
+            manifest.append_row(
+                self.manifest, index, manifest.frame_file(index),
+                "2026-05-14T09:12:0%d.000Z" % index, clock,
+                "press '5' -- wait and listen",
+                "I wait, and listen.", root=self.root)
+        # The two captures those rows describe, sealed.  A correction
+        # changes prose and never pixels, so the frames are the same
+        # frames before and after an amendment -- which is one of the
+        # things this suite asserts.
+        seal_captures(self.root, (1, 2))
+
+    def amend(self, frame=2, field="action", amended=None):
+        """Append one amendment for `frame` and return it."""
+        rows = {row["frame"]: row for row in
+                manifest.read_rows(self.manifest, root=self.root)}
+        digests = manifest.row_digests(self.manifest, root=self.root)
+        recorded = rows[frame][field]
+        if amended is None:
+            amended = recorded + "; nothing on the screen changed"
+        return manifest.append_amendment(
+            self.ledger, 1, "2026-05-14T10:00:00.000Z", frame, field,
+            digests[frame], recorded, amended,
+            "the two captures were compared and are identical.",
+            "the note claims an effect the capture contradicts.",
+            root=self.root)
+
+    def run_cli(self, argv):
+        """Return (exit status, stdout, stderr) of the real main()."""
+        out = io.StringIO()
+        err = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            with contextlib.redirect_stderr(err):
+                status = timeline.main(argv, root=self.root)
+        return status, out.getvalue(), err.getvalue()
+
+    def written(self):
+        """The timeline the CLI wrote, read back."""
+        return timeline.read_timeline(
+            os.path.join(self.root, "timeline.json"), root=self.root)
+
+    def test_with_no_ledger_the_attestation_is_null(self):
+        status, _, err = self.run_cli(["-q"])
+        self.assertEqual(status, 0, err)
+        document = self.written()
+        self.assertIsNone(document["amendments"])
+        self.assertEqual([entry["amended"]
+                          for entry in document["frames"]],
+                         [False, False])
+
+    def test_an_amendment_reaches_the_entry_and_is_attested(self):
+        self.amend()
+        status, _, err = self.run_cli(["-q"])
+        self.assertEqual(status, 0, err)
+        document = self.written()
+        attestation = document["amendments"]
+        self.assertEqual(list(attestation),
+                         list(timeline.AMENDMENT_ATTESTATION_FIELDS))
+        # The relative form is derived from the PARENT of the approved
+        # root, exactly as the manifest attestation's is, so in a
+        # temporary tree it carries that tree's own last component.
+        self.assertEqual(
+            attestation["path"],
+            os.path.join(os.path.basename(self.root),
+                         "amendments.jsonl"))
+        self.assertEqual(attestation["rows"], 1)
+        self.assertEqual(attestation["applied"], 1)
+        self.assertEqual(attestation["sha256"],
+                         timeline.file_digest(self.ledger))
+        entries = document["frames"]
+        self.assertEqual([entry["amended"] for entry in entries],
+                         [False, True])
+        self.assertTrue(entries[1]["action"].endswith(
+            "; nothing on the screen changed"))
+        # THE RECORD IS UNTOUCHED: the row still reads as recorded.
+        rows = manifest.read_rows(self.manifest, root=self.root)
+        self.assertNotIn("nothing on the screen changed",
+                         rows[1]["action"])
+
+    def test_a_correction_to_prose_moves_no_duration(self):
+        before, _, err = self.run_cli(["-q"]), None, None
+        self.assertEqual(before[0], 0, before[2])
+        paced = self.written()
+        self.amend()
+        status, _, err = self.run_cli(["-q"])
+        self.assertEqual(status, 0, err)
+        amended = self.written()
+        for name in ("total_duration", "total_transition", "total",
+                     "final_cue_end", "frame_count",
+                     "transition_count"):
+            with self.subTest(field=name):
+                self.assertEqual(amended[name], paced[name])
+        for index, (was, now) in enumerate(
+                zip(paced["frames"], amended["frames"]), start=1):
+            for name in ("raw_delta", "duration", "transition_after",
+                         "cue_start", "cue_end", "ingame_clock",
+                         "clock_seconds", "real_ts"):
+                with self.subTest(frame=index, field=name):
+                    self.assertEqual(now[name], was[name])
+
+    def test_a_ledger_that_no_longer_binds_is_refused(self):
+        self.amend()
+        # A THIRD ROW MOVES NOTHING -- the amendment names frame 2's own
+        # bytes -- so this must still pass.  Then the ledger is tampered
+        # with, and the run must stop.
+        manifest.append_row(
+            self.manifest, 3, manifest.frame_file(3),
+            "2026-05-14T09:12:03.000Z", "08:15:35",
+            "press '5' -- wait and listen", "Still listening.",
+            root=self.root)
+        seal_captures(self.root, (3,))
+        status, _, err = self.run_cli(["-q"])
+        self.assertEqual(status, 0, err)
+        with open(self.ledger, "r", encoding="utf-8") as handle:
+            rows = [json.loads(line) for line in handle if line.strip()]
+        rows[0]["source_sha256"] = "ab" * 32
+        with open(self.ledger, "w", encoding="utf-8",
+                  newline="\n") as handle:
+            for row in rows:
+                handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+        status, _, err = self.run_cli(["-q"])
+        self.assertEqual(status, 1)
+        self.assertIn("amendment", err.lower())
+
+    def test_a_timeline_written_before_the_ledger_is_caught(self):
+        status, _, err = self.run_cli(["-q"])
+        self.assertEqual(status, 0, err)
+        stored = self.written()
+        self.assertIsNone(stored["amendments"])
+        self.amend()
+        problems = timeline.amendment_attestation_problems(
+            stored, self.root)
+        self.assertTrue(
+            any("attests no ledger" in one for one in problems),
+            problems)
+        with self.assertRaises(timeline.TimelineError):
+            timeline.assert_timeline_document(stored, self.root)
+
+    def test_a_document_claiming_a_ledger_it_cannot_show_is_caught(self):
+        self.amend()
+        status, _, err = self.run_cli(["-q"])
+        self.assertEqual(status, 0, err)
+        stored = self.written()
+        self.assertEqual(
+            timeline.amendment_attestation_problems(stored, self.root),
+            [])
+        os.remove(self.ledger)
+        problems = timeline.amendment_attestation_problems(
+            stored, self.root)
+        self.assertTrue(any("does not exist" in one
+                            for one in problems), problems)
+
+    def test_verify_reads_the_ledger_too(self):
+        self.amend()
+        status, _, err = self.run_cli(["-q"])
+        self.assertEqual(status, 0, err)
+        status, out, err = self.run_cli(["--verify", "-q"])
+        self.assertEqual(status, 0, err)
+
+
+class TestTheCaptureLedgerReachesTheDerivative(unittest.TestCase):
+    """The frames are verified BEFORE anything is timed, and attested.
+
+    THE DEFECT BEHIND THIS SUITE.  A security review observed that no
+    part of this pipeline had ever recorded what a capture's bytes were:
+    every check on a frame was structural -- it exists, it is 1920x1080,
+    it is not blank, the counts agree -- so a same-sized, non-blank,
+    correctly-named replacement PNG paced the film, timed the captions and
+    reached the commit with nothing objecting.
+
+    A duration is derived from a clock READ OFF A FRAME.  So the frames
+    are re-hashed against the append-only attestation ledger before the
+    first delta is computed, the ledger is named in the document, and
+    every later consumer -- the transition composer, the encoder, the
+    caption generator -- inherits the check through
+    assert_timeline_document() rather than each remembering to repeat it.
+    """
+
+    CLOCKS = ("08:15:33", "08:15:34", "08:15:40")
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = os.path.realpath(self.temporary.name)
+        self.addCleanup(self.temporary.cleanup)
+        self.manifest = os.path.join(self.root, "manifest.jsonl")
+        self.output = os.path.join(self.root, "timeline.json")
+        self.env = _environment(
+            PLAYTHROUGH_MANIFEST=self.manifest,
+            PLAYTHROUGH_TIMELINE=self.output,
+            PLAYTHROUGH_OBSERVATIONS=os.path.join(
+                self.root, "observations.jsonl"),
+            PLAYTHROUGH_DATE_AUDIT=os.path.join(
+                self.root, "frame_dates.jsonl"))
+        self.env.__enter__()
+        self.addCleanup(self.env.__exit__, None, None, None)
+        for index, clock in enumerate(self.CLOCKS, start=1):
+            manifest.append_row(
+                self.manifest, index, manifest.frame_file(index),
+                "2026-05-14T09:12:0%d.000Z" % index, clock,
+                "press '5' -- wait and listen",
+                "I wait, and listen.", root=self.root)
+        self.digests = seal_captures(self.root,
+                                     range(1, len(self.CLOCKS) + 1))
+        self.frames = os.path.join(self.root, "frames")
+
+    def run_cli(self, argv):
+        """Return (exit status, stdout, stderr) of the real main()."""
+        out = io.StringIO()
+        err = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            with contextlib.redirect_stderr(err):
+                status = timeline.main(argv, root=self.root)
+        return status, out.getvalue(), err.getvalue()
+
+    def written(self):
+        """The timeline the CLI wrote, read back."""
+        return timeline.read_timeline(self.output, root=self.root)
+
+    def substitute(self, index):
+        """Replace one capture's bytes, keeping its name."""
+        path = os.path.join(self.frames, "frame_%05d.png" % index)
+        with open(path, "wb") as handle:
+            handle.write(b"\x89PNG\r\n\x1a\nsubstituted afterwards\n")
+        return path
+
+    def test_the_ledger_is_named_in_the_document(self):
+        status, _, err = self.run_cli(["-q"])
+        self.assertEqual(status, 0, err)
+        attestation = self.written()["captures"]
+        # Spelled relative to the parent of the approved root, which in
+        # production is the checkout root and here is the sandbox's
+        # parent -- the same rule the manifest attestation follows, so a
+        # confined run is resolvable by a confined verifier.
+        self.assertTrue(
+            attestation["path"].endswith(
+                "/build/frame_digests.jsonl"),
+            msg=attestation["path"])
+        self.assertEqual(attestation["sha256"],
+                         timeline.file_digest(self.digests))
+        self.assertEqual(attestation["rows"], len(self.CLOCKS))
+        self.assertEqual(
+            attestation["verified"], len(self.CLOCKS),
+            msg=("every frame the document paces was checked, not a "
+                 "sample of them"))
+
+    def test_a_substituted_frame_refuses_generation(self):
+        """THE SUBSTITUTION EVERY STRUCTURAL CHECK PASSES."""
+        self.substitute(2)
+        status, _, err = self.run_cli(["-q"])
+        self.assertEqual(status, 1)
+        self.assertIn("frame 2 is attested as sha256", err)
+        self.assertIn("not the bytes that were captured", err)
+        self.assertFalse(
+            os.path.exists(self.output),
+            msg=("nothing may reach the disk from frames whose bytes "
+                 "are not the bytes that were captured"))
+
+    def test_a_substituted_frame_is_refused_even_under_the_override(self):
+        """--allow-unattested-frames forgives an ABSENCE, never a change.
+
+        The one honest case the override exists for is a session captured
+        before the ledger did.  A frame that IS attested and no longer
+        matches is a different thing entirely, and no flag reaches it.
+        """
+        self.substitute(2)
+        status, _, err = self.run_cli(
+            ["-q", "--allow-unattested-frames"])
+        self.assertEqual(status, 1)
+        self.assertIn("frame 2 is attested as sha256", err)
+
+    def test_an_unattested_frame_refuses_generation(self):
+        manifest.append_row(
+            self.manifest, 4, manifest.frame_file(4),
+            "2026-05-14T09:12:04.000Z", "08:15:44",
+            "press '5' -- wait and listen", "Still listening.",
+            root=self.root)
+        with open(os.path.join(self.frames, "frame_00004.png"),
+                  "wb") as handle:
+            handle.write(b"\x89PNG\r\n\x1a\nnever sealed\n")
+        status, _, err = self.run_cli(["-q"])
+        self.assertEqual(status, 1)
+        self.assertIn("frame 4 is recorded but its bytes are not "
+                      "attested", err)
+
+    def test_a_session_recorded_before_the_ledger_may_be_paced(self):
+        """The override exists, announces itself, and is diagnostic."""
+        os.unlink(self.digests)
+        status, _, err = self.run_cli(["-q"])
+        self.assertEqual(
+            status, 1,
+            msg="an absent ledger is a refusal by default")
+        self.assertIn("no capture attestation ledger", err)
+        status, _, err = self.run_cli(
+            ["-q", "--allow-unattested-frames"])
+        self.assertEqual(status, 0, err)
+        self.assertIn("not proven to be the frames that were captured",
+                      err)
+        self.assertIsNone(
+            self.written()["captures"],
+            msg=("a document that verified nothing attests nothing; "
+                 "silence here is the honest value"))
+
+    def test_a_missing_frame_refuses_generation(self):
+        os.unlink(os.path.join(self.frames, "frame_00002.png"))
+        status, _, err = self.run_cli(["-q"])
+        self.assertEqual(status, 1)
+        self.assertIn("frame 2 is attested but", err)
+
+    def test_verify_reads_the_captures_too(self):
+        self.assertEqual(self.run_cli(["-q"])[0], 0)
+        status, _, err = self.run_cli(["--verify", "-q"])
+        self.assertEqual(status, 0, err)
+        self.substitute(3)
+        status, _, err = self.run_cli(["--verify", "-q"])
+        self.assertEqual(
+            status, 1,
+            msg=("--verify re-hashes the frames as well: an artifact "
+                 "that still matches a fresh computation is not "
+                 "evidence if the pixels beneath it moved"))
+        self.assertIn("frame 3 is attested as sha256", err)
+
+    def test_a_document_written_before_the_seal_is_caught(self):
+        """A timeline computed before the frames were sealed is stale.
+
+        It is perfectly self-consistent -- that is exactly why the check
+        has to be about provenance rather than about internal agreement.
+        """
+        status, _, err = self.run_cli(
+            ["-q", "--allow-unattested-frames"], )
+        del status, err
+        os.unlink(self.output)
+        os.unlink(self.digests)
+        self.assertEqual(
+            self.run_cli(["-q", "--allow-unattested-frames"])[0], 0)
+        stored = self.written()
+        self.assertIsNone(stored["captures"])
+        seal_captures(self.root, range(1, len(self.CLOCKS) + 1))
+        problems = timeline.capture_attestation_problems(
+            stored, self.root)
+        self.assertTrue(
+            any("attests no capture ledger" in one for one in problems),
+            problems)
+        with self.assertRaises(timeline.TimelineError):
+            timeline.assert_timeline_document(stored, self.root)
+
+    def test_a_document_claiming_a_ledger_it_cannot_show_is_caught(self):
+        self.assertEqual(self.run_cli(["-q"])[0], 0)
+        stored = self.written()
+        self.assertEqual(
+            timeline.capture_attestation_problems(stored, self.root), [])
+        os.unlink(self.digests)
+        problems = timeline.capture_attestation_problems(
+            stored, self.root)
+        self.assertTrue(any("does not exist" in one
+                            for one in problems), problems)
+
+    def test_a_ledger_that_grew_after_the_document_is_caught(self):
+        """The document names the ledger's own digest and row count."""
+        self.assertEqual(self.run_cli(["-q"])[0], 0)
+        stored = self.written()
+        manifest.append_row(
+            self.manifest, 4, manifest.frame_file(4),
+            "2026-05-14T09:12:04.000Z", "08:15:44",
+            "press '5' -- wait and listen", "Still listening.",
+            root=self.root)
+        seal_captures(self.root, (4,))
+        problems = timeline.capture_attestation_problems(
+            stored, self.root)
+        self.assertTrue(
+            any("now hashes to" in one for one in problems), problems)
+        self.assertTrue(
+            any("now holds 4" in one for one in problems), problems)
 
 
 class TestTheSuiteIsHermetic(unittest.TestCase):

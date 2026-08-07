@@ -617,25 +617,50 @@ class MuxFixture(unittest.TestCase):
 
     # -- running it --------------------------------------------------
 
+    def supported_os_release(self):
+        """Write, and name, an os-release the support table accepts.
+
+        Ubuntu 24.04 LTS -- a real release, genuinely in support until
+        2029-04 by env.sh's own dated table -- so the platform check
+        passes because it PASSES, not because anything was relaxed.  The
+        file lives in the sandbox, and env.sh honours the nomination only
+        because this tree is not a git working tree.
+        """
+        path = os.path.join(self.root, "os-release")
+        if not os.path.isfile(path):
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write('ID=ubuntu\n'
+                             'VERSION_ID="24.04"\n'
+                             'PRETTY_NAME="Ubuntu 24.04.3 LTS"\n')
+        return path
+
     def run_mux(self, args=(), **environment):
         """Run embed_captions.sh in the sandbox; report the result."""
         env = {
             "PATH": self.bin,
             "PLAYTHROUGH_STUB_LOG": self.stub_log,
-            # THE PLATFORM GATE IS SATISFIED, NOT SWITCHED OFF.
-            # playthrough_check_platform REFUSES an out-of-support or
-            # untabulated release by default, and the host this suite
-            # runs on may well be one -- so without a waiver every test
-            # here would exercise the prerequisite refusal and assert
-            # nothing about the subject.  The waiver takes a REASON,
-            # which is what makes declaring it in a fixture honest: it
-            # says why, in the same words a run on this host would.  It
-            # is not a trust bypass, so the enforced production path is
-            # unaffected, and the gate itself has its own tests in
-            # test_env.py.
-            "PLAYTHROUGH_ALLOW_EOL_PLATFORM":
-                "test fixture; the platform gate has its own coverage "
-                "in test_env.py",
+            # THE PLATFORM GATE IS SATISFIED, NOT WAIVED -- AND THE
+            # DIFFERENCE IS THE WHOLE POINT.  This fixture used to set
+            # PLAYTHROUGH_ALLOW_EOL_PLATFORM with a reason, on the
+            # grounds that the waiver was not a trust bypass.  A
+            # security review was right that it had to become one: an
+            # end-of-life release means the ImageMagick, ffmpeg and
+            # Xorg/Xvfb packages that photograph, decode and encode
+            # every frame receive no further security fixes, and
+            # recording that in a summary does not stop the next command
+            # from producing evidence under it.  It is registered now,
+            # so it forces the diagnostic state and this suite's own
+            # subject would refuse.
+            #
+            # So the sandbox NOMINATES its platform facts instead, which
+            # relaxes nothing: playthrough_check_platform runs in full
+            # against the nominated file and still refuses an
+            # out-of-support or untabulated release.  env.sh honours a
+            # nomination ONLY in a tree git does not track -- a verified
+            # property, not a declared one -- and this sandbox is such a
+            # tree, while a real checkout is not.  The gate and the
+            # nomination both have their own coverage in test_env.py.
+            "PLAYTHROUGH_OS_RELEASE": self.supported_os_release(),
             "PLAYTHROUGH_PYTHON": INTERPRETER,
             # A short ceiling, so a test that wedges something fails
             # fast rather than holding the suite for fifteen minutes.
@@ -1537,6 +1562,56 @@ class TestTheMux(MuxFixture):
 
     def test_a_gained_cue_is_refused(self):
         self.refuse(EX_VERIFY, STUB_ROUND_TRIP_CUES=str(CUES + 1))
+
+
+class TestTheTrustGate(MuxFixture):
+    """Finding 5: the captioned film is the pipeline's final artifact.
+
+    It is committed, so it is evidence in exactly the sense a kept frame
+    is -- and the end-of-life platform waiver used not to force the
+    diagnostic trust state, which left "capture and mux ... eligible as
+    trusted production evidence despite known-unpatched parser/X risks".
+    The waiver is a registered bypass now and the mux refuses under it,
+    before ffmpeg is invoked.
+    """
+
+    def test_a_declared_bypass_refuses_the_mux(self):
+        for name in ("PLAYTHROUGH_ALLOW_EOL_PLATFORM",
+                     "PLAYTHROUGH_ALLOW_UNAUTHENTICATED_X",
+                     "PLAYTHROUGH_ALLOW_VULNERABLE_PILLOW"):
+            with self.subTest(bypass=name):
+                status, _, err = self.run_mux(**{name: "a reason"})
+                self.assertEqual(status, EX_PREREQ)
+                self.assertIn("refusing the caption mux", err)
+                self.assertIn("trust state is diagnostic", err)
+                self.assertIn(name, err)
+                self.assertFalse(
+                    os.path.isfile(self.output),
+                    msg="nothing is produced under a relaxed check")
+
+    def test_the_refusal_names_what_the_bypass_endangers(self):
+        _, _, err = self.run_mux(
+            PLAYTHROUGH_ALLOW_EOL_PLATFORM="an out-of-support host")
+        self.assertIn("no further security fixes", err)
+        self.assertIn("encode every frame", err)
+
+    def test_the_gate_precedes_the_ffmpeg_invocation(self):
+        """Refused before the tool runs, not after it has written."""
+        self.run_mux(PLAYTHROUGH_ALLOW_EOL_PLATFORM="a reason")
+        self.assertEqual(
+            self.stub_calls("ffmpeg"), [],
+            msg="ffmpeg is never reached")
+
+    def test_an_untrusted_run_is_still_diagnosable(self):
+        """The refusal explains what to do, so it is not a dead end."""
+        _, _, err = self.run_mux(
+            PLAYTHROUGH_ALLOW_EOL_PLATFORM="a reason")
+        self.assertIn("unset the variable(s) above", err)
+
+    def test_the_ordinary_run_is_unaffected(self):
+        status, _, _ = self.run_mux()
+        self.assertEqual(status, 0)
+        self.assertTrue(os.path.isfile(self.output))
 
 
 class TestTheHelpAndUsage(MuxFixture):

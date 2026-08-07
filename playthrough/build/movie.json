@@ -9,14 +9,14 @@
   "group_count": 2,
   "height": 1080,
   "movie": {
-    "bytes": 8051910,
+    "bytes": 8051911,
     "path": "playthrough/cata-play.mp4",
-    "sha256": "5e1344bac9f1dbf04501ec028d654e210f6bfdc5dd6a4eff296fb2db4d59db9d"
+    "sha256": "5cf3c11e58216259218317f764db3ed0459d7307eddf76a2b01a4ab93fb3c4c5"
   },
   "stage": "movie",
   "timeline": {
     "path": "playthrough/timeline.json",
-    "sha256": "f030d75f65ff221d79f93de23093c0931295cc84ea568910f4450e3df8605171"
+    "sha256": "8f0dcd4130bff9bd041b3220f106c5865ba20b03b8e1d9a15c01e29056156a5a"
   },
   "version": 1,
   "width": 1920

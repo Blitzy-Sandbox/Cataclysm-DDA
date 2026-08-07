@@ -1425,6 +1425,51 @@ class TestTheCommandLine(OcrFixture):
             msg=('CLOCK="$(ocr_clock.py "$FRAME")" must need no '
                  "parsing, no trimming and no decoration stripped"))
 
+    def test_the_command_line_accepts_only_the_canonical_audit(self):
+        """THE DEFECT THIS TEST EXISTS FOR.
+
+        A security review published this reproduction:
+
+            ocr_clock.py --audit playthrough/manifest.jsonl \\
+                --audit-frame 99999 <frame>
+
+        It appended an audit-shaped line to the record and exited
+        reporting success, because the writer's rule was CONTAINMENT and
+        the manifest is inside the tree -- as is every other artifact
+        this pipeline produces.  The command line now names the sidecar
+        it already knows, or nothing.
+        """
+        tooling = os.path.dirname(os.path.abspath(ocr_clock.__file__))
+        expected = os.path.join(
+            os.path.realpath(os.path.dirname(tooling)),
+            *ocr_clock.DATE_AUDIT_REL_PARTS)
+        for candidate in (os.path.join(self.root, "frame_dates.jsonl"),
+                          "playthrough/manifest.jsonl",
+                          "playthrough/transcript.srt",
+                          "/tmp/frame_dates.jsonl"):
+            with self.subTest(path=candidate):
+                with self.assertRaises(SystemExit) as caught:
+                    self.run_main(*self.base(
+                        "--audit", candidate, "--audit-frame", "1"))
+                self.assertEqual(caught.exception.code, 2)
+        self.assertEqual(
+            ocr_clock.canonical_audit_path(), expected,
+            msg="and the one accepted path is derived, never read")
+
+    def test_a_malformed_bound_digest_is_a_usage_error(self):
+        for bad in ("nope", "AB" * 32, "ab" * 31):
+            with self.subTest(digest=bad):
+                with self.assertRaises(SystemExit) as caught:
+                    self.run_main(*self.base(
+                        "--audit", ocr_clock.canonical_audit_path(),
+                        "--audit-frame", "1", "--audit-sha256", bad))
+                self.assertEqual(caught.exception.code, 2)
+
+    def test_the_bound_digest_needs_the_audit(self):
+        with self.assertRaises(SystemExit) as caught:
+            self.run_main(*self.base("--audit-sha256", "a" * 64))
+        self.assertEqual(caught.exception.code, 2)
+
     def test_an_unreadable_clock_exits_one_with_an_empty_stdout(self):
         status, out, _ = self.run_main(*self.base(), texts={})
         self.assertEqual(status, ocr_clock.EXIT_UNREADABLE)
@@ -1824,15 +1869,24 @@ class TestTheOneWriteIsConfined(OcrFixture):
 
     def setUp(self):
         super().setUp()
-        self.audit = os.path.join(self.root, "frame_dates.jsonl")
+        # THE SIDECAR HAS EXACTLY ONE PLACE INSIDE A TREE, and this
+        # fixture nominates the tree rather than the file.  A security
+        # review reproduced the alternative -- `--audit
+        # playthrough/manifest.jsonl` appended an audit-shaped line to the
+        # record and reported success -- so containment is no longer the
+        # rule for this write; the exact relative name is.
+        os.mkdir(os.path.join(self.root,
+                              *ocr_clock.DATE_AUDIT_REL_PARTS[:-1]))
+        self.audit = os.path.join(self.root,
+                                  *ocr_clock.DATE_AUDIT_REL_PARTS)
         self.reading = ocr_clock.SidebarReading(
             png=self.frame, rect=None, clock="08:15:33", phrase=None,
             date="Thursday, Mar 8", text="08:15:33")
 
-    def append(self, path):
+    def append(self, path, **extra):
         """Append one record, holding the writer to our own root."""
         return ocr_clock.append_date_audit(
-            path, 1, self.reading, root=self.root)
+            path, 1, self.reading, root=self.root, **extra)
 
     def test_a_record_lands_where_it_was_asked_to(self):
         record = self.append(self.audit)
@@ -1871,42 +1925,109 @@ class TestTheOneWriteIsConfined(OcrFixture):
         self.assertFalse(os.path.exists(os.path.realpath(escape)))
 
     def test_a_symlinked_sidecar_is_refused_and_not_followed(self):
+        """The link is planted AT the canonical name, on purpose.
+
+        A link somewhere else would be caught by the exact-name check
+        before the symlink check was reached, and this test's subject is
+        the symlink handling.
+        """
         victim = os.path.join(self.root, "manifest.jsonl")
         with open(victim, "w", encoding="utf-8") as handle:
             handle.write("this is another artifact\n")
-        link = os.path.join(self.root, "linked.jsonl")
-        os.symlink(victim, link)
+        os.symlink(victim, self.audit)
         with self.assertRaises(ocr_clock.AuditError):
-            self.append(link)
+            self.append(self.audit)
         with open(victim, encoding="utf-8") as handle:
             self.assertEqual(handle.read(), "this is another artifact\n")
 
     def test_a_symlinked_component_is_refused(self):
+        """Again at the canonical name: build/ itself is the link."""
         real = os.path.join(self.root, "real")
         os.mkdir(real)
-        os.symlink(real, os.path.join(self.root, "linked"))
+        os.rmdir(os.path.dirname(self.audit))
+        os.symlink(real, os.path.dirname(self.audit))
         with self.assertRaises(ocr_clock.AuditError):
-            self.append(os.path.join(self.root, "linked", "a.jsonl"))
+            self.append(self.audit)
         self.assertEqual(
             os.listdir(real), [],
             msg="nothing may be appended through a linked directory")
 
     def test_a_directory_and_a_fifo_are_refused(self):
-        fifo = os.path.join(self.root, "fifo.jsonl")
-        os.mkfifo(fifo)
-        for candidate in (self.root, fifo):
-            with self.subTest(path=candidate):
-                with self.assertRaises(ocr_clock.AuditError):
-                    self.append(candidate)
+        os.mkfifo(self.audit)
+        with self.assertRaises(ocr_clock.AuditError):
+            self.append(self.audit)
+        os.unlink(self.audit)
+        os.mkdir(self.audit)
+        with self.assertRaises(ocr_clock.AuditError):
+            self.append(self.audit)
 
     def test_a_missing_parent_is_reported_not_created(self):
-        absent = os.path.join(self.root, "build", "frame_dates.jsonl")
+        os.rmdir(os.path.dirname(self.audit))
         with self.assertRaises(ocr_clock.AuditError):
-            self.append(absent)
+            self.append(self.audit)
         self.assertFalse(
-            os.path.exists(os.path.dirname(absent)),
+            os.path.exists(os.path.dirname(self.audit)),
             msg=("directory creation is playthrough_mkdirs()' job; a "
                  "mistyped path must not grow a second sidecar"))
+
+    def test_only_the_canonical_name_is_accepted(self):
+        """THE DEFECT THIS TEST EXISTS FOR.
+
+        Every artifact of this pipeline lives inside the same tree, so a
+        CONTAINED path is not a safe one for an append.  Each candidate
+        below is inside the approved root and each names something that is
+        not the sidecar.
+        """
+        for name in ("manifest.jsonl", "transcript.srt",
+                     "cata-play.mp4", "amendments.jsonl",
+                     os.path.join("build", "observations.jsonl"),
+                     os.path.join("build", "frame_dates.json"),
+                     os.path.join("frame_dates.jsonl")):
+            candidate = os.path.join(self.root, name)
+            parent = os.path.dirname(candidate)
+            if not os.path.isdir(parent):
+                os.makedirs(parent)
+            with open(candidate, "w", encoding="utf-8") as handle:
+                handle.write("this is another artifact\n")
+            with self.subTest(path=name):
+                with self.assertRaises(ocr_clock.AuditError) as caught:
+                    self.append(candidate)
+                self.assertIn("and to nothing else",
+                              str(caught.exception))
+                with open(candidate, encoding="utf-8") as handle:
+                    self.assertEqual(handle.read(),
+                                     "this is another artifact\n")
+
+    def test_the_canonical_path_is_derived_not_read(self):
+        self.assertEqual(
+            ocr_clock.canonical_audit_path(self.root), self.audit)
+        tooling = os.path.dirname(os.path.abspath(ocr_clock.__file__))
+        self.assertEqual(
+            ocr_clock.canonical_audit_path(),
+            os.path.join(os.path.realpath(os.path.dirname(tooling)),
+                         *ocr_clock.DATE_AUDIT_REL_PARTS))
+
+    def test_the_record_can_be_bound_to_the_capture_digest(self):
+        """The reading names the pixels it was taken from."""
+        digest = "a" * 64
+        record = self.append(self.audit, frame_sha256=digest)
+        self.assertEqual(record["frame_sha256"], digest)
+        self.assertEqual(list(record), list(ocr_clock.DATE_AUDIT_FIELDS))
+
+    def test_an_unbound_record_says_so_rather_than_guessing(self):
+        record = self.append(self.audit)
+        self.assertIsNone(
+            record["frame_sha256"],
+            msg=("a digest measured now and presented as one taken at "
+                 "publication would be a fabrication; null is the "
+                 "honest value"))
+
+    def test_a_malformed_capture_digest_is_refused(self):
+        for bad in ("not-a-digest", "AB" * 32, "ab" * 31, "ab" * 33, 7):
+            with self.subTest(digest=bad):
+                with self.assertRaises(ocr_clock.AuditError):
+                    self.append(self.audit, frame_sha256=bad)
+        self.assertFalse(os.path.exists(self.audit))
 
     def test_the_default_root_is_the_module_s_own_tree(self):
         tooling = os.path.dirname(os.path.abspath(ocr_clock.__file__))
