@@ -1950,17 +1950,165 @@ class TestObservationSidecar(unittest.TestCase):
         self.assertEqual(sorted(rows), [1, 2])
         self.assertEqual(rows[2]["date"], "Friday, Mar 9")
 
-    def test_the_last_row_for_a_frame_wins(self):
+    def test_two_readings_that_agree_corroborate_each_other(self):
+        """A re-capture within one step legitimately appends a row.
+
+        Two readings of the same screen are corroboration, not conflict,
+        so the frame keeps the date both of them report.
+        """
+        path = self.sidecar(
+            '{"frame": 1, "date": "Thursday, Mar 8", '
+            '"date_status": "read"}\n'
+            '{"frame": 1, "date": "Thursday, Mar 8", '
+            '"date_status": "read"}\n')
+        self.assertEqual(self.load(path)[1]["date"], "Thursday, Mar 8")
+
+    def test_two_readings_that_disagree_leave_the_date_unobserved(self):
+        """LAST-ROW-WINS WAS THE DEFECT, and this is the fix.
+
+        This reader used to take the later row unconditionally, so a
+        contradiction still decided a day of game time on nothing better
+        than write order -- while read_date_audit(), reading the very
+        same kind of evidence, had already been hardened to require
+        unanimity.  A code review named the asymmetry: build_timeline
+        PREFERRED this record, so the unhardened one was the one that
+        decided.  There is no rule by which being written later makes one
+        of two contradictory observations the true one.
+        """
         path = self.sidecar(
             '{"frame": 1, "date": "Thursday, Mar 8", '
             '"date_status": "read"}\n'
             '{"frame": 1, "date": "Friday, Mar 9", '
             '"date_status": "read"}\n')
-        rows = self.load(path)
-        self.assertEqual(
-            rows[1]["date"], "Friday, Mar 9",
-            msg=("the file is append-only, so a re-capture means the "
-                 "later row"))
+        self.assertIsNone(self.load(path)[1]["date"])
+
+    def test_a_null_reading_does_not_erase_one_that_succeeded(self):
+        """An absence of evidence is not counter-evidence.
+
+        `null` is the ordinary shape of an unreadable reading, and under
+        last-row-wins a later one silently erased a date that had been
+        read -- with no warning at all, because a null is not a conflict.
+        """
+        path = self.sidecar(
+            '{"frame": 1, "date": "Thursday, Mar 8", '
+            '"date_status": "read"}\n'
+            '{"frame": 1, "date": null, '
+            '"date_status": "unreadable"}\n')
+        self.assertEqual(self.load(path)[1]["date"], "Thursday, Mar 8")
+
+    def test_two_keystrokes_for_one_frame_are_refused(self):
+        """One keystroke makes one frame, so this is not a re-capture."""
+        path = self.sidecar(
+            '{"frame": 1, "key": "j", "date": "Thursday, Mar 8", '
+            '"date_status": "read"}\n'
+            '{"frame": 1, "key": "k", "date": "Thursday, Mar 8", '
+            '"date_status": "read"}\n')
+        with self.assertRaises(timeline.TimelineError) as caught:
+            self.load(path)
+        self.assertIn("different keystrokes", str(caught.exception))
+
+    def test_a_row_the_ledger_contradicts_is_discarded(self):
+        """A reading of pixels that are no longer at that index.
+
+        The digest binding read_date_audit() already applied, applied
+        here too: a row naming a frame_sha256 that is not the digest
+        attested for the frame describes a photograph that has been
+        withdrawn or re-taken, and attributing its date to whatever now
+        holds the index would be a reading of one screen reported as
+        another.
+        """
+        path = self.sidecar(
+            '{"frame": 1, "frame_sha256": "%s", '
+            '"date": "Thursday, Mar 8", "date_status": "read"}\n'
+            % ("a" * 64))
+        rows = timeline.load_observations(
+            path, root=self.directory, digests={1: "b" * 64})
+        self.assertEqual(rows, {})
+
+    def test_a_row_the_ledger_confirms_is_kept(self):
+        path = self.sidecar(
+            '{"frame": 1, "frame_sha256": "%s", '
+            '"date": "Thursday, Mar 8", "date_status": "read"}\n'
+            % ("a" * 64))
+        rows = timeline.load_observations(
+            path, root=self.directory, digests={1: "a" * 64})
+        self.assertEqual(rows[1]["date"], "Thursday, Mar 8")
+
+    def test_an_unbound_row_is_used_and_reported(self):
+        """Every row of the committed record is in this state.
+
+        The telemetry predates the attestation ledger, so discarding
+        unbound rows would throw away a whole captured session's date
+        evidence; presenting them as checked would be a false claim.
+        """
+        path = self.sidecar(
+            '{"frame": 1, "date": "Thursday, Mar 8", '
+            '"date_status": "read"}\n')
+        rows = timeline.load_observations(
+            path, root=self.directory, digests={1: "a" * 64})
+        self.assertEqual(rows[1]["date"], "Thursday, Mar 8")
+
+    def test_a_row_of_the_wrong_shape_is_refused(self):
+        """The schema is part of the evidence.
+
+        A field of the wrong TYPE is not coerced: `"date": 3` is not a
+        date line, `"capture_attempts": 0` is not a count of a capture
+        that happened, and a row naming another frame's file cannot be
+        attributed to either frame.
+        """
+        for text in ('{"frame": 1, "date": 3}\n',
+                     '{"frame": 1, "date": "x", "date_status": 7}\n',
+                     '{"frame": 1, "recovered": "yes"}\n',
+                     '{"frame": 1, "capture_attempts": 0}\n',
+                     '{"frame": 1, "capture_attempts": "many"}\n',
+                     '{"frame": 0, "date": "x"}\n',
+                     '{"frame": 1, '
+                     '"file": "playthrough/frames/frame_00002.png"}\n'):
+            with self.subTest(text=text):
+                with self.assertRaises(timeline.TimelineError):
+                    timeline.load_observations(
+                        self.sidecar(text), root=self.directory)
+
+    def test_a_row_written_by_the_real_writer_validates(self):
+        """The contract between the two modules, round-tripped.
+
+        timeline.py restates the schema rather than importing session.py,
+        so this is what holds the copy to the original: a row built by
+        the real writer, from the real payload contract, must satisfy the
+        reader's own validation unchanged.
+        """
+        tooling = os.path.dirname(os.path.abspath(__file__))
+        if not os.path.isfile(os.path.join(tooling, "session.py")):
+            self.skipTest("session.py is not beside this test")
+        if tooling not in sys.path:
+            sys.path.insert(0, tooling)
+        try:
+            import session as writer
+        except ImportError as err:
+            # session.py reaches ocr_clock, which needs the capture
+            # toolchain; recomputing a timeline deliberately does not.
+            self.skipTest("the writer cannot be imported here: %s" % err)
+        row = writer.observation_row(
+            1,
+            {"FRAME_INDEX": "1",
+             "FRAME_FILE": "playthrough/frames/frame_00001.png",
+             "FRAME_SHA256": "c" * 64,
+             "REAL_TS": "2026-08-04T19:18:22.200Z",
+             "CLOCK": "08:00:00", "CLOCK_STATUS": "exact",
+             "TIME_PHRASE": "", "DATE": "Thursday, Mar 8",
+             "DATE_STATUS": "read", "FRAME_GEOMETRY": "1920x1080",
+             "LUMA_MEAN": "0.27", "LUMA_STDDEV": "0.19",
+             "CAPTURE_TOOL": "import", "CLOCK_RECT": "352x1072+1568+4",
+             "CLOCK_RECT_FROM": "computed",
+             "CLOCK_SOURCE": "ocr_clock.py"},
+            key="j", action="press 'j' -- step south")
+        path = self.sidecar(json.dumps(row) + "\n")
+        rows = timeline.load_observations(path, root=self.directory)
+        self.assertEqual(rows[1]["date"], "Thursday, Mar 8")
+        self.assertLessEqual(
+            set(row) - timeline.OBSERVATION_KNOWN_FIELDS, set(),
+            msg=("every column the writer produces has a declared type "
+                 "in the reader's copy of the schema"))
 
     def test_blank_lines_are_tolerated(self):
         path = self.sidecar(
@@ -1983,6 +2131,55 @@ class TestObservationSidecar(unittest.TestCase):
                     "date_status": "unreadable"}}
         document = timeline.build_timeline(make_rows(["08:00:00"]), rows)
         self.assertIsNone(document["frames"][0]["ingame_date"])
+
+    def test_the_telemetry_no_longer_outranks_the_audit(self):
+        """NEITHER RECORD IS PREFERRED, which was the defect.
+
+        build_timeline() used to take the telemetry's date and consult
+        the audit only where the telemetry had none -- so the record with
+        no unanimity rule and no digest binding decided, and one stale
+        telemetry row could override unanimous, digest-bound audit
+        evidence and move a day of game time.  The two records read the
+        same photographs: agreement corroborates, and a contradiction
+        leaves the frame's date unobserved rather than settled by which
+        file it came out of.
+        """
+        telemetry = {
+            1: {"frame": 1, "date": "Thursday, Mar 8",
+                "date_status": "read"},
+            2: {"frame": 2, "date": "Friday, Mar 9",
+                "date_status": "read"},
+        }
+        agreeing = timeline.build_timeline(
+            make_rows(["08:00:00", "08:00:01"]), telemetry,
+            ["Thursday, Mar 8", "Friday, Mar 9"])
+        self.assertEqual(
+            [entry["ingame_date"] for entry in agreeing["frames"]],
+            ["Thursday, Mar 8", "Friday, Mar 9"],
+            msg="two records that agree are two readings of one screen")
+        disputed = timeline.build_timeline(
+            make_rows(["08:00:00", "08:00:01"]), telemetry,
+            ["Thursday, Mar 8", "Saturday, Mar 10"])
+        self.assertEqual(
+            [entry["ingame_date"] for entry in disputed["frames"]],
+            ["Thursday, Mar 8", None],
+            msg=("frame 2's records contradict each other, so its date "
+                 "is UNOBSERVED -- not the telemetry's reading because "
+                 "the telemetry used to be preferred"))
+        self.assertEqual(
+            disputed["frames"][1]["date_agreement"],
+            timeline.AGREE_UNVERIFIED,
+            msg=("an unobserved date is unverified rather than "
+                 "confirmed; nothing was established for that frame"))
+
+    def test_the_audit_alone_still_settles_a_day(self):
+        """A gap in one record is not a gap in the evidence."""
+        telemetry = {1: {"frame": 1, "date": None,
+                         "date_status": "unreadable"}}
+        document = timeline.build_timeline(
+            make_rows(["08:00:00"]), telemetry, ["Thursday, Mar 8"])
+        self.assertEqual(document["frames"][0]["ingame_date"],
+                         "Thursday, Mar 8")
 
     def test_the_default_path_is_the_documented_one(self):
         parts = timeline.OBSERVATIONS_REL_PARTS
@@ -3973,13 +4170,72 @@ class TestTimelineCliAndIo(unittest.TestCase):
                  "thing as no sidecar"))
         self.assertIn("is not valid JSON", err)
 
+    def test_a_malformed_audit_row_refuses_to_publish(self):
+        """FAIL CLOSED, and leave what is already published alone.
+
+        The audit used to warn and skip a row it could not parse, which
+        is not the neutral loss it looks like: two rows carrying one date
+        make a backwards clock a same-date reconciliation, and losing one
+        of them makes the same clock an unevidenced wrap -- a different
+        timeline, published while every count still tallies.  So each
+        malformed shape stops the run, names the file and the line, and
+        the timeline already on disk is left exactly as it was.
+        """
+        good = json.dumps({"frame": 1, "file": FRAME_FILE_FORMAT % 1,
+                           "clock": None, "phrase": None,
+                           "date": "Spring, day 3", "agreement": True})
+        for name, line in (
+            ("invalid JSON", "{not json"),
+            ("not an object", "[1, 2, 3]"),
+            ("no frame index", '{"date": "Spring, day 3"}'),
+            ("a string index", '{"frame": "1", "date": "x"}'),
+            ("a boolean index", '{"frame": true, "date": "x"}'),
+            ("a numeric date", '{"frame": 1, "date": 3}'),
+        ):
+            with self.subTest(shape=name):
+                # A timeline computed from sound evidence, published.
+                _write_lines(self.audit, [good])
+                first, _, _ = self.run_main()
+                self.assertEqual(first, 0)
+                published = _read_text(self.output)
+                # Now the same run over an audit with one bad row.
+                _write_lines(self.audit, [good, line])
+                status, out, err = self.run_main()
+                self.assertEqual(
+                    status, 1,
+                    msg=("a malformed audit row must refuse "
+                         "publication: %s / %s" % (out, err)))
+                self.assertIn("frame_dates.jsonl", err)
+                self.assertEqual(
+                    _read_text(self.output), published,
+                    msg=("the timeline already on disk is not "
+                         "replaced, truncated or half-written by a run "
+                         "that refused"))
+
+    def test_an_absent_audit_still_publishes(self):
+        """The boundary of the refusal above, asserted from the CLI."""
+        if os.path.exists(self.audit):
+            os.unlink(self.audit)
+        status, _, err = self.run_main()
+        self.assertEqual(
+            status, 0,
+            msg="no audit at all is a documented mode: %s" % err)
+
     def test_a_telemetry_row_without_a_frame_index_is_refused(self):
         _write_lines(self.observations, [json.dumps({"date": "x"})])
         status, _, err = self.run_main()
         self.assertEqual(status, 1)
         self.assertIn("frame index", err)
 
-    def test_the_last_telemetry_row_for_a_frame_wins(self):
+    def test_telemetry_rows_for_a_frame_must_agree(self):
+        """Through the real reader, on the real file, at the CLI.
+
+        The rule this asserts replaced last-row-wins, which is the
+        defect: two rows that contradicted each other about the date
+        still decided a day of game time, settled by write order alone.
+        A `null` remains an absence of evidence rather than
+        counter-evidence, so the two halves are asserted together.
+        """
         _write_lines(self.observations, [
             json.dumps({"frame": 1, "date": "Thursday, Mar 8",
                         "date_status": timeline.DATE_STATUS_READ}),
@@ -3988,11 +4244,22 @@ class TestTimelineCliAndIo(unittest.TestCase):
         ])
         rows = timeline.load_observations(
             self.observations, root=self.directory)
+        self.assertIsNone(
+            rows[1]["date"],
+            msg=("a contradiction is not evidence, and being written "
+                 "later does not make one of two readings the true one"))
+        _write_lines(self.observations, [
+            json.dumps({"frame": 1, "date": "Thursday, Mar 8",
+                        "date_status": timeline.DATE_STATUS_READ}),
+            json.dumps({"frame": 1, "date": None,
+                        "date_status": "unreadable"}),
+        ])
+        rows = timeline.load_observations(
+            self.observations, root=self.directory)
         self.assertEqual(
-            rows[1]["date"], "Friday, Mar 9",
-            msg=("the sidecar is append-only, so a frame captured "
-                 "twice has two rows and the later one is the one that "
-                 "describes the frame on disk"))
+            rows[1]["date"], "Thursday, Mar 8",
+            msg=("an unreadable second look does not erase a reading "
+                 "that succeeded"))
 
     def test_an_absent_sidecar_reads_as_no_evidence_at_all(self):
         self.assertIsNone(
@@ -4584,23 +4851,57 @@ class TestDateEvidenceSidecar(unittest.TestCase):
             self.read(digests={1: "a" * 64}),
             {1: "Spring, day 3"})
 
-    def test_a_malformed_line_is_skipped_not_fatal(self):
+    def test_a_malformed_line_is_fatal_not_skipped(self):
+        """DROPPING A ROW CHANGES THE EVIDENCE, which is the point.
+
+        This used to be reported and skipped, on the reasoning that
+        corroborating evidence can only be lost, never made wrong.  A
+        code review showed the reasoning is false: two rows carrying one
+        date make a backwards clock a same-date reconciliation, and
+        losing one of them makes the same clock an unevidenced wrap the
+        bounded rule may believe -- a different, wrong timeline,
+        published while every count still tallies.  So a file that
+        exists is read whole or not at all.
+        """
         with open(self.audit, "w", encoding="utf-8") as handle:
             handle.write("{not json\n")
             handle.write(json.dumps(self.record(2, "Spring, day 3")))
             handle.write("\n")
-        self.assertEqual(
-            self.read(),
-            {2: "Spring, day 3"},
-            msg=("corroborating evidence that cannot be parsed "
-                 "degrades a rollover to unevidenced; it does not stop "
-                 "the pipeline"))
+        with self.assertRaises(timeline.TimelineError) as caught:
+            self.read()
+        self.assertIn("is not JSON", str(caught.exception))
 
-    def test_a_record_without_an_integer_index_is_skipped(self):
-        self.write([{"frame": "one", "date": "Spring, day 3"},
-                    self.record(2, "Spring, day 3")])
-        self.assertEqual(list(self.read()),
-                         [2])
+    def test_every_malformed_shape_is_fatal(self):
+        """Each shape the reader can meet, and none of them is skipped."""
+        for name, rows in (
+            ("not an object", ["[1, 2, 3]"]),
+            ("no frame index", ['{"date": "Spring, day 3"}']),
+            ("a string index", '{"frame": "1", "date": "x"}'),
+            ("a boolean index", '{"frame": true, "date": "x"}'),
+            ("a numeric date", '{"frame": 1, "date": 3}'),
+            ("a listed date", '{"frame": 1, "date": ["x"]}'),
+        ):
+            with self.subTest(shape=name):
+                with open(self.audit, "w", encoding="utf-8") as handle:
+                    for line in ([rows] if isinstance(rows, str)
+                                 else rows):
+                        handle.write(line + "\n")
+                    handle.write(
+                        json.dumps(self.record(2, "Spring, day 3")))
+                    handle.write("\n")
+                with self.assertRaises(timeline.TimelineError):
+                    self.read()
+
+    def test_an_absent_audit_is_still_no_evidence_at_all(self):
+        """The one state that legitimately means "nothing was read".
+
+        Asserted beside the refusals above so the boundary is explicit:
+        a file that EXISTS is a claim and is read whole or not at all,
+        while no file at all is a complete, honest state.
+        """
+        self.write([self.record(1, "Spring, day 3")])
+        os.unlink(self.audit)
+        self.assertEqual(self.read(), {})
 
     def test_an_unread_date_is_recorded_as_none(self):
         self.write([self.record(1, None)])

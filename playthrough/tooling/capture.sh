@@ -944,11 +944,40 @@ unbounded wait these ceilings exist to prevent"
 # invocation's own payload, which is what a caller asks a diagnostic
 # capture for, and DATE_AUDIT=off says plainly that nothing was
 # appended.  A diagnostic capture that could write evidence is a
-# contradiction in terms, so both overrides are refused here and the
+# contradiction in terms, so ASKING FOR an audit is refused here and the
 # canonical-destination check has moved OUT of the production-only
 # block, where it applies whenever the audit is on at all.
+#
+# THE THIRD DEFECT, AND WHY "off" IS ACCEPTED RATHER THAN REFUSED.  The
+# refusal above was written against the PRESENCE of the variable, at any
+# value -- and "off" is not a request for an audit, it is agreement with
+# the value this mode forces two lines below.  Refusing it broke the one
+# caller in the pipeline: launch_game.sh's verify_resume_ui_state()
+# invokes this script with PLAYTHROUGH_CAPTURE_MODE=diagnostic and
+# PLAYTHROUGH_CAPTURE_AUDIT=off, stating at its own call site that the
+# probe owes no audit row so that the probe cannot acquire one by a
+# change of default here.  That invocation exited EX_USAGE instead of
+# EX_DIAGNOSTIC, the launcher read the unexpected status as "the screen
+# could not be read", and every resumed launch recorded
+# INITIAL_UI_STATE=unverified -- so the mandatory proof that a resumed
+# launch reached the expected load UI was structurally disabled, by two
+# scripts disagreeing about one variable.  A code review found it.
+#
+# So the two halves of the contract are separated, and this is now ONE
+# diagnostic API both scripts hold to:
+#
+#   * PLAYTHROUGH_CAPTURE_AUDIT=off      -- accepted.  It cannot enable
+#     anything: it names the value this mode forces anyway, and saying
+#     it at a call site documents the intent where the reader is.
+#   * PLAYTHROUGH_CAPTURE_AUDIT=on       -- refused.  That is the
+#     request the two defects above were about.
+#   * PLAYTHROUGH_CAPTURE_AUDIT_PATH=... -- refused at ANY value,
+#     including alongside "off": naming a destination is asking for a
+#     row to be written to it, and a diagnostic capture writes none.
+#   * anything else                      -- refused by the on|off case
+#     below, which every mode shares.
 if [ "${CAPTURE_MODE}" = "diagnostic" ]; then
-    if [ -n "${PLAYTHROUGH_CAPTURE_AUDIT:-}" ] ||
+    if [ "${PLAYTHROUGH_CAPTURE_AUDIT:-off}" != "off" ] ||
        [ -n "${PLAYTHROUGH_CAPTURE_AUDIT_PATH:-}" ]; then
         die "${EX_USAGE}" "PLAYTHROUGH_CAPTURE_AUDIT\
 ${PLAYTHROUGH_CAPTURE_AUDIT:+=\"${PLAYTHROUGH_CAPTURE_AUDIT}\"}\
@@ -959,7 +988,9 @@ out of the working tree precisely so that it is not evidence, and a \
 capture that writes an audit row while its own photograph is withdrawn \
 leaves a record with nothing to account for it.  The reading is in this \
 invocation's payload; the sidecar is written only by a capture that \
-keeps its frame."
+keeps its frame.  Only PLAYTHROUGH_CAPTURE_AUDIT=off is accepted here, \
+and it is accepted because it asks for exactly what this mode does \
+anyway."
     fi
     AUDIT_MODE="off"
 fi

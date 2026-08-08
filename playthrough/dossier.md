@@ -1,194 +1,202 @@
-# Delphine Ouellette
+# Ambrose Halloran
 
-*Forty-seven years old. Mechanical engineer, paper mill, north side of the
-river. Written sitting on the floor with my back against a door, before I go
-out.*
+*Sixty-one years old. Letter carrier, thirty-four years on the same three
+routes. Written at the kitchen table in a house that is not mine, before I open
+the door.*
 
 ## Who I was
 
-My name is Delphine Ouellette and everyone who ever paid me called me Del. I am
-forty-seven years old. I was named for my grandmother, who came down from
-Quebec at fifteen to sew uppers in a shoe shop and who never once in her life
-let anybody see her cry in a kitchen. I took my degree in mechanical
-engineering at the state school up the valley and came straight back home with
-it, which the professors thought was a waste and which I have never regretted
-for one hour.
+My name is Ambrose Halloran. My mother called me Ambrose and everybody since
+has called me Bram, and I have never much minded either. I am sixty-one years
+old. My father drove a milk truck and my mother took in sewing, and between the
+two of them they got four children out of a three-room flat on the wrong side of
+the tracks, which in this town means the side the tracks were built for.
 
-Twenty-two years in the same plant. I started as the youngest engineer they had
-and I ended up the only one left who understood the whole steam side of the
-building, which is a polite way of saying I was the one they phoned at three in
-the morning. A bearing gone at the wet end. Header pressure creeping where it
-had no business creeping. Somebody's shortcut from four years ago finally
-coming due. I would put on the boots, drive down through a dead town, and fix
-it, and then I would write down what I did and the time I did it, because a
-repair nobody writes down is a repair you get to do again in eight months.
+I carried mail for thirty-four years. Three routes, all of them inside two miles
+of where I am sitting. If you want to know what that does to a man, it is this:
+I know this town the way you know the inside of your own mouth. I know which
+storm drain floods in April and which one only looks like it does. I know the
+house on Hollis with the bad third step that the family never fixed in eleven
+years. I know which dogs are noise and which dog is not noise. I know that the
+Petrosians on Elm leave for the lake the second week of July and that the mail
+piles up behind their door in a particular way, and I know that if the pile is
+wrong then something is wrong, and twice in thirty-four years I was right about
+that and once it mattered very much.
 
-My father was a millwright at that same plant before the strike years. He
-taught me to listen to a machine before I looked at it, to keep my own tools
-clean, and to fish the river in the spring when the water is still too cold to
-be pleasant about it. That last lesson is the joke of my life just now: my
-tools are in a red steel box on a bench two miles from here, and I have none of
-them with me. I am dressed for a shift and not for this — work shirt, jeans, my
-steel-toed boots, my watch, my phone, and a wallet full of money that nobody is
-ever going to want again.
-
-I lived alone in the top half of a two-family house on the north end. A
-landlady downstairs who watered my plants when I was on nights, a sister two
-towns over who called on Sundays, and a mother I buried four winters ago. I was
-not lonely. I was busy, which is a different thing that looks the same from
-outside.
+A route is not a job you learn. It is a job you accumulate. On my last morning I
+could have walked all three of them with my eyes shut, and there were days near
+the end when I nearly did.
 
 ## How I missed the buses
 
-I did not miss the buses because I was brave. I missed them because I am
-stubborn, and because you cannot walk away from live boilers.
+I missed the buses because I was asleep, and I am not going to dress that up
+into something braver than it was.
 
-The order came in the afternoon and the last buses were staging at the high
-school by six. I was on the floor with two of the boiler operators, bringing
-the plant down cold — dropping the load, killing the burners in sequence,
-venting through the roof, standing there watching the drum level until it
-stopped moving. Do that badly and you do not get a fire, you get a rupture, and
-a rupture takes the wall out and everything on the far side of the wall, and on
-our side of that wall is a street of two-family houses full of people who were
-still waiting for their ride. Nobody else in the building knew the order the
-valves had to go in. I did. So I sent the operators to the buses, and I
-finished it alone, and I wrote the last line in the log at twenty past nine.
+I worked the early sort my whole life — up at four, on the street by six, done
+by two, asleep by nine like a child. That schedule is the whole architecture of
+me. On the fifteenth I finished my route, came home, ate something standing up,
+and went to bed in the middle of the afternoon because I had a swap coming and
+was due in at three the next morning. Whatever happened in this town, happened
+while I was face down in a pillow with the fan on.
 
-By then the lot at the high school was empty except for paper blowing across
-it. I have not been out of the city since.
+I woke to no power, no radio, and a street I did not recognise by its sound —
+and the sound is how I have always known this street. No cars. No school bus at
+the corner. No Mrs. Kelleher shouting at her grandson. Just something farther
+off that I have decided not to write down yet, because I have not looked at it
+properly and I will not put a word to a thing I have not seen.
 
-I have thought about whether that was a decision or just habit, and I think the
-honest answer is that I do not know. I do know that if I had left at six the
-plant would have gone up behind us and I would be a different kind of person
-now. I would rather be this kind, stuck here, than that kind, safe.
+By then the buses were four days gone. I have since found a notice about them,
+which is a fine thing to find on the fifth day.
+
+I have one more thing to say about it and then I will stop. My sister Maureen
+lives on Elm, eleven houses into the middle third of my second route, and she
+does not drive. If there had been a bus and I had been awake, I would have gone
+to Elm first and I would have argued with her on her own porch until she got on
+it, and we both know how that argument goes, because we have had it about a
+snowstorm and about a hospital and about our mother. So I am not sure the buses
+were ever really mine to catch.
 
 ## What I am like
 
-I make lists. On paper when there is paper, out loud when there is not. I count
-things — doors, exits, minutes, how many of something I actually have as
-opposed to how many I remember having. I do not trust a plan I cannot say
-through in order without stopping, and when somebody tells me a thing is fine I
-start looking for the crack, because fine is the word people use right before
-they show you the crack.
+I am steady and I am slow and I am extremely stubborn, in that order.
 
-I am not warm. My sister used to tell me that I talk to people the way I would
-read them a procedure, and she was not wrong. I do not raise my voice. I do not
-argue twice. What I do instead is get quiet and stubborn and finish the job,
-and I have made enemies of better people than me that way.
+I am not brave. I want that written down at the start so that nothing later
+reads like modesty. What I have instead of bravery is a route: a thing I have
+decided to do, broken into an order, done in that order, whatever the weather is
+doing. That has carried me through thirty-four Januaries and two funerals and it
+is the only equipment I trust.
 
-I am frightened. I want that written down plainly, once, so I do not have to
-keep saying it. Five days now, and all five of them frightened the way you are
-frightened standing next to a machine that is about to let go: very calm, very
-awake, hands cold, thinking clearly about exactly one thing. I can work like
-that. I have worked like that for twenty-two years. It is not courage. It is
-just the shape my fear takes.
+I notice things. It is not a talent, it is a deformation — thirty-four years of
+being paid to see whether a house is right. I read a street the way you read a
+page, and I cannot stop doing it any more than you can stop reading a sign you
+have already looked at. It is the one thing about me that is genuinely better
+than average, and it is about to be the most useful thing I own.
+
+I talk to myself when I am frightened. I have decided not to be embarrassed
+about that today.
 
 ## What I want
 
-Today I want four things, in this order. Water I can actually drink. Something
-to carry things in. One real tool — a pry bar, a hammer, a proper knife, I am
-not fussy. And a room with a door that closes and stays closed. If I have those
-four by dark I will call it a good day and I will not ask for anything else.
+Three things, in this order, and I am writing them down so that I can be held
+to the order.
 
-After that, and only after that: I would like to know what happened. Not the
-radio version, not the rumour a stranger shouts at you across a street. And I
-would like to keep the log going. That is not sentiment. A day you have written
-down has a shape, and a day you have not is one long noise, and I have watched
-what the noise does to people.
+**One: get to Elm.** Eleven houses in, blue door, a wind chime she made out of
+spoons. If Maureen got on a bus then I want to know it, and if she did not then
+I am not going to be a man who sat in a stranger's kitchen while he wondered.
 
-My sister is two towns over — twenty-odd miles of New England between us, and
-every yard of it worse than it was five days ago — and I am not going to
-pretend I can walk there. Not today. Not with this back and no water and
-nothing in my hands. If I ever get there it will be because I did the small
-things right for a lot of days in a row, and today is one of the small days.
+**Two: do it the way I do a route.** Look before I move. Go the way I know
+rather than the way that is short. I have never once been rewarded for hurrying
+and I have twice been badly punished for it.
+
+**Three: live through today.** Not the week, not the winter. Today. A man who
+plans past today with no water and no boots is telling himself a story, and I
+would rather do the arithmetic.
+
+And then sleep. That is not a fourth thing, it is the same thing as the third
+one. I have been awake since something woke me and I am sixty-one; if I am
+still standing when the light goes, I will find a bed with a door I can shut
+and I will lie down in it, because a man who does not sleep makes the kind of
+mistake I cannot afford twice.
 
 ## What I am good for, and what I am not
 
-Give me a machine and I will tell you what is wrong with it, usually before the
-cover is off. That is not a boast, it is twenty-two years. And I can make the
-thing I need if there is anything at all to make it out of — a bracket, a
-wedge, a handle, a length of stock jammed across the inside of a window —
-because that is half the work in an old plant: the part you want is not in the
-crib, so you build one out of whatever is on the bench.
+I have thought about this honestly, because the alternative is finding it out at
+the wrong moment.
 
-The mill sent us to the first-aid refresher every spring and I paid attention
-every spring, so I can stop a bleed, splint a wrist, and tell the difference
-between a wound that is frightening and a wound that is killing you. My
-father's river taught me enough to find water, read weather coming up the
-valley, and not eat something stupid.
+**What I am good for.**
 
-My ears are the best thing I own. I can hear a bad bearing through a concrete
-floor, and in five days I have learned that I can hear which rooms have
-something in them long before there is anything to see. My eyes are still good
-enough to read a gauge from across a bay, which is not nothing when the thing
-you need to know is at the far end of a room you do not want to walk into. My
-hands are steady and they recover fast; twenty-two years of threading nuts into
-holes I could not see taught them to come back from a slip before my head has
-caught up.
+*I see.* This is the whole of my advantage. Movement at the end of a street, a
+door that is open a hand's width when it was shut yesterday, a shape in a yard
+that is the wrong shape for a yard. I will see it before it sees me, and seeing
+it first is the only fight I am likely to win.
 
-Now the other side of the ledger, and I would rather set it down myself than be
-surprised by it. Nothing on the first side of that page came free, either. The
-ears and the hands are twenty-two years of the same work that took the back,
-and the sleep went the same way the rest of it went. You buy the one with the
-other. There is no arrangement of my life where I get the first half without
-the second.
+*I hear.* I have carried mail through thirty-four years of dogs and I can tell
+you which side of a fence a thing is on with my back turned. I have found that
+this town has gone very quiet, which means the sounds that are left are worth
+their whole weight.
 
-I am strong for a woman my age and slow for anybody's. I have never been quick.
-I plan instead, and when a plan runs out and the thing in front of me is fast,
-I am the wrong person to be standing there.
+*I walk quietly.* Thirty-four years of not waking a night-shift nurse who slept
+till noon on Torrey Street. I put my feet down the way you put down a letter you
+do not want to crease.
 
-My back went for good six years ago, on a lift I should have refused and did
-not. I can still lift. I cannot carry. Ten minutes with a real load on me and
-my legs go stupid and my hands stop being useful. That is going to decide what
-I pick up and what I walk away from, all day, every day, and there is no
-arguing with it — I have tried arguing with it in front of two different
-doctors.
+*I sleep.* Anywhere, on anything, through anything. My wife used to say it was
+the most annoying quality a man ever had. It is going to keep me alive.
 
-I do not sleep. Not properly, not since the winter my mother was dying and I
-lived in a chair beside her for four months. Two hours, awake, two more if I am
-owed a favour. Other people lie down and go under like a thrown switch; I lie
-there and listen to the building and wait to be tired enough to be allowed in.
-Tonight, whenever tonight comes, that is going to matter more than anything
-else on this page.
+*I walk.* Not fast — but I have walked eight to eleven miles a day for
+thirty-four years, and the distances in this town are distances I have already
+done.
 
-And I smoke. There is nothing in my shirt pocket but the pocket. One hour
-without and I am mean, two and I cannot hold a thought in a straight line, and
-I know precisely how the rest of that goes because I quit twice in my thirties
-and failed twice. It is going to be a hard day and none of it will be the day's
-fault.
+*And I know some first aid,* properly, from a course the post office paid for
+after a man on the east routes went down in a driveway in August. I know what to
+do about bleeding and I know what not to do about a broken bone.
 
-That is the whole of me. Hands, ears, and a head full of machines, sitting on
-top of a back that quit and a body that will not sleep, wanting a cigarette. I
-would not have arranged myself this way. Nobody gets to.
+**What I am not good for, and this is the longer list.**
+
+*I am not strong.* Wiry is the kind word. Thirty-four years of walking builds
+nothing in the arms, and I am sixty-one. If a thing must be forced, I cannot
+force it, and if I must swing something heavy I will swing it slowly and badly.
+
+*My hands are not what they were.* Cold mornings and thirty-four years of
+sorting have left the fingers stiff and clumsy at anything fine.
+
+*My knees are finished.* That is not a complaint, it is a fact with a
+consequence: pavement hurts, stairs hurt, and running is not a thing I have
+available. Whatever I do today, I do at a walk. Every plan I make has to survive
+that sentence.
+
+*I cannot see close up without my glasses.* I am far-sighted and I have been for
+fifteen years. Hand me a label, a dial, a page, a wound to work on, and it is a
+grey smear until I get the glasses on my face. For a man who read four thousand
+addresses a week this is the private joke of my middle age, and today it stops
+being funny: anything that needs doing at arm's length needs the glasses first,
+and the glasses are one small thing that can be dropped, stepped on, or left
+behind in a hurry.
+
+So: a man who sees far and cannot see near, who hears everything and cannot
+hurry, who can walk all day at one speed and cannot run one step. I would not
+have chosen it. But I know exactly what it is, which is worth something.
 
 ## The watch
 
-The watch is a steel-cased thing with a scratched crystal that I have worn
-every working day since my father put it on the kitchen table and went back to
-his coffee without saying anything about it. It is not clever. It does not want
-a charge or a signal from anybody. It wants me to look at it.
+I have my watch on. It is on my left wrist and it has been on my left wrist
+every working day since 1989, and it is going to be the most important object I
+own, so I am giving it its own heading.
 
-You cannot run a maintenance shift without knowing the time, and I mean the
-actual time, not a guess. How long has that pump been dry. How long since I
-walked this floor last. How long until the crew I called can possibly be here,
-and therefore how long I have to hold something together by hand. I have
-measured my entire working life in minutes and seconds and I am not going to
-stop now that it is nearly the only instrument I have left. The phone will tell
-me the time too, right up until the day it doesn't. The watch will still be on
-my wrist after that.
+A letter carrier lives on a clock. Not roughly — exactly. Third pickup at
+eleven-forty. Relay box at one-fifteen. The difference between a good route and
+a bad one is four minutes, repeated. I have looked at this watch so many times
+that I do it without deciding to, and today that habit is the only instrument I
+have.
 
-So everything I set down from here has a time against it. Not for anybody else.
-It is how I keep a day from turning into one long noise.
+Because here is what I have worked out sitting at this table: I do not know what
+day it is by the light, I do not know how long anything takes any more, and I
+cannot trust my own sense of it, because a frightened man's minute is not a
+minute. But the watch does not care that I am frightened. If I look at it before
+I do a thing and after I do a thing, then I know what that thing cost me. And
+knowing what a thing costs is the entire difference between a route and a
+wander.
+
+So that is the rule I am giving myself, and it is the only rule I intend to keep
+absolutely: **look at the watch, then look at the street.** In that order, every
+time.
 
 ## The first morning
 
-Do the next thing. Water, a bag, a tool, a door. Write down when.
+It is going to be the twentieth of May and the game start is eight in the
+morning, and I have never in thirty-four years begun a day that late.
 
-If I get this wrong today I will be dead, and there will be nothing clever to
-say about it afterwards, and nobody left to say it. I know that. I am going to
-be slow and careful and count my exits, and I am going to keep the log anyway,
-because it is mine and because my grandmother did not cry in kitchens and my
-father wrote down every job he ever did.
+I do not know which house this is. I know it is not mine, and I know I have
+delivered to it, because I have delivered to all of them. In a moment I am going
+to stand up, and the first thing I do will not be the door. The first thing I do
+is stand still and look — at the room, at the windows, at whatever is out there
+that I have been listening to and not looking at.
 
-Twenty past nine, the last line in the mill log. Let's see how far past that I
-can get.
+Then the watch. Then the street. Then Elm.
+
+I am sixty-one years old, my knees are gone, I cannot read a label without my
+glasses, and I have a dog whistle, three envelopes I am never going to deliver,
+and six dollars.
+
+It is a route. I have done worse ones in February.
+
+— A. Halloran

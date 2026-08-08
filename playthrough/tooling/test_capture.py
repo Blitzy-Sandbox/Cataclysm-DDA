@@ -2064,12 +2064,19 @@ class TestTheTelemetryHandoff(CaptureFixture):
         Defaulting the audit off was not enough: PLAYTHROUGH_CAPTURE_AUDIT
         =on remained permitted in diagnostic mode, which is how a
         withdrawn frame could still write a row into the sidecar
-        timeline.py reads.  Both overrides are refused now, and the
+        timeline.py reads.  Asking for one is refused now, and the
         reading a caller wanted is in the payload either way.
+
+        `off` is a separate case and is exercised below: it is not a
+        request for an audit, so refusing it bought nothing and broke
+        the one caller in the pipeline.
         """
         for override in ({"PLAYTHROUGH_CAPTURE_AUDIT": "on"},
-                         {"PLAYTHROUGH_CAPTURE_AUDIT": "off"},
+                         {"PLAYTHROUGH_CAPTURE_AUDIT": "yes"},
                          {"PLAYTHROUGH_CAPTURE_AUDIT_PATH":
+                          self.audit},
+                         {"PLAYTHROUGH_CAPTURE_AUDIT": "off",
+                          "PLAYTHROUGH_CAPTURE_AUDIT_PATH":
                           self.audit}):
             with self.subTest(**override):
                 status, _, err = self.run_diagnostic("1", **override)
@@ -2078,6 +2085,46 @@ class TestTheTelemetryHandoff(CaptureFixture):
                 self.assertIn("withdrawn", err)
                 self.assertEqual(self.audit_rows(), [])
                 self.assertEqual(self.frame_files(), [])
+
+    def test_the_launcher_s_own_diagnostic_invocation_is_accepted(self):
+        """THE CROSS-SCRIPT CONTRACT, against the real capture.sh.
+
+        launch_game.sh's verify_resume_ui_state() proves that a resumed
+        launch reached the load UI by taking exactly this capture:
+        diagnostic mode, PLAYTHROUGH_CAPTURE_AUDIT=off declared at the
+        call site so the probe cannot acquire an audit row by a change
+        of default here, and the reserved index 99999.  For a while
+        this script refused the mere PRESENCE of that variable, so the
+        invocation exited EX_USAGE, the launcher read the unexpected
+        status as "the screen could not be read", and every resumed
+        launch published INITIAL_UI_STATE=unverified -- the proof was
+        structurally disabled by two scripts disagreeing about one
+        variable.  A code review found it; this test is what would have
+        found it first, because it runs the REAL callee with the caller's
+        real environment instead of a stub that ignores it.
+        """
+        status, out, err = self.run_diagnostic(
+            "99999",
+            PLAYTHROUGH_CAPTURE_AUDIT="off",
+            STUB_DATE=DATE_LINE, STUB_DATE_RC="0")
+        self.assertEqual(
+            status, EX_DIAGNOSTIC,
+            msg=("the launcher's own invocation must reach the "
+                 "diagnostic exit status it tests for, not a usage "
+                 "refusal: %s" % err))
+        payload = self.payload(out)
+        self.assertEqual(payload["CAPTURE_MODE"], "diagnostic")
+        self.assertEqual(payload["DATE_AUDIT"], "off")
+        self.assertEqual(payload["DATE"], DATE_LINE)
+        self.assertEqual(
+            payload["FRAME_FILE"], "",
+            msg="a withdrawn frame names no repository-relative path")
+        self.assertEqual(
+            self.audit_rows(), [],
+            msg="and it appended nothing to the sidecar")
+        self.assertEqual(
+            self.frame_files(), [],
+            msg="and kept no frame in the working tree")
 
     def test_the_bound_digest_reaches_the_delegate(self):
         """The audit row names the pixels the reading came from.

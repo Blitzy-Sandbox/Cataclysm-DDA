@@ -1296,6 +1296,21 @@ export PLAYTHROUGH_AMENDMENTS="${PLAYTHROUGH_DIR}/amendments.jsonl"
 # frame it was read from, so a reading cannot be attributed to a
 # different photograph that later took the same index.
 #
+# THAT WAS TRUE OF THE DATE AUDIT AND NOT OF THIS FILE, WHICH IS WORTH
+# STATING BECAUSE THIS PARAGRAPH ASSERTED IT OF BOTH.  A code review
+# found timeline.load_observations() still taking the LAST row for a
+# frame, with no unanimity, no digest check and no schema validation,
+# while build_timeline PREFERRED this record over the hardened audit --
+# so one stale telemetry row could override unanimous, digest-bound
+# audit evidence and change the film's pacing.  Both readers now apply
+# the same rule, and the two records are held to unanimity against EACH
+# OTHER as well: neither is preferred, because there is no rule by which
+# one file's reading of the same photograph beats the other's, and a
+# contradiction between them leaves that frame's date unobserved.  Rows
+# written before the attestation ledger existed carry no `frame_sha256`
+# -- every row of the committed record is in that state -- and are used
+# with the fact reported once, never presented as checked.
+#
 # It lives under playthrough/build/ because it is an intermediate,
 # recomputable observation record rather than a delivered artifact,
 # and because putting it beside manifest.jsonl would invite exactly
@@ -2915,11 +2930,42 @@ playthrough_child_close_fd() {
     return 0
 }
 
+# playthrough_child_close_done
+#   Give back the borrowed descriptor.
+#
+#   A REDIRECTION ON AN `exec` WITH NO COMMAND IS APPLIED TO THE SHELL,
+#   FOR THE REST OF ITS LIFE.  This line used to read
+#
+#       exec {PLAYTHROUGH_CHILD_CLOSE_FD}>&- 2>/dev/null
+#
+#   where the `2>/dev/null` was meant to swallow one possible complaint
+#   from the close.  What it actually did was point THE CALLING SHELL's
+#   stderr at /dev/null permanently, so every warning, diagnosis and
+#   refusal that shell produced after its first detached spawn went
+#   nowhere.  Measured, not theorised: a preflight that starts Xvfb and
+#   then fails printed its verdict on stdout and NOT ONE WORD of the
+#   diagnosis that says which stage failed and why.  It went unnoticed
+#   because the borrowed branch only runs when no lock is held, and the
+#   scripts that spawn under a lock skip it entirely.
+#
+#   So the descriptor is closed with NO redirection on the exec at all,
+#   and the one complaint that redirection was hiding -- closing a
+#   descriptor that is not open, which a second call would do -- is
+#   prevented by asking first.  A `{ ... } 2>/dev/null` group is NOT an
+#   alternative here: it restores stderr correctly when the close
+#   succeeds, but a close that FAILS inside it leaves the shell with the
+#   group's redirection still in force, which is the same defect again
+#   in a narrower window.
 playthrough_child_close_done() {
     if [ "${PLAYTHROUGH_CHILD_CLOSE_BORROWED:-0}" = "1" ]; then
         case "${PLAYTHROUGH_CHILD_CLOSE_FD:-}" in
             ''|*[!0-9]*) ;;
-            *) exec {PLAYTHROUGH_CHILD_CLOSE_FD}>&- 2>/dev/null ;;
+            *)
+                if [ -e "/proc/self/fd/${PLAYTHROUGH_CHILD_CLOSE_FD}" ]
+                then
+                    exec {PLAYTHROUGH_CHILD_CLOSE_FD}>&-
+                fi
+                ;;
         esac
     fi
     PLAYTHROUGH_CHILD_CLOSE_FD=""
@@ -2936,7 +2982,16 @@ playthrough_release_lock() {
         ''|*[!0-9]*) return 0 ;;
     esac
     flock -u "${fd}" 2>/dev/null || true
-    exec {fd}>&- 2>/dev/null || true
+    # THE SAME TRAP as playthrough_child_close_done documents at length:
+    # `exec {fd}>&- 2>/dev/null` sends this shell's stderr to /dev/null
+    # for good, so a script that released its lock and then had something
+    # to report reported it into the void.  The lock itself is already
+    # dropped by the `flock -u` above, so the worst case here is a
+    # descriptor that stays open in a script that is about to exit --
+    # which costs nothing, and costs far less than a lost diagnosis.
+    if [ -e "/proc/self/fd/${fd}" ]; then
+        exec {fd}>&-
+    fi
     if [ "${fd}" = "${PLAYTHROUGH_LOCK_FD:-}" ]; then
         PLAYTHROUGH_LOCK_FD=""
     fi

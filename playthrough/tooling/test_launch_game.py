@@ -1549,13 +1549,41 @@ class TestTheResumeUiState(LaunchFixture):
 
     def install_capture_stub(self, clock="", phrase="", date="",
                              status=9):
-        """A capture.sh stand-in that reports one sidebar reading."""
+        """A capture.sh stand-in that reports one sidebar reading.
+
+        AND THAT ENFORCES THE REAL SCRIPT'S DIAGNOSTIC CONTRACT, because
+        a stub which ignored the environment is exactly how the caller
+        and the callee were allowed to disagree.  capture.sh, in
+        diagnostic mode, forces the date audit off and refuses to be
+        ASKED for one: PLAYTHROUGH_CAPTURE_AUDIT=on and any
+        PLAYTHROUGH_CAPTURE_AUDIT_PATH exit EX_USAGE, while `off` --
+        agreement with the value the mode forces, and what this
+        launcher declares at its call site -- is accepted.  For a while
+        the real script refused the mere PRESENCE of the variable, so
+        the probe below exited EX_USAGE, this script read that as "the
+        screen could not be read" and every resumed launch published
+        INITIAL_UI_STATE=unverified.  The old stub answered 9 to
+        anything and could not see it; this one behaves as the real
+        callee does, so the whole class stays visible here.
+        """
         path = os.path.join(self.tooling, "capture.sh")
         self.write(path, (
             "#!/bin/sh\n"
+            "# capture.sh's own diagnostic contract, mirrored.\n"
+            "if [ \"${PLAYTHROUGH_CAPTURE_MODE-}\" = diagnostic ] && {\n"
+            "     [ \"${PLAYTHROUGH_CAPTURE_AUDIT:-off}\" != off ] ||\n"
+            "     [ -n \"${PLAYTHROUGH_CAPTURE_AUDIT_PATH-}\" ]; }\n"
+            "then\n"
+            "    printf 'playthrough: FATAL: PLAYTHROUGH_CAPTURE_AUDIT"
+            "=%%s cannot be used with PLAYTHROUGH_CAPTURE_MODE="
+            "diagnostic; the frame is withdrawn\\n' "
+            "\"${PLAYTHROUGH_CAPTURE_AUDIT-}\" >&2\n"
+            "    exit 1\n"
+            "fi\n"
             "printf 'CAPTURE_MODE=diagnostic\\n'\n"
             "printf 'FRAME_INDEX=%%s\\n' \"${FRAME_INDEX-}\"\n"
             "printf 'FRAME_FILE=\\n'\n"
+            "printf 'DATE_AUDIT=off\\n'\n"
             "printf 'CLOCK_STATUS=read\\n'\n"
             "printf 'CLOCK=%s\\n'\n"
             "printf 'TIME_PHRASE=%s\\n'\n"
@@ -1563,6 +1591,13 @@ class TestTheResumeUiState(LaunchFixture):
             "printf 'DATE=%s\\n'\n"
             "printf 'DATE_STATUS=read\\n'\n"
             "exit %d\n" % (clock, phrase, date, status)))
+        os.chmod(path, 0o755)
+        return path
+
+    def install_real_capture(self):
+        """Put the GENUINE capture.sh in the sandbox's tooling."""
+        path = os.path.join(self.tooling, "capture.sh")
+        shutil.copyfile(os.path.join(TOOLING, "capture.sh"), path)
         os.chmod(path, 0o755)
         return path
 
@@ -1625,6 +1660,73 @@ class TestTheResumeUiState(LaunchFixture):
         self.assertEqual(status, 0)
         self.assertEqual(self.emitted(out)["STATE"], "unverified")
         self.assertIn("recorded as unverified", err)
+
+    def test_the_probe_is_accepted_by_the_real_capture_contract(self):
+        """THE CROSS-SCRIPT SEAM, exercised rather than assumed.
+
+        The stub above now enforces capture.sh's own diagnostic
+        contract, so this asserts what the old stub could not: the
+        environment this function passes -- diagnostic mode, the audit
+        declared off, the reserved index -- is one the callee ACCEPTS,
+        and the probe therefore reaches its verified state instead of
+        degrading to 'unverified' on a usage refusal nobody saw.
+        """
+        self.install_capture_stub()
+        status, out, err = self.verify()
+        self.assertEqual(status, 0)
+        emitted = self.emitted(out)
+        self.assertEqual(emitted["STATUS"], "0")
+        self.assertEqual(
+            emitted["STATE"], "main-menu-load-required",
+            msg=("the probe must VERIFY the screen; 'unverified' here "
+                 "is the defect this seam had: %s" % err))
+        self.assertNotIn("cannot be used with", err)
+        self.assertNotIn("recorded as unverified", err)
+
+    def test_a_usage_refusal_from_the_probe_is_fatal(self):
+        """An invocation this script got wrong is not a dark screen.
+
+        EX_USAGE from a diagnostic capture means capture.sh refused the
+        arguments and environment the launcher passed it.  Reporting
+        that as 'unverified' is precisely how a broken contract hid: the
+        resume proof was missing and nothing said so.  It stops the run
+        now, and names the invocation to reproduce.
+        """
+        self.install_capture_stub(status=EX_USAGE)
+        status, out, err = self.verify()
+        self.assertEqual(status, EX_USAGE)
+        self.assertNotIn(
+            "STATE=", out,
+            msg="a refused contract publishes no state at all")
+        self.assertIn("REFUSED this script's own invocation", err)
+        self.assertIn("PLAYTHROUGH_CAPTURE_AUDIT=off", err)
+        self.assertNotIn("recorded as unverified", err)
+
+    def test_the_real_capture_script_accepts_this_invocation(self):
+        """And now against the genuine file, not a mirror of it.
+
+        The sandbox has no display and no ImageMagick stub for the real
+        script to reach, so it cannot complete -- but it must not fail
+        as BAD USAGE, because that status is exactly what the launcher
+        cannot distinguish from an unreadable screen.  A refusal of the
+        audit declaration would be visible in both places.
+        """
+        self.install_real_capture()
+        status, out, err = self.verify()
+        self.assertNotIn(
+            "cannot be used with", err,
+            msg=("the real capture.sh refused the launcher's own "
+                 "diagnostic environment: %s" % err))
+        self.assertNotEqual(
+            status, EX_USAGE,
+            msg=("the real capture.sh answered the launcher's "
+                 "invocation with EX_USAGE, which this script can only "
+                 "read as a contract fault: %s" % err))
+        self.assertEqual(
+            self.emitted(out).get("STATE"), "unverified",
+            msg=("without a display the probe cannot be taken, and "
+                 "that is reported as unverified rather than passed "
+                 "off as verified"))
 
     def test_the_declared_state_reaches_the_machine_channel(self):
         """emit_launch_facts publishes it, like every other fact."""

@@ -2223,5 +2223,89 @@ class TestTheSummaryDisclosesNoHostPath(EnvFixture):
         self.assertTrue(values.get("PLAYTHROUGH_PLATFORM_WAIVER"))
 
 
+class TestTheHelpersDoNotSilenceTheirCaller(EnvFixture):
+    """A redirection on a bare `exec` is applied to THE SHELL.
+
+    Two helpers closed a descriptor with
+
+        exec {fd}>&- 2>/dev/null
+
+    where the `2>/dev/null` was meant to swallow one possible complaint
+    from the close.  What it actually did was point the CALLING SHELL's
+    stderr at /dev/null for the rest of its life, so every warning,
+    diagnosis and refusal that shell produced afterwards went nowhere.
+
+    It was found by a preflight that starts an X server and then reports
+    which stage failed: the verdict arrived on stdout and not one word of
+    the diagnosis did.  The borrowed branch only runs when no lock is
+    held, and the scripts that spawn under a lock skip it -- which is why
+    it survived so long in a file this well covered.
+
+    Each test below is paired with a SABOTAGED copy that restores the old
+    line, so neither can pass because the situation stopped arising.
+    """
+
+    ALIVE = "STDERR_IS_STILL_ALIVE"
+
+    def borrow_and_return(self):
+        """Borrow a descriptor for a child and give it back."""
+        return ('playthrough_child_close_fd\n'
+                'playthrough_child_close_done\n'
+                'printf "%s\\n" "' + self.ALIVE + '" >&2\n')
+
+    def take_and_release_a_lock(self):
+        """Take a real lock and release it, then try to be heard."""
+        return ('playthrough_acquire_lock probe 5 >/dev/null 2>&1\n'
+                'playthrough_release_lock\n'
+                'printf "%s\\n" "' + self.ALIVE + '" >&2\n')
+
+    def test_returning_a_borrowed_descriptor_keeps_stderr(self):
+        result = self.source(after=self.borrow_and_return())
+        self.assertIn(
+            self.ALIVE, result.stderr,
+            msg="playthrough_child_close_done silenced its caller's "
+                "stderr; every diagnosis after the first detached "
+                "spawn would be lost")
+
+    def test_releasing_a_lock_keeps_stderr(self):
+        result = self.source(after=self.take_and_release_a_lock())
+        self.assertIn(
+            self.ALIVE, result.stderr,
+            msg="playthrough_release_lock silenced its caller's "
+                "stderr; every script that releases its lock and then "
+                "has something to report would report it into the void")
+
+    def test_the_old_close_really_did_silence_it(self):
+        # The guard on the guard.  If this ever stops failing, the two
+        # tests above have stopped proving anything -- either the idiom
+        # changed or bash did.
+        root, script = self.sabotaged_copy(
+            'if [ -e "/proc/self/fd/${PLAYTHROUGH_CHILD_CLOSE_FD}" ]\n'
+            '                then\n'
+            '                    exec {PLAYTHROUGH_CHILD_CLOSE_FD}>&-\n'
+            '                fi',
+            'exec {PLAYTHROUGH_CHILD_CLOSE_FD}>&- 2>/dev/null',
+            name="old-close")
+        result = self.source(script=script, cwd=root,
+                             after=self.borrow_and_return())
+        self.assertNotIn(
+            self.ALIVE, result.stderr,
+            msg="the sabotaged copy carries the ORIGINAL line, so it "
+                "must lose the message; if it does not, these tests "
+                "are measuring nothing")
+
+    def test_a_second_return_is_not_an_error_either(self):
+        # The complaint the old redirection was hiding: closing a
+        # descriptor that is not open.  It is now prevented by asking
+        # first, so calling twice is quiet AND keeps stderr.
+        result = self.source(
+            after=('playthrough_child_close_fd\n'
+                   'playthrough_child_close_done\n'
+                   'playthrough_child_close_done\n'
+                   'printf "%s\\n" "' + self.ALIVE + '" >&2\n'))
+        self.assertIn(self.ALIVE, result.stderr)
+        self.assertNotIn("Bad file descriptor", result.stderr)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

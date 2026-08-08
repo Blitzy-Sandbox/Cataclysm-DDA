@@ -3387,15 +3387,47 @@ verify_resume_ui_state() {
     # AND NO DATE-AUDIT ROW.  The reading this probe wants is in the
     # payload below; the audit sidecar is the record timeline.py reads,
     # and a row in it keyed to 99999 would name a frame that does not
-    # exist.  capture.sh defaults a diagnostic capture's audit off for
+    # exist.  capture.sh forces a diagnostic capture's audit off for
     # exactly that reason -- it is stated here as well, at the call
     # site, so the probe cannot acquire one by a change of default.
+    #
+    # THAT DECLARATION IS PART OF ONE SHARED DIAGNOSTIC API, and it has
+    # to be, because for a while it was not.  capture.sh refused the
+    # PRESENCE of PLAYTHROUGH_CAPTURE_AUDIT in diagnostic mode at any
+    # value, so this call -- which says "off", the very value the mode
+    # forces -- exited EX_USAGE instead of 9, the `-ne 9` branch below
+    # read that as "the screen could not be read", and EVERY resumed
+    # launch published INITIAL_UI_STATE=unverified.  The proof this
+    # function exists to produce was structurally disabled by two
+    # scripts disagreeing about one variable, and a code review found
+    # it.  capture.sh now accepts exactly `off` here (it can enable
+    # nothing) and still refuses `on` and any
+    # PLAYTHROUGH_CAPTURE_AUDIT_PATH; the EX_USAGE branch below makes a
+    # future disagreement fail loudly instead of degrading in silence.
     payload="$(
         PLAYTHROUGH_CAPTURE_MODE=diagnostic \
         PLAYTHROUGH_CAPTURE_AUDIT=off \
         FRAME_INDEX=99999 \
         "${PLAYTHROUGH_DIR}/tooling/capture.sh" 2>/dev/null
     )" && status=0 || status=$?
+    if [ "${status}" -eq "${EX_USAGE}" ]; then
+        # AN INVOCATION THIS SCRIPT GOT WRONG IS NOT AN UNREADABLE
+        # SCREEN.  EX_USAGE from a diagnostic capture means capture.sh
+        # refused the arguments and environment THIS function passed it,
+        # which is a defect in the two scripts' shared contract -- and
+        # answering it with "unverified" is what turned that defect into
+        # a silently missing proof last time.  It stops here instead.
+        die "${EX_USAGE}" "the diagnostic capture that checks the" \
+            "starting screen REFUSED this script's own invocation" \
+            "(exit ${EX_USAGE}: bad usage).  That is not a screen that" \
+            "could not be read -- it is capture.sh and launch_game.sh" \
+            "disagreeing about the diagnostic contract, and the resume" \
+            "proof would be silently missing if this were reported as" \
+            "'unverified'.  Run the invocation by hand to see the" \
+            "refusal: PLAYTHROUGH_CAPTURE_MODE=diagnostic" \
+            "PLAYTHROUGH_CAPTURE_AUDIT=off FRAME_INDEX=99999" \
+            "playthrough/tooling/capture.sh"
+    fi
     if [ "${status}" -ne 9 ]; then
         playthrough_warn "the diagnostic capture that checks the" \
             "starting screen exited ${status} rather than 9, so what" \

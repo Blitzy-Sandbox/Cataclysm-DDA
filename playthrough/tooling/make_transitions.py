@@ -2085,11 +2085,28 @@ def _publish_generation_manifest(directory: str, text: str) -> str:
     record is stale, which render_movie.py refuses by digest and the next
     run repairs.  The reverse order would leave a record describing
     frames that are not there, which reads like a complete generation.
+
+    THE SIBLING IS REMOVED ON EVERY PRE-PUBLICATION FAILURE, and it used
+    not to be.  A short os.write or a failing fsync raised, the `finally`
+    closed the descriptor, and `.transitions.json.publishing` was left
+    sitting in playthrough/build/ -- inside the tree .gitignore
+    re-includes wholesale, and outside the transitions directory that
+    _own_litter() sweeps, so nothing would ever clear it and a later
+    `git add -A playthrough/` would commit a half-written provenance
+    record nobody authored.  Only the rename's own failure path unlinked
+    it.  A code review found it; the whole sequence is wrapped now, and
+    publish_transitions() sweeps a stale sibling at the start of a run
+    as well, so an interruption no process survived is cleared too.
+
+    A SHORT WRITE IS RETRIED RATHER THAN REPORTED.  os.write may write
+    fewer bytes than it was given without anything being wrong, so the
+    old check turned an ordinary partial write into a failed generation.
+    It loops until the buffer is on the descriptor, and only a write
+    that makes no progress at all is an error.
     """
     target = generation_manifest_path(directory)
     parent = os.path.dirname(target) or os.curdir
-    staged = os.path.join(
-        parent, ".%s.publishing" % GENERATION_MANIFEST_NAME)
+    staged = staged_manifest_path(directory)
     data = text.encode("utf-8")
     try:
         descriptor = os.open(
@@ -2097,30 +2114,119 @@ def _publish_generation_manifest(directory: str, text: str) -> str:
             os.O_CREAT | os.O_WRONLY | os.O_TRUNC |
             os.O_CLOEXEC | os.O_NOFOLLOW, 0o644)
     except OSError as err:
+        _discard_staged_manifest(staged)
         raise TransitionError(
             "could not stage the provenance record at %s: %s"
             % (staged, err)) from err
     try:
-        written = os.write(descriptor, data)
-        if written != len(data):
-            raise TransitionError(
-                "only %d of %d bytes of the generation manifest reached "
-                "%s" % (written, len(data), staged))
+        offset = 0
+        while offset < len(data):
+            written = os.write(descriptor, data[offset:])
+            if written <= 0:
+                raise TransitionError(
+                    "only %d of %d bytes of the generation manifest "
+                    "reached %s" % (offset, len(data), staged))
+            offset += written
         os.fsync(descriptor)
-    finally:
+    except BaseException:
+        os.close(descriptor)
+        _discard_staged_manifest(staged)
+        raise
+    else:
         os.close(descriptor)
     try:
         os.replace(staged, target)
     except OSError as err:
-        try:
-            os.unlink(staged)
-        except OSError:
-            pass
+        _discard_staged_manifest(staged)
         raise TransitionError(
             "could not publish the provenance record to %s: %s"
             % (target, err)) from err
     timeline.fsync_directory(parent)
     return target
+
+
+def staged_manifest_path(directory: str) -> str:
+    """Where the provenance record is staged before it is renamed.
+
+    Named so that the writer, the failure paths and the stale-sibling
+    sweep cannot spell it three different ways.
+    """
+    target = generation_manifest_path(directory)
+    parent = os.path.dirname(target) or os.curdir
+    return os.path.join(
+        parent, ".%s.publishing" % GENERATION_MANIFEST_NAME)
+
+
+def _discard_staged_manifest(path: str) -> None:
+    """Remove a staged provenance record.  Best effort, never raises.
+
+    Called on every path that leaves the staging file unpublished.  It
+    must not mask the failure that brought it here, so an unlink that
+    itself fails is reported and swallowed rather than raised: the
+    original exception is the one an operator needs.
+
+    ONLY A PLAIN FILE IS REMOVED, which is the same rule
+    :func:`_sweep_staged_manifest` applies and for the same reason.  This
+    module stages a regular file at that name; anything else there was
+    put there by something else, and a module that refuses to WRITE
+    through a planted symlink must not quietly DELETE one either.
+    """
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return
+    except OSError as err:
+        _warn("could not inspect the staged provenance record %s (%s); "
+              "it may be left in the tree" % (path, err))
+        return
+    if not stat.S_ISREG(info.st_mode):
+        _warn("%s is not a regular file, so it is left exactly as it "
+              "is; this module stages a plain file there and removes "
+              "nothing else" % path)
+        return
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        return
+    except OSError as err:
+        _warn("the staged provenance record %s could not be removed "
+              "(%s); it is not a published artifact and must not be "
+              "committed -- delete it before staging playthrough/"
+              % (path, err))
+
+
+def _sweep_staged_manifest(directory: str) -> None:
+    """Clear a provenance sibling an earlier run left behind.
+
+    THE HALF NO FAILURE PATH CAN COVER.  A run killed outright -- SIGKILL,
+    the power going -- runs no handler at all, so the sibling survives
+    with nobody to remove it.  It is swept at the START of a generation
+    instead, under the same lock, where the file is unambiguously stale:
+    this run is about to write its own.
+
+    Only a plain file is removed, and never a symlink or a directory: the
+    name is inside the committed tree, and following a link planted there
+    would be exactly the write outside the tree every other path in this
+    module refuses.
+    """
+    staged = staged_manifest_path(directory)
+    try:
+        info = os.lstat(staged)
+    except FileNotFoundError:
+        return
+    except OSError as err:
+        _warn("could not inspect %s (%s); a stale staged provenance "
+              "record may be left in the tree" % (staged, err))
+        return
+    if not stat.S_ISREG(info.st_mode):
+        _warn("%s exists and is not a regular file, so it is left "
+              "exactly as it is; this module stages a plain file there "
+              "and will not remove anything else" % staged)
+        return
+    _warn("a previous run left the staged provenance record %s behind "
+          "(%d byte(s)); it was never published, so it is removed before "
+          "this generation writes its own" % (staged, info.st_size))
+    _discard_staged_manifest(staged)
 
 
 def _assert_published_manifest(directory: str, text: str) -> None:
@@ -2263,6 +2369,13 @@ def make_transitions(
         # that this module could never have written, and a file nobody
         # wrote here at all.
         _assert_no_foreign_transition_frames(directory)
+        # AND THE ONE PIECE OF LITTER THAT IS NOT IN THAT DIRECTORY.
+        # _own_litter() sweeps the transitions directory; the provenance
+        # record is staged BESIDE it, in playthrough/build/, so a run
+        # killed between opening that file and renaming it leaves a
+        # sibling no sweep covered and no failure handler ran for.  It is
+        # cleared here, under this lock, where it is unambiguously stale.
+        _sweep_staged_manifest(directory)
         keep = _foreign_entries(directory)
         before = _glob_names(directory)
         removed = _previous_generation(directory) + _own_litter(directory)

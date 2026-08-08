@@ -1,419 +1,326 @@
-{"frame": 1, "file": "playthrough/frames/frame_00001.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 2, "file": "playthrough/frames/frame_00002.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 3, "file": "playthrough/frames/frame_00003.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 4, "file": "playthrough/frames/frame_00004.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 5, "file": "playthrough/frames/frame_00005.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 6, "file": "playthrough/frames/frame_00006.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 7, "file": "playthrough/frames/frame_00007.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 8, "file": "playthrough/frames/frame_00008.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 9, "file": "playthrough/frames/frame_00009.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 10, "file": "playthrough/frames/frame_00010.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 11, "file": "playthrough/frames/frame_00011.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 12, "file": "playthrough/frames/frame_00012.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 13, "file": "playthrough/frames/frame_00013.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 14, "file": "playthrough/frames/frame_00014.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 15, "file": "playthrough/frames/frame_00015.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 16, "file": "playthrough/frames/frame_00016.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 17, "file": "playthrough/frames/frame_00017.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 18, "file": "playthrough/frames/frame_00018.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 19, "file": "playthrough/frames/frame_00019.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 20, "file": "playthrough/frames/frame_00020.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 21, "file": "playthrough/frames/frame_00021.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 22, "file": "playthrough/frames/frame_00022.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 23, "file": "playthrough/frames/frame_00023.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 24, "file": "playthrough/frames/frame_00024.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 25, "file": "playthrough/frames/frame_00025.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 26, "file": "playthrough/frames/frame_00026.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 27, "file": "playthrough/frames/frame_00027.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 28, "file": "playthrough/frames/frame_00028.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 29, "file": "playthrough/frames/frame_00029.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 30, "file": "playthrough/frames/frame_00030.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 31, "file": "playthrough/frames/frame_00031.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 32, "file": "playthrough/frames/frame_00032.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 33, "file": "playthrough/frames/frame_00033.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 34, "file": "playthrough/frames/frame_00034.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 35, "file": "playthrough/frames/frame_00035.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 36, "file": "playthrough/frames/frame_00036.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 37, "file": "playthrough/frames/frame_00037.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 38, "file": "playthrough/frames/frame_00038.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 39, "file": "playthrough/frames/frame_00039.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 40, "file": "playthrough/frames/frame_00040.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 41, "file": "playthrough/frames/frame_00041.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 42, "file": "playthrough/frames/frame_00042.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 43, "file": "playthrough/frames/frame_00043.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 44, "file": "playthrough/frames/frame_00044.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 45, "file": "playthrough/frames/frame_00045.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 46, "file": "playthrough/frames/frame_00046.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 47, "file": "playthrough/frames/frame_00047.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 48, "file": "playthrough/frames/frame_00048.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 49, "file": "playthrough/frames/frame_00049.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 50, "file": "playthrough/frames/frame_00050.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 51, "file": "playthrough/frames/frame_00051.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 52, "file": "playthrough/frames/frame_00052.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 53, "file": "playthrough/frames/frame_00053.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 54, "file": "playthrough/frames/frame_00054.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 55, "file": "playthrough/frames/frame_00055.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 56, "file": "playthrough/frames/frame_00056.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 57, "file": "playthrough/frames/frame_00057.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 58, "file": "playthrough/frames/frame_00058.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 59, "file": "playthrough/frames/frame_00059.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 60, "file": "playthrough/frames/frame_00060.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 61, "file": "playthrough/frames/frame_00061.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 62, "file": "playthrough/frames/frame_00062.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 63, "file": "playthrough/frames/frame_00063.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 64, "file": "playthrough/frames/frame_00064.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 65, "file": "playthrough/frames/frame_00065.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 66, "file": "playthrough/frames/frame_00066.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 67, "file": "playthrough/frames/frame_00067.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 68, "file": "playthrough/frames/frame_00068.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 69, "file": "playthrough/frames/frame_00069.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 70, "file": "playthrough/frames/frame_00070.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 71, "file": "playthrough/frames/frame_00071.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 72, "file": "playthrough/frames/frame_00072.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 73, "file": "playthrough/frames/frame_00073.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 74, "file": "playthrough/frames/frame_00074.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 75, "file": "playthrough/frames/frame_00075.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 76, "file": "playthrough/frames/frame_00076.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 77, "file": "playthrough/frames/frame_00077.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 78, "file": "playthrough/frames/frame_00078.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 79, "file": "playthrough/frames/frame_00079.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 80, "file": "playthrough/frames/frame_00080.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 81, "file": "playthrough/frames/frame_00081.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 82, "file": "playthrough/frames/frame_00082.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 83, "file": "playthrough/frames/frame_00083.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 84, "file": "playthrough/frames/frame_00084.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 85, "file": "playthrough/frames/frame_00085.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 86, "file": "playthrough/frames/frame_00086.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 87, "file": "playthrough/frames/frame_00087.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 88, "file": "playthrough/frames/frame_00088.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 89, "file": "playthrough/frames/frame_00089.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 90, "file": "playthrough/frames/frame_00090.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 91, "file": "playthrough/frames/frame_00091.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 92, "file": "playthrough/frames/frame_00092.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 93, "file": "playthrough/frames/frame_00093.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 94, "file": "playthrough/frames/frame_00094.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 95, "file": "playthrough/frames/frame_00095.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 96, "file": "playthrough/frames/frame_00096.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 97, "file": "playthrough/frames/frame_00097.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 98, "file": "playthrough/frames/frame_00098.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 99, "file": "playthrough/frames/frame_00099.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 100, "file": "playthrough/frames/frame_00100.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 101, "file": "playthrough/frames/frame_00101.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 102, "file": "playthrough/frames/frame_00102.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 103, "file": "playthrough/frames/frame_00103.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 104, "file": "playthrough/frames/frame_00104.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 105, "file": "playthrough/frames/frame_00105.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 106, "file": "playthrough/frames/frame_00106.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 107, "file": "playthrough/frames/frame_00107.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 108, "file": "playthrough/frames/frame_00108.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 109, "file": "playthrough/frames/frame_00109.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 110, "file": "playthrough/frames/frame_00110.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 111, "file": "playthrough/frames/frame_00111.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 112, "file": "playthrough/frames/frame_00112.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 113, "file": "playthrough/frames/frame_00113.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 114, "file": "playthrough/frames/frame_00114.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 115, "file": "playthrough/frames/frame_00115.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 116, "file": "playthrough/frames/frame_00116.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 117, "file": "playthrough/frames/frame_00117.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 118, "file": "playthrough/frames/frame_00118.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 119, "file": "playthrough/frames/frame_00119.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 120, "file": "playthrough/frames/frame_00120.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 121, "file": "playthrough/frames/frame_00121.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 122, "file": "playthrough/frames/frame_00122.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 123, "file": "playthrough/frames/frame_00123.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 124, "file": "playthrough/frames/frame_00124.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 125, "file": "playthrough/frames/frame_00125.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 126, "file": "playthrough/frames/frame_00126.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 127, "file": "playthrough/frames/frame_00127.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 128, "file": "playthrough/frames/frame_00128.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 129, "file": "playthrough/frames/frame_00129.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 130, "file": "playthrough/frames/frame_00130.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 131, "file": "playthrough/frames/frame_00131.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 132, "file": "playthrough/frames/frame_00132.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 133, "file": "playthrough/frames/frame_00133.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 134, "file": "playthrough/frames/frame_00134.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 135, "file": "playthrough/frames/frame_00135.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 136, "file": "playthrough/frames/frame_00136.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 137, "file": "playthrough/frames/frame_00137.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 138, "file": "playthrough/frames/frame_00138.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 139, "file": "playthrough/frames/frame_00139.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 140, "file": "playthrough/frames/frame_00140.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 141, "file": "playthrough/frames/frame_00141.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 142, "file": "playthrough/frames/frame_00142.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 143, "file": "playthrough/frames/frame_00143.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 144, "file": "playthrough/frames/frame_00144.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 145, "file": "playthrough/frames/frame_00145.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 146, "file": "playthrough/frames/frame_00146.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 147, "file": "playthrough/frames/frame_00147.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 148, "file": "playthrough/frames/frame_00148.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 149, "file": "playthrough/frames/frame_00149.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 150, "file": "playthrough/frames/frame_00150.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 151, "file": "playthrough/frames/frame_00151.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 152, "file": "playthrough/frames/frame_00152.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 153, "file": "playthrough/frames/frame_00153.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 154, "file": "playthrough/frames/frame_00154.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 155, "file": "playthrough/frames/frame_00155.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 156, "file": "playthrough/frames/frame_00156.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 157, "file": "playthrough/frames/frame_00157.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 158, "file": "playthrough/frames/frame_00158.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 159, "file": "playthrough/frames/frame_00159.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 160, "file": "playthrough/frames/frame_00160.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 161, "file": "playthrough/frames/frame_00161.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 162, "file": "playthrough/frames/frame_00162.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 163, "file": "playthrough/frames/frame_00163.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 164, "file": "playthrough/frames/frame_00164.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 165, "file": "playthrough/frames/frame_00165.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 166, "file": "playthrough/frames/frame_00166.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 167, "file": "playthrough/frames/frame_00167.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 168, "file": "playthrough/frames/frame_00168.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 169, "file": "playthrough/frames/frame_00169.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 170, "file": "playthrough/frames/frame_00170.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 171, "file": "playthrough/frames/frame_00171.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 172, "file": "playthrough/frames/frame_00172.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 173, "file": "playthrough/frames/frame_00173.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 174, "file": "playthrough/frames/frame_00174.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 175, "file": "playthrough/frames/frame_00175.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 176, "file": "playthrough/frames/frame_00176.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 177, "file": "playthrough/frames/frame_00177.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 178, "file": "playthrough/frames/frame_00178.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 179, "file": "playthrough/frames/frame_00179.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 180, "file": "playthrough/frames/frame_00180.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 181, "file": "playthrough/frames/frame_00181.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 182, "file": "playthrough/frames/frame_00182.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 183, "file": "playthrough/frames/frame_00183.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 184, "file": "playthrough/frames/frame_00184.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 185, "file": "playthrough/frames/frame_00185.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 186, "file": "playthrough/frames/frame_00186.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 187, "file": "playthrough/frames/frame_00187.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 188, "file": "playthrough/frames/frame_00188.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 189, "file": "playthrough/frames/frame_00189.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 190, "file": "playthrough/frames/frame_00190.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 191, "file": "playthrough/frames/frame_00191.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 192, "file": "playthrough/frames/frame_00192.png", "clock": "08:00:00", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 193, "file": "playthrough/frames/frame_00193.png", "clock": "08:00:00", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 194, "file": "playthrough/frames/frame_00194.png", "clock": "08:00:00", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 195, "file": "playthrough/frames/frame_00195.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 196, "file": "playthrough/frames/frame_00196.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 197, "file": "playthrough/frames/frame_00197.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 198, "file": "playthrough/frames/frame_00198.png", "clock": "08:00:00", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 199, "file": "playthrough/frames/frame_00199.png", "clock": "08:00:00", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 200, "file": "playthrough/frames/frame_00200.png", "clock": "08:00:01", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 201, "file": "playthrough/frames/frame_00201.png", "clock": "08:00:01", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 202, "file": "playthrough/frames/frame_00202.png", "clock": "08:00:01", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 203, "file": "playthrough/frames/frame_00203.png", "clock": "08:00:02", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 204, "file": "playthrough/frames/frame_00204.png", "clock": "08:00:02", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 205, "file": "playthrough/frames/frame_00205.png", "clock": "08:00:04", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 206, "file": "playthrough/frames/frame_00206.png", "clock": "08:00:04", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 207, "file": "playthrough/frames/frame_00207.png", "clock": "08:00:05", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 208, "file": "playthrough/frames/frame_00208.png", "clock": "08:00:05", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 209, "file": "playthrough/frames/frame_00209.png", "clock": "08:00:06", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 210, "file": "playthrough/frames/frame_00210.png", "clock": "08:00:06", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 211, "file": "playthrough/frames/frame_00211.png", "clock": "08:00:08", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 212, "file": "playthrough/frames/frame_00212.png", "clock": "08:00:08", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 213, "file": "playthrough/frames/frame_00213.png", "clock": "08:00:09", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 214, "file": "playthrough/frames/frame_00214.png", "clock": "08:00:10", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 215, "file": "playthrough/frames/frame_00215.png", "clock": "08:00:11", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 216, "file": "playthrough/frames/frame_00216.png", "clock": "08:00:12", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 217, "file": "playthrough/frames/frame_00217.png", "clock": "08:00:14", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 218, "file": "playthrough/frames/frame_00218.png", "clock": "08:00:14", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 219, "file": "playthrough/frames/frame_00219.png", "clock": "08:00:14", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 220, "file": "playthrough/frames/frame_00220.png", "clock": "08:00:15", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 221, "file": "playthrough/frames/frame_00221.png", "clock": "08:00:15", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 222, "file": "playthrough/frames/frame_00222.png", "clock": "08:00:16", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 223, "file": "playthrough/frames/frame_00223.png", "clock": "08:00:18", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 224, "file": "playthrough/frames/frame_00224.png", "clock": "08:00:18", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 225, "file": "playthrough/frames/frame_00225.png", "clock": "08:00:18", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 226, "file": "playthrough/frames/frame_00226.png", "clock": "08:00:19", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 227, "file": "playthrough/frames/frame_00227.png", "clock": "08:00:20", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 228, "file": "playthrough/frames/frame_00228.png", "clock": "08:00:22", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 229, "file": "playthrough/frames/frame_00229.png", "clock": "08:00:23", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 230, "file": "playthrough/frames/frame_00230.png", "clock": "08:00:24", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 231, "file": "playthrough/frames/frame_00231.png", "clock": "08:00:24", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 232, "file": "playthrough/frames/frame_00232.png", "clock": "08:00:25", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 233, "file": "playthrough/frames/frame_00233.png", "clock": "08:00:25", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 234, "file": "playthrough/frames/frame_00234.png", "clock": "08:00:25", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 235, "file": "playthrough/frames/frame_00235.png", "clock": "08:00:25", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 236, "file": "playthrough/frames/frame_00236.png", "clock": "08:00:29", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 237, "file": "playthrough/frames/frame_00237.png", "clock": "08:00:29", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 238, "file": "playthrough/frames/frame_00238.png", "clock": "08:00:34", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 239, "file": "playthrough/frames/frame_00239.png", "clock": "08:00:34", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 240, "file": "playthrough/frames/frame_00240.png", "clock": "08:00:34", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 241, "file": "playthrough/frames/frame_00241.png", "clock": "08:00:35", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 242, "file": "playthrough/frames/frame_00242.png", "clock": "08:00:35", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 243, "file": "playthrough/frames/frame_00243.png", "clock": "08:00:36", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 244, "file": "playthrough/frames/frame_00244.png", "clock": "08:00:36", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 245, "file": "playthrough/frames/frame_00245.png", "clock": "08:00:37", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 246, "file": "playthrough/frames/frame_00246.png", "clock": "08:00:37", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 247, "file": "playthrough/frames/frame_00247.png", "clock": "08:00:40", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 248, "file": "playthrough/frames/frame_00248.png", "clock": "08:00:40", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 249, "file": "playthrough/frames/frame_00249.png", "clock": "08:00:44", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 250, "file": "playthrough/frames/frame_00250.png", "clock": "08:00:44", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 251, "file": "playthrough/frames/frame_00251.png", "clock": "08:00:44", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 252, "file": "playthrough/frames/frame_00252.png", "clock": "08:00:44", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 253, "file": "playthrough/frames/frame_00253.png", "clock": "08:00:44", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 254, "file": "playthrough/frames/frame_00254.png", "clock": "08:00:45", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 255, "file": "playthrough/frames/frame_00255.png", "clock": "08:00:46", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 256, "file": "playthrough/frames/frame_00256.png", "clock": "08:00:46", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 257, "file": "playthrough/frames/frame_00257.png", "clock": "08:00:47", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 258, "file": "playthrough/frames/frame_00258.png", "clock": "08:00:47", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 259, "file": "playthrough/frames/frame_00259.png", "clock": "08:00:48", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 260, "file": "playthrough/frames/frame_00260.png", "clock": "08:00:48", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 261, "file": "playthrough/frames/frame_00261.png", "clock": "08:00:48", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 262, "file": "playthrough/frames/frame_00262.png", "clock": "08:00:49", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 263, "file": "playthrough/frames/frame_00263.png", "clock": "08:00:49", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 264, "file": "playthrough/frames/frame_00264.png", "clock": "08:00:50", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 265, "file": "playthrough/frames/frame_00265.png", "clock": "08:00:50", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 266, "file": "playthrough/frames/frame_00266.png", "clock": "08:00:50", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 267, "file": "playthrough/frames/frame_00267.png", "clock": "08:00:51", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 268, "file": "playthrough/frames/frame_00268.png", "clock": "08:00:52", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 269, "file": "playthrough/frames/frame_00269.png", "clock": "08:00:52", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 270, "file": "playthrough/frames/frame_00270.png", "clock": "08:00:52", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 271, "file": "playthrough/frames/frame_00271.png", "clock": "08:00:53", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 272, "file": "playthrough/frames/frame_00272.png", "clock": "08:00:54", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 273, "file": "playthrough/frames/frame_00273.png", "clock": "08:00:55", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 274, "file": "playthrough/frames/frame_00274.png", "clock": "08:00:55", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 275, "file": "playthrough/frames/frame_00275.png", "clock": "08:00:55", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 276, "file": "playthrough/frames/frame_00276.png", "clock": "08:00:56", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 277, "file": "playthrough/frames/frame_00277.png", "clock": "08:00:57", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 278, "file": "playthrough/frames/frame_00278.png", "clock": "08:00:59", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 279, "file": "playthrough/frames/frame_00279.png", "clock": "08:01:00", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 280, "file": "playthrough/frames/frame_00280.png", "clock": "08:01:01", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 281, "file": "playthrough/frames/frame_00281.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 282, "file": "playthrough/frames/frame_00282.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 283, "file": "playthrough/frames/frame_00283.png", "clock": "08:01:01", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 284, "file": "playthrough/frames/frame_00284.png", "clock": "08:01:03", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 285, "file": "playthrough/frames/frame_00285.png", "clock": "08:01:04", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 286, "file": "playthrough/frames/frame_00286.png", "clock": "08:01:05", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 287, "file": "playthrough/frames/frame_00287.png", "clock": "08:01:06", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 288, "file": "playthrough/frames/frame_00288.png", "clock": "08:01:08", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 289, "file": "playthrough/frames/frame_00289.png", "clock": "08:01:08", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 290, "file": "playthrough/frames/frame_00290.png", "clock": "08:01:08", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 291, "file": "playthrough/frames/frame_00291.png", "clock": "08:01:08", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 292, "file": "playthrough/frames/frame_00292.png", "clock": "08:01:08", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 293, "file": "playthrough/frames/frame_00293.png", "clock": "08:01:08", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 294, "file": "playthrough/frames/frame_00294.png", "clock": "08:01:10", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 295, "file": "playthrough/frames/frame_00295.png", "clock": "08:01:11", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 296, "file": "playthrough/frames/frame_00296.png", "clock": "08:01:11", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 297, "file": "playthrough/frames/frame_00297.png", "clock": "08:01:11", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 298, "file": "playthrough/frames/frame_00298.png", "clock": "08:01:11", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 299, "file": "playthrough/frames/frame_00299.png", "clock": "08:01:12", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 300, "file": "playthrough/frames/frame_00300.png", "clock": "08:01:13", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 301, "file": "playthrough/frames/frame_00301.png", "clock": "08:01:14", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 302, "file": "playthrough/frames/frame_00302.png", "clock": "08:01:15", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 303, "file": "playthrough/frames/frame_00303.png", "clock": "08:01:15", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 304, "file": "playthrough/frames/frame_00304.png", "clock": "08:01:15", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 305, "file": "playthrough/frames/frame_00305.png", "clock": "08:01:16", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 306, "file": "playthrough/frames/frame_00306.png", "clock": "08:01:18", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 307, "file": "playthrough/frames/frame_00307.png", "clock": "08:01:20", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 308, "file": "playthrough/frames/frame_00308.png", "clock": "08:01:20", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 309, "file": "playthrough/frames/frame_00309.png", "clock": "08:01:20", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 310, "file": "playthrough/frames/frame_00310.png", "clock": "08:01:20", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 311, "file": "playthrough/frames/frame_00311.png", "clock": "08:01:22", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 312, "file": "playthrough/frames/frame_00312.png", "clock": "08:01:22", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 313, "file": "playthrough/frames/frame_00313.png", "clock": "08:01:22", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 314, "file": "playthrough/frames/frame_00314.png", "clock": "08:01:22", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 315, "file": "playthrough/frames/frame_00315.png", "clock": "08:01:23", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 316, "file": "playthrough/frames/frame_00316.png", "clock": "08:25:00", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 317, "file": "playthrough/frames/frame_00317.png", "clock": "08:29:58", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 318, "file": "playthrough/frames/frame_00318.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 319, "file": "playthrough/frames/frame_00319.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 320, "file": "playthrough/frames/frame_00320.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 321, "file": "playthrough/frames/frame_00321.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 322, "file": "playthrough/frames/frame_00322.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 323, "file": "playthrough/frames/frame_00323.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 324, "file": "playthrough/frames/frame_00324.png", "clock": "08:29:58", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 325, "file": "playthrough/frames/frame_00325.png", "clock": "08:29:58", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 326, "file": "playthrough/frames/frame_00326.png", "clock": "08:29:58", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 327, "file": "playthrough/frames/frame_00327.png", "clock": "08:29:58", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 328, "file": "playthrough/frames/frame_00328.png", "clock": "08:29:58", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 329, "file": "playthrough/frames/frame_00329.png", "clock": "08:29:59", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 330, "file": "playthrough/frames/frame_00330.png", "clock": "08:29:59", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 331, "file": "playthrough/frames/frame_00331.png", "clock": "08:29:59", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 332, "file": "playthrough/frames/frame_00332.png", "clock": "08:29:59", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 333, "file": "playthrough/frames/frame_00333.png", "clock": "08:30:01", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 334, "file": "playthrough/frames/frame_00334.png", "clock": "08:30:02", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 335, "file": "playthrough/frames/frame_00335.png", "clock": "08:30:02", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 336, "file": "playthrough/frames/frame_00336.png", "clock": "08:30:04", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 337, "file": "playthrough/frames/frame_00337.png", "clock": "08:30:05", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 338, "file": "playthrough/frames/frame_00338.png", "clock": "08:30:06", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 339, "file": "playthrough/frames/frame_00339.png", "clock": "08:30:07", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 340, "file": "playthrough/frames/frame_00340.png", "clock": "08:30:07", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 341, "file": "playthrough/frames/frame_00341.png", "clock": "08:30:07", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 342, "file": "playthrough/frames/frame_00342.png", "clock": "08:30:07", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 343, "file": "playthrough/frames/frame_00343.png", "clock": "08:30:08", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 344, "file": "playthrough/frames/frame_00344.png", "clock": "08:30:09", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 345, "file": "playthrough/frames/frame_00345.png", "clock": "08:30:09", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 346, "file": "playthrough/frames/frame_00346.png", "clock": "08:30:09", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 347, "file": "playthrough/frames/frame_00347.png", "clock": "08:30:09", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 348, "file": "playthrough/frames/frame_00348.png", "clock": "08:30:10", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 349, "file": "playthrough/frames/frame_00349.png", "clock": "08:30:11", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 350, "file": "playthrough/frames/frame_00350.png", "clock": "08:30:12", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 351, "file": "playthrough/frames/frame_00351.png", "clock": "08:30:13", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 352, "file": "playthrough/frames/frame_00352.png", "clock": "08:30:15", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 353, "file": "playthrough/frames/frame_00353.png", "clock": "08:30:16", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 354, "file": "playthrough/frames/frame_00354.png", "clock": "08:30:17", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 355, "file": "playthrough/frames/frame_00355.png", "clock": "08:30:18", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 356, "file": "playthrough/frames/frame_00356.png", "clock": "08:30:19", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 357, "file": "playthrough/frames/frame_00357.png", "clock": "08:30:19", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 358, "file": "playthrough/frames/frame_00358.png", "clock": "08:30:20", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 359, "file": "playthrough/frames/frame_00359.png", "clock": "08:30:20", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 360, "file": "playthrough/frames/frame_00360.png", "clock": "08:30:20", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 361, "file": "playthrough/frames/frame_00361.png", "clock": "08:30:21", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 362, "file": "playthrough/frames/frame_00362.png", "clock": "08:30:22", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 363, "file": "playthrough/frames/frame_00363.png", "clock": "08:30:22", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 364, "file": "playthrough/frames/frame_00364.png", "clock": "08:30:22", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 365, "file": "playthrough/frames/frame_00365.png", "clock": "08:30:23", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 366, "file": "playthrough/frames/frame_00366.png", "clock": "08:30:24", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 367, "file": "playthrough/frames/frame_00367.png", "clock": "08:30:24", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 368, "file": "playthrough/frames/frame_00368.png", "clock": "08:30:24", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 369, "file": "playthrough/frames/frame_00369.png", "clock": "08:30:25", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 370, "file": "playthrough/frames/frame_00370.png", "clock": "08:30:25", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 371, "file": "playthrough/frames/frame_00371.png", "clock": "08:30:25", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 372, "file": "playthrough/frames/frame_00372.png", "clock": "08:30:26", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 373, "file": "playthrough/frames/frame_00373.png", "clock": "08:30:27", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 374, "file": "playthrough/frames/frame_00374.png", "clock": "08:30:27", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 375, "file": "playthrough/frames/frame_00375.png", "clock": "08:30:27", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 376, "file": "playthrough/frames/frame_00376.png", "clock": "08:30:28", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 377, "file": "playthrough/frames/frame_00377.png", "clock": "08:30:30", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 378, "file": "playthrough/frames/frame_00378.png", "clock": "08:30:31", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 379, "file": "playthrough/frames/frame_00379.png", "clock": "08:30:32", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 380, "file": "playthrough/frames/frame_00380.png", "clock": "08:30:33", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 381, "file": "playthrough/frames/frame_00381.png", "clock": "08:30:34", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 382, "file": "playthrough/frames/frame_00382.png", "clock": "08:30:35", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 383, "file": "playthrough/frames/frame_00383.png", "clock": "08:30:36", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 384, "file": "playthrough/frames/frame_00384.png", "clock": "08:30:37", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 385, "file": "playthrough/frames/frame_00385.png", "clock": "08:30:38", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 386, "file": "playthrough/frames/frame_00386.png", "clock": "08:30:39", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 387, "file": "playthrough/frames/frame_00387.png", "clock": "08:30:40", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 388, "file": "playthrough/frames/frame_00388.png", "clock": "08:30:41", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 389, "file": "playthrough/frames/frame_00389.png", "clock": "08:30:42", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 390, "file": "playthrough/frames/frame_00390.png", "clock": "08:30:43", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 391, "file": "playthrough/frames/frame_00391.png", "clock": "08:30:44", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 392, "file": "playthrough/frames/frame_00392.png", "clock": "08:30:45", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 393, "file": "playthrough/frames/frame_00393.png", "clock": "08:30:46", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 394, "file": "playthrough/frames/frame_00394.png", "clock": "08:30:47", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 395, "file": "playthrough/frames/frame_00395.png", "clock": "08:30:48", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 396, "file": "playthrough/frames/frame_00396.png", "clock": "08:30:48", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 397, "file": "playthrough/frames/frame_00397.png", "clock": "08:30:48", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 398, "file": "playthrough/frames/frame_00398.png", "clock": "08:30:48", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 399, "file": "playthrough/frames/frame_00399.png", "clock": "08:30:48", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 400, "file": "playthrough/frames/frame_00400.png", "clock": "08:30:48", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 401, "file": "playthrough/frames/frame_00401.png", "clock": "08:30:48", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 402, "file": "playthrough/frames/frame_00402.png", "clock": "08:30:48", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 403, "file": "playthrough/frames/frame_00403.png", "clock": "08:30:48", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 404, "file": "playthrough/frames/frame_00404.png", "clock": "08:30:48", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 405, "file": "playthrough/frames/frame_00405.png", "clock": "08:30:48", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 406, "file": "playthrough/frames/frame_00406.png", "clock": "08:30:48", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 407, "file": "playthrough/frames/frame_00407.png", "clock": "08:30:48", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 408, "file": "playthrough/frames/frame_00408.png", "clock": "08:30:48", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 409, "file": "playthrough/frames/frame_00409.png", "clock": "08:30:48", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 410, "file": "playthrough/frames/frame_00410.png", "clock": "08:30:48", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 411, "file": "playthrough/frames/frame_00411.png", "clock": "08:30:48", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 412, "file": "playthrough/frames/frame_00412.png", "clock": "08:30:48", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 413, "file": "playthrough/frames/frame_00413.png", "clock": "08:30:48", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 414, "file": "playthrough/frames/frame_00414.png", "clock": "08:30:48", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 415, "file": "playthrough/frames/frame_00415.png", "clock": "08:30:48", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 416, "file": "playthrough/frames/frame_00416.png", "clock": "08:30:48", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 417, "file": "playthrough/frames/frame_00417.png", "clock": null, "phrase": null, "date": null, "agreement": true}
-{"frame": 418, "file": "playthrough/frames/frame_00418.png", "clock": "08:30:48", "phrase": null, "date": "Thursday, May 20", "agreement": true}
-{"frame": 419, "file": "playthrough/frames/frame_00419.png", "clock": null, "phrase": null, "date": null, "agreement": true}
+{"frame": 1, "file": "playthrough/frames/frame_00001.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "2df791ebf2e4baf1046244be29a69b0637f7346a9f709f1d30a20d6648b39c68"}
+{"frame": 2, "file": "playthrough/frames/frame_00002.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "b9e9599cb8e0705c1eb6910b0c22c6cc11bbf7c19c7c310b07166c935eabb888"}
+{"frame": 3, "file": "playthrough/frames/frame_00003.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "03922c0f98f179c6c4bc165454e91997ae7c81cb61455c8358ea556e340374f7"}
+{"frame": 4, "file": "playthrough/frames/frame_00004.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "1bd572967ef6a8831a1a7c0d00ed8cf1c77623d0f6e70b1d28f4feec46d2d5b5"}
+{"frame": 5, "file": "playthrough/frames/frame_00005.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "091b67d565f7dc9a9f13e7037d1bb68dac0096a263ac553d5c1e5f8ce3d531c1"}
+{"frame": 6, "file": "playthrough/frames/frame_00006.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "e3f7e845cfaba4fa41c47d6a0da3c9da91196b7437ea20e9827a95f7b3512b85"}
+{"frame": 7, "file": "playthrough/frames/frame_00007.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "0ee21151832902a4f7fc4f438ca0d9e9cc43c81171541d7808f657f8e0211a22"}
+{"frame": 8, "file": "playthrough/frames/frame_00008.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "5ba4bf6f947b98855126788bcd1851f7ff12227e057ac5e7873fcd03f6cf6d5a"}
+{"frame": 9, "file": "playthrough/frames/frame_00009.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "89e4370f3320011bc351fb1514e30f7537cbe9586dcd1b122256267df00ec6c4"}
+{"frame": 10, "file": "playthrough/frames/frame_00010.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "f1488622c478447dd1f2e68d6cf1c1aee7d6ea4f4b29942067018139523f9195"}
+{"frame": 11, "file": "playthrough/frames/frame_00011.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "9e2c6a81a94f613de99b813a0439141b94b33fa14a35f5f4fed0e6e38bb3d0c7"}
+{"frame": 12, "file": "playthrough/frames/frame_00012.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "131f37d4de50fb58a76ef1b0cd570ff27128c76a1c0507339fec47a3a4e929bd"}
+{"frame": 13, "file": "playthrough/frames/frame_00013.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "810030c5c991ad51ac527fd2c6bd361b0ce40574da45198dedf7e7f505dc1666"}
+{"frame": 14, "file": "playthrough/frames/frame_00014.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "f44ee541ddf25e9a56af3337c854f1c6a7ff99d9bc6481744bcfc84cbb79e78f"}
+{"frame": 15, "file": "playthrough/frames/frame_00015.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "5fbd4a229ba5c866cade5fbb531672248224ad53d2c817ccb14f4fbb9d224544"}
+{"frame": 16, "file": "playthrough/frames/frame_00016.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "69eb90b5ae5f7167b542e856aca66e45e06dbdfcaa1919679b78c4cf1d0bc637"}
+{"frame": 17, "file": "playthrough/frames/frame_00017.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "89441e4bedfdcb33c70e5b01f896ddb04fc123be389953b5a6c0249547c25b36"}
+{"frame": 18, "file": "playthrough/frames/frame_00018.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "c1566775cb449018bd20fae6e90fcfa57c10d8dfcc9b534b0457972c809f66d4"}
+{"frame": 19, "file": "playthrough/frames/frame_00019.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "5dc4e81bb4c1580b71d75b882696569a43d2505615c52328193d8d163ef7cd61"}
+{"frame": 20, "file": "playthrough/frames/frame_00020.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "1b5406371acb359759d00e203b8b9b75d6a2ad725e60faaec6363803205598c2"}
+{"frame": 21, "file": "playthrough/frames/frame_00021.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "5f7aaf0a3e00e2d6469e28f36b1df102f194618043654357fbeaaef29c6b1e56"}
+{"frame": 22, "file": "playthrough/frames/frame_00022.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "1e88b4edbe088be2b6853c25ad42bfe8bbd3a4b1ab0cb8477b6abbe69a120ee8"}
+{"frame": 23, "file": "playthrough/frames/frame_00023.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "6f24aa6734d65307555dcbaa653b0a37d88a1c8b6540bc20de4e8d342587fde1"}
+{"frame": 24, "file": "playthrough/frames/frame_00024.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "580c3698361191be7541b144c2eaf615d5fc1aa171bd31e940b9df0483faa361"}
+{"frame": 25, "file": "playthrough/frames/frame_00025.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "169bcdc08f275c1c71d2c91320b310f3a3f0525638a79e0ffa308fb5ba268a2d"}
+{"frame": 26, "file": "playthrough/frames/frame_00026.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "fce76ddcc46eacbc02c9851761ecfff84708cf4ee24087f6c155947d4718166f"}
+{"frame": 27, "file": "playthrough/frames/frame_00027.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "9c5e49ce4d4751902dcab431173920aa09456b3ed4e3a6dc094fdd73965be0a7"}
+{"frame": 28, "file": "playthrough/frames/frame_00028.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "2abd5110029560b4b56cb60c0b1ff39a9c05fb0f892fe3b1bbe96f8609d6ba8d"}
+{"frame": 29, "file": "playthrough/frames/frame_00029.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "7c0e217069da2fba038681a65fc07d237bd86a50bee6b4705d759b278f92b004"}
+{"frame": 30, "file": "playthrough/frames/frame_00030.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "8ef67214ecad0377f84688119028b1f084cd2698d5543f294bfe7ff89a9c6df1"}
+{"frame": 31, "file": "playthrough/frames/frame_00031.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "c6d7f6c21fbb81d4586d13fa66273268943d83f2ff7c493f486464d0f36c6713"}
+{"frame": 32, "file": "playthrough/frames/frame_00032.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "21243371014de9ecd4e9064e12ba2ca7311a12fdd6cdb73feb20880495ef1e4e"}
+{"frame": 33, "file": "playthrough/frames/frame_00033.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "1fe7ac772e30c49fb4efcdc694e06668052bcb02cde5436f922237a794eeb17b"}
+{"frame": 34, "file": "playthrough/frames/frame_00034.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "0b80df6cb603110916beec0297557843be6e6cf6532f8e3c9d3c562d4510633b"}
+{"frame": 35, "file": "playthrough/frames/frame_00035.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "b1322d08613d03aa7c6b1012886d6997bf937f7a0b5f0c5681732eaa730410f2"}
+{"frame": 36, "file": "playthrough/frames/frame_00036.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "4c1c505171466ad0fc7e5feb674de16c05c7d42b7ea36160f61cdbb98d3238b8"}
+{"frame": 37, "file": "playthrough/frames/frame_00037.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "80d58d30e0e7633c375b7617f238064153a56a8cc7d625caa808e2d54128106c"}
+{"frame": 38, "file": "playthrough/frames/frame_00038.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "a8980701d80bf77a22f716a55fd0c384dd5bad3aa0101201cc464b9e5ed95722"}
+{"frame": 39, "file": "playthrough/frames/frame_00039.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "7f5d79cfc5b177338759b03f07f5757c7819d4412399004f3ddb2b840d5e8437"}
+{"frame": 40, "file": "playthrough/frames/frame_00040.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "52b94012fe0e953efe55603219a4f88c169569f6509470314d9ba748b75c9f45"}
+{"frame": 41, "file": "playthrough/frames/frame_00041.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "818c11f653b28e99f3159d678c2f66ed2a1562634dbd70ffbc666e8bbedb934f"}
+{"frame": 42, "file": "playthrough/frames/frame_00042.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "f29b125484764d8590b99fcaaed7d341fe2b57bc8cc3618d8e80317be84e9fe9"}
+{"frame": 43, "file": "playthrough/frames/frame_00043.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "ba8a7425e69ab6473da4c0f2a027cb6ab47f6bcd0cd21241bbc766bf3e01168a"}
+{"frame": 44, "file": "playthrough/frames/frame_00044.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "34513e0446b597102a187579cdaa1c7a2bcaed73701e4127ba48ec3aa18c5142"}
+{"frame": 45, "file": "playthrough/frames/frame_00045.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "0b4bbb9e68ac79b64ad9129add48dc5e6cceaf6a0d8a60f99de37e59bfdff8cd"}
+{"frame": 46, "file": "playthrough/frames/frame_00046.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "2c4b7db717aa3f1b3b7cb054f046a3f31a74c8da5f5572316f5ee98e0ecae411"}
+{"frame": 47, "file": "playthrough/frames/frame_00047.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "e402a6845237b231e9394d14a30393140b692834f89f50be1c1a91e0df94a256"}
+{"frame": 48, "file": "playthrough/frames/frame_00048.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "9221ce67a5a3b404b9cdb2ef6487edab894f3c20a8389b3cd1fea416d3d9380d"}
+{"frame": 49, "file": "playthrough/frames/frame_00049.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "efd6bd34d44891575e74ef7bcadbf3f7e2c4601e6b0a4e211f9a2b24e56249d6"}
+{"frame": 50, "file": "playthrough/frames/frame_00050.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "36e0dfdd67dff52e30b3d1bc039ae70be3d31f3104e75e8420251ed5406551ee"}
+{"frame": 51, "file": "playthrough/frames/frame_00051.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "a43f8f73b06e31bc275fa6e2ee8b74fe8797bce3f28b08a191165a4003ffe697"}
+{"frame": 52, "file": "playthrough/frames/frame_00052.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "aa14a6735bf0619564e60c9670546f507c8fb22c02f9d72d9486fe4c780cdc83"}
+{"frame": 53, "file": "playthrough/frames/frame_00053.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "eae5a33840b63ecacf90530b6e28e9483828678e06e7d326909719baaf34772c"}
+{"frame": 54, "file": "playthrough/frames/frame_00054.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "6cf8e800f39132a6e60399405c4a7292d5528361a157883b6d2dc20307f654ee"}
+{"frame": 55, "file": "playthrough/frames/frame_00055.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "40c2f61c80acd501b4332a12393e0a99943969d17801ce076964191cf0ff62e1"}
+{"frame": 56, "file": "playthrough/frames/frame_00056.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "b8370b3105f41b648f2beed061f47aa096dd9a6e8aaf737eacb972dc9b0a2a92"}
+{"frame": 57, "file": "playthrough/frames/frame_00057.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "0357145f0f810088fa7c42b2e6fb99b1a97138f98668b23ef3e658169d558183"}
+{"frame": 58, "file": "playthrough/frames/frame_00058.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "11a47da81853725a77f4f8d801b4e9c4ba4370a6707133faa16c363c4cbda3eb"}
+{"frame": 59, "file": "playthrough/frames/frame_00059.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "93c589d30cfc8704c2960d1c99bd42161e1f1f0f00c0bcbf9dec3941c0fd9d2c"}
+{"frame": 60, "file": "playthrough/frames/frame_00060.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "5aceda01cdfc080aa3e74571fef55e4613d275abf511a5abcf496b188f673edf"}
+{"frame": 61, "file": "playthrough/frames/frame_00061.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "fa3f7c0037b8946b5b2e5262aec7b46f7fb6151db5fdabca10db375ae92fdbb9"}
+{"frame": 62, "file": "playthrough/frames/frame_00062.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "00bd373787f3a1392a0d5ece6ad8b46586e24c0770a94e7d53ff21fd0b5d509f"}
+{"frame": 63, "file": "playthrough/frames/frame_00063.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "a0752a56fefa0770d26b0d2bbe2e37f19fc1af983ce4e9c3d4929fc5147a270e"}
+{"frame": 64, "file": "playthrough/frames/frame_00064.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "314bc252e994d7d3ef6a4ffa8082fc1cfaad9a8eb81021b82bdd28867d9d281e"}
+{"frame": 65, "file": "playthrough/frames/frame_00065.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "99b0f1f3b3fdbc77f238e35b770665a48715a0b7a26583cd97df153cf456f830"}
+{"frame": 66, "file": "playthrough/frames/frame_00066.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "921e424bcf46c4448186119db3d7da2f6fdeda50ac8de5af07e7838c6d2bf6ae"}
+{"frame": 67, "file": "playthrough/frames/frame_00067.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "403f283d9b40ff26ef610c89591c589f0b3c3a28305ca2bef0d5535c5da50284"}
+{"frame": 68, "file": "playthrough/frames/frame_00068.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "7b767f66a91d969be43b52885671e6dddd0e778f1070a4075dbda4ac7fe3f545"}
+{"frame": 69, "file": "playthrough/frames/frame_00069.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "35b3c413a0f0d9a73a62ba633f183c300ef7730649bd0a41bf66b6829d1babe4"}
+{"frame": 70, "file": "playthrough/frames/frame_00070.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "3ad6a93af3d66b48a9e53c80d982665a1bd32b0d52c0b6ab615d5b57b563d4c3"}
+{"frame": 71, "file": "playthrough/frames/frame_00071.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "8cd02edf6771a869ac17b93b615539a391421534fe7ce453c6c761578cbf7c37"}
+{"frame": 72, "file": "playthrough/frames/frame_00072.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "e8f03db6b717d73bffa05bdac2ff1334b1a0e8b4b59be07f0335bcd2b5b041b6"}
+{"frame": 73, "file": "playthrough/frames/frame_00073.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "3436225b935dbdb7dff8928e248644b03461607959d7f47cb87c5dbcc35f103c"}
+{"frame": 74, "file": "playthrough/frames/frame_00074.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "4292c1a4bb2e967980f034422ebe4c2380a8332e18d2c161ce0c7f860692c090"}
+{"frame": 75, "file": "playthrough/frames/frame_00075.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "5d5b03cbe915b3c48f2e375216262263f8a539f82cee1aa31eb87af041af91e8"}
+{"frame": 76, "file": "playthrough/frames/frame_00076.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "e959769ae78774139f01127b65780e135d5bdd8f344e35ca6f7ac9acdf501c89"}
+{"frame": 77, "file": "playthrough/frames/frame_00077.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "acdf3ea6662de87def6eeceef8511ec4fdb5520cbf721c87b84658dac7ec9524"}
+{"frame": 78, "file": "playthrough/frames/frame_00078.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "0ed3ef1bc44b634a62e6a54dd3f0a4a05eddefcc1fb4a4bb149148cb48d7d8c1"}
+{"frame": 79, "file": "playthrough/frames/frame_00079.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "e77a2307197842ae881a2ed1770d92670c77026108e6739dfbdbf23593b3c077"}
+{"frame": 80, "file": "playthrough/frames/frame_00080.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "c977c07293086b34e8800acfaf186c51ea08e5cd75eeed5991f7c13f52981599"}
+{"frame": 81, "file": "playthrough/frames/frame_00081.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "03dee86307ccbbd0e3c880a6381ea9d66ef976dc114c790e649be51ebebf737d"}
+{"frame": 82, "file": "playthrough/frames/frame_00082.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "3370c5cdc1016a8aaefa140c3166e75cd9357cdf4730ef8fd4f7b973c182b2fe"}
+{"frame": 83, "file": "playthrough/frames/frame_00083.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "59f433556154e57bd1dbcb848be2d1586d33c7ded3935a18c975e20ad1ba021f"}
+{"frame": 84, "file": "playthrough/frames/frame_00084.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "acdf3ea6662de87def6eeceef8511ec4fdb5520cbf721c87b84658dac7ec9524"}
+{"frame": 85, "file": "playthrough/frames/frame_00085.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "69f0609efdee8735c09e127e3f590057c9f6196976fa07ea83ce74f9ff430743"}
+{"frame": 86, "file": "playthrough/frames/frame_00086.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "38ba49a5799737bc049c46471888af901004884c9b46ebc6d6ec092f237f89fd"}
+{"frame": 87, "file": "playthrough/frames/frame_00087.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "6ed825c8392ed18e40a3062cba6be6d38dc94c7fbb1cc2c573406479a7e24360"}
+{"frame": 88, "file": "playthrough/frames/frame_00088.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "b956eab81ac3f6347eb3e3f7663e4d06a1b8365db0ce49c02167f4ef0456e4d5"}
+{"frame": 89, "file": "playthrough/frames/frame_00089.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "3bf2791e30de3942b911486ba69320c6794739ebc221b2cb94161bd0a9946c5b"}
+{"frame": 90, "file": "playthrough/frames/frame_00090.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "00cdcedd6fc5fb2404fc35634c9d88b2c9162e782bd3c46cdc9a664c800c79a8"}
+{"frame": 91, "file": "playthrough/frames/frame_00091.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "6187e79ceb26cbdf09719a794c7700bea312f1df1e4f0dd757671a2bee673006"}
+{"frame": 92, "file": "playthrough/frames/frame_00092.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "8c4e903de0654841f9a10fc936596cc478e30bd88fa8822affa077924a0dc4e9"}
+{"frame": 93, "file": "playthrough/frames/frame_00093.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "741f4ea920d84a1381e0194f5913e244a01781f2a13579e2e41467fd8245d2f0"}
+{"frame": 94, "file": "playthrough/frames/frame_00094.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "c052762a7ade8099e69318cb607e9731d48dfc072bc5d38dacda8c785711eb0b"}
+{"frame": 95, "file": "playthrough/frames/frame_00095.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "70cdb05d1acab84762b56c3045ea2732b3beff40fae268e4f778940fa5677643"}
+{"frame": 96, "file": "playthrough/frames/frame_00096.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "e9a2adbc2e1389103ed70fcc3b4205f2ee448ae2994bf1024667f53f6eb7114d"}
+{"frame": 97, "file": "playthrough/frames/frame_00097.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "1f1976d2591699c3c38d15dbd622531de35f9c68ac9a43a5dd33856946755ec5"}
+{"frame": 98, "file": "playthrough/frames/frame_00098.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "bc8e5ac83b338f7987a510b08934ca3a0927388b9e6a7ed7dbf587ae182cc9be"}
+{"frame": 99, "file": "playthrough/frames/frame_00099.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "f5953dd0aa45a77260b7c04b3ecda230feaef02ed7e9b720e7f0bb1b6cdb993e"}
+{"frame": 100, "file": "playthrough/frames/frame_00100.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "ed42bd11215cedf18815fc629c12690fce735238360f90ead6a345a0f846a9d7"}
+{"frame": 101, "file": "playthrough/frames/frame_00101.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "7b4d374766e487a47ea1c6f1f5f6fab76bce813f696d5843b4e842d58961bd17"}
+{"frame": 102, "file": "playthrough/frames/frame_00102.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "38dd0e0437b659372e5794e942c84d7aff84fe56f4d55a7d1a3b1a9ff12c7d01"}
+{"frame": 103, "file": "playthrough/frames/frame_00103.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "5f33c2d64f14a2382eda3e5a38b81ab871a5bf8377df985caf57b63158c803b7"}
+{"frame": 104, "file": "playthrough/frames/frame_00104.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "70043b4f05cf5eb27fa543d6454812b6a964b792ea4f37df4b30aade20161290"}
+{"frame": 105, "file": "playthrough/frames/frame_00105.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "e2b015319e36deb0b8fbc459a3d1dda203eba32818e8b94bbe3cdb04001e15ef"}
+{"frame": 106, "file": "playthrough/frames/frame_00106.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "e2b015319e36deb0b8fbc459a3d1dda203eba32818e8b94bbe3cdb04001e15ef"}
+{"frame": 107, "file": "playthrough/frames/frame_00107.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "3b287880cb02e04be6e3f09622cf64d2221fb2ed549c03a1b51e801e1131071e"}
+{"frame": 108, "file": "playthrough/frames/frame_00108.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "58c94d1afe113be899d566e3a79c53b19fc5888deb893ceab7e98658c935b958"}
+{"frame": 109, "file": "playthrough/frames/frame_00109.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "66a225afc2d328c9f32930aa071b14105841d007beb4ce4cdbd57170dde1ca27"}
+{"frame": 110, "file": "playthrough/frames/frame_00110.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "bcf41601ffc971a6152349165a5d619b4872dd889642cc3b45f35b0cf6a0cf1b"}
+{"frame": 111, "file": "playthrough/frames/frame_00111.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "cc815f16e386b1d72ba396da4827e0dcbc587bc9f31ddd68b7d2f5b86a5bda20"}
+{"frame": 112, "file": "playthrough/frames/frame_00112.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "0396519a4414e8fbde8f7ddb3a9d270535ef597971fa8fba623d917583182dc8"}
+{"frame": 113, "file": "playthrough/frames/frame_00113.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "b2099c9494dac82e5c719ccd441a37010d9ba1731ec49a690623c445a5b632d9"}
+{"frame": 114, "file": "playthrough/frames/frame_00114.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "957804daef81aee672833d70be59e02aa57184a2ce3d562e708e79870167c7b2"}
+{"frame": 115, "file": "playthrough/frames/frame_00115.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "35066a8da844ad4396272b1da3bc03a6af913273de9e6429f383a27c3a8017c2"}
+{"frame": 116, "file": "playthrough/frames/frame_00116.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "2783232a5a731cfd4d84f80daada22948538902e6139fdc60201138ee03192cb"}
+{"frame": 117, "file": "playthrough/frames/frame_00117.png", "clock": null, "phrase": null, "date": null, "agreement": true, "frame_sha256": "2ba81b299d2bcd01cce9bf235bb2560e04fcf084b5ce541300ac5318c5a1dcc9"}
+{"frame": 118, "file": "playthrough/frames/frame_00118.png", "clock": "08:00:00", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "89bdf98606aeea802503d97f9e020b2601de73e399f362ecfe6b9f19d18c10f7"}
+{"frame": 119, "file": "playthrough/frames/frame_00119.png", "clock": "08:00:00", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "d595910161a983585571abd165fa56e6b581e6ae48c00cd1a7eb6706f95220b5"}
+{"frame": 120, "file": "playthrough/frames/frame_00120.png", "clock": "08:00:00", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "b62de737c7744895b92d82dd7395fc40f390461b4120c8c130063e20ce7d348d"}
+{"frame": 121, "file": "playthrough/frames/frame_00121.png", "clock": "08:00:00", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "59c5d472818914a95513df5d60f0c20d24e358c858f7255f4f322708aa5dc5e3"}
+{"frame": 122, "file": "playthrough/frames/frame_00122.png", "clock": "08:00:00", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "1761a0f7c10fec618771ef3ff3d7aa3cfc06b89f69a40a72b610602a438a19e3"}
+{"frame": 123, "file": "playthrough/frames/frame_00123.png", "clock": "08:00:02", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "f86d268c03b4d21e4c663c2a27fa0f2266b51fbd9b96cdc60a98bdea99f4cdb2"}
+{"frame": 124, "file": "playthrough/frames/frame_00124.png", "clock": "08:00:02", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "6b57096fe20406f4771d370099a9e6cb5f1aecf1f0f05685800fa09517824f44"}
+{"frame": 125, "file": "playthrough/frames/frame_00125.png", "clock": "08:00:02", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "5319e6dc192dee30051ff63844942b0458ece03250bd464d0a05cb35a69eeedb"}
+{"frame": 126, "file": "playthrough/frames/frame_00126.png", "clock": "08:00:02", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "3ee2b3904de8185de51bbe2285b85d4727002f8bfaa2bbb57f95e9db9fd21fc0"}
+{"frame": 127, "file": "playthrough/frames/frame_00127.png", "clock": "08:00:02", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "6dc59ceba3d855118e2110dfc41ca2a56343afb541b872a6c7a9524da733f89b"}
+{"frame": 128, "file": "playthrough/frames/frame_00128.png", "clock": "08:00:02", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "11caf6d828a1db4533bea10df4e342adb474262d05727137e53f6ef004ff67f5"}
+{"frame": 129, "file": "playthrough/frames/frame_00129.png", "clock": "08:00:03", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "cf0842d93d8921467a92ce14027dd42fe593f409eb3ea4d7e35649d66766b42f"}
+{"frame": 130, "file": "playthrough/frames/frame_00130.png", "clock": "08:00:04", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "61a36d7e0138dab5da9a0813a343a7427aef0bc1f08b532c258c1e0cb71810ec"}
+{"frame": 131, "file": "playthrough/frames/frame_00131.png", "clock": "08:00:05", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "6e93c53dcbfa632386195439409c6446d77c3bef2a4cd4719fe0c1bf3839cfeb"}
+{"frame": 132, "file": "playthrough/frames/frame_00132.png", "clock": "08:00:05", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "b280bec412343783e279e2b810b41039c8f32030311b36cabe324500f7f025e8"}
+{"frame": 133, "file": "playthrough/frames/frame_00133.png", "clock": "08:00:06", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "e9dd3a3a17d1d0e0929edea0e90df648ffdfb73dc8899ddc5a61edcde8f4b063"}
+{"frame": 134, "file": "playthrough/frames/frame_00134.png", "clock": "08:00:07", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "5c87bacaa3437290a0ed7d6063ae4d0a01e665e0f5765534832684069de9096a"}
+{"frame": 135, "file": "playthrough/frames/frame_00135.png", "clock": "08:00:08", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "29c388dbecec99502a6aecf42e6156e067f73f78058eb479dc37b6c77a7f2aa4"}
+{"frame": 136, "file": "playthrough/frames/frame_00136.png", "clock": "08:00:09", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "570736242eb0d54434d9fee270e749b19f18af2e180c4fe7d43e6c51eebb6993"}
+{"frame": 137, "file": "playthrough/frames/frame_00137.png", "clock": "08:00:09", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "9313e7aa017948db2d39d296f2bb254968ec3830e42c61865a60c45b486a4da3"}
+{"frame": 138, "file": "playthrough/frames/frame_00138.png", "clock": "08:00:09", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "a9728db842ce3433b12a5400e96cfbb216fbfaf50f87660c2265962b3e3ba55d"}
+{"frame": 139, "file": "playthrough/frames/frame_00139.png", "clock": "08:00:09", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "279f281f4905f279ee2e9249efca41783571dfda9ab710b4da049ba1c281222c"}
+{"frame": 140, "file": "playthrough/frames/frame_00140.png", "clock": "08:00:22", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "440017ef633e2d5ca210412306a798edde2ddea2bebe2041c4a31eae2aaa2f93"}
+{"frame": 141, "file": "playthrough/frames/frame_00141.png", "clock": "08:00:22", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "bd9f30731ef9d5377f100b7c3c3be19068e509ec868be985661676ea621e6f51"}
+{"frame": 142, "file": "playthrough/frames/frame_00142.png", "clock": "08:00:23", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "f16f97498af32dc379bb918deb8934a7377ccc46c7517a1556e3b74d36324a03"}
+{"frame": 143, "file": "playthrough/frames/frame_00143.png", "clock": "08:00:23", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "874d6f6e2fe333bc88bc0e3f64ce15d5f34c99e2901e2219b8ae95be8f8f6113"}
+{"frame": 144, "file": "playthrough/frames/frame_00144.png", "clock": "08:00:23", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "2403d49217ce261e79b28c02e01d967114b8403349d8847c8364d0e37a30d77c"}
+{"frame": 145, "file": "playthrough/frames/frame_00145.png", "clock": "08:00:23", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "07e8d60a6178b608b86e28a5bc937c5ff79807bfa7065cddb6c9078a987cfba9"}
+{"frame": 146, "file": "playthrough/frames/frame_00146.png", "clock": "08:00:23", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "07e8d60a6178b608b86e28a5bc937c5ff79807bfa7065cddb6c9078a987cfba9"}
+{"frame": 147, "file": "playthrough/frames/frame_00147.png", "clock": "08:00:23", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "21f7fe025fd75e15942bc0ee5651fc77edc3ae75bc94118394da19a3fea26d55"}
+{"frame": 148, "file": "playthrough/frames/frame_00148.png", "clock": "08:00:25", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "a9b335fe895c6d336718b1f008fa6ed036c4ee0fa39a161011c98ff225ec9d5e"}
+{"frame": 149, "file": "playthrough/frames/frame_00149.png", "clock": "08:00:25", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "68f738182a4e1c9e09114d31ed47e8b2356acf836361a66327b41653f0dd4665"}
+{"frame": 150, "file": "playthrough/frames/frame_00150.png", "clock": "08:00:25", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "ec35874a7a4dd0ead616a349b6bdd633509172be0024a99de6fde7eeedbc2777"}
+{"frame": 151, "file": "playthrough/frames/frame_00151.png", "clock": "08:00:25", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "ec35874a7a4dd0ead616a349b6bdd633509172be0024a99de6fde7eeedbc2777"}
+{"frame": 152, "file": "playthrough/frames/frame_00152.png", "clock": "08:00:25", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "977348a895093c8be992943240525d1724d2112a964150f5d1c08e0270320f18"}
+{"frame": 153, "file": "playthrough/frames/frame_00153.png", "clock": "08:00:25", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "70515a3144e29c5006aa112badaed202fa6d0db660fa1416b702b85627e79b54"}
+{"frame": 154, "file": "playthrough/frames/frame_00154.png", "clock": "08:00:25", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "0b1be0c07d70c871e556c2678cda434a0aff6830d31e49261b48322e18604c19"}
+{"frame": 155, "file": "playthrough/frames/frame_00155.png", "clock": "08:00:26", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "7c8644e993815a9b076f448ec1b93c322d3c5ebe1dbd174353bafd58cff2ce20"}
+{"frame": 156, "file": "playthrough/frames/frame_00156.png", "clock": "08:00:27", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "80c398a613e8d6d9d4f1d2fbd7a46d13eef5141cdfb901edb05135506a354576"}
+{"frame": 157, "file": "playthrough/frames/frame_00157.png", "clock": "08:00:27", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "d17122faf280ca470ac5997bb311b8167a5706715778a46beda80af2a9c7e1b5"}
+{"frame": 158, "file": "playthrough/frames/frame_00158.png", "clock": "08:00:27", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "a38b6d964e31dedc74aa81288dc1b9528b58b2e2e263b5de79eaba2c656d5f2e"}
+{"frame": 159, "file": "playthrough/frames/frame_00159.png", "clock": "08:00:27", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "973e39d2d87ed93f71060175ff8d5332bd4b499a8a72e5f40d62cc7cd33107c5"}
+{"frame": 160, "file": "playthrough/frames/frame_00160.png", "clock": "08:00:27", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "a38b6d964e31dedc74aa81288dc1b9528b58b2e2e263b5de79eaba2c656d5f2e"}
+{"frame": 161, "file": "playthrough/frames/frame_00161.png", "clock": "08:00:27", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "ccb079d898e841a11a22fc40bc4b15d58cc878b93600f08686ff92d896208af3"}
+{"frame": 162, "file": "playthrough/frames/frame_00162.png", "clock": "08:00:27", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "34e02af4770413e9dd8b1501740845bbb08909d8474b0c2d4116b8e11cc79858"}
+{"frame": 163, "file": "playthrough/frames/frame_00163.png", "clock": "08:00:27", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "f026f56125dcd0f5a805bef7782b4f76df7629c52034cf3d052b9323baf57a22"}
+{"frame": 164, "file": "playthrough/frames/frame_00164.png", "clock": "08:00:31", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "57483a8e5bfafa5e69e02fc47d6a8fac69d22522044e4bb0ce571f1384b4da37"}
+{"frame": 165, "file": "playthrough/frames/frame_00165.png", "clock": "08:00:31", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "ae6d92c091e3cdb8f6ecc533cae0a2676d7822cf075baccfd6b28037ac57e2a6"}
+{"frame": 166, "file": "playthrough/frames/frame_00166.png", "clock": "08:00:31", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "7f00e452caeb89304d0275331c42c9ccdda4a43d7cbc18acb1e93d252e96a38a"}
+{"frame": 167, "file": "playthrough/frames/frame_00167.png", "clock": "08:00:31", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "2c27e8383b6076faf7a5e81b2114c57e0ce5492e8ddba4cbecd90bb30a547062"}
+{"frame": 168, "file": "playthrough/frames/frame_00168.png", "clock": "08:00:32", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "42e31133a8fdbe0bc3f48c13de8ec6437fc61b04a56ca93be5e5a3acd76bee7a"}
+{"frame": 169, "file": "playthrough/frames/frame_00169.png", "clock": "08:00:41", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "eaec1f4d957fb0ee1f7e3f3bcac6bd8061d49aacb1f87fcd08134e47dd29908f"}
+{"frame": 170, "file": "playthrough/frames/frame_00170.png", "clock": "08:00:41", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "95bf73e29141e677bcee7fdd702b4f02cc5d367f760e8d7c68361b8710c6d448"}
+{"frame": 171, "file": "playthrough/frames/frame_00171.png", "clock": "08:00:41", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "202fb69f8c83d0229da41171eeda9c21ad1cc126bee9dc45001c8247cfc3a131"}
+{"frame": 172, "file": "playthrough/frames/frame_00172.png", "clock": "08:00:41", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "e9c5986661a3b5d182ecb6b2d7861ba334dbe2fc703eded6041b6ba30f938557"}
+{"frame": 173, "file": "playthrough/frames/frame_00173.png", "clock": "08:00:41", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "fb0253a3b819ead7adffff28d41a1a88a72e33886b3b8726215e0ec6cebb85f7"}
+{"frame": 174, "file": "playthrough/frames/frame_00174.png", "clock": "08:00:41", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "e5afba31f30bf5d5d29207ab9363324cde7b557398e02d1ca3773161bed416f9"}
+{"frame": 175, "file": "playthrough/frames/frame_00175.png", "clock": "08:00:41", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "a026a397369af4d1566f259dfdb50fe15cccf44ebd20c62eba7e578f24733621"}
+{"frame": 176, "file": "playthrough/frames/frame_00176.png", "clock": "08:00:41", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "f7b0dc72767573dde0c005d0f280aafdc47df6cae20cd95ae28368a7724d1060"}
+{"frame": 177, "file": "playthrough/frames/frame_00177.png", "clock": "08:00:42", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "55a3c22abe8b85e6842736c88f2de773b140fa823b89698e51540d42b56701cf"}
+{"frame": 178, "file": "playthrough/frames/frame_00178.png", "clock": "08:00:42", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "9c8024323f10723680fb2b4f601b15b4de9a16774158d8db9b8db224b2a7191c"}
+{"frame": 179, "file": "playthrough/frames/frame_00179.png", "clock": "08:00:42", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "4a556489edc467f506e57dd4576d76dbe430acea0fdd1c7921385a8f672f9b32"}
+{"frame": 180, "file": "playthrough/frames/frame_00180.png", "clock": "08:00:42", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "f486f1c485497b2f3399b8504a1c5976d61f9f097fb9586ec3c617c8d5840b74"}
+{"frame": 181, "file": "playthrough/frames/frame_00181.png", "clock": "08:00:42", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "f7d62c4bd959b44e20de3b6899ff6c56d12639355fa797b8e1391a03cb0b116e"}
+{"frame": 182, "file": "playthrough/frames/frame_00182.png", "clock": "08:00:42", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "1d8a55bbf94fe349d607b26216ece0368e2f2d48516ea322e66003c400ea7619"}
+{"frame": 183, "file": "playthrough/frames/frame_00183.png", "clock": "08:00:42", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "ccbd9f0139ec2f6a4700e00453fcb9f54233d23d4d0f23f0e1aacca9b9c90567"}
+{"frame": 184, "file": "playthrough/frames/frame_00184.png", "clock": "08:00:42", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "5b662a65ccea150c1de12b56291de47e94dfa96c59b1be3d314c8e59edc52c58"}
+{"frame": 185, "file": "playthrough/frames/frame_00185.png", "clock": "08:00:42", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "5b662a65ccea150c1de12b56291de47e94dfa96c59b1be3d314c8e59edc52c58"}
+{"frame": 186, "file": "playthrough/frames/frame_00186.png", "clock": "08:00:42", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "5b662a65ccea150c1de12b56291de47e94dfa96c59b1be3d314c8e59edc52c58"}
+{"frame": 187, "file": "playthrough/frames/frame_00187.png", "clock": "08:00:44", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "d0807bf5a9e1518ba1508df7c5ea92e051dcfafe7e88dd426e1e1856f44b07aa"}
+{"frame": 188, "file": "playthrough/frames/frame_00188.png", "clock": "08:00:44", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "ca669f97a121fad593e4ab1d3b3e194d5393fbbf7d0438c0f46c167b01c8fdd2"}
+{"frame": 189, "file": "playthrough/frames/frame_00189.png", "clock": "08:00:44", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "436e483349a4a29df834d4dbb7c7c6ab089fb41d0be1ae78e00eff3bf3686082"}
+{"frame": 190, "file": "playthrough/frames/frame_00190.png", "clock": "08:00:44", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "da7b67058fa2007488388f9ccbe408513cf889ad44fa8fa67d5a6b476270bbb1"}
+{"frame": 191, "file": "playthrough/frames/frame_00191.png", "clock": "08:00:44", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "9b41bd4db4ab1e89973bc7bde1705d75d6258dd8b9dd07e31243f910d0c97f42"}
+{"frame": 192, "file": "playthrough/frames/frame_00192.png", "clock": "08:00:44", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "ff7d195249b19f82cb6902bdadb4d542829f3b03e1d2cb5e47a477b805659f74"}
+{"frame": 193, "file": "playthrough/frames/frame_00193.png", "clock": "08:00:44", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "2ac6d7c2f9009b31845187bc0a5dcb697306ff52f7ac49b630f5c3c5d54310a0"}
+{"frame": 194, "file": "playthrough/frames/frame_00194.png", "clock": "08:00:44", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "5608378e39ee03b31d620dc27db7d653c93aabfe6e0eeab2eea19d23ab8f8e40"}
+{"frame": 195, "file": "playthrough/frames/frame_00195.png", "clock": "08:00:47", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "2fcb014b4ae8a9f932f7669bb4207331a28dbb9a13f726e01766557e2aa413ad"}
+{"frame": 196, "file": "playthrough/frames/frame_00196.png", "clock": "08:00:48", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "42aa1d960c58034b9d13713ee2d673e2631ba07ad24faf0e68c4c6adf9f3fe95"}
+{"frame": 197, "file": "playthrough/frames/frame_00197.png", "clock": "08:00:50", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "4ce32957bf6f88a9f085c2cb51e1fe302dc99f50025e5a9431935dd4e2831e6b"}
+{"frame": 198, "file": "playthrough/frames/frame_00198.png", "clock": "08:00:50", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "ad8803e6780a431a1f390ba26f187ae44ec20c67c0c289bc202c022a62d41423"}
+{"frame": 199, "file": "playthrough/frames/frame_00199.png", "clock": "08:00:50", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "f9eb2eb3909e6ed8cbfd6de96a158735a35a0ad322382e308eb32dbbe702d986"}
+{"frame": 200, "file": "playthrough/frames/frame_00200.png", "clock": "08:00:50", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "638edc5f7ae1f3fa509ea4836e948e6cf51c1b809f5c3d9166731a5175e752e6"}
+{"frame": 201, "file": "playthrough/frames/frame_00201.png", "clock": "08:00:50", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "d92f96175e121dabb3ead9dfc4faa91dff72e9786beb342ac3b96ce2ff66d12e"}
+{"frame": 202, "file": "playthrough/frames/frame_00202.png", "clock": "08:00:50", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "4a416afcad662dd83a82103bc32a224d7870aa3ba9c8107549054532bbe3daa1"}
+{"frame": 203, "file": "playthrough/frames/frame_00203.png", "clock": "08:00:50", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "369eb89bf9478c3ab561b4164ba0e83d843510ac2576b0b480183da9a09f5ae1"}
+{"frame": 204, "file": "playthrough/frames/frame_00204.png", "clock": "08:00:50", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "e32cc2f28e313d366f515f7c4f7915a2377fdc5d01feda7d34d78944828efcf9"}
+{"frame": 205, "file": "playthrough/frames/frame_00205.png", "clock": "08:00:50", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "be18551dc746c35dce2dbb860ba5a14fa7e3fc6ade2c312fb4de173863e94b8b"}
+{"frame": 206, "file": "playthrough/frames/frame_00206.png", "clock": "08:00:53", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "4b9b50f09f3b2ed5e78f3054f9df1db491a07763fdd347f0b49ff4127468d7aa"}
+{"frame": 207, "file": "playthrough/frames/frame_00207.png", "clock": "08:00:53", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "ac5ddf78ab84ca013af52c8b3e4ca961a0fd82fc54696ec2ee1b405d75c5473f"}
+{"frame": 208, "file": "playthrough/frames/frame_00208.png", "clock": "08:00:53", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "f53f41cc750b1a5fcb47367c936cf235dae3d215aa8a9bd6eafe4f4d30dda1b0"}
+{"frame": 209, "file": "playthrough/frames/frame_00209.png", "clock": "08:00:53", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "cb31c50cec6313818c7aa35f72bcbdc6d7b537328d636213b0922500ff19327b"}
+{"frame": 210, "file": "playthrough/frames/frame_00210.png", "clock": "08:00:53", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "10311dca5e8d47b5eae45077d8a573134d9c7dc0bdea78e5162075ce86cc8b2c"}
+{"frame": 211, "file": "playthrough/frames/frame_00211.png", "clock": "08:00:53", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "10311dca5e8d47b5eae45077d8a573134d9c7dc0bdea78e5162075ce86cc8b2c"}
+{"frame": 212, "file": "playthrough/frames/frame_00212.png", "clock": "08:00:53", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "10311dca5e8d47b5eae45077d8a573134d9c7dc0bdea78e5162075ce86cc8b2c"}
+{"frame": 213, "file": "playthrough/frames/frame_00213.png", "clock": "08:00:53", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "aab19bcbb1bd86376d83ea8549bdee162192e2c5e0f9727183e5fc2da376cccf"}
+{"frame": 214, "file": "playthrough/frames/frame_00214.png", "clock": "08:00:53", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "aab19bcbb1bd86376d83ea8549bdee162192e2c5e0f9727183e5fc2da376cccf"}
+{"frame": 215, "file": "playthrough/frames/frame_00215.png", "clock": "08:00:53", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "aab19bcbb1bd86376d83ea8549bdee162192e2c5e0f9727183e5fc2da376cccf"}
+{"frame": 216, "file": "playthrough/frames/frame_00216.png", "clock": "08:00:53", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "aab19bcbb1bd86376d83ea8549bdee162192e2c5e0f9727183e5fc2da376cccf"}
+{"frame": 217, "file": "playthrough/frames/frame_00217.png", "clock": "08:00:53", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "aab19bcbb1bd86376d83ea8549bdee162192e2c5e0f9727183e5fc2da376cccf"}
+{"frame": 218, "file": "playthrough/frames/frame_00218.png", "clock": "08:00:53", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "aab19bcbb1bd86376d83ea8549bdee162192e2c5e0f9727183e5fc2da376cccf"}
+{"frame": 219, "file": "playthrough/frames/frame_00219.png", "clock": "08:00:53", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "583db81fc107212e15d7dc059dc098f0fad8287dc85a4495eff6a111aea85179"}
+{"frame": 220, "file": "playthrough/frames/frame_00220.png", "clock": "08:00:53", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "583db81fc107212e15d7dc059dc098f0fad8287dc85a4495eff6a111aea85179"}
+{"frame": 221, "file": "playthrough/frames/frame_00221.png", "clock": "08:00:53", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "39aaa0fef2e4932f7b516d6422433fd6ff3b4f3f9081df265bb19ecac5384a92"}
+{"frame": 222, "file": "playthrough/frames/frame_00222.png", "clock": "08:00:53", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "39aaa0fef2e4932f7b516d6422433fd6ff3b4f3f9081df265bb19ecac5384a92"}
+{"frame": 223, "file": "playthrough/frames/frame_00223.png", "clock": "08:00:53", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "3d368771bab8028acc4464daa3759b73d6a1daa6ac58fdaae0be241b8a304d76"}
+{"frame": 224, "file": "playthrough/frames/frame_00224.png", "clock": "08:00:53", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "b2aeb0ee4b99be615088273af4a28ce01e5f9df1ee79ab68ccfc8321c98a8f70"}
+{"frame": 225, "file": "playthrough/frames/frame_00225.png", "clock": "08:00:54", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "4d8b5129937810dac83c05f1951d2d817a33d77dccf4b9b9eff3a12d716221df"}
+{"frame": 226, "file": "playthrough/frames/frame_00226.png", "clock": "08:00:55", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "3f38eb49e15a1acef4bae1ac86404489bc4f4cb2a08fde7680f1ecbde0a906b8"}
+{"frame": 227, "file": "playthrough/frames/frame_00227.png", "clock": "08:00:56", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "10aa9f7d5a0f88a92199637ae959c9c08ef5fde3db5711a56f4d75e4eab4da2d"}
+{"frame": 228, "file": "playthrough/frames/frame_00228.png", "clock": "08:00:57", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "03db05af43644d422e671b7db3c8aaba3a6f1137acf3c7019fbe8329b47de7a0"}
+{"frame": 229, "file": "playthrough/frames/frame_00229.png", "clock": "08:00:58", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "47103847a3a2df41427634dad58a3803fa7a79e6acf370fed93e5dfb4cff2efd"}
+{"frame": 230, "file": "playthrough/frames/frame_00230.png", "clock": "08:00:59", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "457460fce99e12051c797a39c682888c109adbc42ee2d886dcc1d82eb44ae49d"}
+{"frame": 231, "file": "playthrough/frames/frame_00231.png", "clock": "08:01:00", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "ac7e474523940d35aa9805b065484992bd8f2aad58bcaaa456f2b3e97551cbd4"}
+{"frame": 232, "file": "playthrough/frames/frame_00232.png", "clock": "08:01:01", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "fc8bb720c322280ffefb9b0f3cefce78290ba6ba2f3ee3b7b22aa8b57d37924f"}
+{"frame": 233, "file": "playthrough/frames/frame_00233.png", "clock": "08:01:02", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "37c5bc0a1e8add392d168f277a8a32e197d15edc0f070b85965d96dd9b8362b8"}
+{"frame": 234, "file": "playthrough/frames/frame_00234.png", "clock": "08:01:03", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "f38fc04f4cd152285512de17f9d670b0a1765c32d9d977bb9252a7ba23106fd5"}
+{"frame": 235, "file": "playthrough/frames/frame_00235.png", "clock": "08:01:04", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "360daa16d829fb774066621ee191052dd3ae02c771b65a10eb9ab4deb22238e7"}
+{"frame": 236, "file": "playthrough/frames/frame_00236.png", "clock": "08:01:05", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "65ff5c57622bf5f52126b0436e8b72ef577c46f9a89e73e1333198cfb862e6e8"}
+{"frame": 237, "file": "playthrough/frames/frame_00237.png", "clock": "08:01:06", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "83dc3984f3084a2ff1b3fe652774ab47b365ba73d265be0b221b9c1a796bceeb"}
+{"frame": 238, "file": "playthrough/frames/frame_00238.png", "clock": "08:01:07", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "4e49c465478f0cab814e227bfb7dc7e7d43e99a3b9983e895e319a52d908971c"}
+{"frame": 239, "file": "playthrough/frames/frame_00239.png", "clock": "08:01:08", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "b71d39eab57a0b51ad34a71213beb876a5c491fe1c1df006a49afa2c7ec721bc"}
+{"frame": 240, "file": "playthrough/frames/frame_00240.png", "clock": "08:01:09", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "712ca80e0f20212d1368250b3964e8f692e9f45712bbb973e0700825e686ee89"}
+{"frame": 241, "file": "playthrough/frames/frame_00241.png", "clock": "08:01:10", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "421251be19445bcac8929b296cb4fa5f376f442e03525b6e25257a5c598236e8"}
+{"frame": 242, "file": "playthrough/frames/frame_00242.png", "clock": "08:01:11", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "b8cc0b3af6aeafba1fdb720fb95ccaf0cc2b21a7c202d8021d310e38cb69ac55"}
+{"frame": 243, "file": "playthrough/frames/frame_00243.png", "clock": "08:01:12", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "04498e9e807f56a5f6397056e797436ad829f5a585802afb7ef10609fb3497e1"}
+{"frame": 244, "file": "playthrough/frames/frame_00244.png", "clock": "08:01:13", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "dc3bb84439053c733b41339eb460babfb39fcbcbc9be081e270be2de8c1fd14a"}
+{"frame": 245, "file": "playthrough/frames/frame_00245.png", "clock": "08:01:14", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "06324592b669f66201920305444f5eb8858d3de616a002be9f89b00f3d31ae63"}
+{"frame": 246, "file": "playthrough/frames/frame_00246.png", "clock": "08:01:14", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "a47044bdbe46f1179311f02d47b97a5e28af849c0dc4de0d76dba3f5aaaafa4b"}
+{"frame": 247, "file": "playthrough/frames/frame_00247.png", "clock": "08:01:14", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "4a1e89503607dc475ef3eed3aa04c6d0394d0a05af9fe21d15395e1b09de0ed5"}
+{"frame": 248, "file": "playthrough/frames/frame_00248.png", "clock": "08:01:14", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "c890d9dfc55264e0ac7832274651b6d07cf4e76a273526b273953bc4724e071d"}
+{"frame": 249, "file": "playthrough/frames/frame_00249.png", "clock": "08:01:14", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "4980dae5e8a674a453773414a843615856ae2becae510df2ed285172eb8c60ef"}
+{"frame": 250, "file": "playthrough/frames/frame_00250.png", "clock": "08:01:14", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "d710b88b99566ef9bf4cb162a022d6f9af0d5d59a8396f81ffa16bf6b3d9eea5"}
+{"frame": 251, "file": "playthrough/frames/frame_00251.png", "clock": "08:01:14", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "2fbe59e6390d22977a5a0aa46bee3909f33caf166d69271a27f128faba954a35"}
+{"frame": 252, "file": "playthrough/frames/frame_00252.png", "clock": "08:01:14", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "e594d2e07e6bb101836ba0c1baed67cdc350cc87a340dcaa33a69d9afc254f6c"}
+{"frame": 253, "file": "playthrough/frames/frame_00253.png", "clock": "08:01:14", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "58bc1bc6c533f30d550afff51c6acce5e0ef6de74963d6995ea4663c62d0a814"}
+{"frame": 254, "file": "playthrough/frames/frame_00254.png", "clock": "08:01:14", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "395f44a0fd4ef2a449f5cde8f1ef92ef910d7eaa6b7ed5d0c0f4c8a1016352f5"}
+{"frame": 255, "file": "playthrough/frames/frame_00255.png", "clock": "08:01:14", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "43de81e1dd2dd7e8161322775268e13b4401e356138be2ed2aab2ba0e8f1d9db"}
+{"frame": 256, "file": "playthrough/frames/frame_00256.png", "clock": "08:01:14", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "de065c6a852a144006c26557a126ea1ce13c402de63ca11d5e026b97b3149634"}
+{"frame": 257, "file": "playthrough/frames/frame_00257.png", "clock": "08:01:15", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "42dfeccaa044336d3985152bc43f8486f1a8af7567d730c1a22dd310a1d7f91a"}
+{"frame": 258, "file": "playthrough/frames/frame_00258.png", "clock": "08:01:15", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "4ac3d585fd42df17f5b7ac625177e5155ce71819dba39e97db0de9c9e195be19"}
+{"frame": 259, "file": "playthrough/frames/frame_00259.png", "clock": "08:01:16", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "2a857b587788921a702c45a8bade73b6ae059357e486baab8eb86bbfda9f7b86"}
+{"frame": 260, "file": "playthrough/frames/frame_00260.png", "clock": "08:01:16", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "4a334b2321078c80948c7c1e56fe52e5155820dadea29d0b2e89abc768de8882"}
+{"frame": 261, "file": "playthrough/frames/frame_00261.png", "clock": "08:01:17", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "cffce0b26436e0dcff12956994d0b546d046658a0a03416199c15fa299990762"}
+{"frame": 262, "file": "playthrough/frames/frame_00262.png", "clock": "08:01:17", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "f5cb262a3abe91be3338a5040d283e52dbdded4edeb881c04c52dc232174530e"}
+{"frame": 263, "file": "playthrough/frames/frame_00263.png", "clock": "08:01:18", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "2515a5240dc62f609b1fee559e04f823ac5667d2c97e75f32fce397c9196552c"}
+{"frame": 264, "file": "playthrough/frames/frame_00264.png", "clock": "08:01:18", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "75c428cd1c3cae27d93a1c570d64d78b042452b6b466ebe1c887109976d9d1cf"}
+{"frame": 265, "file": "playthrough/frames/frame_00265.png", "clock": "08:01:19", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "55fd4a99b0c506d37d44d87528f81e3a323221adfea2e651bb209788f5f1fd96"}
+{"frame": 266, "file": "playthrough/frames/frame_00266.png", "clock": "08:01:19", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "0603537d465ef7b6e456a51d90cae2fa33e31f532617d8059a21174fad98ec96"}
+{"frame": 267, "file": "playthrough/frames/frame_00267.png", "clock": "08:01:20", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "c5b1dc2d56ac3a7eb28497a6df32069a4341dc20444550844b7c6064e2d7c8c0"}
+{"frame": 268, "file": "playthrough/frames/frame_00268.png", "clock": "08:01:20", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "170895f1da791cb4db1214d9afe6d2e6d5a0183c78d0c9bb1a46c4634bfc9e3b"}
+{"frame": 269, "file": "playthrough/frames/frame_00269.png", "clock": "08:01:21", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "05a3603a133a8ecab1c5fd716fd041a5da1f5b409a3d057dc5151530bde5f1a1"}
+{"frame": 270, "file": "playthrough/frames/frame_00270.png", "clock": "08:01:21", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "369fff8d6bc08b59afcf9986314162d42b42b855fbfba7faff1a8bda40697fc0"}
+{"frame": 271, "file": "playthrough/frames/frame_00271.png", "clock": "08:01:22", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "a681714e0d6688270bec8124332d5d96d56747cfcf400aa6ea4f7efde36cfa80"}
+{"frame": 272, "file": "playthrough/frames/frame_00272.png", "clock": "08:01:22", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "4663c98b0f06bb5d54d28ee7bac95939d8d9ed9da746c0281455e55cb269c6e2"}
+{"frame": 273, "file": "playthrough/frames/frame_00273.png", "clock": "08:01:23", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "b3ac14910580d0be203da5742d08f99cdfc2643f5b09f2d7f6ceac41160660a9"}
+{"frame": 274, "file": "playthrough/frames/frame_00274.png", "clock": "08:01:23", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "9b42b11e82b66d52e3b2b71a5e9ff8caec921fa3b6a02c0eb7a54a49b9d4250b"}
+{"frame": 275, "file": "playthrough/frames/frame_00275.png", "clock": "08:01:24", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "ce25d3e630283d8e22c10b62852507fb6dd36db162c32bf5243e1e202787a855"}
+{"frame": 276, "file": "playthrough/frames/frame_00276.png", "clock": "08:01:24", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "cf3a85ad79ef6bb6eff84eba065e3eb4835269ddc124bf8edc2ae169c908ffe6"}
+{"frame": 277, "file": "playthrough/frames/frame_00277.png", "clock": "08:01:25", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "c8ad9f6cd9888a18cd10e1a5ab3178dbc2dd61c468cf024df0da7d99c7ec4967"}
+{"frame": 278, "file": "playthrough/frames/frame_00278.png", "clock": "08:01:26", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "c7a5adc1317d4477caa1bfaf33903ee05be6b353e5cff6824ceedbc5c04e76ea"}
+{"frame": 279, "file": "playthrough/frames/frame_00279.png", "clock": "08:01:27", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "70660fbfed847a5a0667301d33222fc3a0af9889e23cfc772b992c08b7e7d5d0"}
+{"frame": 280, "file": "playthrough/frames/frame_00280.png", "clock": "08:01:29", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "3b1e14ad1515b0294bb712a12edd7bd82ee67905f0121d5a99b1aaeee9610493"}
+{"frame": 281, "file": "playthrough/frames/frame_00281.png", "clock": "08:01:30", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "18cad4906f4855733a1bdf63d1817c4226796c86bc57c52b527e0716c63689a0"}
+{"frame": 282, "file": "playthrough/frames/frame_00282.png", "clock": "08:01:31", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "4df7c3af5edc7d16a11ac71ccbed6df8cb0e3232e2a70852db8b7eaa7f4af59a"}
+{"frame": 283, "file": "playthrough/frames/frame_00283.png", "clock": "08:01:33", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "70256ddb1d99296a40168369db67d95f3fd458892053b489172ff7af01be77e7"}
+{"frame": 284, "file": "playthrough/frames/frame_00284.png", "clock": "08:01:34", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "1aa5988703269e6c09ad4a9787e43f44d24529db783b1ec9dcff94a37f8f26df"}
+{"frame": 285, "file": "playthrough/frames/frame_00285.png", "clock": "08:01:36", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "2d34a6b24d7c1ce87356865a236abb72d85217bb1f7d311119f21c19e4353825"}
+{"frame": 286, "file": "playthrough/frames/frame_00286.png", "clock": "08:01:38", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "218593cea6a1a4151b3f6ee4807a771df0ed5333da3c2da56db553fccca4d1c8"}
+{"frame": 287, "file": "playthrough/frames/frame_00287.png", "clock": "08:01:39", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "3c4765f86a42f174522bef9e599b719b00a014b01088a9088d0dd2fc361af146"}
+{"frame": 288, "file": "playthrough/frames/frame_00288.png", "clock": "08:01:41", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "40fc16e44e620ed0160e8313d69003e9dcbeab5aeb481aed39332b9313a069f7"}
+{"frame": 289, "file": "playthrough/frames/frame_00289.png", "clock": "08:01:43", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "e490f5621197378d6bed7512d44b5823b4d2a4ed2b141cb2bb58a8149b7b1bcd"}
+{"frame": 290, "file": "playthrough/frames/frame_00290.png", "clock": "08:01:46", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "6bc162b553c86d8b04a24fd57939a54b348a0392ab7607ed6c4ec6be104a3d5d"}
+{"frame": 291, "file": "playthrough/frames/frame_00291.png", "clock": "08:01:48", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "316112b8206fc61651d4d84e581d9eddbbb444d73e5b3a171be8d46595b2bd99"}
+{"frame": 292, "file": "playthrough/frames/frame_00292.png", "clock": "08:01:51", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "6cb429c31add9cf3607c406b3af7e020cc73dcd54713eaf9d551b51eadfa3d06"}
+{"frame": 293, "file": "playthrough/frames/frame_00293.png", "clock": "08:01:52", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "aede3184eb94c46d3ffa026ed3aa4e3429e0d277e1451399a97b8b125785b592"}
+{"frame": 294, "file": "playthrough/frames/frame_00294.png", "clock": "08:01:55", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "bb308fa34cd4ff2422219b5daed09eaa3f85a100158dabeaa52d1e7845f813c8"}
+{"frame": 295, "file": "playthrough/frames/frame_00295.png", "clock": "08:01:57", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "271da40e30e352a8fc407fa33a12575efe88d594b4084feea50aae88eb66a89f"}
+{"frame": 296, "file": "playthrough/frames/frame_00296.png", "clock": "08:02:00", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "9a43a5ea67d88013fc9cacc473fccce685fd3c1c4a020085f96e16fc0fbf8682"}
+{"frame": 297, "file": "playthrough/frames/frame_00297.png", "clock": "08:02:00", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "99902bf4d9df7a839454d6731f65414ad6aeafbedc9083762e591c916a7b7ccd"}
+{"frame": 298, "file": "playthrough/frames/frame_00298.png", "clock": "08:02:00", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "99902bf4d9df7a839454d6731f65414ad6aeafbedc9083762e591c916a7b7ccd"}
+{"frame": 299, "file": "playthrough/frames/frame_00299.png", "clock": "08:02:00", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "99902bf4d9df7a839454d6731f65414ad6aeafbedc9083762e591c916a7b7ccd"}
+{"frame": 300, "file": "playthrough/frames/frame_00300.png", "clock": "08:02:00", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "99902bf4d9df7a839454d6731f65414ad6aeafbedc9083762e591c916a7b7ccd"}
+{"frame": 301, "file": "playthrough/frames/frame_00301.png", "clock": "08:02:00", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "99902bf4d9df7a839454d6731f65414ad6aeafbedc9083762e591c916a7b7ccd"}
+{"frame": 302, "file": "playthrough/frames/frame_00302.png", "clock": "08:02:00", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "99902bf4d9df7a839454d6731f65414ad6aeafbedc9083762e591c916a7b7ccd"}
+{"frame": 303, "file": "playthrough/frames/frame_00303.png", "clock": "08:02:00", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "99902bf4d9df7a839454d6731f65414ad6aeafbedc9083762e591c916a7b7ccd"}
+{"frame": 304, "file": "playthrough/frames/frame_00304.png", "clock": "08:02:00", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "99902bf4d9df7a839454d6731f65414ad6aeafbedc9083762e591c916a7b7ccd"}
+{"frame": 305, "file": "playthrough/frames/frame_00305.png", "clock": "08:02:00", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "99902bf4d9df7a839454d6731f65414ad6aeafbedc9083762e591c916a7b7ccd"}
+{"frame": 306, "file": "playthrough/frames/frame_00306.png", "clock": "08:02:07", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "8b20a2509ac5c1d5ed9a7f47491d9b99fab37c95fdf14e6d9261356691ecbae1"}
+{"frame": 307, "file": "playthrough/frames/frame_00307.png", "clock": "08:02:13", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "4d8ecb545d352810332ac38d11f297ad18c0985eb17b73460f1d67dba93e6be3"}
+{"frame": 308, "file": "playthrough/frames/frame_00308.png", "clock": "08:02:19", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "256264fea49ddf230f369d13f4d61ea97355b8c835a3d4b5734ae83651465b30"}
+{"frame": 309, "file": "playthrough/frames/frame_00309.png", "clock": "08:02:26", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "9a5f1c30236aa57d46832c6777f624474cb2e91c605aafff413f48e49d61bde9"}
+{"frame": 310, "file": "playthrough/frames/frame_00310.png", "clock": "08:02:32", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "b29c13ca485044be513becc870eb47f336b5260ee48069559f9817759ccc3e74"}
+{"frame": 311, "file": "playthrough/frames/frame_00311.png", "clock": "08:02:39", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "76aa94ffd41b238fe6ec2943ef85106a5292c67cffb9928f0f181a44afccc6dd"}
+{"frame": 312, "file": "playthrough/frames/frame_00312.png", "clock": "08:02:40", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "3307312154996d246bf7d7e4eae90da283d4232e44e8fbc268edae540426fb43"}
+{"frame": 313, "file": "playthrough/frames/frame_00313.png", "clock": "08:02:40", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "4b2e0687f2a02bac7fd2e38e88689d6c1740efc52f19b20aea62ff27ce4c205a"}
+{"frame": 314, "file": "playthrough/frames/frame_00314.png", "clock": "08:02:40", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "a8dad29db7e1ab567d8b458aac13c8b2154f97ba1868543efba6631e57fd3339"}
+{"frame": 315, "file": "playthrough/frames/frame_00315.png", "clock": "08:02:40", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "79ba75ebc9eaf82bd5f33c38e4f32943c17422698f5858ee63a59a206a04f9c3"}
+{"frame": 316, "file": "playthrough/frames/frame_00316.png", "clock": "08:02:40", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "3c0ed06857072680bd31151cf8b2820d9026b8d3c8b1b0aa661afdfdd0a2d030"}
+{"frame": 317, "file": "playthrough/frames/frame_00317.png", "clock": "08:02:40", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "3c0ed06857072680bd31151cf8b2820d9026b8d3c8b1b0aa661afdfdd0a2d030"}
+{"frame": 318, "file": "playthrough/frames/frame_00318.png", "clock": "08:02:40", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "cb84e4f66d54f148c57a1f3bb9e8708a135d9ec3959032e2d19893338e975a86"}
+{"frame": 319, "file": "playthrough/frames/frame_00319.png", "clock": "08:02:40", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "bda1e2388a35b77d29b039407d2565aa8b5df2cd59f3e90c6735b220bd2daa71"}
+{"frame": 320, "file": "playthrough/frames/frame_00320.png", "clock": "08:02:40", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "bda1e2388a35b77d29b039407d2565aa8b5df2cd59f3e90c6735b220bd2daa71"}
+{"frame": 321, "file": "playthrough/frames/frame_00321.png", "clock": "08:02:40", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "ffebcf5d445be29de8761e8c7cd870a6ae52dc3f3fd7a1f7503d54a9d959afbb"}
+{"frame": 322, "file": "playthrough/frames/frame_00322.png", "clock": "08:02:40", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "45d69a1c644ac2e721767ea361b679f3958e3690e434a6e1008f8ea8bd3b388f"}
+{"frame": 323, "file": "playthrough/frames/frame_00323.png", "clock": "08:02:40", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "25a0ff0c3d97165870ee3fe0b0a442d015711e7fb3e925eff3eb5b74ae2b869c"}
+{"frame": 324, "file": "playthrough/frames/frame_00324.png", "clock": "08:02:40", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "2325ac0cc00d746652b9d1a297aa3608f20cb487df887a497843a7d128ac5966"}
+{"frame": 325, "file": "playthrough/frames/frame_00325.png", "clock": "08:02:40", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "9abc22f6ee6aeeaaee9026ee0d1d41a7218ce161725741b0bc42ff0f4fe858a4"}
+{"frame": 326, "file": "playthrough/frames/frame_00326.png", "clock": "08:02:40", "phrase": null, "date": "Thursday, May 20", "agreement": true, "frame_sha256": "27fca2abdc672c1f60b8232f9ab31cdb22b38a36d8775783fcfb7bae65af276a"}

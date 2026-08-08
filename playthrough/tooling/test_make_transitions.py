@@ -1163,6 +1163,142 @@ class TestTheGenerationManifest(TransitionFixture):
             timeline.read_generation_journal(mt.LOCK_NAME, self.root),
             msg="a completed publication clears its own journal")
 
+    # -- the staged sibling, and every way it can be left behind ------
+
+    def staged(self):
+        """Where the provenance record is staged before its rename."""
+        return mt.staged_manifest_path(self.transitions)
+
+    def test_the_staged_sibling_is_gone_after_an_ordinary_run(self):
+        self.captures(3)
+        self.write_timeline(3, flagged={2})
+        self.run_make()
+        self.assertFalse(
+            os.path.exists(self.staged()),
+            msg="the rename consumes it; nothing else may remain")
+
+    def test_a_short_write_leaves_no_sibling_behind(self):
+        """THE DEFECT: a raise between open and rename left the file.
+
+        `.transitions.json.publishing` lives in playthrough/build/, which
+        .gitignore re-includes wholesale and which the transitions
+        directory's own litter sweep does not cover -- so the sibling
+        would sit there until a `git add -A playthrough/` committed a
+        half-written provenance record nobody authored.
+        """
+        original = os.write
+
+        def stall(descriptor, data):
+            """Write nothing, as a full device would."""
+            return 0
+
+        os.write = stall
+        self.addCleanup(setattr, os, "write", original)
+        with self.assertRaises(mt.TransitionError):
+            mt._publish_generation_manifest(self.transitions, "{}\n")
+        os.write = original
+        self.assertFalse(
+            os.path.exists(self.staged()),
+            msg="a write that made no progress must clean up after "
+                "itself")
+
+    def test_a_failing_fsync_leaves_no_sibling_behind(self):
+        original = os.fsync
+
+        def refuse(descriptor):
+            raise OSError(5, "I/O error")
+
+        os.fsync = refuse
+        self.addCleanup(setattr, os, "fsync", original)
+        with self.assertRaises(OSError):
+            mt._publish_generation_manifest(self.transitions, "{}\n")
+        os.fsync = original
+        self.assertFalse(os.path.exists(self.staged()))
+
+    def test_a_failing_rename_leaves_no_sibling_behind(self):
+        original = os.replace
+
+        def refuse(source, target):
+            raise OSError(13, "permission denied")
+
+        os.replace = refuse
+        self.addCleanup(setattr, os, "replace", original)
+        with self.assertRaises(mt.TransitionError):
+            mt._publish_generation_manifest(self.transitions, "{}\n")
+        os.replace = original
+        self.assertFalse(os.path.exists(self.staged()))
+
+    def test_a_whole_buffer_larger_than_one_write_still_publishes(self):
+        """A short write is ordinary, not a failure.
+
+        The old check treated any os.write that returned fewer bytes than
+        it was given as a failed generation, which is wrong: a partial
+        write is normal and the buffer is simply written again.
+        """
+        original = os.write
+
+        def dribble(descriptor, data):
+            """Write one byte at a time, as a slow pipe would."""
+            return original(descriptor, data[:1])
+
+        os.write = dribble
+        self.addCleanup(setattr, os, "write", original)
+        text = json.dumps({"version": timeline.GENERATION_VERSION}) + "\n"
+        published = mt._publish_generation_manifest(
+            self.transitions, text)
+        os.write = original
+        self.assertEqual(_read(published), text)
+        self.assertFalse(os.path.exists(self.staged()))
+
+    def test_a_stale_sibling_is_swept_at_the_start_of_a_run(self):
+        """The half no failure handler can cover.
+
+        A run killed outright runs no handler at all, so the sibling
+        survives with nobody to remove it.  The next generation clears
+        it under the same lock, where it is unambiguously stale, and says
+        so rather than removing a file in silence.
+        """
+        self.captures(3)
+        self.write_timeline(3, flagged={2})
+        with open(self.staged(), "w", encoding="utf-8") as handle:
+            handle.write('{"half": "written"')
+        _result, noise = self.quietly(
+            mt.make_transitions,
+            timeline_path=self.timeline_path,
+            transitions_dir=self.transitions,
+            root=self.root, repo_root_dir=REPO_ROOT)
+        self.assertIn("staged provenance record", noise)
+        self.assertFalse(os.path.exists(self.staged()))
+        self.assertTrue(os.path.isfile(
+            mt.generation_manifest_path(self.transitions)))
+
+    def test_a_sibling_that_is_not_a_plain_file_stops_the_run(self):
+        """It stages a plain file, and removes or writes nothing else.
+
+        The name is inside the committed tree, so a symlink planted there
+        must be neither followed nor deleted: O_NOFOLLOW refuses the
+        write, the sweep refuses the removal, and the generation fails
+        with the planted link and its target both exactly as they were.
+        A module that will not write through a link must not quietly
+        delete one either.
+        """
+        elsewhere = os.path.join(self.root, "not-a-target")
+        with open(elsewhere, "w", encoding="utf-8") as handle:
+            handle.write("do not touch me\n")
+        os.symlink(elsewhere, self.staged())
+        self.captures(3)
+        self.write_timeline(3, flagged={2})
+        with self.assertRaises(mt.TransitionError) as caught:
+            self.quietly(
+                mt.make_transitions,
+                timeline_path=self.timeline_path,
+                transitions_dir=self.transitions,
+                root=self.root, repo_root_dir=REPO_ROOT)
+        self.assertIn("could not stage the provenance record",
+                      str(caught.exception))
+        self.assertTrue(os.path.islink(self.staged()))
+        self.assertEqual(_read(elsewhere), "do not touch me\n")
+
 
 class TestTheDirectoryDescribesTheTimeline(TransitionFixture):
     """A re-run leaves the current timeline's groups and nothing else."""

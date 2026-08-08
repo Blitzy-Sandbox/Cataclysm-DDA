@@ -62,14 +62,17 @@ artifacts were untouched.  Standard library only.
 """
 
 import argparse
+import dataclasses
 import hashlib
 import io
 import json
 import os
+import re
 import shutil
 import stat
 
 import sys
+import types
 import tempfile
 import unittest
 
@@ -811,6 +814,160 @@ class JournalRecovery(SessionFixture):
         self.assertEqual(opened.frame, 1)
         self.assertFalse(
             os.path.isfile(session.journal_path(self.root)))
+        # AND THE THIRD RECORD, which this repair used to leave behind:
+        # the manifest row and the telemetry row were made whole and the
+        # journal discarded, so nothing would ever have attested the
+        # bytes again.
+        ledger = manifest.read_frame_digests(
+            os.path.join(self.root, *manifest.DIGESTS_REL_PARTS),
+            self.root)
+        self.assertEqual(len(ledger), 1)
+        self.assertEqual(ledger[0]["frame"], 1)
+        self.assertEqual(ledger[0]["sha256"], STUB_FRAME_SHA256)
+
+    def recorded_frame_without_its_attestation(self, digest=True):
+        """Leave frame 1 recorded, attested in telemetry, unattested.
+
+        Exactly the state an interruption between the telemetry append
+        and the ledger append leaves: the frame is on disk, the manifest
+        row is durable, the telemetry row is durable, the capture digest
+        is missing and the step journal is still there to say so.
+        """
+        self.stub_window_module()
+        with open(os.path.join(self.frames, "frame_00001.png"),
+                  "w", encoding="utf-8") as handle:
+            handle.write("stub")
+        payload = {
+            session.CAPTURE_MODE_KEY: session.CAPTURE_MODE_PRODUCTION,
+            "FRAME_INDEX": "1",
+            "FRAME_NAME": "frame_00001.png",
+            "FRAME_FILE": "playthrough/frames/frame_00001.png",
+            "FRAME_PATH": os.path.join(self.frames, "frame_00001.png"),
+            "REAL_TS": FIXED_REAL_TS,
+            "CLOCK": "08:00:00",
+            "CLOCK_STATUS": "read",
+            "DATE": "Spring, day 61",
+        }
+        if digest:
+            payload["FRAME_SHA256"] = STUB_FRAME_SHA256
+        manifest.append_row(
+            self.manifest, 1, "playthrough/frames/frame_00001.png",
+            FIXED_REAL_TS, "08:00:00", "press 'j'", "South.",
+            root=self.root)
+        session.append_observation(
+            self.observations,
+            session.observation_row(1, payload, key="j",
+                                    action="press 'j'"),
+            root=self.root)
+        self.journal(
+            phase=session.JOURNAL_PHASE_CAPTURED, frame=1, key="j",
+            action="press 'j'", commentary="South.", payload=payload)
+        return payload
+
+    def ledger_rows(self):
+        """Every capture attestation in this tree's ledger."""
+        path = os.path.join(self.root, *manifest.DIGESTS_REL_PARTS)
+        if not os.path.isfile(path):
+            return []
+        return list(manifest.read_frame_digests(path, self.root))
+
+    def test_a_stale_entry_repairs_a_missing_capture_digest(self):
+        """THE SECOND POST-MANIFEST GAP, which nothing used to settle.
+
+        _commit() appends the manifest row, then the telemetry row, then
+        the capture digest, then clears the journal.  An interruption
+        between the last two left a recorded frame with NO attestation
+        -- and this recovery repaired only the telemetry row, saw it
+        already present, and discarded the journal, so the digest was
+        lost for good.  The session then carried on and the frame
+        surfaced as unattested during timeline publication, hours later
+        and with the journal long gone.
+        """
+        self.recorded_frame_without_its_attestation()
+        self.assertEqual(self.ledger_rows(), [])
+        opened = self.open_session()
+        ledger = self.ledger_rows()
+        self.assertEqual(len(ledger), 1, msg=ledger)
+        self.assertEqual(ledger[0]["frame"], 1)
+        self.assertEqual(ledger[0]["sha256"], STUB_FRAME_SHA256)
+        self.assertEqual(
+            ledger[0]["attested"], manifest.DIGEST_AT_CAPTURE,
+            msg=("the journal carried the digest capture.sh published "
+                 "when it renamed the PNG into place, and the file "
+                 "still hashes to it, so the claim IS a capture-time "
+                 "one"))
+        self.assertEqual(
+            len(self.sidecar()), 1,
+            msg="the telemetry row that was already there is not doubled")
+        self.assertEqual(opened.frame, 1)
+        self.assertEqual(opened.verify_record(), ())
+        self.assertFalse(
+            os.path.isfile(session.journal_path(self.root)),
+            msg=("the journal is discarded only once the row, the "
+                 "telemetry and the attestation all cover the frame"))
+
+    def test_a_repaired_digest_says_recovery_when_none_was_published(
+            self):
+        """A weaker claim is recorded as the weaker claim.
+
+        With no publication digest to hold the file to, the digest can
+        only be MEASURED now: that establishes what the bytes are, not
+        that they are the bytes the keystroke produced, and recording it
+        as `capture` would be the stronger claim than the evidence.
+        """
+        self.recorded_frame_without_its_attestation(digest=False)
+        self.open_session()
+        ledger = self.ledger_rows()
+        self.assertEqual(len(ledger), 1, msg=ledger)
+        self.assertEqual(ledger[0]["sha256"], STUB_FRAME_SHA256)
+        self.assertEqual(
+            ledger[0]["attested"], manifest.DIGEST_AT_RECOVERY)
+
+    def test_a_substituted_frame_stops_the_digest_repair(self):
+        """And leaves the journal, so the frame can be looked at."""
+        self.recorded_frame_without_its_attestation()
+        with open(os.path.join(self.frames, "frame_00001.png"),
+                  "w", encoding="utf-8") as handle:
+            handle.write("not the bytes that were captured")
+        with self.assertRaises(session.RecordError) as caught:
+            self.open_session()
+        self.assertIn("not the bytes that were captured",
+                      str(caught.exception))
+        self.assertEqual(
+            self.ledger_rows(), [],
+            msg="nothing is attested about a substituted frame")
+        self.assertTrue(
+            os.path.isfile(session.journal_path(self.root)),
+            msg="the journal survives an unrepaired gap")
+
+    def test_a_record_missing_an_attestation_is_not_continued(self):
+        """Counter recovery verifies the ledger, not only the rows.
+
+        Once the journal is gone the gap cannot be repaired honestly, so
+        the session that would carry on over it stops instead -- while
+        the evidence is still on disk, rather than at publication time
+        when it is not.
+        """
+        self.recorded_frame_without_its_attestation()
+        os.unlink(session.journal_path(self.root))
+        with self.assertRaises(session.RecordError) as caught:
+            self.open_session()
+        message = str(caught.exception)
+        self.assertIn("no capture digest", message)
+        self.assertIn("frame_digests.jsonl", message)
+
+    def test_verify_record_reports_the_unattested_frame(self):
+        """The same gap is visible to a read-only caller."""
+        opened = self.open_session()
+        self.stub_window(opened)
+        opened.step("j", commentary="South.")
+        path = os.path.join(self.root, *manifest.DIGESTS_REL_PARTS)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("")
+        problems = opened.verify_record()
+        self.assertEqual(len(problems), 1, msg=problems)
+        self.assertIn("1 recorded frame(s) have no capture digest",
+                      problems[0])
 
     def test_an_unbelievable_journal_stops_the_session(self):
         with open(session.journal_path(self.root), "w",
@@ -1504,6 +1661,369 @@ class TheRouteIsGuardedNotOnlyTheLetters(SessionFixture):
                     commentary="The custom sheet I drew is still in my "
                                "pocket.")
         self.assertEqual(self.sent, ["Return", "Return"])
+
+
+class TheRouteIsGuardedByThePhotograph(SessionFixture):
+    """The route enforced from the SCREEN, not from the caller's words.
+
+    A code review demonstrated that the two guards above are only as
+    good as the caller's honesty: they refuse five letters and refuse
+    prose that mentions the custom sheet, so ordinary truthful-looking
+    wording -- "move selection", "activate selected item" -- walks the
+    verified MENU_CUSTOM_CHARACTER_ROUTE into the creator with neither
+    of them firing, and the save pin only notices afterwards, once a
+    second survivor exists and the prohibited route has already been
+    taken and photographed.
+
+    So the refusal reads the last capture with the engine's own font.
+    The fixtures here are the COMMITTED frames -- genuine photographs of
+    this build's menus, not drawings of them -- because a guard that
+    claims to read screens should be tested against screens.
+    """
+
+    #: <repo>/playthrough/frames, beside this test's own directory.
+    RECORD_FRAMES = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "frames")
+
+    #: Classification -> committed frame index, filled in on first use.
+    #:
+    #: THE FIXTURES ARE CHOSEN BY WHAT THEY SHOW, NOT BY THEIR INDEX,
+    #: and that is a correction rather than a preference.  They used to
+    #: be three literals -- frame 2 for the submenu, 195 for the resumed
+    #: launch's own menu, 300 for a screen inside the world -- which was
+    #: true of the capture set they were written against and silently
+    #: false of the next one.  When the session was re-recorded, index 2
+    #: became a world-creation dialog and 195 became a screen from inside
+    #: the world, so thirteen tests began asserting the guard's behaviour
+    #: on screens that were not the ones they named, and the failures
+    #: read as defects in the guard.  A fixture that identifies itself by
+    #: position in an artifact that can legitimately be replaced is not a
+    #: fixture; it is a coincidence.  These scan the committed record for
+    #: a frame that actually classifies as the wanted screen, and skip
+    #: with a precise reason when the record contains none.
+    _by_screen = {}
+
+    def classify_committed(self, index):
+        """Return session's own classification of a committed frame.
+
+        The real method is used rather than a copy of its rules, so a
+        change to the classifier moves the fixtures with it.  It needs
+        only the frames directory, so it is called unbound against a
+        stand-in that supplies one.
+        """
+        stand_in = types.SimpleNamespace(_frames=self.RECORD_FRAMES)
+        return session.Session._classify_screen(stand_in, index)
+
+    def committed_frame_showing(self, screen):
+        """Return the first committed frame that shows `screen`.
+
+        Skips when the record has no example.  That is a real outcome
+        rather than a hedge: the re-recorded session opens with the
+        new-game submenu already on, and it never takes the load route,
+        so it contains no capture of the main menu WITHOUT the submenu.
+        A test that needs one has nothing to photograph, and saying so
+        is better than passing on a frame that shows something else.
+        """
+        if screen in self._by_screen:
+            found = self._by_screen[screen]
+        else:
+            found = None
+            for index in self.committed_indices():
+                if self.classify_committed(index) == screen:
+                    found = index
+                    break
+            type(self)._by_screen[screen] = found
+        if found is None:
+            self.skipTest(
+                "the committed record contains no capture that "
+                "classifies as %r, so this test has no screen to read"
+                % screen)
+        return found
+
+    def committed_indices(self):
+        """Return the committed frame indices, lowest first."""
+        if not os.path.isdir(self.RECORD_FRAMES):
+            self.skipTest("this checkout has no committed frames")
+        found = []
+        pattern = re.compile(r"\Aframe_(\d{5})\.png\Z")
+        for name in os.listdir(self.RECORD_FRAMES):
+            match = pattern.match(name)
+            if match is not None:
+                found.append(int(match.group(1)))
+        if not found:
+            self.skipTest("this checkout has no committed frames")
+        return sorted(found)
+
+    def committed_world_frame(self):
+        """Return a committed frame taken from INSIDE the world.
+
+        Selected by evidence rather than by classification: the first
+        manifest row whose `ingame_clock` is a real reading is, by
+        definition, a frame with the survivor's sidebar on it.
+        """
+        rows = manifest.read_rows(
+            os.path.join(os.path.dirname(self.RECORD_FRAMES),
+                         "manifest.jsonl"))
+        for row in rows:
+            if (row.get("ingame_clock") or "").strip():
+                return int(row["frame"])
+        self.skipTest("no committed row carries a sidebar clock, so the "
+                      "record has no frame from inside the world")
+
+    def committed_frame(self, index):
+        """Return a committed capture's path, or skip the test."""
+        path = os.path.join(self.RECORD_FRAMES,
+                            manifest.FRAME_NAME_FORMAT % index)
+        if not os.path.isfile(path):
+            self.skipTest("committed frame %d is not in this checkout"
+                          % index)
+        return path
+
+    def record_one_menu_frame(self, source):
+        """Record frame 1 AS a committed capture of a menu screen.
+
+        The whole record is built by hand rather than through the stub
+        capturer, because the point of the fixture is the PIXELS: the
+        stub writes four bytes, and four bytes decode to no screen at
+        all.  Manifest row, telemetry row (sidebar-free, so the phase
+        stays at the menu) and capture digest are all written, which is
+        the state an ordinary step leaves.
+        """
+        self.world()
+        planted = os.path.join(self.frames, manifest.FRAME_NAME_FORMAT % 1)
+        shutil.copyfile(self.committed_frame(source), planted)
+        digest = manifest.file_digest(planted, "frame")
+        manifest.append_row(
+            self.manifest, 1, manifest.frame_file(1), FIXED_REAL_TS,
+            None, "press '1' -- choose English at the language prompt",
+            "One language, one form to fill in.", root=self.root)
+        session.append_observation(
+            self.observations,
+            session.observation_row(
+                1,
+                {"FRAME_INDEX": "1",
+                 "FRAME_FILE": manifest.frame_file(1),
+                 "FRAME_SHA256": digest,
+                 "REAL_TS": FIXED_REAL_TS,
+                 "CLOCK": "", "CLOCK_STATUS": "unreadable",
+                 "TIME_PHRASE": "", "DATE": "",
+                 "DATE_STATUS": "unreadable"},
+                key="1", action="press '1' -- choose English at the "
+                                "language prompt"),
+            root=self.root)
+        manifest.append_frame_digest(
+            os.path.join(self.root, *manifest.DIGESTS_REL_PARTS),
+            1, manifest.frame_file(1), digest,
+            os.path.getsize(planted), manifest.DIGEST_AT_CAPTURE,
+            manifest.utc_timestamp(), root=self.root)
+        opened = self.open_session()
+        self.stub_window(opened)
+        self.assertEqual(opened.pin.mode, session.SESSION_MODE_RESUME)
+        self.assertEqual(opened.ui_phase, session.UI_PHASE_MENU)
+        self.assertEqual(opened.frame, 1)
+        os.environ["STUB_NO_SIDEBAR"] = "1"
+        return opened
+
+    # -- what the classifier reads off real captures -----------------
+
+    def test_the_committed_submenu_frame_is_read_as_the_submenu(self):
+        opened = self.record_one_menu_frame(
+            self.committed_frame_showing(
+                session.SCREEN_NEW_GAME_SUBMENU))
+        self.assertEqual(opened._observed_screen(1),
+                         session.SCREEN_NEW_GAME_SUBMENU)
+
+    def test_the_committed_load_menu_frame_is_read_as_the_main_menu(
+            self):
+        opened = self.record_one_menu_frame(
+            self.committed_frame_showing(session.SCREEN_MAIN_MENU))
+        self.assertEqual(
+            opened._observed_screen(1), session.SCREEN_MAIN_MENU,
+            msg=("the resumed launch's own screen must classify as the "
+                 "route, or the guard would refuse the load itself"))
+
+    def test_a_screen_from_inside_the_world_is_neither(self):
+        opened = self.record_one_menu_frame(self.committed_world_frame())
+        self.assertEqual(opened._observed_screen(1),
+                         session.SCREEN_OTHER)
+
+    def test_a_frame_that_decodes_to_nothing_is_unreadable(self):
+        """No evidence is reported as no evidence.
+
+        The stub capturer's four bytes are not a rendered screen, and
+        neither is a missing file.  Both must come back UNREADABLE
+        rather than as "not the main menu", because the guard treats the
+        two differently and conflating them would refuse the first
+        keystroke of every resumed session.
+        """
+        opened = self.record_one_menu_frame(
+            self.committed_frame_showing(session.SCREEN_MAIN_MENU))
+        with open(os.path.join(self.frames,
+                               manifest.FRAME_NAME_FORMAT % 1),
+                  "w", encoding="utf-8") as handle:
+            handle.write("stub")
+        opened._screens.clear()
+        self.assertEqual(opened._observed_screen(1),
+                         session.SCREEN_UNREADABLE)
+        self.assertEqual(opened._observed_screen(7),
+                         session.SCREEN_UNREADABLE)
+
+    # -- what the guard does with it ---------------------------------
+
+    def test_generic_prose_cannot_walk_the_route_to_the_creator(self):
+        """THE DEFECT, exactly as the review reproduced it.
+
+        Nothing in these rows mentions the custom sheet and not one of
+        these keys is a new-survivor hotkey, so both earlier guards pass
+        them.  The photograph does not: it shows the five new-character
+        entries, and on that screen a key that confirms or moves deeper
+        is refused before delivery.
+        """
+        opened = self.record_one_menu_frame(
+            self.committed_frame_showing(
+                session.SCREEN_NEW_GAME_SUBMENU))
+        for key, note in (("Return", "activate selected item"),
+                          ("KP_Enter", "confirm the highlighted row"),
+                          ("space", "select the current entry"),
+                          ("Down", "move selection"),
+                          ("Up", "move selection"),
+                          ("End", "jump to the last entry")):
+            with self.subTest(key=key):
+                self.assertNotIn(
+                    key, session.MENU_NEW_SURVIVOR_HOTKEYS)
+                self.assertIsNone(
+                    session.CUSTOM_CHARACTER_MENTION_RE.search(note))
+                with self.assertRaises(session.CheatGuard) as caught:
+                    opened.step(key, note=note,
+                                commentary="Get on with it.")
+                self.assertIn("SHOWS THE NEW-GAME SUBMENU",
+                              str(caught.exception))
+        self.assertEqual(
+            self.sent, [],
+            msg="not one of them may reach the engine")
+        self.assertEqual(
+            len(self.rows()), 1,
+            msg="and no row is written about a keystroke never sent")
+
+    def test_the_way_out_of_that_screen_stays_open(self):
+        """A guard that stranded the session would be a worse defect.
+
+        Left and Right walk the top row away from [New Game]; Escape
+        closes the submenu.  The load route needs exactly those, so they
+        are not refused on that screen.
+        """
+        opened = self.record_one_menu_frame(
+            self.committed_frame_showing(
+                session.SCREEN_NEW_GAME_SUBMENU))
+        for key in ("Right", "Left", "Escape"):
+            with self.subTest(key=key):
+                opened.step(key, note="walk the top row",
+                            commentary="Past that, to the list with my "
+                                       "own name on it.")
+        self.assertEqual(self.sent, ["Right", "Left", "Escape"])
+
+    def test_the_load_route_itself_is_not_refused(self):
+        """Return on the resumed launch's own menu is the load."""
+        opened = self.record_one_menu_frame(
+            self.committed_frame_showing(session.SCREEN_MAIN_MENU))
+        opened.step("Return", note="open the selected world",
+                    commentary="Fern Creek. Where I left off.")
+        self.assertEqual(self.sent, ["Return"])
+
+    def test_the_load_route_is_permitted_on_a_main_menu_reading(self):
+        """The same property, held without a photograph of one.
+
+        The test above is the one worth having, because it reads real
+        pixels -- but it can only run where the committed record happens
+        to contain a capture of the main menu WITHOUT the new-game
+        submenu, and the re-recorded session contains none: its menu
+        opened with the submenu already on and it never took the load
+        route.  Left at that, the guard's PERMITTING branch would have no
+        coverage at all, and that branch is the one whose regression
+        strands a legitimate resume instead of merely allowing a
+        forbidden key.
+
+        So this asserts the guard rather than the classifier, and says
+        so: the reading is supplied directly, and what is under test is
+        what the guard DOES with a main-menu reading.  It is deliberately
+        the weaker of the two tests and deliberately not a substitute for
+        it -- if a future record carries a main-menu capture, the one
+        above starts running again on its own.
+        """
+        opened = self.record_one_menu_frame(
+            self.committed_frame_showing(
+                session.SCREEN_NEW_GAME_SUBMENU))
+        # The submenu reading is what the photograph gives; on it, a
+        # confirm is refused.  That half is asserted here too, so the
+        # override below cannot be mistaken for the guard being off.
+        with self.assertRaises(session.CheatGuard):
+            opened.step("Return", note="open the selected world",
+                        commentary="Fern Creek. Where I left off.")
+        self.assertEqual(self.sent, [])
+        opened._screens[1] = session.SCREEN_MAIN_MENU
+        opened.step("Return", note="open the selected world",
+                    commentary="Fern Creek. Where I left off.")
+        self.assertEqual(
+            self.sent, ["Return"],
+            msg="on a main-menu reading the load route must be sent")
+
+    def test_confirming_on_an_unrecognised_menu_screen_is_refused(self):
+        """The route runs through the main menu and nothing else."""
+        opened = self.record_one_menu_frame(self.committed_world_frame())
+        with self.assertRaises(session.CheatGuard) as caught:
+            opened.step("Return", note="activate selected item",
+                        commentary="Whatever this is.")
+        self.assertIn("does not show the main menu",
+                      str(caught.exception))
+        self.assertEqual(self.sent, [])
+
+    def test_an_unreadable_screen_refuses_nothing_by_itself(self):
+        """No evidence relaxes nothing and refuses nothing.
+
+        The other guards still stand -- this asserts both halves, so a
+        future change cannot quietly turn "could not read" into either
+        permission or a wall.
+        """
+        opened = self.record_one_menu_frame(
+            self.committed_frame_showing(session.SCREEN_MAIN_MENU))
+        with open(os.path.join(self.frames,
+                               manifest.FRAME_NAME_FORMAT % 1),
+                  "w", encoding="utf-8") as handle:
+            handle.write("stub")
+        opened._screens.clear()
+        opened.step("Return", note="open the selected world",
+                    commentary="Fern Creek.")
+        self.assertEqual(self.sent, ["Return"])
+        with self.assertRaises(session.CheatGuard):
+            opened.step("u", commentary="No.")
+
+    def test_a_create_run_with_its_survivor_is_guarded_too(self):
+        """The rule is "one survivor", not "resume mode".
+
+        A create run whose survivor already exists is in the same
+        position as a resumed one, and the UI phase cannot see it: the
+        phase latches to in-world at the first sidebar frame, so a
+        relaunch part-way through a record -- which the committed record
+        contains -- returns the engine to a menu the phase still calls
+        the world.  The submenu half of this guard does not consult the
+        phase for exactly that reason.
+        """
+        opened = self.record_one_menu_frame(
+            self.committed_frame_showing(
+                session.SCREEN_NEW_GAME_SUBMENU))
+        opened._pin = dataclasses.replace(
+            opened._pin, mode=session.SESSION_MODE_CREATE)
+        self.assertFalse(opened._pin.resume)
+        self.assertTrue(
+            opened._must_not_create_survivor(),
+            msg="the survivor's save is on disk, so a second is a "
+                "replacement whatever mode this is")
+        opened._ui_phase = session.UI_PHASE_IN_WORLD
+        with self.assertRaises(session.CheatGuard):
+            opened.step("Return", note="activate selected item",
+                        commentary="Get on with it.")
+        self.assertEqual(self.sent, [])
 
 
 class TheLauncherStateCoupling(SessionFixture):

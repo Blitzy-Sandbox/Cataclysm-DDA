@@ -190,7 +190,7 @@ import time
 
 from dataclasses import dataclass
 from typing import (Any, Dict, Iterable, List, Mapping, NamedTuple,
-                    Optional, Sequence, Tuple)
+                    Optional, Sequence, Set, Tuple)
 
 # Set BEFORE the sibling import below, which is the only import here
 # that can write into the repository working tree.  env.sh exports
@@ -398,6 +398,56 @@ OBSERVATIONS_REL_PARTS = ("build", "observations.jsonl")
 # "read" is evidence; every other value means the line was not read and
 # the field must not be treated as one.
 DATE_STATUS_READ = "read"
+
+# THE TELEMETRY SCHEMA, as session.py's OBSERVATION_FIELDS and
+# ATTESTED_FIELDS write it.  Restated here rather than imported, for the
+# same reason the audit's field names are (see AUDIT_FRAME_FIELD): this
+# module must be able to recompute and audit a timeline in a checkout
+# with no capture toolchain, so it may not import the modules that pull
+# in Pillow and pytesseract.  test_timeline.py holds the two sides
+# together by round-tripping a sidecar the real writer produced.
+OBSERVATION_FRAME_FIELD = "frame"
+OBSERVATION_FILE_FIELD = "file"
+OBSERVATION_DATE_FIELD = "date"
+# The digest a post-ledger row is BOUND to, exactly as
+# AUDIT_SHA256_FIELD binds an audit record.  Rows written before the
+# attestation ledger existed carry none and are counted as unbound.
+OBSERVATION_SHA256_FIELD = "frame_sha256"
+
+# Every known column and the JSON type(s) it may hold.  A value of
+# `null` is always allowed -- it is how an unread field is recorded --
+# and a field that is absent is not checked at all, because the writer
+# has grown columns over the life of this record and an older row is not
+# a malformed one.
+OBSERVATION_FIELD_TYPES: Dict[str, Tuple[type, ...]] = {
+    "frame": (int,),
+    "file": (str,),
+    "frame_sha256": (str,),
+    "real_ts": (str,),
+    "ingame_clock": (str,),
+    "clock_status": (str,),
+    "clock_source": (str,),
+    "clock_rect": (str,),
+    "clock_rect_from": (str,),
+    "time_phrase": (str,),
+    "date": (str,),
+    "date_status": (str,),
+    "frame_geometry": (str,),
+    "luma_mean": (str,),
+    "luma_stddev": (str,),
+    "capture_tool": (str,),
+    "key": (str,),
+    "action": (str,),
+    "capture_attempts": (int,),
+    "recovered": (bool,),
+    # The observed-effect verdict and its measurements, which session.py
+    # records beside the reading so a verdict can be re-checked.
+    "effect": (str,),
+    "screen_diff_px": (int,),
+    "map_diff_px": (int,),
+    "map_diff_box": (str,),
+}
+OBSERVATION_KNOWN_FIELDS = frozenset(OBSERVATION_FIELD_TYPES)
 
 # Millisecond resolution, which is all SubRip can express.  Anything
 # finer in the artifact would be false precision and would invite a
@@ -639,6 +689,10 @@ class ClockReading:
     date_agreement: str = AGREE_NONE
 
 
+# Conditions already reported in this process, for :func:`_warn_once`.
+_WARNED: Set[str] = set()
+
+
 def _warn(message: str) -> None:
     """Report a non-fatal problem on stderr and carry on.
 
@@ -648,6 +702,20 @@ def _warn(message: str) -> None:
     """
     print("playthrough: WARNING: timeline.py: %s" % message,
           file=sys.stderr, flush=True)
+
+
+def _warn_once(key: str, message: str) -> None:
+    """Warn about `key` the first time it is seen in this process.
+
+    For a condition that is true of a whole FILE rather than of one row:
+    an unknown telemetry column would otherwise be reported four hundred
+    times and the one thing a reader needs -- that it is there at all --
+    would be buried in the repetition.
+    """
+    if key in _WARNED:
+        return
+    _WARNED.add(key)
+    _warn(message)
 
 
 # ---------------------------------------------------------------------
@@ -1460,11 +1528,28 @@ def read_date_audit(
     holds the index.  A row with no such field predates the ledger; it is
     used, and the fact that nothing binds it is reported once.
 
-    A malformed line is reported and skipped rather than raising: this
-    is corroborating evidence, and losing one frame's worth of it
-    degrades a rollover to "unevidenced" instead of stopping the
-    pipeline.  A malformed sidecar cannot make the timeline WRONG -- it
-    can only leave it unable to justify advancing a day.
+    A MALFORMED LINE IN A FILE THAT EXISTS RAISES.  It used to be
+    reported and skipped, on the reasoning that this is corroborating
+    evidence and losing one frame's worth of it could only degrade a
+    rollover to "unevidenced" rather than make the timeline wrong.  A
+    code review showed that reasoning is false: dropping a row is not
+    neutral, it CHANGES the evidence set.  Two frames whose audit rows
+    record the same date turn a backwards clock into a same-date
+    reconciliation; drop one of those rows and the same backwards clock
+    becomes an unevidenced wrap that the bounded clock-only rule may
+    believe -- a different, wrong timeline, published silently while
+    every count still tallies.  Publication here is fail-closed, so a
+    row that cannot be parsed stops the run and leaves the previous
+    timeline exactly as it was.
+
+    An ABSENT file is still not an error: "there is no audit" is a
+    complete, honest state, and it is the only one that means no
+    evidence.  A file that exists is a claim, and a claim this module
+    cannot read is not one it may read half of.
+
+    :raises TimelineError: when the file exists and any row of it is
+        malformed -- invalid JSON, not an object, no usable frame index,
+        or a date that is neither text nor null.
     """
     resolved = _validated_evidence_path(
         default_date_audit_path(root) if audit_path is None
@@ -1485,26 +1570,40 @@ def read_date_audit(
             try:
                 record = json.loads(text)
             except ValueError as err:
-                _warn("%s line %d is not JSON (%s); that frame's date "
-                      "is treated as unobserved"
-                      % (resolved, number, err))
-                continue
+                raise TimelineError(
+                    "%s line %d is not JSON (%s).  This file exists, so "
+                    "it is a claim about what was read from the frames; "
+                    "a row that cannot be parsed cannot be dropped "
+                    "without changing the evidence set -- two rows "
+                    "carrying one date make a backwards clock a "
+                    "same-date reconciliation, and losing one of them "
+                    "makes it an unevidenced wrap and a different "
+                    "timeline.  Nothing is published and the previous "
+                    "timeline is left as it stands"
+                    % (resolved, number, err)) from err
             if not isinstance(record, dict):
-                _warn("%s line %d is a %s, not an object; that "
-                      "frame's date is treated as unobserved"
-                      % (resolved, number, type(record).__name__))
-                continue
+                raise TimelineError(
+                    "%s line %d holds a %s, not an object; a row that "
+                    "is not a record cannot be read as one, and this "
+                    "file's rows decide day boundaries.  Nothing is "
+                    "published"
+                    % (resolved, number, type(record).__name__))
             index = record.get(AUDIT_FRAME_FIELD)
             if isinstance(index, bool) or not isinstance(index, int):
-                _warn("%s line %d records %r as its frame index; the "
-                      "record is skipped"
-                      % (resolved, number, index))
-                continue
+                raise TimelineError(
+                    "%s line %d records %r as its frame index; the "
+                    "audit is keyed by frame and an unkeyed row cannot "
+                    "be matched to one, so it can neither be used nor "
+                    "safely ignored.  Nothing is published"
+                    % (resolved, number, index))
             value = record.get(AUDIT_DATE_FIELD)
             if value is not None and not isinstance(value, str):
-                _warn("%s line %d records %r as its date; the record "
-                      "is skipped" % (resolved, number, value))
-                continue
+                raise TimelineError(
+                    "%s line %d records %r as its date; a date line is "
+                    "text or it is null, and a value of another type is "
+                    "neither a reading nor an absence of one.  Nothing "
+                    "is published"
+                    % (resolved, number, value))
             bound = record.get(AUDIT_SHA256_FIELD)
             if digests is not None:
                 attested = _attested_sha256(digests, index)
@@ -1904,8 +2003,16 @@ def build_timeline(
     :param dates: the same evidence in its other form -- the per-frame
         date lines ocr_clock.py recorded as it read them, parallel to
         ``rows``, as :func:`date_lines_for_rows` returns them.  It is
-        consulted for any frame the telemetry has no date for, so the
-        two records complement rather than compete.
+        NOT a fallback consulted only where the telemetry is silent.
+        Both records are read for every frame and held to ONE unanimity
+        rule, because there is no ground on which one file's reading of
+        the same photograph beats the other's: where only one of them
+        has a date, that date stands; where both do and they agree, it
+        stands; where they disagree, the frame's date is unobserved and
+        the disagreement is reported by frame.  This paragraph used to
+        describe the telemetry-preferred precedence the body below now
+        refuses, which is the same defect in the declared contract that
+        the preference itself was.
 
     Passing NEITHER means NO EVIDENCE: the timeline is then computed
     from the clock alone under the MAX_WRAP_ADVANCE bound, so a
@@ -1938,28 +2045,56 @@ def build_timeline(
         if dates is None:
             dates = observations
         observations = None
-    # THE TWO DATE RECORDS COMPLEMENT EACH OTHER, they do not compete.
+    # THE TWO DATE RECORDS ARE ONE BODY OF EVIDENCE, judged by one rule.
     # capture.sh's telemetry row carries the date it emitted for a
     # frame; ocr_clock.py's audit carries the date the module recorded
-    # as it read the very pixels.  Either alone is evidence; where both
-    # exist the telemetry is taken first and the audit fills any frame
-    # the telemetry had no date for, so a gap in one record does not
-    # become an unevidenced rollover.  With neither, `resolved` stays
-    # None and absolutise_clocks falls back to its BOUNDED clock-only
-    # rule: a wrap within MAX_WRAP_ADVANCE is believed, anything larger
-    # is reconciled rather than inflated into a day that may never have
-    # passed.
+    # as it read the very pixels.  Either alone is evidence.  Where BOTH
+    # exist they are held to UNANIMITY, exactly as two rows inside either
+    # record are: agreement corroborates, a `null` is an absence of
+    # evidence rather than counter-evidence, and a genuine disagreement
+    # makes that frame's date UNOBSERVED and is reported.
+    #
+    # It used to PREFER the telemetry and consult the audit only for
+    # frames the telemetry had no date for.  A code review named the
+    # consequence: the audit is the record that is unanimity-checked and
+    # digest-bound, so preferring the other one let a single conflicting
+    # telemetry row override it and change R4 timing.  Preference is the
+    # wrong instrument here -- there is no rule by which one record's
+    # reading of the same photograph beats the other's -- so neither is
+    # preferred and a contradiction resolves to "not observed".
+    #
+    # With neither record, `resolved` stays None and absolutise_clocks
+    # falls back to its BOUNDED clock-only rule: a wrap within
+    # MAX_WRAP_ADVANCE is believed, anything larger is reconciled rather
+    # than inflated into a day that may never have passed.
     audit_dates = list(dates) if dates is not None else []
     resolved: Optional[List[Any]] = None
     if observations is not None or dates is not None:
         resolved = []
+        disputed: List[int] = []
         for position, row in enumerate(materialised, start=1):
-            observed = (
-                _observed_date(observations, _row_index(row, position))
-                if observations is not None else None)
-            if observed is None and position <= len(audit_dates):
-                observed = audit_dates[position - 1]
-            resolved.append(observed)
+            index = _row_index(row, position)
+            reported = (_observed_date(observations, index)
+                        if observations is not None else None)
+            audited = (audit_dates[position - 1]
+                       if position <= len(audit_dates) else None)
+            agreed = {normalise_date(one): one
+                      for one in (reported, audited) if one is not None}
+            if len(agreed) > 1:
+                disputed.append(index)
+                resolved.append(None)
+                continue
+            resolved.append(next(iter(agreed.values()), None))
+        if disputed:
+            _warn(
+                "the capture telemetry and the date audit report "
+                "different date lines for %d frame(s) (%s); the two "
+                "records read the same photographs, so a contradiction "
+                "is not evidence and neither is preferred for being "
+                "read from the other file -- those frames' dates are "
+                "treated as UNOBSERVED and their day decisions fall to "
+                "the bounded clock-only rule"
+                % (len(disputed), _bounded(disputed)))
     readings = absolutise_clocks(
         [row.get("ingame_clock") for row in materialised], resolved)
     deltas = raw_deltas([reading.seconds for reading in readings])
@@ -4005,10 +4140,93 @@ def default_observations_path(root: Optional[str] = None) -> str:
     return os.path.join(_playthrough_dir(), *OBSERVATIONS_REL_PARTS)
 
 
+def _validated_observation(
+    row: Dict[str, Any],
+    path: str,
+    number: int,
+) -> int:
+    """Check one telemetry row against its schema.  Returns its frame.
+
+    THE SCHEMA IS PART OF THE EVIDENCE.  session.py writes these rows
+    from OBSERVATION_FIELDS plus ATTESTED_FIELDS, and this module makes a
+    timing decision out of two of the columns, so a row whose shape
+    cannot be believed cannot be believed about the date either.  A field
+    of the wrong TYPE is refused rather than coerced: `"date": 3` is not
+    a date line and `"capture_attempts": "many"` is not a count, and
+    guessing what either meant would be inventing evidence.
+
+    Fail-closed on anything that could change a decision, and reported
+    once for anything that cannot: an unknown column means a writer this
+    reader does not know about, which is worth saying and is not grounds
+    for discarding a session's date evidence.
+
+    :raises TimelineError: on a missing or non-integer frame index, an
+        out-of-range index, a known field of the wrong type, a `file`
+        that names a different frame, or a non-positive attempt count.
+    """
+    index = row.get(OBSERVATION_FRAME_FIELD)
+    if isinstance(index, bool) or not isinstance(index, int):
+        raise TimelineError(
+            "%s line %d records %r as its frame index; the sidecar is "
+            "keyed by frame and an unkeyed row cannot be matched to one"
+            % (path, number, index))
+    if index < manifest.MIN_FRAME_INDEX:
+        raise TimelineError(
+            "%s line %d records frame %d; the record is numbered from "
+            "%d, so that row describes no capture"
+            % (path, number, index, manifest.MIN_FRAME_INDEX))
+    for field, kinds in OBSERVATION_FIELD_TYPES.items():
+        if field not in row:
+            continue
+        value = row[field]
+        if value is None:
+            continue
+        if isinstance(value, bool) and bool not in kinds:
+            raise TimelineError(
+                "%s line %d records %r as %s, which is a boolean where "
+                "%s is required"
+                % (path, number, value, field,
+                   " or ".join(kind.__name__ for kind in kinds)))
+        if not isinstance(value, kinds):
+            raise TimelineError(
+                "%s line %d records %r as %s, which is %s where %s is "
+                "required"
+                % (path, number, value, field, type(value).__name__,
+                   " or ".join(kind.__name__ for kind in kinds)))
+    named = row.get(OBSERVATION_FILE_FIELD)
+    if isinstance(named, str) and named.strip():
+        expected = manifest.frame_file(index)
+        if os.path.basename(named) != os.path.basename(expected):
+            raise TimelineError(
+                "%s line %d is keyed to frame %d but names %r; a row "
+                "that describes one frame and points at another cannot "
+                "be attributed to either"
+                % (path, number, index, named))
+    attempts = row.get("capture_attempts")
+    if isinstance(attempts, int) and not isinstance(attempts, bool):
+        if attempts < 1:
+            raise TimelineError(
+                "%s line %d records %d capture attempt(s) for frame %d; "
+                "a recorded frame was photographed at least once"
+                % (path, number, attempts, index))
+    unknown = sorted(set(row) - OBSERVATION_KNOWN_FIELDS)
+    if unknown:
+        _warn_once(
+            "observation-unknown-fields",
+            "%s carries telemetry column(s) this reader does not know "
+            "about (%s, first seen on line %d).  They are ignored -- "
+            "nothing here decides anything from them -- and reported so "
+            "that a writer this module has not been taught about is "
+            "visible rather than silently half-read"
+            % (path, ", ".join(unknown), number))
+    return index
+
+
 def load_observations(
     observations_path: Optional[str] = None,
     required: bool = False,
     root: Optional[str] = None,
+    digests: Optional[Mapping[int, Any]] = None,
 ) -> Optional[Dict[int, Dict[str, Any]]]:
     """Read the capture telemetry sidecar, keyed by frame index.
 
@@ -4017,12 +4235,42 @@ def load_observations(
     line this module cross-checks its day decisions against.  capture.sh
     REPORTS each row on its machine payload and session.py appends it
     beside the manifest row for the same frame, so one record has one
-    writer and the capture's own write surface stays the frame.  The
-    file
-    is APPEND-ONLY, so a frame captured twice has two rows: the LAST
-    row for a frame wins, which is the same last-occurrence rule the
-    engine applies to duplicated option entries and the only rule that
-    makes a re-capture mean what it obviously means.
+    writer and the capture's own write surface stays the frame.
+
+    UNANIMITY OR UNOBSERVED, and BOUND TO THE PIXELS -- which is what
+    env.sh's description of this sidecar has always said and what this
+    reader did not do.  It took the LAST row for a frame, unconditionally
+    and with no digest check, and a code review named all three
+    consequences: a stale or later duplicate row could override a
+    reading that agreed with everything else; a later row whose date was
+    `null` -- the ordinary shape of an unreadable reading -- silently
+    ERASED a date that had been read; and a row could be attributed to a
+    frame whose bytes it was never read from.  read_date_audit() had been
+    hardened against exactly those and this reader had not, so the
+    unhardened record was the one the timeline preferred.
+
+    So, per frame:
+
+      * every row for it is collected, in file order;
+      * a row carrying a `frame_sha256` that CONTRADICTS the digest
+        attested for that frame is discarded -- it is a reading of a
+        photograph that is no longer at that index -- and reported;
+      * a row with no `frame_sha256` is used and the fact that nothing
+        binds it is reported once.  Every row written before the
+        attestation ledger existed is in that state, and discarding them
+        would throw away a whole captured session's date evidence to
+        gain nothing;
+      * the frame's DATE is the agreed value when every reading that has
+        one agrees; `null` is an absence of evidence and neither erases
+        nor contradicts a reading that succeeded; a genuine disagreement
+        makes the date UNOBSERVED and is reported by frame;
+      * two different `key` values attested for one index RAISE.  One
+        keystroke makes one frame, so two keystrokes claiming one index
+        is not a duplicate reading, it is a broken record.
+
+    The merged row this returns is the last surviving row for the frame
+    with its `date` replaced by the agreed value, so a caller reads one
+    row per frame exactly as before.
 
     An ABSENT file returns None -- the timeline is then computed from
     the clock alone and every day decision is recorded as AGREE_NONE,
@@ -4030,8 +4278,8 @@ def load_observations(
     disagreed -- unless `required`, which turns it into a hard failure
     for a run that must not accept unevidenced rollovers.
 
-    A file that EXISTS but cannot be read or parsed always raises: a
-    sidecar that cannot be believed is not the same thing as no
+    A file that EXISTS but cannot be read, parsed or believed always
+    raises: a sidecar that cannot be believed is not the same thing as no
     sidecar, and quietly falling back to the clock would hide the
     difference.
 
@@ -4040,9 +4288,15 @@ def load_observations(
         It exists so a test can hold this reader against a temporary
         directory it owns, the same discipline read_timeline() and
         load_manifest_rows() already follow.
+    :param digests: frame index to attestation, as
+        :func:`manifest.attested_digests` returns it or as a bare
+        index-to-sha256 mapping, for binding each row to the pixels it
+        was read from.  ``None`` leaves every row unbound, which is
+        reported rather than presented as checked.
 
     :raises TimelineError: on a missing required file, an unreadable
-        file, a malformed line, or a row without a usable frame index.
+        file, a malformed line, a row that fails its schema, or two
+        keystrokes attested for one index.
     """
     path = _validated_evidence_path(
         observations_path or default_observations_path(root),
@@ -4060,7 +4314,10 @@ def load_observations(
                 % (path, AGREE_NONE))
         return None
 
-    rows: Dict[int, Dict[str, Any]] = {}
+    # frame -> its rows in file order, and the readings taken from them.
+    collected: Dict[int, List[Dict[str, Any]]] = {}
+    unbound: List[int] = []
+    superseded: List[int] = []
     try:
         with _open_evidence(path, "capture telemetry") as handle:
             for number, raw in enumerate(handle, start=1):
@@ -4077,28 +4334,73 @@ def load_observations(
                     raise TimelineError(
                         "%s line %d holds a %s, not an object"
                         % (path, number, type(row).__name__))
-                index = row.get("frame")
-                if isinstance(index, bool) or not isinstance(
-                        index, int):
-                    raise TimelineError(
-                        "%s line %d records %r as its frame index; "
-                        "the sidecar is keyed by frame and an "
-                        "unkeyed row cannot be matched to one"
-                        % (path, number, index))
-                # Last row for a frame wins; see the docstring.
-                rows[index] = row
+                index = _validated_observation(row, path, number)
+                bound = row.get(OBSERVATION_SHA256_FIELD)
+                if digests is not None:
+                    attested = _attested_sha256(digests, index)
+                    if isinstance(bound, str) and bound.strip():
+                        if attested is not None and bound != attested:
+                            superseded.append(index)
+                            continue
+                    elif attested is not None:
+                        unbound.append(index)
+                collected.setdefault(index, []).append(row)
     except OSError as err:
         raise TimelineError(
             "cannot read the capture telemetry at %s: %s"
             % (path, err)) from err
+
+    rows: Dict[int, Dict[str, Any]] = {}
+    conflicting: List[int] = []
+    for index, candidates in collected.items():
+        keys = {row["key"] for row in candidates
+                if isinstance(row.get("key"), str) and row["key"]}
+        if len(keys) > 1:
+            raise TimelineError(
+                "%s attests %d different keystrokes for frame %d (%s).  "
+                "One keystroke makes exactly one frame and one row, so "
+                "this is not a re-capture of the same screen -- it is a "
+                "record that cannot say which key produced that frame"
+                % (path, len(keys), index,
+                   ", ".join(repr(one) for one in sorted(keys))))
+        merged = dict(candidates[-1])
+        readings = [_row_date(row) for row in candidates]
+        observed = {normalise_date(one): one
+                    for one in readings if one is not None}
+        if len(observed) > 1:
+            conflicting.append(index)
+            merged[OBSERVATION_DATE_FIELD] = None
+        else:
+            merged[OBSERVATION_DATE_FIELD] = next(
+                iter(observed.values()), None)
+        rows[index] = merged
+    if superseded:
+        _warn("the capture telemetry holds row(s) for %d frame(s) whose "
+              "frame_sha256 is not the digest attested for that frame "
+              "(%s); they describe pixels that are no longer at those "
+              "indexes, so they are discarded rather than read as those "
+              "frames' telemetry"
+              % (len(set(superseded)), _bounded(sorted(set(superseded)))))
+    if unbound:
+        _warn("%d frame(s) have telemetry row(s) naming no frame_sha256 "
+              "(%s), so nothing binds the reading to the pixels it was "
+              "taken from.  Every row written before the capture "
+              "attestation ledger existed is in this state; the readings "
+              "are used and the fact is reported rather than presented "
+              "as checked"
+              % (len(set(unbound)), _bounded(sorted(set(unbound)))))
+    if conflicting:
+        _warn("the capture telemetry records two different dates for %d "
+              "frame(s) (%s); a contradiction is not evidence and "
+              "neither reading is preferred for having been written "
+              "later, so those frames' dates are treated as UNOBSERVED"
+              % (len(set(conflicting)),
+                 _bounded(sorted(set(conflicting)))))
     return rows
 
 
-def _observed_date(
-    observations: Dict[int, Dict[str, Any]],
-    frame: int,
-) -> Optional[str]:
-    """Return the date line observed for one frame, or None.
+def _row_date(row: Any) -> Optional[str]:
+    """Return the date line ONE telemetry row observed, or None.
 
     A row that reports a status other than "read" carries no date this
     module may use, even if the field happens to be non-empty: the
@@ -4106,17 +4408,30 @@ def _observed_date(
     and honouring it is what keeps a faulted read from being treated
     as evidence.
     """
-    row = observations.get(frame)
     if not isinstance(row, dict):
         return None
     status = row.get("date_status")
     if (isinstance(status, str) and status and
             status != DATE_STATUS_READ):
         return None
-    value = row.get("date")
+    value = row.get(OBSERVATION_DATE_FIELD)
     if isinstance(value, str) and value.strip():
         return value
     return None
+
+
+def _observed_date(
+    observations: Dict[int, Dict[str, Any]],
+    frame: int,
+) -> Optional[str]:
+    """Return the date the telemetry observed for one frame, or None.
+
+    The row this reads is load_observations()' MERGED row, whose `date`
+    is already the unanimous reading of every row recorded for the frame
+    -- or None where they disagreed.  So a disagreement inside the
+    telemetry arrives here as "unobserved", which is what it is.
+    """
+    return _row_date(observations.get(frame))
 
 
 def encode_timeline(document: Dict[str, Any]) -> str:
@@ -4588,6 +4903,7 @@ def _audit_evidence(
     args: argparse.Namespace,
     rows: Sequence[Dict[str, Any]],
     root: Optional[str] = None,
+    digests: Optional[Mapping[int, Any]] = None,
 ) -> Optional[List[Any]]:
     """Return the audit's date lines, or None when it observed none.
 
@@ -4601,7 +4917,7 @@ def _audit_evidence(
     """
     lines = date_lines_for_rows(
         rows, audit_path=args.date_audit, root=root,
-        digests=_attested_frames(root))
+        digests=_attested_frames(root) if digests is None else digests)
     if any(line is not None for line in lines):
         return lines
     return None
@@ -4811,9 +5127,14 @@ def _verify(
     that legitimately crossed midnight.
     """
     rows = _load_rows(args, root)
+    # THE SAME LEDGER, BOUND THE SAME WAY, as the write used -- so that a
+    # row the digest binding discards on one path cannot be kept on the
+    # other and reported as drift in the artifact.
+    attested = _attested_frames(root)
     observations = load_observations(
-        args.observations, required=args.require_date, root=root)
-    dates = _audit_evidence(args, rows, root)
+        args.observations, required=args.require_date, root=root,
+        digests=attested)
+    dates = _audit_evidence(args, rows, root, attested)
     resolved, amendments, amended = _resolved_rows(rows, args, root)
     captures = _verified_captures(rows, args, root)
     fresh = build_timeline(
@@ -4915,9 +5236,13 @@ def main(
         if args.verify:
             return _verify(args, root)
         rows = _load_rows(args, root)
+        # ONE attestation reading, given to BOTH date records, so the two
+        # are bound to the same ledger by the same rule.
+        attested = _attested_frames(root)
         observations = load_observations(
-            args.observations, required=args.require_date, root=root)
-        dates = _audit_evidence(args, rows, root)
+            args.observations, required=args.require_date, root=root,
+            digests=attested)
+        dates = _audit_evidence(args, rows, root, attested)
         # THE CORRECTIONS ARE APPLIED BEFORE THE ARITHMETIC, to a copy of
         # the rows, so that a correction to prose can never move a
         # duration -- and the document then attests which ledger supplied

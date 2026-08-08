@@ -1,120 +1,28 @@
 
 
 -----------------------------------------
-18:57:49.131 : Starting log.
-18:57:49.131 INFO : Cataclysm DDA version e50300eeb0
-18:57:49.132 INFO : [main] C locale set to LC_CTYPE=C.UTF-8;LC_NUMERIC=C;LC_TIME=C;LC_COLLATE=C;LC_MONETARY=C;LC_MESSAGES=C;LC_PAPER=C;LC_NAME=C;LC_ADDRESS=C;LC_TELEPHONE=C;LC_MEASUREMENT=C;LC_IDENTIFICATION=C
-18:57:49.132 INFO : [main] C++ locale set to LC_CTYPE=C.UTF-8;LC_NUMERIC=C;LC_TIME=C;LC_COLLATE=C;LC_MONETARY=C;LC_MESSAGES=C;LC_PAPER=C;LC_NAME=C;LC_ADDRESS=C;LC_TELEPHONE=C;LC_MEASUREMENT=C;LC_IDENTIFICATION=C
-18:57:49.132 INFO : SDL version used during compile is 2.32.4
-18:57:49.132 INFO : SDL version used during linking and in runtime is 2.32.4
-18:57:49.148 INFO : SDL render devices: software, opengl, opengles2
-18:57:49.149 INFO : [options] C locale set to LC_CTYPE=C.UTF-8;LC_NUMERIC=C;LC_TIME=C;LC_COLLATE=C;LC_MONETARY=C;LC_MESSAGES=C;LC_PAPER=C;LC_NAME=C;LC_ADDRESS=C;LC_TELEPHONE=C;LC_MEASUREMENT=C;LC_IDENTIFICATION=C
-18:57:49.149 INFO : [options] C++ locale set to LC_CTYPE=C.UTF-8;LC_NUMERIC=C;LC_TIME=C;LC_COLLATE=C;LC_MONETARY=C;LC_MESSAGES=C;LC_PAPER=C;LC_NAME=C;LC_ADDRESS=C;LC_TELEPHONE=C;LC_MEASUREMENT=C;LC_IDENTIFICATION=C
-18:57:49.149 INFO : Setting language to: 'en'
-18:57:49.149 INFO : [i18n] Scanning mod translations from playthrough/userdir/mods/
-18:57:49.149 INFO : [i18n] Scanning core translations from lang/mo/
-18:57:49.567 INFO : USE_COLOR_MODULATED_TEXTURES is set to 0
-18:57:49.601 INFO : Setting language to: 'en'
-18:57:49.601 INFO : [i18n] Scanning mod translations from playthrough/userdir/mods/
-18:57:49.601 INFO : [i18n] Scanning core translations from lang/mo/
-19:00:04.102 INFO : Setting language to: 'en'
-19:00:04.102 INFO : [i18n] Scanning mod translations from playthrough/userdir/mods/
-19:00:04.102 INFO : [i18n] Scanning core translations from lang/mo/
-19:04:36.014 INFO : src/mod_tracker.h:68: Tried check if 'vector_null' had a duplicate, but type 'attack_vector' does not track object sources
-19:04:38.072 WARNING : Dark Days Ahead pack load time:: 1941187us (avg: 1941187us) (count: 1)
-19:04:38.072 WARNING : Disable NPC Needs pack load time:: 182us (avg: 182us) (count: 1)
-19:04:38.072 WARNING : Portal Storms Ignore NPCs pack load time:: 8966us (avg: 8966us) (count: 1)
-19:04:51.873 INFO : Loaded tileset: MshockXottoplus
-19:04:51.979 INFO : Loaded tileset: Larwick Overmap
-19:17:14.900 : Log shutdown.
+07:51:46.922 : Starting log.
+07:51:46.922 INFO : Cataclysm DDA version 1ad0bd73d4
+07:51:46.922 INFO : [main] C locale set to C
+07:51:46.922 INFO : [main] C++ locale set to C
+07:51:46.922 INFO : SDL version used during compile is 2.32.4
+07:51:46.922 INFO : SDL version used during linking and in runtime is 2.32.10
+07:51:46.926 INFO : SDL render devices: software, opengl, opengles2
+07:51:46.927 INFO : [options] C locale set to C
+07:51:46.927 INFO : [options] C++ locale set to C
+07:51:46.927 INFO : Setting language to: 'en'
+07:51:46.927 INFO : [i18n] Scanning mod translations from playthrough/userdir/mods/
+07:51:46.927 INFO : [i18n] Scanning core translations from lang/mo/
+07:51:47.341 INFO : USE_COLOR_MODULATED_TEXTURES is set to 0
+07:51:47.364 INFO : Setting language to: 'en'
+07:51:47.364 INFO : [i18n] Scanning mod translations from playthrough/userdir/mods/
+07:51:47.364 INFO : [i18n] Scanning core translations from lang/mo/
+07:53:21.786 INFO : src/mod_tracker.h:68: Tried check if 'vector_null' had a duplicate, but type 'attack_vector' does not track object sources
+07:53:23.648 WARNING : Dark Days Ahead pack load time:: 1755817us (avg: 1755817us) (count: 1)
+07:53:23.648 WARNING : Disable NPC Needs pack load time:: 164us (avg: 164us) (count: 1)
+07:53:23.648 WARNING : Portal Storms Ignore NPCs pack load time:: 305us (avg: 305us) (count: 1)
+07:53:35.413 INFO : Loaded tileset: MshockXottoplus
+07:53:35.513 INFO : Loaded tileset: Larwick Overmap
+11:06:09.613 : Log shutdown.
 -----------------------------------------
 
-
-
------------------------------------------
-19:17:26.968 : Starting log.
-19:17:26.968 INFO : Cataclysm DDA version e50300eeb0
-19:17:26.968 INFO : [main] C locale set to LC_CTYPE=C.UTF-8;LC_NUMERIC=C;LC_TIME=C;LC_COLLATE=C;LC_MONETARY=C;LC_MESSAGES=C;LC_PAPER=C;LC_NAME=C;LC_ADDRESS=C;LC_TELEPHONE=C;LC_MEASUREMENT=C;LC_IDENTIFICATION=C
-19:17:26.968 INFO : [main] C++ locale set to LC_CTYPE=C.UTF-8;LC_NUMERIC=C;LC_TIME=C;LC_COLLATE=C;LC_MONETARY=C;LC_MESSAGES=C;LC_PAPER=C;LC_NAME=C;LC_ADDRESS=C;LC_TELEPHONE=C;LC_MEASUREMENT=C;LC_IDENTIFICATION=C
-19:17:26.968 INFO : SDL version used during compile is 2.32.4
-19:17:26.968 INFO : SDL version used during linking and in runtime is 2.32.4
-19:17:26.989 INFO : SDL render devices: software, opengl, opengles2
-19:17:26.990 WARNING : opendir [playthrough/userdir/cache] failed with "No such file or directory".
-19:17:26.990 INFO : [options] C locale set to LC_CTYPE=C.UTF-8;LC_NUMERIC=C;LC_TIME=C;LC_COLLATE=C;LC_MONETARY=C;LC_MESSAGES=C;LC_PAPER=C;LC_NAME=C;LC_ADDRESS=C;LC_TELEPHONE=C;LC_MEASUREMENT=C;LC_IDENTIFICATION=C
-19:17:26.990 INFO : [options] C++ locale set to LC_CTYPE=C.UTF-8;LC_NUMERIC=C;LC_TIME=C;LC_COLLATE=C;LC_MONETARY=C;LC_MESSAGES=C;LC_PAPER=C;LC_NAME=C;LC_ADDRESS=C;LC_TELEPHONE=C;LC_MEASUREMENT=C;LC_IDENTIFICATION=C
-19:17:26.990 INFO : Setting language to: 'en'
-19:17:26.990 INFO : [i18n] Scanning mod translations from playthrough/userdir/mods/
-19:17:26.990 INFO : [i18n] Scanning core translations from lang/mo/
-19:17:27.408 INFO : USE_COLOR_MODULATED_TEXTURES is set to 0
-19:17:27.437 INFO : Setting language to: 'en'
-19:17:27.437 INFO : [i18n] Scanning mod translations from playthrough/userdir/mods/
-19:17:27.437 INFO : [i18n] Scanning core translations from lang/mo/
-19:18:20.669 INFO : Setting language to: 'en'
-19:18:20.669 INFO : [i18n] Scanning mod translations from playthrough/userdir/mods/
-19:18:20.669 INFO : [i18n] Scanning core translations from lang/mo/
-19:20:14.880 INFO : src/mod_tracker.h:68: Tried check if 'vector_null' had a duplicate, but type 'attack_vector' does not track object sources
-19:20:16.979 WARNING : Dark Days Ahead pack load time:: 1990055us (avg: 1990055us) (count: 1)
-19:20:16.979 WARNING : Disable NPC Needs pack load time:: 155us (avg: 155us) (count: 1)
-19:20:16.979 WARNING : Portal Storms Ignore NPCs pack load time:: 230us (avg: 230us) (count: 1)
-19:20:30.705 INFO : Loaded tileset: MshockXottoplus
-19:20:30.810 INFO : Loaded tileset: Larwick Overmap
-
------------------------------------------
-18:49:20.687 : Starting log.
-18:49:20.687 INFO : Cataclysm DDA version e50300eeb0
-18:49:20.687 INFO : [main] C locale set to LC_CTYPE=C.UTF-8;LC_NUMERIC=C;LC_TIME=C;LC_COLLATE=C;LC_MONETARY=C;LC_MESSAGES=C;LC_PAPER=C;LC_NAME=C;LC_ADDRESS=C;LC_TELEPHONE=C;LC_MEASUREMENT=C;LC_IDENTIFICATION=C
-18:49:20.687 INFO : [main] C++ locale set to LC_CTYPE=C.UTF-8;LC_NUMERIC=C;LC_TIME=C;LC_COLLATE=C;LC_MONETARY=C;LC_MESSAGES=C;LC_PAPER=C;LC_NAME=C;LC_ADDRESS=C;LC_TELEPHONE=C;LC_MEASUREMENT=C;LC_IDENTIFICATION=C
-18:49:20.687 INFO : SDL version used during compile is 2.32.4
-18:49:20.687 INFO : SDL version used during linking and in runtime is 2.32.4
-18:49:20.704 INFO : SDL render devices: software, opengl, opengles2
-18:49:20.706 INFO : [options] C locale set to LC_CTYPE=C.UTF-8;LC_NUMERIC=C;LC_TIME=C;LC_COLLATE=C;LC_MONETARY=C;LC_MESSAGES=C;LC_PAPER=C;LC_NAME=C;LC_ADDRESS=C;LC_TELEPHONE=C;LC_MEASUREMENT=C;LC_IDENTIFICATION=C
-18:49:20.706 INFO : [options] C++ locale set to LC_CTYPE=C.UTF-8;LC_NUMERIC=C;LC_TIME=C;LC_COLLATE=C;LC_MONETARY=C;LC_MESSAGES=C;LC_PAPER=C;LC_NAME=C;LC_ADDRESS=C;LC_TELEPHONE=C;LC_MEASUREMENT=C;LC_IDENTIFICATION=C
-18:49:20.706 INFO : Setting language to: 'en'
-18:49:20.706 INFO : [i18n] Scanning mod translations from playthrough/userdir/mods/
-18:49:20.706 INFO : [i18n] Scanning core translations from lang/mo/
-18:49:21.138 INFO : USE_COLOR_MODULATED_TEXTURES is set to 0
-18:49:21.166 INFO : Setting language to: 'en'
-18:49:21.167 INFO : [i18n] Scanning mod translations from playthrough/userdir/mods/
-18:49:21.167 INFO : [i18n] Scanning core translations from lang/mo/
-18:49:44.092 INFO : Setting language to: 'en'
-18:49:44.092 INFO : [i18n] Scanning mod translations from playthrough/userdir/mods/
-18:49:44.092 INFO : [i18n] Scanning core translations from lang/mo/
-19:10:29.656 INFO : src/mod_tracker.h:68: Tried check if 'vector_null' had a duplicate, but type 'attack_vector' does not track object sources
-19:10:31.672 WARNING : Dark Days Ahead pack load time:: 1908730us (avg: 1908730us) (count: 1)
-19:10:31.672 WARNING : Disable NPC Needs pack load time:: 189us (avg: 189us) (count: 1)
-19:10:31.672 WARNING : Portal Storms Ignore NPCs pack load time:: 279us (avg: 279us) (count: 1)
-19:10:44.935 INFO : Loaded tileset: MshockXottoplus
-19:10:45.040 INFO : Loaded tileset: Larwick Overmap
-02:43:53.382 ERROR GAME : (error message will follow backtrace)
-    ./cataclysm-tiles(+0xd65aa0) [0x5aa601eb8aa0]
-    ./cataclysm-tiles(+0xd67f44) [0x5aa601ebaf44]
-    ./cataclysm-tiles(+0xe97271) [0x5aa601fea271]
-    ./cataclysm-tiles(+0xe9881b) [0x5aa601feb81b]
-    ./cataclysm-tiles(+0x5d18f8) [0x5aa6017248f8]
-    /lib/x86_64-linux-gnu/libc.so.6(+0x2a575) [0x7bda634bd575]
-    /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x88) [0x7bda634bd628]
-    ./cataclysm-tiles(_start+0x25) [0x5aa6018bb495]
-
-    Attempting to repeat stack trace using debug symbols…
-    ??
-    ??:0
-    ??
-    ??:0
-    ??
-    ??:0
-    ??
-    ??:0
-    ??
-    ??:0
-    ??
-    ??:0
-    ??
-    ??:0
-    _start
-    ??:?
-Backtrace emission took 11 seconds.
-(continued from above) ERROR : src/do_turn.cpp:293: game:monmove: feral human can't move to its location!  (51:123:0), nannyberry tree
-02:44:04.594 ERROR GAME : src/do_turn.cpp:293: game:monmove: feral human can't move to its location!  (51:123:0), nannyberry tree
-02:44:13.042 ERROR : src/creature_tracker.cpp:124 [bool creature_tracker::update_pos(const monster&, const tripoint_abs_ms&, const tripoint_abs_ms&)] update_zombie_pos: wanted to move the zombie to (3684,2384,-1), but new location already has the swimmer zombie
-07:51:30.323 : Log shutdown.
------------------------------------------

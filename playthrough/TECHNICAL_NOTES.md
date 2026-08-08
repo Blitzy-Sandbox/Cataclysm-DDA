@@ -4,13 +4,54 @@ The engineering record for the playthrough capture. Everything that is a
 decision about the machinery, a measurement taken from this checkout, or an
 observation about how the pipeline behaves belongs here — and nowhere else.
 
-`playthrough/dossier.md` is Delphine Ouellette's own account of herself,
-written before the first keystroke, and it is hers entirely: no point
-accounting, no option values, no source citations, no notes about how any of
-it was arranged. She would not write a page like that and does not think
-about herself in those terms. Keeping the two apart is what makes the
-in-character record worth reading as a record rather than as a commentary,
-so the mechanical half of the character lives on this page instead.
+> ## READ THIS FIRST: the session in this tree is no longer the one most of
+> ## this page describes
+>
+> **The record was re-recorded from the first keystroke.** The artifacts in
+> this tree are a **326-frame** session played by **Ambrose Halloran**. The
+> **419-frame** session played by **Delphine Ouellette**, which the great
+> majority of this page measures in detail, **no longer exists in the tree**:
+> its frames, manifest, telemetry, digest ledger, date audit, timeline,
+> transcripts, films, amendment ledger, dossier and userdir were all replaced.
+>
+> It was not replaced for tidiness. A code review established that the
+> shipped session **could not satisfy R11**: Delphine died, and after death
+> the engine makes `ACTION_SAVE` unreachable, so the in-game Save & Quit that
+> R11 requires had never happened — while five appended frames of post-death
+> menu navigation and the surrounding prose implied that it had. That is not
+> repairable by editing a record (and editing a captured record is forbidden
+> here for its own reasons). It is only repairable by playing again.
+>
+> **The new session's outcome, stated plainly at the top so nothing downstream
+> has to carry it:** Ambrose Halloran was created through the custom
+> point-buy creator on the *Missed* scenario, woke in a garage at 08:00:00 on
+> Thursday, May 20, and **died at 08:02:40** — cornered in a bathroom by a
+> tough zombie that opened the door he had shut behind him. R11 admits two
+> endings, "realistic sleep **or** death", and the plan states that "death by
+> legitimate play is an acceptable, honest ending"; this is that ending. The
+> **sleep-and-wake-and-Save-&-Quit branch the review asked for was attempted
+> and was not reached**, and the in-game Save & Quit remains unreachable for
+> the same engine reason as before. Nothing in the record, the transcripts or
+> the films claims otherwise, and no post-death menu navigation was appended
+> this time. The full account is in **"The re-recorded session: Ambrose
+> Halloran"** below.
+>
+> Everything on this page that measures 419 frames, 233.000 s, Delphine
+> Ouellette, the golf course, the restaurant spawn or the 27-entry amendment
+> ledger is therefore **historical**. It was true of the artifacts it was
+> written about; those artifacts are gone. It is kept rather than deleted
+> because the reasoning in it — the timeline algorithm, the trust gates, the
+> capture invariants, the CI contract, the environment — is what produced the
+> new session too, and because a page that quietly erased its own history
+> would be the wrong kind of document.
+
+`playthrough/dossier.md` is the survivor's own account of himself, written
+before the first keystroke, and it is his entirely: no point accounting, no
+option values, no source citations, no notes about how any of it was
+arranged. He would not write a page like that and does not think about
+himself in those terms. Keeping the two apart is what makes the in-character
+record worth reading as a record rather than as a commentary, so the
+mechanical half of the character lives on this page instead.
 
 Every value below was read out of this checkout at the stated location. Where
 a number is quoted, it is the shipped value in this tree and not a value
@@ -112,6 +153,138 @@ elsewhere on this page for `manifest.jsonl`, `build/observations.jsonl`,
 `timeline.json`, either transcript or either MP4 predates that restoration.
 
 ---
+
+## The re-recorded session: Ambrose Halloran
+
+Everything in this section was measured from the artifacts now in the tree. It
+supersedes every count on this page taken from the 419-frame session.
+
+### What shipped
+
+| Artifact | Value |
+| --- | --- |
+| captures | **326**, indices contiguous 1..326, every one 1920×1080 |
+| manifest rows | **326**, the six prescribed fields on every row, every `action` and `commentary` non-empty; `manifest.py verify` → `manifest ok: 326 row(s)` |
+| capture telemetry rows | **326**; `session.py status` → `RECORD_PROBLEMS=0` |
+| frame digest attestations | **326** |
+| `timeline.json` | 326 entries, every duration within \[0.25, 10.0\], **1** `transition_after` flag, **117** clock readings reconciled rather than read, **218.500 s + 1.000 s = 219.500 s**; `timeline.py --verify` recomputes it from the manifest identically |
+| transition frames | 1 group × 12 = **12** PNGs under `playthrough/build/transitions/`, never in `playthrough/frames/` |
+| concat list | **338** entries (326 captures + 12 transition frames, with the final entry repeated) |
+| `cata-play.mp4` | 3 749 146 bytes, `h264` 1920×1080, 339 read frames, container **219.560 s** against a computed 219.500 s (+0.060 s encoder rounding) |
+| `cata-play-cc.mp4` | 3 774 538 bytes; video stream copied intact (proved by stream hash), subtitle stream index 1, `mov_text`, `TAG:language=eng`, `SUBTITLE_DURATION=219.500000`, **326 cues in, 326 cues round-tripped**, zero audio streams |
+| `transcript.srt` / `transcript.md` | 326 cues and 326 stamps, last cue closing at `00:03:39,500` = the timeline's own 219.500 s |
+| non-blank | sampled frames 1 / 119 / 200 / 326 measure mean 0.00524 / 0.0990 / 0.1088 / 0.0224 with stddev 0.0645 / 0.1574 / 0.1767 / 0.1250, and a frame pulled back **out of the captioned film** at t=120 s measures mean 0.1037 stddev 0.1759 — every one `mean > 0` **and** `stddev > 0` |
+
+The **117 reconciled clocks** are frames 1–118, the character creation: there
+is no survivor and therefore no sidebar clock to read, so the timeline carries
+each of them flagged with its reason rather than inventing a reading. The
+first frame with a real clock is **119**, at `08:00:00`, `Thursday, May 20`.
+
+### The character, and why the point pool matters
+
+The creator was driven through **`Custom Character`** — never `Preset
+Character`, `Random Character`, `Play Now!  (Default Scenario)` or `Play
+Now!`. On the `POINTS` tab, `Survivor (current)` was declined in favour of
+**`Legacy: Multiple pools`**, which is the only mode of the three that
+enforces a budget: it reported `Points left: 6+0+2=8`. Choosing the
+constrained mode over the freeform default is what makes "point-buy" a fact
+about this session rather than a word.
+
+| Choice | Cost | Why |
+| --- | --- | --- |
+| scenario **Missed** | 0 | The hard rule for a new character. Start of cataclysm Y1 May 15 00:00:00, **start of game Y1 May 20 08:00:00**, location "In Town", flag "No starting NPC" |
+| profession **Mail Carrier** | 0 | Thirty-four years on three routes — and its kit includes a **worn wrist watch**, which is what makes R4's exact second-resolution clock possible. The watch was acquired the way the plan says it must be: as a characterful, legitimate choice, not a code change |
+| Strength 7, Dexterity 7 | refund 2 | Sixty-one, wiry, stiff-fingered |
+| Intelligence 10, Perception 12 | spend 6 | His trade was noticing |
+| +Accomplished Sleeper, +Good Hearing, +Light Step | spend 3 | Each one earned on a postal route |
+| −Bad Knees, −Far-Sighted | refund 3 | Real mechanical costs. Far-Sighted blocks reading and penalises melee and fine crafting, and it guaranteed the reading glasses he is wearing |
+| athletics 2, health care 2 | spend 2 | The walking, and the first-aid course the post office paid for |
+
+The trait pool closed at **exactly zero** — every boon paid for by a flaw —
+and **2 stat points were deliberately left unspent**. That last choice is on
+the record in the engine's own words: finishing raised *"Remaining points will
+be discarded, are you sure you want to proceed?"*, and it was answered yes.
+"Deliberate and characterful rather than min-maxed" is therefore a property of
+the frames, not a claim about intent.
+
+### How it ended, and what that does and does not satisfy
+
+He woke in a garage, took a PAPR welding helmet off the bench, heard glass
+break, retreated west into a small windowless utility room and **shut the door
+behind him**, and settled to wait out the day. Glass crunching indoors
+interrupted the wait. A **tough zombie opened the door he had shut** and stood
+in the only doorway of the 1×2 bathroom he had backed into.
+
+What followed is the whole of the ending, and every step of it is in the
+frames: fists did *no damage*; the welding hood would not fit over his mail
+carrier hat; wielded as a club it also did *no damage*, until one critical for
+**2**; it grabbed his right leg and he **broke the grab** after some twenty
+attempts; he tried to smash out through the wall; his stamina gave out, so he
+could neither dodge nor block; six limbs broke; he died at **08:02:40**. The
+engine's own epitaph: *"In memory of: Ambrose Halloran. Survived: 2 mins 48
+secs. Kills: 0."* He filed last words — **"On my way."** — and declined the
+offer to watch the replay. **The record ends there, at frame 326.**
+
+- **R11 is satisfied by its death branch.** The requirement is "realistic
+  sleep **or** death", and the plan states that death by legitimate play is an
+  acceptable, honest ending. No debug menu, no spawning, no healing, no stat
+  edit, no teleport: the fight was lost on its merits, and the committed
+  `keybindings.json` carries no binding for `debug`, `debug_mode` or
+  `debug_hour_timer` for a stranger to check.
+- **The sleep branch was attempted and not reached.** He chose a windowless
+  room with one door and tried to wait the day out; the interruption came
+  about one in-game minute later. The review's remediation asked specifically
+  for sleep → wake → in-game Save & Quit. That did not happen, the in-game
+  Save & Quit is unreachable after death for the engine reason the review
+  itself identified, and **no artifact says otherwise**.
+- **The defect the review actually raised is fixed.** Its complaint was that
+  the old record *appended five frames of post-death menu navigation* and that
+  the surrounding claims implied a compliant ending. This time, after the
+  death rite the engine was **stopped by signal rather than driven back
+  through its menus**, precisely so that no post-death menu frame and no
+  dead-man commentary could enter the record.
+
+Independent corroboration, all of it committed: the character's own memorial
+log at `playthrough/userdir/save/Apshawa/#QW1icm9zZSBIYWxsb3Jhbg==.log`
+(base64 decodes to `Ambrose Halloran`) reads *"Ambrose Halloran began their
+journey into the Cataclysm"*, then *"Lost the conduct Nudist"*, *"Lost the
+conduct Nonviolence"*, *"Lost the conduct Mouse in a china shop"* — the second
+is the moment he first struck the zombie, the third the moment he first struck
+the wall — and *"Received a deep bite wound"* twice. There is also an
+achievements file under the same name.
+
+### Three blemishes in this record, disclosed rather than buffed out
+
+An append-only record cannot be tidied afterwards, which is the point of it
+being append-only. So:
+
+1. **Rows 78–84 record keystrokes that had no effect.** On the `SKILLS` tab a
+   skill is bought with `+`, not `Return` — the same convention as `STATS` —
+   and seven keys were spent discovering that. They are real keys, really
+   sent, each with its own captured frame; row 85's note says *"put my walking
+   down properly this time"*, which is exactly what happened.
+2. **Rows 78 and 85 share one commentary sentence.** A consequence of the
+   same fumble. Nothing false, but it reads as a repetition in the transcript
+   and on the captions, and it would not have been written that way twice on
+   purpose.
+3. **The dead character's save was never archived to `graveyard/`.** Stopping
+   the engine by signal is what kept post-death menu frames out of the record,
+   and the cost is that the engine never ran its own post-death housekeeping.
+   So `playthrough/userdir/save/Apshawa/` still holds a live-shaped character
+   save for a survivor who is dead, and `session.py probe` will report
+   `SESSION_MODE=resume` for him. Anyone resuming this world should know they
+   would be resuming a corpse's save file; the memorial log above is the
+   authority on what happened to him.
+
+### One rendering artifact worth naming
+
+Several terrain tiles in the captured frames render as **flat magenta**. That
+is the MSXotto+ pack's missing-sprite fallback, not a capture fault and not
+damage: the tileset has no sprite for those particular terrain ids, so the
+loader substitutes a placeholder. It is visible in the film, it is honest
+output of the configured tileset, and it is left as it is — the alternative
+would be changing the artwork the plan fixes as `MSXotto+`.
+
 
 ## The pre-play character build
 
@@ -657,8 +830,17 @@ at all, because "cannot tell" is not "supported". `capture.sh` and
 
 **The migration target is Ubuntu 26.04 LTS** (supported to 2031-04, and in the
 table). Ubuntu 24.04 LTS (2029-04), Debian 13 (2030-06) and Debian 12
-(2028-06) also pass. Moving the capture and render workload to any of them
-removes the condition entirely; nothing in the pipeline depends on 25.10.
+(2028-06) also pass *the table*. Moving the capture and render workload to a
+release that passes removes the waiver condition entirely; nothing in the pipeline
+depends on 25.10.
+
+One qualification, measured later and recorded in full under *"The supported
+release is now DECLARED"* below: passing the dated table is **necessary but not
+sufficient for capture**. A capture host also needs an **SDL2 runtime of at least
+2.32**, because the engine's ImGui screens — the character creator among them —
+accept no keyboard input under 24.04's SDL 2.30.0. 26.04 ships 2.32.10 and drives
+them correctly, which is why it is the declared base rather than merely the
+furthest-dated option.
 
 **Why this session ran under a waiver, stated plainly.** The container this
 work was performed in *is* Ubuntu 25.10 and cannot be replaced from inside it,
@@ -707,10 +889,21 @@ rather than hidden:
   PNG is created.
 - **The waiver buys diagnosis, not evidence.** `PLAYTHROUGH_CAPTURE_MODE=diagnostic`
   still works and still withdraws its frame out of the working tree.
-- **The derived stages are deliberately unaffected**, because they photograph
-  nothing: timeline, transitions, render, transcripts and the caption mux can be
-  re-run over an existing record, which is what let the restored record be
-  republished. What the waiver can no longer do is manufacture the record.
+- **Three of the derived stages are unaffected; two are not, and an earlier
+  version of this bullet got that wrong.** It said "the derived stages are
+  deliberately unaffected … timeline, transitions, render, transcripts and the
+  caption mux can be re-run over an existing record". That is true of
+  `timeline.py`, `make_transitions.py` and `make_srt.py`, none of which contains
+  a trust gate — and **false of the two that produce media**. Measured on this
+  host under the waiver: `render_movie.assert_trusted_render()` raises
+  *"REFUSING to encode the film while the trust state is diagnostic"*
+  \[render_movie.py:605\], and `embed_captions.sh` exits **8** (`EX_PREREQ`) at
+  `playthrough_assert_trusted "the caption mux"` \[embed_captions.sh:874\] before
+  ffmpeg is invoked; both films were byte-identical afterwards, so neither
+  refusal is a partial write. So a waived host can recompute the *timeline and
+  the transcripts* over an existing record, but it can neither re-encode the film
+  nor re-mux its captions. What the waiver can no longer do is manufacture the
+  record — or republish the media.
 - **The already-recorded session keeps its disclosed provenance.** It was
   captured on this host under the waiver, before the gate was tightened, and
   that is stated here and in the environment summary rather than reinterpreted.
@@ -721,6 +914,158 @@ rather than hidden:
 ignored: `=1` is now the default and says so, and `=0` no longer weakens
 anything and says that, because an operator who set a variable believing it
 configured something has to be told it did not.
+
+### The supported release is now DECLARED, and the production path is proved in it
+
+The bullet above — *"a compliant re-capture requires a supported release; that is
+a platform action, not a code change"* — was true and insufficient, and a code
+review said so plainly: a pipeline whose every production stage refuses on the
+only host available has **no declared production path at all**. Naming the
+requirement is not the same as making it available, and "somebody should find a
+supported host" is not a path a later reader can walk. Three tracked files close
+that gap.
+
+`playthrough/tooling/environment/Dockerfile` **is the declaration.** Ubuntu 26.04
+LTS, chosen for two independent reasons, one of which was learned the hard way.
+
+The first is arithmetic: env.sh's own dated table carries `ubuntu:26.04` to
+**2031-04**, so the platform gate passes on its own terms with no waiver and no
+bypass. It also clears the engine's ABI floor — the committed binary needs at most
+`GLIBC_2.38` and `GLIBCXX_3.4.32` — so a binary built on an older host still runs
+there.
+
+The second is **functional, and it disqualifies a release the table accepts.** The
+first version of this image was built on Ubuntu 24.04, and every stage below
+passed on it. It still could not record a session, because **on 24.04 the
+character creator cannot be reached**: the `Create World` dialog that stands
+between the main menu and the creator will not raise its own confirmation, so the
+route stops there.
+
+Stated exactly, because the distinction matters and only one half of it was
+isolated. What was **measured** on 24.04: the dialog was reached and displayed
+correctly; its sliders had moved under the arrow keys, so keys were reaching it;
+pressing `f` (`[f][ Finish ]`, visibly focused) produced **no confirmation
+dialog**, and neither did `Return`, `xdotool type`, or a mouse click on the label;
+two root grabs two seconds apart were **byte-identical**; the process was alive and
+busy throughout (`Rsl`, 14–30% CPU in `hrtimer_nanosleep`); `xprop -id <w>
+_NET_WM_PID` returned the live engine's pid and `session.py window` resolved the
+same id; `xdotool getactivewindow getwindowname` returned the engine's title, so
+it held focus; `xset` reported an all-zero LED mask; and `debug.log` and the game
+log carried no ERROR or WARN. What was **not** isolated is whether the
+confirmation never opened or opened without rendering — a distinction worth
+naming, because on 26.04 the same dialog's confirmation was at one point invisible
+to the OCR text decode while the game's own keybindings overlay reported it as the
+open window. Either way the creator is unreachable, which is the fact the base
+image had to answer.
+
+`debug.log` names the most likely mechanism: *"SDL version used during compile is
+2.32.4 … used during linking and in runtime is 2.30.0"*. SDL guarantees
+**forward** compatibility only, so a binary compiled against 2.32 running on 2.30
+is the unsupported direction. **Rebuilding the engine inside 24.04 did not fix
+it** — a full 1570-second, 446-object rebuild there produced a binary reporting
+*compile 2.30.0 / runtime 2.30.0* and the dialog behaved exactly as before — so
+this is not a version *skew*; on that release the path is closed either way. On
+26.04's **SDL 2.32.10** the same unmodified host-built binary drives the dialog
+correctly: `f` raised *"Are you SURE you're finished? (Case Sensitive) \[Y\]es
+\[N\]o"* and `Y` opened the creator.
+
+So a capture host must satisfy **both** conditions — a release the dated table
+accepts **and** an SDL2 runtime of at least 2.32 — and `supported_env.sh` says so
+in the message that offers the container-free alternative, naming 24.04 explicitly
+as passing the table and still not being a capture host. This is exactly the kind
+of requirement that cannot be discovered by reading a table, which is why the
+preflight exists.
+
+The image carries every tool `playthrough_require_tools` asserts, the SDL2
+runtime, the compiler set that can rebuild the engine *in the same environment
+that captures it* (`g++-14` pinned, because 26.04's default is GCC 15 and this
+engine builds `-Werror`), and a venv at `/opt/playthrough-venv` installed from
+`requirements.lock` under `--require-hashes`. Two consequences of the newer base
+are worth recording:
+
+- **SDL3 is present in 26.04** (`libsdl3-dev 3.4.2`, which would satisfy the
+  Makefile's `>= 3.4.0` gate). Every `make` here still carries `SDL3=0`: the SDL3
+  GPU-shader path is out of scope for this checkpoint, and the committed record
+  was captured through SDL2.
+- **The pipeline's interpreter is built from source.** 26.04 ships Python 3.14 as
+  `python3` and has no `python3.12` package at all, while `env.sh` pins
+  `PLAYTHROUGH_PYTHON_ABI="3.12"` and `requirements.lock` holds only `cp312`
+  wheels under `--require-hashes --only-binary :all:`. Relaxing the closure to
+  suit the base image would be the wrong way round — the closure is what the
+  film's byte-level reproducibility rests on — so the image compiles **CPython
+  3.12.13** from the python.org tarball, **pinned by sha256**
+  (`0816c476…b0b`, verified on every build, a mismatch failing it) and creates the
+  venv from that. `--enable-optimizations` is deliberately omitted: it triples the
+  build for a speed-up a pipeline that spends its time in ffmpeg and the engine
+  cannot notice.
+
+Apt versions are deliberately **not** pinned — the value of a supported release
+*is* the updates it publishes, and pinning the archive would freeze the image on
+the day it was written while claiming to be patched — so the build **records** what
+it installed instead, at `/opt/playthrough-image-inventory.txt`, including the
+built interpreter's version, its source digest, and the system `python3` it is
+*not*.
+
+`playthrough/tooling/supported_env.sh` **is the driver** (`build`, `inventory`,
+`run`, `shell`, `preflight`). It moves the workload, not the gate: it clears
+every name in `PLAYTHROUGH_TRUST_BYPASS_VARS` on the way into the container, so a
+host operating under a waiver cannot leak one in, and it does **not** source
+env.sh — doing so on an end-of-life host is the refusal it routes around, and it
+would import the host's own waiver into the one process that must not carry one.
+The registry is therefore restated as a literal, and `test_supported_env.py`
+compares that literal against env.sh's exported list so the copy cannot drift.
+
+`playthrough/tooling/preflight_capture.sh` **is the proof**, in eleven stages, and
+it is written to run either inside that image or directly on any release the
+table accepts. It does not assert that the gates would open; it opens them:
+
+| Stage | Measured on Ubuntu 26.04 LTS, image `playthrough-capture:26.04` |
+| --- | --- |
+| 1 platform | `PLATFORM_SUPPORTED=yes`, `PLATFORM_EOL=2031-04`, `PLATFORM_SOURCE=/etc/os-release`, `TRUST_STATE=trusted`, `TRUST_BYPASSES=` empty, `PLATFORM_WAIVER=` empty |
+| 2 toolchain | all 16 tools env.sh asserts, versions recorded (Xvfb 21.1.22, openbox 3.6.1, xdotool 3.20160805.1, xauth 1.1.2, ImageMagick 7.1.2-18, ffmpeg/ffprobe 8.0.1, tesseract 5.5.0) |
+| 3 python | `PYTHON_VERSION=3.12.13` (the source-built interpreter), `PIP_CHECK=ok`, all six declared libraries import, `ocr_clock.py --preflight` ok |
+| 4 engine | `Cataclysm Dark Days Ahead: 1ad0bd73d4 +tiles, +sound` |
+| 5 display | `:99` at `1920x1080x24`, `XAUTHORITY_ORIGIN=pipeline` |
+| 6 scratch | a throwaway checkout under `$TMPDIR`, engine `284407592` bytes |
+| 7 launch | calibration launch, `seed_options.py`, then window `4194313` at `1920x1080+0+0` with `INITIAL_UI_STATE=main-menu-create-permitted`, tileset `MshockXottoplus` / `MSXotto+` / `required-installed` |
+| 8 capture | **2 kept frames = 2 manifest rows = 2 telemetry rows = 2 digest attestations**, `1920x1080`, luminance `0.00620352 / 0.0687404`, `manifest.py verify` clean |
+| 9 render | `h264, 1920, 1080` |
+| 10 captions | `mov_text, eng` |
+| 11 teardown | `frames=419 rows=419 dirty=18` before **and** after; scratch removed |
+
+`PREFLIGHT_FAILURES=0`, `PREFLIGHT=pass`, eleven of eleven. **The earlier
+measurements in this table were taken on Ubuntu 24.04 and are superseded**: they
+were true of the stages they measured and still describe a host that cannot drive
+the character creator, which is why the base moved and the numbers were re-taken
+rather than carried over.
+
+Stage 8 is the one that matters, because a **kept** frame with a digest
+attestation is precisely what `capture.sh` refuses under `diagnostic`. Producing
+one is not an argument that the capture gate opened; it is the gate's own output.
+Stages 9 and 10 are the same kind of evidence for the two refusals corrected in
+the bullet above.
+
+**Nothing here touches the committed record.** Stages 7–11 need somewhere to
+write, so they build a scratch checkout — the tooling copied, `data/`, `lang/`,
+`src/` and `Makefile` symlinked, `gfx/` **copied** (a symlinked `gfx/`
+canonicalises outside the checkout and `launch_game.sh` rightly refuses artwork
+it cannot hold against the tracked provenance anchor), and an empty
+`playthrough/` tree. The record's fingerprint is taken on both sides of the run
+and compared, by the preflight itself and again by the driver outside it.
+
+**Two of the pipeline's own gates refused this file while it was being written,
+and both refusals were right.** `manifest.py` rejected its first commentary for
+carrying the word *keystroke*, and `make_srt.py` rejected the second for needing
+three lines of 42 columns. The preflight's rows are held to the same standard as
+the record's, which is the point; the sentence is now *"I hold still and look
+before I choose."*
+
+**What this does and does not settle.** It settles that the pipeline has a
+buildable environment in which capture, render and mux all work — the gap the
+review identified. It does **not** by itself produce an R11-compliant session:
+that needs a survivor played from creation to a sleep-and-wake ending and out
+through the in-game Save & Quit, which is a session, not a preflight. What the
+preflight removes is the obstacle that made such a session impossible to attempt.
 
 **Tightening it required a second, narrower seam, and that seam is disclosed
 here because it touches the same gate.** Making the waiver a trust bypass broke
@@ -1266,10 +1611,15 @@ move both pins together, re-measure, and re-run the transition path end to end.
 **2. The recorded session was captured on an end-of-life host.** That is now a
 trust bypass, and the gate refuses a production capture on such a host, so the
 condition cannot recur here; what it cannot do is retro-fit the existing
-capture. A compliant re-capture requires a supported release — Ubuntu 26.04
-LTS, 24.04 LTS, Debian 13 or 12 all pass the dated table — and that is a
-platform action rather than a code change. Nothing in the pipeline depends on
-25.10.
+capture. A compliant re-capture requires a supported release, and that release is
+now **declared and built rather than merely named**: `ubuntu:26.04` in
+`playthrough/tooling/environment/Dockerfile`, driven by
+`playthrough/tooling/supported_env.sh` and proved end to end by
+`playthrough/tooling/preflight_capture.sh` at `PREFLIGHT=pass`,
+`TRUST_STATE=trusted`, zero bypasses. Of the other releases the dated table
+accepts, **24.04 is not a capture host** — its SDL 2.30.0 delivers no input to
+the engine's ImGui screens — which is measured and recorded under *The supported
+release is now DECLARED*. Nothing in the pipeline depends on 25.10.
 
 ### The re-recorded artifact set, and the gates it passes
 
@@ -5309,7 +5659,9 @@ correct when it was written.
 
 | Earlier statement | Where | Current measurement |
 | --- | --- | --- |
-| 560 frames / 560 rows | the first session log | **419** frames, **419** manifest rows, **419** tracked PNGs, **419** SRT cues, **419** transcript entries |
+| **the shipped session is Delphine Ouellette's, 419 frames, 233.000 s, with a 27-entry amendment ledger** | **essentially this whole page** | **superseded wholesale.** The tree now holds a **326**-frame session played by **Ambrose Halloran**, totalling **218.500 + 1.000 = 219.500 s**, with **no** amendment ledger (there is nothing to amend: the record was written once and not corrected). Frames, manifest, telemetry, digest ledger, date audit, timeline, both transcripts, both films, the dossier and the userdir were all replaced. The reason is R11: Delphine died, `ACTION_SAVE` is unreachable after death, so the Save & Quit her artifacts implied had never happened — and a captured record cannot be edited into compliance. See *The re-recorded session: Ambrose Halloran* |
+| 419-frame counts of every derived artifact — SRT cues, transcript entries, concat entries, transition groups, tracked PNGs | throughout | **326** cues, **326** transcript entries, **338** concat entries, **1** transition group of 12 frames, **326** tracked PNGs |
+| 560 frames / 560 rows | the first session log | **419** frames, **419** manifest rows, **419** tracked PNGs, **419** SRT cues, **419** transcript entries — itself now historical; see the row above |
 | 395 frames, then a 397-frame correction | the re-record sections | 419; the 395-frame set was retired and re-recorded |
 | "frames 1–243 have no clock; frame 244 is the first frame with an exact clock" | the reconciliation section | the first exact clock in this set is **frame 192** (`08:00:00`); 49 frames below 244 carry one |
 | "246 of 395 clock readings were reconciled" | same | **204 of 419**, all with `reconciled_reason: clock-missing` |
@@ -5330,6 +5682,10 @@ correct when it was written.
 | the grid is "1920×1072 at `+0+4`" with "a 4-pixel letterbox top and bottom" | the root-window capture section | measured over all **419** captures: 412 frames carry ink in y0–3, 223 reach y1071, and **none** carries a pixel in y1072–1079. The grid sits at **`+0+0`** with one 8-pixel band at the bottom; the crop's `+4` is the centred derivation, which `ocr_clock.py` re-measures per frame anyway |
 | "MSXotto+ is **not** in this clone's `gfx/`" | the tileset section | it is never *tracked* (only four `gfx/` entries are), and in a worktree where `launch_game.sh tileset` has run it IS present and ignored — `gfx/MShockXotto+/tileset.txt` reads `NAME: MshockXottoplus` / `VIEW: MSXotto+`, matched by `.gitignore:52` |
 | the retired golf-course spawn cites `playthrough/frames/frame_00403.png` | the first session's verification section | that live path has been rewritten twice since; the claim now cites the immutable blob `a50ce8d123c6…` at commit `7117ef9700`, re-read with `ocr_clock.py` to confirm `Place: golf course servic…`. Row 403 of the shipped set is a letter of Delphine's last words, and the shipped spawn is a restaurant at frame 192 |
+| "`capture.sh` refuses `PLAYTHROUGH_CAPTURE_AUDIT` *and* `PLAYTHROUGH_CAPTURE_AUDIT_PATH` outright in diagnostic mode"; "An explicit `PLAYTHROUGH_CAPTURE_AUDIT=on` still records one" | the two date-audit sections | refusing the variable's *presence* refused the pipeline's only caller: `launch_game.sh` declares `PLAYTHROUGH_CAPTURE_AUDIT=off` at its probe call site, so the probe exited `EX_USAGE`, the launcher read that as "the screen could not be read", and **every resumed launch published `INITIAL_UI_STATE=unverified`** — the resume proof was structurally disabled. Current contract, one API both scripts hold to: in diagnostic mode `=off` is **accepted** (it names the value the mode forces and can enable nothing), `=on` is **refused**, any `PLAYTHROUGH_CAPTURE_AUDIT_PATH` is **refused** at any value including beside `off`, and anything else is refused by the shared `on|off` case. The launcher additionally treats `EX_USAGE` from the probe as **fatal** rather than as an unreadable screen, so a future disagreement between the two scripts stops the run instead of quietly removing a proof |
+| "**The derived stages are deliberately unaffected** … timeline, transitions, render, transcripts and the caption mux can be re-run over an existing record" | the platform-waiver section | **two of the five DO refuse**: `render_movie.assert_trusted_render()` raises "REFUSING to encode the film while the trust state is diagnostic" [render_movie.py:605] and `embed_captions.sh` exits **8** at `playthrough_assert_trusted "the caption mux"` [embed_captions.sh:874]. `timeline.py`, `make_transitions.py` and `make_srt.py` carry no trust gate and are genuinely unaffected. Measured under this host's waiver; both films byte-identical after the probe |
+| the declared capture environment is `ubuntu:24.04`, with an eleven-stage table measured there | *The supported release is now DECLARED* | the base is **`ubuntu:26.04`** (EOL 2031-04) and every stage figure was **re-measured** there. 24.04 was rejected on a functional ground the dated table cannot express: its **SDL 2.30.0 delivers no keyboard input to the engine's ImGui screens**, so the character creator cannot be driven, and a full rebuild inside 24.04 (1570 s, 446 objects, compile and runtime both 2.30.0) did not change it. 26.04's **SDL 2.32.10** drives them. Consequences recorded with the base: `g++-14` stays pinned against 26.04's GCC 15 default; SDL3 3.4.2 is now *present* but every `make` still carries `SDL3=0`; and because 26.04 has no `python3.12` while `env.sh` pins that ABI for `requirements.lock`'s `cp312` wheels, the image **builds CPython 3.12.13 from a sha256-pinned python.org tarball** rather than relaxing the closure |
+
 
 **The binary that drew the current frames is named in the frames**, and it is
 neither of the two commits previously written down. Read off the pixels of the

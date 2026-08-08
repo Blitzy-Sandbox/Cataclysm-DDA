@@ -294,11 +294,13 @@ try:
     import manifest
     import ocr_clock
     import seed_options
+    import sidebar_geometry
 except ImportError:  # pragma: no cover - flat siblings, as tools/ does
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import manifest
     import ocr_clock
     import seed_options
+    import sidebar_geometry
 
 LOG = logging.getLogger("playthrough.session")
 
@@ -471,6 +473,13 @@ OBSERVATIONS_STAGING_OF = "the telemetry sidecar"
 # derived from it -- so the record does not merely assert which key was
 # pressed, it stores it in a form a reviewer can compare against the
 # manifest row's prose without trusting either.  See ATTESTED_FIELDS.
+# AND timeline.py RESTATES THIS SCHEMA AND VALIDATES EVERY ROW AGAINST
+# IT.  It cannot import this module -- doing so would make Pillow and
+# pytesseract a hard dependency of recomputing a timeline -- so
+# timeline.OBSERVATION_FIELD_TYPES is the reader's copy of the contract
+# and test_timeline.py round-trips a sidecar this writer produced to
+# hold the two together.  A column added here without a type there is
+# reported by the reader as unknown rather than silently half-read.
 OBSERVATION_FIELDS = (
     ("frame", "FRAME_INDEX"),
     ("file", "FRAME_FILE"),
@@ -663,6 +672,98 @@ MENU_NEW_SURVIVOR_HOTKEYS = (
     "r", "R",   # Random Character
     "d", "D",   # Play Now!  (Default Scenario)
     "o", "O",   # Play Now!
+)
+
+
+# ---------------------------------------------------------------------
+# THE OBSERVED SCREEN, read off the capture with the game's own font.
+#
+# WHY THIS EXISTS.  Refusing the five new-survivor letters refuses five
+# doors, and refusing prose that SAYS it is opening the custom sheet
+# refuses an honest caller.  Neither refuses the ROUTE: a code review
+# demonstrated that ordinary, truthful-looking wording -- "move
+# selection", "activate selected item" -- walks the verified
+# MENU_CUSTOM_CHARACTER_ROUTE (Left/Right, Up/Down, Return) straight into
+# the creator with the letter guard never firing and the prose guard
+# never matching, and that the save pin only notices afterwards, once a
+# second survivor's save already exists and the prohibited route has been
+# taken AND photographed.
+#
+# So the route is enforced from the SCREEN instead of from the caller's
+# words.  ocr_clock.read_column_by_glyphs() decodes a band of the capture
+# cell by cell against data/font/Terminus.ttf -- the very font the engine
+# drew it with -- so this is a reading of the photograph, not an OCR
+# guess, and it is the same class of evidence the UI phase already comes
+# from (SIDEBAR_READING_FIELDS).  Measured against the committed record:
+# the two frames that show the submenu yield all four labels below, and
+# 22 other frames spanning menus, the creator, the world dialog, play and
+# the death screens yield none.
+#
+# The band is the BOTTOM of the capture, computed from the frame's own
+# height rather than hard-coded, because that is where the engine draws
+# the main menu's entry row and the submenu that opens above it.  A
+# whole-screen decode is deliberately not used: on a frame dominated by
+# the title's ASCII art the row-phase detection locks onto the art and
+# the menu text is lost, which would report a screen that is plainly
+# readable as unreadable.
+# ---------------------------------------------------------------------
+
+# The engine's own strings, quoted from the same source as
+# MENU_CUSTOM_CHARACTER and MENU_FORBIDDEN_ENTRIES
+# (src/main_menu.cpp:475-483) but WITHOUT the <> hotkey markup, because
+# what is drawn on the screen has the brackets resolved away.
+MENU_NEW_GAME_SUBMENU_LABELS = (
+    "Custom Character",
+    "Preset Character",
+    "Random Character",
+    "Play Now!",
+)
+
+# Two, not one.  The submenu draws all five entries together, so any two
+# of them is conclusive -- while a single "Play Now!" or "Load" appearing
+# in a message log, a book or a note is not, and a guard that refuses on
+# one word the game might print anywhere would refuse the wrong screens.
+MENU_SUBMENU_LABELS_REQUIRED = 2
+
+# The main menu's entry row (src/main_menu.cpp:466-474), as drawn.  The
+# row is the load route's own landmark: every screen the resumed route
+# passes through -- the world list and the character list open above it
+# -- carries it, and no other screen in the record does.
+MENU_ENTRY_ROW_MARKERS = (
+    "MOTD", "New Game", "Load", "World", "Tutorial Game", "Settings",
+)
+MENU_ENTRY_ROW_MARKERS_REQUIRED = 4
+
+# How much of the capture the menu band covers, in grid rows.  23 rows
+# reaches from the submenu's top rule to the bottom of the frame at the
+# 240x67 grid this pipeline captures, and it is multiplied by the row
+# height the options file yields rather than by an assumed 16.
+MENU_BAND_ROWS = 23
+
+# What the classifier can conclude.
+SCREEN_MAIN_MENU = "main-menu"
+SCREEN_NEW_GAME_SUBMENU = "new-game-submenu"
+SCREEN_OTHER = "other"
+SCREEN_UNREADABLE = "unreadable"
+
+# The keys that CONFIRM the highlighted entry.  On the new-game submenu
+# each one opens a new survivor, which is the door this guard shuts.
+MENU_ACTIVATION_KEYS = ("Return", "KP_Enter", "space")
+
+# The keys that move DEEPER into an open submenu -- onto another
+# new-character entry.  Nothing in the load route needs one while the
+# new-game submenu is on screen.
+MENU_DESCENT_KEYS = (
+    "Up", "Down", "KP_Up", "KP_Down", "Page_Up", "Page_Down",
+    "Home", "End",
+)
+
+# The keys that walk AWAY from the new-game entry along the top row, or
+# close the submenu outright.  These stay available at all times, because
+# a guard that refused them would strand a resumed session on the one
+# screen it must leave.
+MENU_WITHDRAWAL_KEYS = (
+    "Left", "Right", "KP_Left", "KP_Right", "Escape",
 )
 
 # The two UI phases this module distinguishes, and the ONLY evidence it
@@ -5452,6 +5553,9 @@ class Session:
             # rather than the whole record.
             self._sidebar_frame: Optional[int] = None
             self._ui_phase = self._observed_ui_phase()
+            # What each capture was READ to be showing, by index.  The
+            # route guard's evidence; see :meth:`_classify_screen`.
+            self._screens: Dict[int, str] = {}
         except BaseException:
             self._lock.release()
             raise
@@ -5599,9 +5703,19 @@ class Session:
             LOG.info("fresh session: no manifest at %s yet",
                      self._manifest)
             return 0
-        problems = manifest.verify_manifest(
+        problems = list(manifest.verify_manifest(
             self._manifest, self._frames, require_frames=True,
-            root=self._root)
+            root=self._root))
+        # AND THE ATTESTATION LEDGER IS PART OF THAT SOUNDNESS.  A
+        # counter recovered over a record whose frames are not all
+        # attested carries on into a session whose later stages -- the
+        # timing, the transitions, the render, the commit -- all verify
+        # bytes against that ledger, so the gap surfaces as a
+        # publication failure hours after the keystroke that caused it.
+        # It is reported here, where the evidence is still on disk and
+        # the journal that could complete it has just been settled.
+        problems.extend(self._digest_problems(
+            manifest.last_recorded_frame(self._manifest, self._root)))
         if problems:
             raise RecordError(
                 "the record at %s cannot be continued until it is "
@@ -5896,60 +6010,206 @@ class Session:
         """Make a recorded frame's telemetry whole, then say what it did.
 
         A journal for an index the manifest already holds means the row
-        landed; it does NOT mean the sidecar row beside it did.  The two
-        are separate appends, and _commit() clears the journal only after
-        both, so an interruption between them leaves exactly this state --
-        and clearing the journal here without looking used to lose that
-        row for good.  What is lost is not decorative: the sidecar
-        carries the sidebar DATE line, which is how timeline.py tells a
-        crossing of midnight from a clock that read backwards, and the
-        `key` attestation that makes the row auditable.
+        landed; it does NOT mean the sidecar row beside it did, and it
+        does not mean the capture DIGEST beside that did either.  The
+        three are separate appends -- manifest row, telemetry row,
+        attestation -- and _commit() clears the journal only after all
+        three, so an interruption anywhere between them leaves exactly
+        this state, and clearing the journal here without looking used to
+        lose whichever records had not landed yet.  What is lost is not
+        decorative: the sidecar carries the sidebar DATE line, which is
+        how timeline.py tells a crossing of midnight from a clock that
+        read backwards, and the `key` attestation that makes the row
+        auditable; the ledger carries the sha256 every later stage --
+        the timing, the transitions, the render and the commit -- checks
+        a frame's bytes against before it uses them.
 
-        So the sidecar is repaired from the journal's own payload where
+        THE SECOND GAP WAS THE ONE THIS METHOD USED TO MISS ENTIRELY.  It
+        repaired the telemetry row and returned, and the caller then
+        cleared the journal -- so an interruption between the telemetry
+        append and the attestation left a recorded frame with NO digest
+        and nothing that would ever notice, until timeline publication
+        failed much later with the frame reported unattested.  Worse, the
+        "already recorded" case returned before looking at the ledger at
+        all, so the commonest shape of that interruption was the one
+        guaranteed to be missed.  A code review found it.  Both gaps are
+        settled here now, in the order _commit() writes them, and the
+        journal is discarded only once all three records cover the frame.
+
+        The sidecar is repaired from the journal's own payload where
         there is one, or measured from the committed frame where there is
-        not.  Either way every value comes from the capture that really
-        happened.  If it cannot be repaired, the journal is NOT cleared:
-        an unrepaired gap that nothing records is worse than a session
-        that stops while the evidence is still on disk.
+        not.  The attestation is re-hashed from the frame on disk and
+        recorded `capture` when the journal carried capture.sh's own
+        publication digest and the file still hashes to it -- that claim
+        WAS taken at publication -- and `recovery` when the digest could
+        only be measured now, which is the honest strength of a claim
+        about what the bytes ARE rather than about what was captured.
+        Either way every value comes from the capture that really
+        happened.  If any of it cannot be repaired, the journal is NOT
+        cleared: an unrepaired gap that nothing records is worse than a
+        session that stops while the evidence is still on disk.
         """
+        # THE JOURNAL'S OWN DIGEST, READ BEFORE ANYTHING REWRITES IT.
+        # _verified_recovery_payload() below returns a payload whose
+        # FRAME_SHA256 is the digest it MEASURED, which is
+        # indistinguishable afterwards from one taken at publication --
+        # so the attestation's strength has to be decided from the raw
+        # journal payload, here, while the difference still exists.
+        published = str((payload or {}).get("FRAME_SHA256", "")).strip()
+        if not manifest.SHA256_RE.match(published):
+            published = ""
+        notes: List[str] = []
         if _observation_recorded(self._observations, frame):
-            return ("frame %d was already recorded; the journal entry "
-                    "for it was stale and has been discarded" % frame)
-        source = "the payload the capture reported"
-        if payload is None:
-            existing = os.path.join(
-                self._frames, manifest.FRAME_NAME_FORMAT % frame)
-            if not os.path.isfile(existing):
-                raise RecordError(
-                    "frame %d has a manifest row but no telemetry row "
-                    "in %s, and neither the journal's payload nor the "
-                    "capture at %s is available to rebuild it from.  "
-                    "The journal is left in place: that row carries the "
-                    "sidebar date timeline.py reconciles a midnight "
-                    "crossing with, and losing it silently is worse "
-                    "than stopping here"
-                    % (frame, manifest.relative_to_repo(
-                        self._observations), existing))
-            # _payload_from_frame() verifies the bytes itself, so the
-            # measured payload arrives already attested.
-            payload = self._payload_from_frame(frame, existing)
-            source = "measurements taken from the committed frame"
+            notes.append("its telemetry row was already there")
         else:
-            # THE BYTES ARE VERIFIED BEFORE THEY ARE BELIEVED.  Recovery
-            # is the one path that reads a frame it did not just take, so
-            # it is the path a substituted file would come in through: the
-            # journal payload carries the digest capture.sh published at
-            # publication, and the file must still hash to it.
-            payload = self._verified_recovery_payload(frame, payload)
-        append_observation(
-            self._observations,
-            observation_row(frame, payload, key=key, action=action,
-                            capture_attempts=1, recovered=True),
-            require_durable=self._require_durable, root=self._root)
-        return ("frame %d had a manifest row but no telemetry row -- the "
-                "interruption fell between the two appends.  The "
-                "telemetry row has been rebuilt from %s and appended, "
-                "and the journal then discarded" % (frame, source))
+            source = "the payload the capture reported"
+            if payload is None:
+                existing = os.path.join(
+                    self._frames, manifest.FRAME_NAME_FORMAT % frame)
+                if not os.path.isfile(existing):
+                    raise RecordError(
+                        "frame %d has a manifest row but no telemetry "
+                        "row in %s, and neither the journal's payload "
+                        "nor the capture at %s is available to rebuild "
+                        "it from.  The journal is left in place: that "
+                        "row carries the sidebar date timeline.py "
+                        "reconciles a midnight crossing with, and "
+                        "losing it silently is worse than stopping here"
+                        % (frame, manifest.relative_to_repo(
+                            self._observations), existing))
+                # _payload_from_frame() verifies the bytes itself, so the
+                # measured payload arrives already attested.
+                payload = self._payload_from_frame(frame, existing)
+                source = "measurements taken from the committed frame"
+            else:
+                # THE BYTES ARE VERIFIED BEFORE THEY ARE BELIEVED.
+                # Recovery is the one path that reads a frame it did not
+                # just take, so it is the path a substituted file would
+                # come in through: the journal payload carries the digest
+                # capture.sh published at publication, and the file must
+                # still hash to it.
+                payload = self._verified_recovery_payload(frame, payload)
+            append_observation(
+                self._observations,
+                observation_row(frame, payload, key=key, action=action,
+                                capture_attempts=1, recovered=True),
+                require_durable=self._require_durable, root=self._root)
+            notes.append("its telemetry row has been rebuilt from %s "
+                         "and appended" % source)
+        notes.append(self._settle_capture_attestation(frame, published))
+        return ("frame %d had a manifest row and an interrupted step "
+                "journal: %s.  The journal has been discarded only now "
+                "that the row, the telemetry and the attestation all "
+                "cover the frame" % (frame, "; ".join(notes)))
+
+    def _attested_digest(self, frame: int) -> Optional[Dict[str, object]]:
+        """Return the ledger's attestation for `frame`, or None.
+
+        :raises RecordError: when the ledger exists and cannot be read.
+            A ledger that cannot be read is not an unattested frame, and
+            the two must not arrive at a caller as the same answer.
+        """
+        try:
+            rows = manifest.read_frame_digests(self._digests, self._root)
+        except manifest.ManifestError as err:
+            raise RecordError(
+                "the capture attestation ledger %s cannot be read, so "
+                "frame %d's digest can neither be checked nor completed: "
+                "%s" % (self._digests, frame, err)) from err
+        return manifest.attested_digests(rows).get(frame)
+
+    def _settle_capture_attestation(self, frame: int,
+                                    published: str) -> str:
+        """Make a recorded frame's capture digest whole.  Returns a note.
+
+        The third record of the transaction, settled by the recovery path
+        exactly as _attest_capture() settles it for a live step -- which
+        is the point: an interruption between the telemetry append and
+        the attestation used to leave a frame recorded and unattested for
+        good, and every later stage verifies bytes against this ledger.
+
+        `published` is the digest capture.sh reported when it renamed the
+        PNG into place, taken off the raw journal payload, or "" when the
+        journal carried none.  It decides the STRENGTH of the claim and
+        nothing else:
+
+        * already attested -- the file is re-hashed and held to the
+          ledger.  Nothing is appended; a second row would say the same
+          thing twice, and a MISMATCH is a substituted frame and stops
+          the session with the journal left in place.
+        * not attested, and the journal carries the publication digest
+          the file still hashes to -- appended as `capture`, because that
+          is when the digest was taken.
+        * not attested, and no publication digest survives -- appended as
+          `recovery`, and the note says so.  It establishes what the
+          bytes ARE, not that they are the bytes the keystroke produced.
+
+        :raises RecordError: on an unreadable ledger, an unhashable or
+            missing frame, a digest mismatch, or a failed append.  Every
+            one of them leaves the journal in place deliberately.
+        """
+        path = os.path.join(self._frames,
+                            manifest.FRAME_NAME_FORMAT % frame)
+        attested = self._attested_digest(frame)
+        try:
+            observed = manifest.file_digest(path, "frame")
+            size = os.path.getsize(path)
+        except (manifest.ManifestError, OSError) as err:
+            raise RecordError(
+                "frame %d has a manifest row, and the capture at %s "
+                "cannot be hashed for its attestation: %s.  The journal "
+                "is left in place rather than clearing it over a frame "
+                "whose bytes nothing has checked"
+                % (frame, manifest.relative_to_repo(path), err)) from err
+        if attested is not None:
+            expected = str(attested.get("sha256", ""))
+            if expected and expected != observed:
+                raise RecordError(
+                    "frame %d is attested as sha256 %s in %s but %s now "
+                    "hashes to %s.  These are not the bytes that were "
+                    "captured; the journal is left in place so the "
+                    "frame can be looked at rather than written about"
+                    % (frame, expected,
+                       manifest.relative_to_repo(self._digests),
+                       manifest.frame_file(frame), observed))
+            return ("its capture digest was already attested (%s)"
+                    % (attested.get("attested") or "unstated"))
+        if published and published != observed:
+            raise RecordError(
+                "frame %d was published as sha256 %s by the capture the "
+                "step journal records, but %s now hashes to %s.  These "
+                "are not the bytes that were captured, so no "
+                "attestation is written about them and the journal is "
+                "left in place"
+                % (frame, published, manifest.frame_file(frame),
+                   observed))
+        strength = (manifest.DIGEST_AT_CAPTURE if published
+                    else manifest.DIGEST_AT_RECOVERY)
+        try:
+            manifest.append_frame_digest(
+                self._digests, frame, manifest.frame_file(frame),
+                observed, size, strength, manifest.utc_timestamp(),
+                require_durable=self._require_durable, root=self._root)
+        except manifest.ManifestError as err:
+            raise RecordError(
+                "frame %d has a manifest row but no attestation in %s, "
+                "and one could not be appended: %s.  The journal is "
+                "left in place; an unattested recorded frame is the "
+                "state that ledger exists to prevent"
+                % (frame, manifest.relative_to_repo(self._digests),
+                   err)) from err
+        if not published:
+            _warn(
+                "frame %d had no capture-time digest to complete its "
+                "attestation from -- the interruption fell before the "
+                "ledger append and the journal carried none -- so its "
+                "digest was measured now and recorded as '%s'.  That "
+                "establishes what the bytes ARE; only a digest taken at "
+                "publication establishes that they are the bytes the "
+                "keystroke produced"
+                % (frame, manifest.DIGEST_AT_RECOVERY))
+        return ("its capture digest was missing and has been appended "
+                "as '%s'" % strength)
 
     def _verified_recovery_payload(
             self, frame: int,
@@ -6180,16 +6440,82 @@ class Session:
                    last))
         return problems
 
+    def _digest_problems(self, last: int) -> List[str]:
+        """Report a ledger that does not cover the record.  Read-only.
+
+        THE FOURTH LEG OF THE SAME IDENTITY, and the one nothing used to
+        compare.  One keystroke is one frame, one manifest row, one
+        telemetry attestation AND one capture digest; the digest is what
+        makes the other three mean something, because it is the only
+        record that ties an index to the BYTES that were photographed.
+        Until this existed a frame whose attestation append failed -- or
+        whose step was interrupted between the telemetry row and the
+        ledger -- was reported sound by `status` and by this module's own
+        verification, and the gap first became visible when timeline
+        publication refused the frame as unattested, long after the
+        evidence that could have completed it had gone.
+
+        It is REPORTED rather than repaired.  Recovery repairs the gap
+        while the step journal is still there to say what was in flight
+        (:meth:`_settle_capture_attestation`); once that journal is gone
+        the honest strength of any digest measured here is `recovery`,
+        and silently writing one would present a claim about what the
+        bytes are as a claim about what was captured.
+
+        A REPEATED index is deliberately not a problem: the ledger is
+        append-only and a retry inside one step attests the same index
+        twice, which is what `manifest.attested_digests` reads with a
+        last-row-wins rule.
+
+        :param last: the last index the manifest holds; 0 for a record
+            with no rows at all.
+        """
+        problems: List[str] = []
+        try:
+            rows = manifest.read_frame_digests(self._digests, self._root)
+        except manifest.ManifestError as err:
+            # Reported rather than raised, for the same reason
+            # _sidecar_problems reports an unreadable sidecar: one
+            # unreadable evidence file must not stop a caller from
+            # hearing about the rest of the record.
+            return [str(err)]
+        covered = {row.get("frame") for row in rows
+                   if not isinstance(row.get("frame"), bool) and
+                   isinstance(row.get("frame"), int)}
+        missing = sorted(set(_indices_through(last)) - covered)
+        if missing:
+            problems.append(
+                "%d recorded frame(s) have no capture digest in %s (%s); "
+                "the attestation that ties each index to the bytes that "
+                "were photographed is missing for them, so every later "
+                "stage that verifies a frame against that ledger will "
+                "refuse it"
+                % (len(missing),
+                   manifest.relative_to_repo(self._digests),
+                   _summarised(missing)))
+        stray = sorted(index for index in covered
+                       if index < manifest.MIN_FRAME_INDEX or
+                       index > last)
+        if stray:
+            problems.append(
+                "%s holds %d capture digest(s) for frame(s) the manifest "
+                "does not record (%s); the record runs 1..%d, so those "
+                "attestations describe captures no row accounts for"
+                % (manifest.relative_to_repo(self._digests), len(stray),
+                   _summarised(stray), last))
+        return problems
+
     def verify_record(self) -> Tuple[str, ...]:
         """Re-check the record against the frames.  Read-only.
 
         Exposed so a caller can assert the invariant between steps
         without opening a new session.  An empty result means the
         manifest satisfies its schema, every row's capture is on disk,
-        no capture is unaccounted for AND every recorded frame has its
-        telemetry attestation -- see :meth:`_sidecar_problems` for why
-        that third comparison belongs in the same answer as the first
-        two.
+        no capture is unaccounted for, every recorded frame has its
+        telemetry attestation AND every recorded frame has its capture
+        digest -- see :meth:`_sidecar_problems` and
+        :meth:`_digest_problems` for why those comparisons belong in the
+        same answer as the first two.
         """
         if not os.path.isfile(self._manifest):
             problems = []
@@ -6198,9 +6524,11 @@ class Session:
                 problems.append(
                     "%d capture(s) in %s with no manifest at %s"
                     % (len(on_disk), self._frames, self._manifest))
-            # last=0: with no record at all, every telemetry row is a
-            # row for a capture nothing accounts for.
+            # last=0: with no record at all, every telemetry row and
+            # every attestation is one for a capture nothing accounts
+            # for.
             problems.extend(self._sidecar_problems(0))
+            problems.extend(self._digest_problems(0))
             return tuple(problems)
         problems = list(manifest.verify_manifest(
             self._manifest, self._frames, require_frames=True,
@@ -6213,6 +6541,7 @@ class Session:
                 "%s is in %s but no row mentions it"
                 % (name, self._frames))
         problems.extend(self._sidecar_problems(last))
+        problems.extend(self._digest_problems(last))
         return tuple(problems)
 
     # -- the retroactive observed-effect pass -----------------------
@@ -6719,6 +7048,200 @@ class Session:
             "frame %d of this record carries a sidebar reading, so the "
             "session is in the world from there", frame)
         return UI_PHASE_IN_WORLD
+
+    def _classify_screen(self, frame: int) -> str:
+        """Read the capture for `frame` and say which screen it shows.
+
+        The reading is done with the engine's own font by
+        ocr_clock.read_column_by_glyphs(), so a match is a decode of the
+        photographed cells rather than a fuzzy OCR guess.  Four answers,
+        and the distinction between the last two is what keeps the guard
+        honest:
+
+        * SCREEN_NEW_GAME_SUBMENU -- two or more of the submenu's own
+          entry strings are on the screen.  The new-character door is
+          open.
+        * SCREEN_MAIN_MENU -- the main menu's entry row is there and the
+          submenu is not.  This is every screen the resumed load route
+          passes through.
+        * SCREEN_OTHER -- text decoded, and it is neither of those.  A
+          real screen that is not on the load route.
+        * SCREEN_UNREADABLE -- nothing decoded at all: no capture yet, no
+          Pillow or numpy, a frame that is not a rendered game screen.
+          NO EVIDENCE, which is a different fact from "a screen that is
+          not the main menu", and the caller treats it differently.
+
+        Never raises: a classifier that could stop a session by failing
+        to read a file would be a worse hazard than the one it guards
+        against, and every failure mode here means the same thing --
+        nothing was established.
+        """
+        path = os.path.join(self._frames,
+                            manifest.FRAME_NAME_FORMAT % frame)
+        if not os.path.isfile(path):
+            return SCREEN_UNREADABLE
+        try:
+            width, height = ocr_clock.png_size(path)
+            row_height = ocr_clock.DEFAULT_ROW_HEIGHT
+            try:
+                _rect, row_height = ocr_clock.resolve_rect()
+            except ocr_clock.OcrClockError as err:
+                # The options file is the authority for FONT_HEIGHT; its
+                # documented default is the fallback, exactly as
+                # ocr_clock's own row probe treats it.
+                LOG.debug("row height fell back to %d px: %s",
+                          row_height, err)
+            band = min(height, MENU_BAND_ROWS * row_height)
+            rect = sidebar_geometry.Rect(width, band, 0, height - band)
+            text = ocr_clock.read_column_by_glyphs(path, rect, row_height)
+        except (ocr_clock.OcrClockError, sidebar_geometry.GeometryError,
+                OSError, ValueError) as err:
+            LOG.info("frame %d could not be read for its screen: %s",
+                     frame, err)
+            return SCREEN_UNREADABLE
+        if not text.strip():
+            return SCREEN_UNREADABLE
+        labels = [one for one in MENU_NEW_GAME_SUBMENU_LABELS
+                  if one in text]
+        if len(labels) >= MENU_SUBMENU_LABELS_REQUIRED:
+            LOG.warning(
+                "frame %d shows the NEW-GAME submenu: %s",
+                frame, ", ".join(repr(one) for one in labels))
+            return SCREEN_NEW_GAME_SUBMENU
+        markers = [one for one in MENU_ENTRY_ROW_MARKERS if one in text]
+        if len(markers) >= MENU_ENTRY_ROW_MARKERS_REQUIRED:
+            return SCREEN_MAIN_MENU
+        return SCREEN_OTHER
+
+    def _observed_screen(self, frame: int) -> str:
+        """Return :meth:`_classify_screen` for `frame`, read once.
+
+        Cached per index because one step asks at most about one frame
+        and a session may ask about the same one repeatedly; the record
+        is append-only, so a frame's answer cannot change underneath a
+        session that is holding the step lock.
+        """
+        if frame not in self._screens:
+            self._screens[frame] = self._classify_screen(frame)
+        return self._screens[frame]
+
+    def _assert_route_allowed_by_screen(self, index: int, key: str,
+                                        token: str) -> None:
+        """Refuse a keystroke the PHOTOGRAPHED screen does not allow.
+
+        The state-based half of "an existing save is continued, never
+        replaced", and the half that does not depend on the caller
+        describing its own intent truthfully.  It runs only while a
+        session that must not create a survivor is at a menu, and only on
+        the strength of what the last capture actually shows:
+
+        * the new-game submenu is on screen -- the confirming keys and
+          the keys that move deeper into it are refused.  Left/Right walk
+          the top row away from [New Game] and Escape closes the submenu,
+          so the load route and the way out both stay open.  This half
+          does NOT ask what UI phase the record believes it is in: a
+          frame carrying two of those five entries is the main menu
+          whatever the phase says, and the phase is latched to
+          `in-world` from the first sidebar frame onward, so a relaunch
+          part-way through a record -- which the committed record itself
+          contains -- is a menu the phase cannot see;
+        * a screen decoded that is neither the main menu nor that submenu
+          -- the confirming keys are refused while the record's phase is
+          `menu`, because the resumed route runs through the main menu
+          and nothing else, and a session confirming something on an
+          unrecognised screen is not on that route.  It is scoped to the
+          menu phase deliberately: in the world nearly every screen is
+          "not the main menu" and Return is an ordinary command there;
+        * the main menu without the submenu -- permitted, which is the
+          world list and the character list the load route is made of;
+        * nothing decoded at all -- permitted and logged.  No evidence is
+          not evidence of a prohibited screen, and refusing here would
+          strand the first keystroke of every resumed session, which by
+          definition has photographed nothing yet.  What still stands in
+          that state is every other refusal: the five hotkeys, the prose
+          test, and the save pin.
+        """
+        if index <= manifest.MIN_FRAME_INDEX:
+            # Nothing has been photographed by this record yet.
+            return
+        frame = index - 1
+        screen = self._observed_screen(frame)
+        if screen == SCREEN_UNREADABLE:
+            LOG.info(
+                "frame %d could not be read as a screen, so the route "
+                "guard has nothing to hold '%s' against; every other "
+                "refusal still applies", frame, key)
+            return
+        if screen == SCREEN_MAIN_MENU:
+            return
+        if screen == SCREEN_NEW_GAME_SUBMENU:
+            if token not in (MENU_ACTIVATION_KEYS + MENU_DESCENT_KEYS):
+                return
+            raise CheatGuard(
+                "'%s' is REFUSED for frame %d and has NOT been sent.  "
+                "The capture for frame %d SHOWS THE NEW-GAME SUBMENU -- "
+                "read off its own cells with the game's font, not "
+                "inferred from anything this caller said -- and this "
+                "session %s, so it may not confirm or move deeper into "
+                "an entry that opens a new survivor: %s and %s all do.  "
+                "The existing save is continued, never replaced.  Walk "
+                "the top row away from [New Game] with Left or Right, "
+                "or press Escape to close the submenu, and load %s "
+                "through the game's own character list; those keys are "
+                "not refused"
+                % (key, index, frame, self._route_reason(),
+                   MENU_CUSTOM_CHARACTER,
+                   ", ".join(MENU_FORBIDDEN_ENTRIES),
+                   self._pinned_survivor_phrase()))
+        if self._ui_phase != UI_PHASE_MENU:
+            return
+        if token not in MENU_ACTIVATION_KEYS:
+            return
+        raise CheatGuard(
+            "'%s' is REFUSED for frame %d and has NOT been sent.  The "
+            "capture for frame %d does not show the main menu, and this "
+            "session %s: the route it may take runs through the main "
+            "menu's own [Load] entry, the world list and the character "
+            "list, so a key that CONFIRMS whatever is highlighted on an "
+            "unrecognised screen is refused before it is delivered.  "
+            "Press Escape to come back to the main menu -- that is not "
+            "refused -- and load %s from there.  Once a captured frame "
+            "shows the sidebar this session is in the world and every "
+            "key is available again"
+            % (key, index, frame, self._route_reason(),
+               self._pinned_survivor_phrase()))
+
+    def _route_reason(self) -> str:
+        """Say why this session may not open the character creator."""
+        if self._pin.resume:
+            return ("is RESUMING world '%s'" % self._pin.world)
+        return ("already has the one survivor this run records "
+                "(%s)" % self._pinned_survivor_phrase())
+
+    def _pinned_survivor_phrase(self) -> str:
+        """Name the survivor(s) the save tree holds, for a refusal."""
+        names = sorted(
+            name or "an undecodable save name"
+            for world in self._fingerprint.values()
+            for name in (decoded_character_name(save) for save in world))
+        return ", ".join(names) or "the survivor already recorded"
+
+    def _must_not_create_survivor(self) -> bool:
+        """True when this session may not open a new-character door.
+
+        Two states, and the second is why this is not simply
+        `self._pin.resume`: a create run whose survivor already EXISTS is
+        in exactly the same position as a resumed one -- the run records
+        one survivor, that survivor is on disk, and a second would be a
+        replacement.  The committed record's own mid-session relaunch is
+        the case that made this concrete: the phase is latched to
+        `in-world` from the first sidebar frame, so a relaunch that
+        returns the engine to the menu is not covered by the phase, and
+        the screen guard is what covers it.
+        """
+        if self._pin.resume:
+            return True
+        return any(self._fingerprint.values())
 
     def _assert_key_allowed_in_phase(self, index: int, key: str,
                                      action: str = "",
@@ -7457,6 +7980,17 @@ class Session:
         # the five hotkeys nor a key of the verified route said to be
         # walking it.
         self._assert_key_allowed_in_phase(index, validated, text, voice)
+
+        # AND THE SAME REFUSAL TAKEN OFF THE PHOTOGRAPH RATHER THAN OFF
+        # THE CALLER'S WORDS, which is what makes it enforcement instead
+        # of cooperation: the line above can be walked past with wording
+        # that says nothing about the custom sheet, so the screen the
+        # last capture SHOWS decides as well.  Also before delivery, and
+        # it can only refuse.
+        if self._must_not_create_survivor():
+            self._assert_route_allowed_by_screen(
+                index, validated,
+                validated.split(CHORD_SEPARATOR)[-1])
 
         # Nothing has been sent and nothing has been journalled yet, so a
         # window that cannot be found or focused leaves the session
