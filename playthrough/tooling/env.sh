@@ -1951,6 +1951,14 @@ playthrough_assert_trusted() {
 # two-minute fix and a search.  The list is the apt block in
 # playthrough/tooling/requirements.txt, which is the single inventory
 # of the system packages this pipeline needs.
+#
+# EVERY IMAGEMAGICK ENTRY POINT IS NAMED, not just the ones the capture
+# path uses.  `compare` was missing from that arm, so an operator whose
+# host lacked it was told to install "unknown package" -- the one answer
+# this table exists to avoid -- while `convert` and `identify`, which
+# ship in the very same package, were named correctly.  A table that is
+# right about two thirds of a package is worse than no table, because it
+# reads as authoritative.
 # ---------------------------------------------------------------------
 playthrough_tool_package() {
     case "$1" in
@@ -1958,7 +1966,8 @@ playthrough_tool_package() {
         openbox) printf '%s\n' "openbox" ;;
         xdpyinfo|xwininfo|xprop) printf '%s\n' "x11-utils" ;;
         xdotool) printf '%s\n' "xdotool" ;;
-        import|convert|identify) printf '%s\n' "imagemagick" ;;
+        import|convert|identify|compare|mogrify|stream)
+            printf '%s\n' "imagemagick" ;;
         ffmpeg|ffprobe) printf '%s\n' "ffmpeg" ;;
         tesseract) printf '%s\n' "tesseract-ocr" ;;
         scrot) printf '%s\n' "scrot" ;;

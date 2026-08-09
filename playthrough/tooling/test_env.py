@@ -1616,10 +1616,18 @@ class TestTheToolPackageTable(EnvFixture):
     """A missing tool says what to install."""
 
     def test_each_command_names_the_package_that_ships_it(self):
+        # Every ImageMagick entry point the pipeline calls is listed
+        # here, `compare` included: it is what verify_artifacts.sh
+        # compares two extracted frames with, it ships in the same
+        # package as convert and identify, and it used to fall through
+        # to "unknown package".
         pairs = (("Xvfb", "xvfb"), ("openbox", "openbox"),
                  ("xdpyinfo", "x11-utils"), ("xdotool", "xdotool"),
                  ("import", "imagemagick"), ("convert", "imagemagick"),
-                 ("ffmpeg", "ffmpeg"), ("tesseract", "tesseract-ocr"),
+                 ("identify", "imagemagick"),
+                 ("compare", "imagemagick"),
+                 ("ffmpeg", "ffmpeg"), ("ffprobe", "ffmpeg"),
+                 ("tesseract", "tesseract-ocr"),
                  ("scrot", "scrot"), ("make", "make"),
                  ("ccache", "ccache"), ("grep", "grep"),
                  ("sed", "sed"), ("supervisorctl", "supervisor"))

@@ -168,6 +168,16 @@ directory, so I cannot find the environment contract" >&2
     exit "${EX_LAYOUT}"
 fi
 
+# WHAT THE CALLER'S ENVIRONMENT SAID, READ BEFORE env.sh OVERWRITES IT.
+# env.sh exports SDL_VIDEODRIVER=x11 unconditionally and deliberately, so
+# after sourcing it there is nothing left to observe: a check that read
+# the value afterwards would be reporting what this file had just set,
+# one line earlier, and would pass whatever the caller intended.  The
+# inherited value is captured here so the report can say what it actually
+# was.
+_VA_INHERITED_VIDEODRIVER="${SDL_VIDEODRIVER:-}"
+readonly _VA_INHERITED_VIDEODRIVER
+
 _va_env_file="${_va_script_dir}/env.sh"
 if [ ! -f "${_va_env_file}" ]; then
     printf '%s\n' "verify_artifacts.sh: FATAL: missing \
@@ -238,6 +248,20 @@ readonly ARITHMETIC_EPSILON="0.0005"
 # the opening captures and inside ordinary play.
 readonly EXTRACT_OFFSET="1"
 
+# AND THE FRACTIONS OF THE FILM SAMPLED ALONGSIDE IT.  One fixed offset
+# near the start was measured to be a real blind spot: a film truncated to
+# a third of its length still decoded perfectly at 1 s, so both the
+# non-blank reading and the burned-in comparison passed while two thirds
+# of the pictures were gone.  These fractions of the timeline total put a
+# reading in the middle and one near the end as well.
+#
+# ANY OFFSET THAT LANDS INSIDE A TRANSITION IS MOVED PAST IT.  A fade or a
+# "…time passes…" card is legitimately near black, so a reading taken
+# there says nothing about whether the session rendered; the windows come
+# from the timeline itself (group 3 publishes them) rather than from an
+# assumption about where they are.
+readonly EXTRACT_FRACTIONS="0.10 0.50 0.95"
+
 # The calibration reading from a real rendered capture, quoted so the
 # report carries the provenance of the threshold.  IT IS NOT A BOUND:
 # the assertion is strictly `> 0` on both terms, because how bright a
@@ -246,22 +270,37 @@ readonly EXTRACT_OFFSET="1"
 readonly LUMINANCE_REFERENCE="mean=0.270018 std=0.198145 \
 (one real frame, quoted as provenance only)"
 
-# How many captures the luminance gate samples: the first, the last, and
-# an even spread between them.
+# HOW MANY CAPTURES THE LUMINANCE GATE READS: ALL OF THEM, BY DEFAULT.
 #
-# WHY THIS IS A SAMPLE AND NOT A SWEEP, STATED PLAINLY.  One grayscale
-# reading costs about a fifth of a second, so reading all 326 committed
-# captures takes between 80 and 110 seconds -- measured on this host.
-# That is not "almost nothing", so the default reads a spread and the
-# report always says HOW MANY of HOW MANY it read rather than implying it
-# read them all.  `--samples all` reads every capture when the extra
-# minute and a half is worth spending, and the exact, whole-set
-# complement to this sampled reading is the digest agreement asserted in
-# group 3: every capture's sha256 was verified when the timeline was
-# computed, so a frame substituted at ANY index changes a digest the
-# timeline itself declares.
-readonly LUMINANCE_SAMPLES_DEFAULT="32"
+# It used to read a spread of 32, and the hole that left was real rather
+# than theoretical.  The digest sweep in group 3 catches a frame
+# SUBSTITUTED after the fact at any index, because its bytes no longer
+# match the digest taken when it was captured -- but a frame that was
+# ALREADY BLANK when it was captured has an honest digest, and at a
+# non-sampled index nothing looked at its pixels at all.  Measured: a
+# black capture at index 157, with its digest correctly re-declared,
+# passed the whole gate.
+#
+# So the default is now the exhaustive sweep, and it is affordable
+# because of how it is measured rather than because the reading got
+# cheaper: one ImageMagick invocation per CHUNK of images, each reporting
+# geometry and both statistics for every image in the chunk, and ONE awk
+# program over the collected readings instead of one per frame.  Measured
+# on this host: 0.235 s per frame one at a time against 0.138 s in chunks
+# of 16, and the separate `identify` call for geometry disappears
+# entirely because %w and %h come back in the same line.
+#
+# `--samples N` still reads a spread, for a quick look; the verdict always
+# says how many of how many it read, so a partial reading can never be
+# mistaken for a complete one.
+readonly LUMINANCE_SAMPLES_DEFAULT="all"
 readonly LUMINANCE_SAMPLES_ALL="all"
+
+# How many images one ImageMagick invocation measures.  ImageMagick holds
+# a chunk in memory at once, so this trades memory for process starts: 16
+# 1920x1080 rasters is a couple of hundred megabytes at most, and 21
+# invocations instead of 326 is where the saving comes from.
+readonly LUMINANCE_CHUNK="16"
 
 # The engine's own debug actions.  All three are declared in
 # data/raw/keybindings.json WITHOUT a `bindings` array -- debug_mode at
@@ -272,12 +311,96 @@ readonly LUMINANCE_SAMPLES_ALL="all"
 # cheating" from a claim into a property a stranger can check.
 readonly DEBUG_ACTION_PATTERN='"(debug|debug_mode|debug_hour_timer)"'
 
+# THE SAME QUESTION ASKED OF THE RECORD ITSELF.
+#
+# The keybindings file and the engine log prove nothing was BOUND and
+# nothing was ACTIVATED, which leaves the most direct evidence there is
+# unexamined: the record of what was actually pressed, and the transcript
+# written from it.  A session that opened the debug menu and spawned a
+# rifle would say so in its own action column -- the requirement is that
+# no decision was made that way at all, so the words are worth reading.
+#
+# THE LEXICON IS DELIBERATELY NARROW.  Every term is either an engine
+# action id (debug, debug_mode, debug_hour_timer, the wish* family behind
+# the debug menu's spawn screens) or an unambiguous name for a cheat
+# (god mode, noclip, teleport, revealing the map, editing stats).  Bare
+# "wish" is excluded on purpose: it is ordinary English, and the honest
+# transcript of this session already contains it ("That is the whole
+# wish."), so including it would manufacture a finding out of prose.
+# Measured across all five committed record files at this checkpoint:
+# zero hits.
+#
+# WRITTEN IN DOUBLE QUOTES, and that is not cosmetic.  A backslash before
+# a newline continues the line only inside double quotes; inside single
+# quotes it is a literal backslash followed by a literal newline, which
+# grep reads as several patterns of which one ends in a trailing
+# backslash -- an invalid expression that grep rejects, leaving the
+# check to find nothing and report success.  That is precisely the
+# vacuous verdict this gate exists to prevent, and it was caught here by
+# running the mutation the check was written for.
+readonly CHEAT_VOCABULARY_PATTERN="debug|god[ _-]?mode|no[ _-]?clip|teleport|wish(item|monster|mutate|skill|proficiency)|spawn|cheat|reveal (the |whole )*map|map reveal|edit (my |the )*(stat|skill|proficienc)|set (my |the )*(stat|skill|proficienc)"
+
 # The engine writes its log beside the configuration it was launched
 # with.  Both candidate locations are inspected, because which one is
 # used has changed between builds and a gate that looked in only one
 # would report "no debug activation" without having read anything.  An
 # ARRAY, so no expansion has to be left unquoted to split it.
 readonly -a DEBUG_LOG_RELATIVE_PATHS=("config/debug.log" "debug.log")
+
+# ---------------------------------------------------------------------
+# THE REQUIRED ARTWORK
+#
+# The tileset is a REQUIREMENT and not a preference: the feature is
+# specified to install the CDDA-Tilesets pack and to configure MSXotto+.
+# It needs its own assertions because none of the other groups can see
+# it.  `+tiles` in the binary's banner says the SDL tiles PATH was
+# compiled in, not which artwork was drawn through it; every count, every
+# duration, every cue and even the luminance gate are satisfied exactly
+# as well by an ASCII-rendered session.  env.sh says as much in its own
+# words when it registers PLAYTHROUGH_ALLOW_TILESET_FALLBACK: a run under
+# the fallback "may render artwork other than the required MSXotto+,
+# which no other check would notice" (env.sh:1837-1840).  So four
+# assertions are made here, from four independent directions -- the
+# installed pack, the committed option values, the engine's own log, and
+# the pixels of the captures themselves.
+#
+# The engine's log line is the strongest of the four, because it is
+# CAPTURE-TIME evidence written by the game rather than a statement about
+# the host doing the auditing: cata_tiles::do_tile_loading_report logs
+# "Loaded tileset: <id>" (src/cata_tiles.cpp:5183) once the artwork has
+# actually been loaded, and playthrough/userdir/config/debug.log is a
+# committed artifact.
+readonly TILESET_LOADED_PREFIX="Loaded tileset:"
+
+# THE PIXEL ASSERTION, AND WHERE ITS NUMBER COMES FROM.  An options file
+# can be edited after the fact and an installed pack can be swapped, so
+# the last assertion is made against the captures: how many DISTINCT
+# COLOURS a rendered frame holds separates sprite artwork from glyphs
+# decisively.  Measured on this checkout: the entire ASCII tileset holds
+# 38 unique colours (gfx/ASCIITileset/ASCIITiles.png) and its fallback
+# glyph sheet 18, while MSXotto+'s sheet holds 170,808
+# (gfx/MShockXotto+/tiles.png).  A text render is bounded by the game's
+# 16-colour palette over 16 backgrounds -- 256 combinations at the
+# absolute most, and far fewer in practice because the shipped font is a
+# bitmap face with no anti-aliasing.  The committed captures measure up
+# to 2352 on a map frame.  512 therefore sits an order of magnitude above
+# anything ASCII can produce and a factor of four below what this session
+# actually produced.
+#
+# IT IS A MAXIMUM OVER SAMPLED IN-GAME CAPTURES, NOT A PER-FRAME FLOOR.
+# A legitimate frame can be almost colourless -- a full-screen menu over
+# the map, a night scene, the closing dialogue -- so demanding depth of
+# every frame would fail an honest session.  One frame that could only
+# have been drawn from sprite artwork is what this proves.
+readonly TILE_COLOUR_FLOOR="512"
+readonly TILE_COLOUR_REFERENCE="ASCII artwork holds 38 unique colours \
+in total (gfx/ASCIITileset/ASCIITiles.png) against 170808 in \
+gfx/MShockXotto+/tiles.png"
+
+# How many in-game captures the colour-depth reading samples.  One
+# reading costs about half a second, and the assertion is a maximum, so a
+# spread of eight is both sufficient and cheap.
+readonly TILE_COLOUR_SAMPLES="8"
 
 # The complete set of paths outside playthrough/ that this feature is
 # allowed to have touched.  Anything else in the change surface is a
@@ -290,6 +413,43 @@ readonly ALLOWED_FOREIGN_PATHS=".gitignore .gitattributes"
 # a whitespace IFS character and drops leading and trailing ones, so a
 # tab-separated protocol would silently lose an empty field.
 readonly VERDICT_SEPARATOR=$'\037'
+
+# ---------------------------------------------------------------------
+# HOW MANY CHECKS THIS FILE IS SUPPOSED TO PERFORM
+#
+# A report that gets SHORTER reads exactly as green as a complete one:
+# "93 of 93 checks passed" and "91 of 91 checks passed" are
+# indistinguishable to a reader who does not already know the number, and
+# a check that cannot be performed is the most dangerous kind of missing
+# check.  So the count is DECLARED here, asserted at the end of the run,
+# and printed in the summary and in the machine block.
+#
+# The derivation, group by group, on a complete artifact set:
+#
+#    1  the measuring environment          6
+#    2  one frame per keystroke           13
+#    3  the timeline                      19
+#    4  the container and its inputs      20
+#    5  the caption track                 19
+#    6  the luminance gate                 5
+#    7  version control                   12
+#    8  no cheating                        3
+#    9  the binary, artwork and hygiene    10
+#   10  the inventory of this report        1
+#                                        ----
+#                                         108
+#
+# The table is maintained with the checks: adding one without adding it
+# here makes this assertion fail, which is the intended direction of that
+# mistake.
+#
+# THE ASSERTION IS "AT LEAST", and deliberately so.  Several checks
+# report one verdict per offending item -- a per-frame luminance failure,
+# a per-film container failure -- so a BROKEN artifact set legitimately
+# produces MORE verdicts than this.  Fewer is the fault being guarded
+# against: a check that returned early, a checker that died, or an
+# assertion an edited artifact managed to switch off.
+readonly EXPECTED_CHECKS=108
 
 # ---------------------------------------------------------------------
 # THE REPORT
@@ -495,13 +655,42 @@ floats_close() {
     }'
 }
 
-# is_number VALUE -- a bare decimal, and not ffprobe's "N/A".
-is_number() {
+# TWO VALIDATORS, BECAUSE TWO DIFFERENT THINGS ARE BEING VALIDATED.
+#
+# There used to be one, accepting the character class [0-9.] and nothing
+# else, and it was wrong in both directions at once.  ImageMagick prints
+# its statistics with %g, which switches to SCIENTIFIC NOTATION for a
+# very dark frame: a real capture measuring mean=7.56475e-09
+# std=5.44662e-06 -- both strictly greater than zero, both perfectly
+# comparable -- was rejected as "could not measure grayscale statistics"
+# and reported as a failure, so an honest near-black capture failed while
+# the numeric comparison never ran.  In the other direction, a value
+# containing '.' passed and then reached `[ "${a}" -eq "${b}" ]`, which
+# is an INTEGER comparison and errors at the syntax level on a decimal.
+#
+# So: is_real is what awk can compare, and is_count is what the shell can.
+# Neither accepts ffprobe's "N/A", which is how ffprobe spells "I do not
+# know" and must never be mistaken for a measurement.
+
+# is_count VALUE -- a non-negative integer, safe for `-eq` and `-gt`.
+is_count() {
     case "${1-}" in
         ''|'N/A'|'n/a') return 1 ;;
-        *[!0-9.]*) return 1 ;;
+        *[!0-9]*) return 1 ;;
         *) return 0 ;;
     esac
+}
+
+# is_real VALUE -- an optionally signed decimal, with an optional
+# exponent, and therefore exactly the set of readings awk can compare.
+# A bash regex rather than a case glob: an exponent is not expressible as
+# a glob without accepting things that are not numbers, and bash is
+# already a requirement of this file (BASH_SOURCE, arrays and `local`).
+is_real() {
+    case "${1-}" in
+        ''|'N/A'|'n/a') return 1 ;;
+    esac
+    [[ "${1}" =~ ^[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?$ ]]
 }
 
 # probe_field FILE SELECTOR ENTRIES
@@ -554,10 +743,14 @@ Options:
                     Defaults to the parent of the first commit that
                     touched playthrough/, which is the point this
                     feature began.
-  --samples N       how many captures the luminance gate samples
-                    (minimum 2 -- the first and the last; default 32).
-  --samples all     read every capture instead of a spread.  Exact, and
-                    about a minute and a half slower on a full session.
+  --samples N       read a spread of N captures in the luminance gate
+                    instead of all of them (minimum 2 -- the first and
+                    the last).  Quicker, and the verdict says how many
+                    of how many it read.
+  --samples all     read every capture.  THIS IS THE DEFAULT, because a
+                    frame that was already blank when it was captured
+                    has an honest digest and only its pixels give it
+                    away.  About forty seconds on a full session.
   -h, --help        print this and exit.
 
 Environment:
@@ -565,6 +758,18 @@ Environment:
   PLAYTHROUGH_VERIFY_SAMPLES  the default for --samples.
   PLAYTHROUGH_FLAKE8          the flake8 to lint with, when it is not
                               on PATH and not importable as a module.
+
+Notes:
+  This gate READS committed evidence and writes nothing into the working
+  tree, so it is safe to run on any host.  Do NOT set the diagnostic
+  bypasses when running it: a capture-time bypass (an unverified
+  executable, an unauthenticated X server, an unverified or substituted
+  tileset pack, an unpinned Pillow, an unsanctioned compiler) is a
+  FAILURE here, because evidence produced under a relaxed check is not
+  evidence.  PLAYTHROUGH_ALLOW_EOL_PLATFORM is the exception: it says
+  something about the host doing the reading rather than about the
+  session that was recorded, so it is reported as a warning and does not
+  fail the run.
 
 Exit status: 0 all checks passed, 1 a check failed, 2 usage, 3 layout.
 USAGE
@@ -803,39 +1008,133 @@ so the lint check in group 9 reports it as unresolved"
         "${FLAKE8_CMD[*]} -- ${version:-version unavailable}"
 }
 
-# THE TRUST STATE.  env.sh registers every diagnostic escape hatch and
-# moves the state to "diagnostic" when any of them is set.  It matters
-# here for a specific reason: a measurement taken with a binary this
-# pipeline could not vouch for is a weaker measurement, and a gate that
-# did not say so would be overstating its own result.
+# THE TRUST STATE, SPLIT BY WHAT EACH BYPASS ACTUALLY ENDANGERS.
+#
+# env.sh registers every diagnostic escape hatch and moves the state to
+# "diagnostic" when any of them is set.  For a stage that RECORDS
+# evidence, any of them is disqualifying -- launch_game.sh and capture.sh
+# refuse outright, and they are right to.  This stage only READS
+# committed evidence, and the bypasses do not all mean the same thing
+# here:
+#
+#   * A CAPTURE-TIME bypass says the evidence itself may be tainted: an
+#     unverified interpreter or tool decided the readings, an
+#     unauthenticated X server let another account type into the session,
+#     the artwork came from somewhere this host cannot vouch for, or the
+#     run may have rendered a tileset other than the required one.  Those
+#     remain FAILURES, because they bear on what is being judged.
+#
+#   * A PLATFORM bypass says the host doing the reading is past its
+#     security support date.  That is worth saying out loud and it
+#     changes nothing about the bytes in the tree -- report_platform
+#     below already treats the same condition as information for exactly
+#     this reason, since "auditing a committed tree on whatever host is
+#     to hand is legitimate".  Failing the run on it would report a
+#     defect in a correct artifact set, which is the one thing an
+#     acceptance gate must never do; and the project's own setup guidance
+#     tells operators to export that waiver for host-side stages, so the
+#     old behaviour turned following the instructions into a failure.
+#
+# An inability to VERIFY (PLAYTHROUGH_TRUST_UNVERIFIED) stays a failure
+# too: a check that could not run is not a check that passed.
+readonly PLATFORM_CLASS_BYPASSES="PLAYTHROUGH_ALLOW_EOL_PLATFORM"
+
 check_trust_state() {
+    local name="" active="" evidential="" platform=""
     if playthrough_trust_refresh; then
         record_pass "the environment doing the measuring is trusted" \
             "PLAYTHROUGH_TRUST_STATE=${PLAYTHROUGH_TRUST_STATE}"
         return 0
     fi
+    active="${PLAYTHROUGH_TRUST_BYPASSES:-}"
+    for name in ${active}; do
+        case " ${PLATFORM_CLASS_BYPASSES} " in
+            *" ${name} "*)
+                platform="${platform}${platform:+ }${name}"
+                ;;
+            *)
+                evidential="${evidential}${evidential:+ }${name}"
+                ;;
+        esac
+    done
+    if [ -z "${evidential}" ] &&
+            [ -z "${PLAYTHROUGH_TRUST_UNVERIFIED:-}" ]; then
+        record_warn "the environment doing the measuring" \
+            "${platform} is set, which says this HOST is past its \
+security support date and nothing about the committed artifacts; this \
+gate reads evidence and writes nothing, so it is reported rather than \
+failed.  A capture-time bypass would fail here instead"
+        record_pass "the environment doing the measuring is trusted" \
+            "no capture-time bypass is set; the only relaxation in \
+force (${platform}) bears on the host doing the reading, not on the \
+evidence being read"
+        return 0
+    fi
     playthrough_trust_explain || true
     record_fail "the environment doing the measuring is trusted" \
         "PLAYTHROUGH_TRUST_STATE=${PLAYTHROUGH_TRUST_STATE:-unknown} \
-(${PLAYTHROUGH_TRUST_BYPASSES:-a check could not be performed})" \
-        "trusted -- no diagnostic bypass set, so every tool and path \
-this gate reads through was verified"
+(${evidential:-${active}}\
+${PLAYTHROUGH_TRUST_UNVERIFIED:+; ${PLAYTHROUGH_TRUST_UNVERIFIED}})" \
+        "no capture-time bypass set and nothing left unverified -- an \
+unverified tool or interpreter decides every reading in the film, an \
+unauthenticated X server lets another account type into the session, \
+and an unverified or substituted tileset pack changes the artwork the \
+whole film is rendered in.  Evidence produced or measured under a \
+relaxed check is not evidence"
 }
 
-# SDL_VIDEODRIVER is asserted even though this gate renders nothing,
-# because `dummy` is the cause of the black-film failure mode and a
-# report that did not state the driver would leave the reader unable to
-# tell a real measurement from a vacuous one.
+# THE VIDEO DRIVER, AND WHOSE IT IS.
+#
+# This verdict is about THE PROCESS DOING THE MEASURING and says nothing
+# about the session that was recorded -- and it now says so in its own
+# name, because the earlier wording ("the video driver contract is x11
+# and not dummy") read as a statement about the recording and could never
+# fail: env.sh exports SDL_VIDEODRIVER=x11 unconditionally, so the check
+# was reading back a value this file had set a few lines earlier.  Running
+# the gate with SDL_VIDEODRIVER=dummy in the caller's environment
+# produced a serene pass.
+#
+# What is asserted is therefore the real property: that the environment
+# contract IS in force in this process, which fails if env.sh is edited
+# or replaced by something that does not establish it.  The caller's
+# inherited value is reported beside it, and warned about when it was
+# `dummy`, since an operator whose shell is set that way is one step away
+# from recording a black film.
+#
+# WHAT DOES JUDGE THE RECORDING is elsewhere and is named here so a
+# reader knows where to look: group 6 reads the grayscale statistics of
+# every committed capture and of frames decoded out of both films, and
+# group 9 reads the tileset the engine logged loading at capture time.
+# Those are measurements of the evidence; this is a statement about the
+# audit.
 check_video_driver() {
+    local inherited="${_VA_INHERITED_VIDEODRIVER:-<unset>}"
+    if [ "${_VA_INHERITED_VIDEODRIVER:-}" = "dummy" ]; then
+        record_warn "the video driver in the caller's environment" \
+            "SDL_VIDEODRIVER=dummy was inherited by this process.  It \
+has no bearing on the committed artifacts -- env.sh overrides it with \
+x11 and this gate renders nothing -- but a capture run started from \
+this shell would photograph zero pixels, so the value is worth seeing"
+    fi
     if [ "${SDL_VIDEODRIVER:-}" = "x11" ]; then
-        record_pass "the video driver contract is x11 and not dummy" \
-            "SDL_VIDEODRIVER=${SDL_VIDEODRIVER}"
+        record_pass "this audit process runs under the x11 video driver \
+contract, never dummy (a statement about the audit, not about the \
+recorded session)" \
+            "SDL_VIDEODRIVER=${SDL_VIDEODRIVER} in force here, \
+inherited as ${inherited}; whether the RECORDED session rendered real \
+pixels is measured in group 6 from the captures and the films \
+themselves, and the artwork it rendered in group 9 from the engine's own \
+log"
         return 0
     fi
-    record_fail "the video driver contract is x11 and not dummy" \
-        "SDL_VIDEODRIVER=${SDL_VIDEODRIVER:-<unset>}" \
-        "x11 -- dummy renders zero pixels, which yields a black film \
-while every count still tallies"
+    record_fail "this audit process runs under the x11 video driver \
+contract, never dummy (a statement about the audit, not about the \
+recorded session)" \
+        "SDL_VIDEODRIVER=${SDL_VIDEODRIVER:-<unset>} after sourcing \
+env.sh (inherited as ${inherited})" \
+        "x11 -- env.sh establishes this contract unconditionally, so \
+anything else here means the environment contract was not established \
+and every tool resolution and path in this run is suspect"
 }
 
 # The platform verdict is INFORMATION here, not a verdict on the
@@ -940,6 +1239,7 @@ emit_record_checker() {
     emit_checker record <<'PY'
 """Assert the capture/record pairing over the committed artifacts."""
 
+import datetime
 import json
 import os
 import re
@@ -947,6 +1247,18 @@ import sys
 
 SEP = "\x1f"
 FRAME_RE = re.compile(r"^frame_([0-9]{5})\.png$")
+
+# The bounds the real-time span is judged against.  Internal on purpose:
+# see check_timestamps for why the auditing host's clock is not consulted.
+MAX_SESSION_SECONDS = 30 * 86400
+EARLIEST_LABEL = "2020-01-01T00:00:00Z"
+EARLIEST_PLAUSIBLE = datetime.datetime(
+    2020, 1, 1, tzinfo=datetime.timezone.utc).timestamp()
+
+# How long after its row a capture may be attested.  The digest is taken
+# immediately after the frame is written, so this is generous by design:
+# the widest gap in the committed session is about 25 s.
+ATTESTATION_WINDOW_SECONDS = 300
 
 
 def verdict(kind, name, observed="", expected=""):
@@ -976,7 +1288,8 @@ def summarise(items, limit=6):
 
 
 def main(argv):
-    manifest_path, frames_dir, tooling_dir, facts_path = argv[1:5]
+    (manifest_path, frames_dir, tooling_dir, facts_path, timeline_path,
+     digests_path) = argv[1:7]
     sys.path.insert(0, tooling_dir)
     import manifest as mf
 
@@ -1077,7 +1390,256 @@ def main(argv):
         ok("every row names its own capture canonically",
            "%d rows match %s" % (len(rows), mf.FRAME_FILE_FORMAT))
 
+    check_timestamps(rows, timeline_path, digests_path)
+
     return finish(rows, len(lines), frames_dir, facts)
+
+
+def check_timestamps(rows, timeline_path, digests_path):
+    """When each capture was taken, asserted rather than assumed.
+
+    real_ts is one of the six mandated fields and it exists for exactly
+    one reason: so a frame is traceable to the MOMENT it was taken.  It
+    used to be carried through the schema check and then never read,
+    which meant a fabricated or reordered timestamp -- a row moved, a
+    value invented, an epoch pasted in -- was invisible to this gate
+    while every count still tallied.  Four properties are asserted, and
+    they are deliberately independent of each other:
+
+      1. every value is a real instant, and the record never goes
+         BACKWARDS.  A session is recorded forwards in time; a row whose
+         timestamp precedes its predecessor's is either a fabrication or
+         a reordering, and both are failures of the same requirement.
+      2. the span is one plausible session, judged WITHOUT reference to
+         the clock of whatever host is auditing.  Comparing evidence
+         against the auditing host's clock would make a skewed or
+         travelled clock into a failure of the artifacts, which it is
+         not; the bounds are therefore internal (a positive span, no
+         longer than a month) plus a floor no run of this pipeline can
+         predate.
+      3. the timeline's own copy of each timestamp is the record's.  The
+         timeline is derived from the record, so a divergence means one
+         of the two was edited after the other was computed.  Only the
+         timestamp and the clock are compared: action and commentary
+         legitimately differ where the amendment ledger corrected them.
+      4. the capture-digest sidecar's attestation is at or after the row
+         that recorded it, and within minutes of it.  attested_ts is
+         written when the frame's bytes are hashed, which happens just
+         after the keystroke that produced it, so this is a second,
+         independently produced witness to the same instant.
+    """
+    stamps = []
+    unparsable = []
+    for number, row in rows:
+        value = row.get("real_ts")
+        moment = parse_instant(value)
+        if moment is None:
+            unparsable.append("row %d: %r" % (number, value))
+            continue
+        stamps.append((row.get("frame"), number, moment, value))
+
+    backwards = []
+    for (_, number, moment, value), (_, _, previous, before) in zip(
+            stamps[1:], stamps[:-1]):
+        if moment < previous:
+            backwards.append("row %d is %s, after %s" % (number, value,
+                                                         before))
+    if unparsable or backwards:
+        bad("every row records when its capture was taken, and the "
+            "record never goes backwards",
+            summarise(unparsable + backwards),
+            "%d ISO-8601 instants in non-decreasing order -- real_ts is "
+            "what makes a frame traceable to the moment it was taken"
+            % len(rows))
+    else:
+        ok("every row records when its capture was taken, and the "
+           "record never goes backwards",
+           "%d instants from %s to %s, none out of order"
+           % (len(stamps), stamps[0][3] if stamps else "-",
+              stamps[-1][3] if stamps else "-"))
+
+    if len(stamps) >= 2:
+        # MIN AND MAX, not first and last.  The ordering check above
+        # already reads them in sequence; measuring the WIDTH from the
+        # extremes means a single out-of-window value is caught here on
+        # its own terms even when it sits in the middle of the record.
+        oldest = min(stamps, key=lambda item: item[2])
+        newest = max(stamps, key=lambda item: item[2])
+        span = newest[2] - oldest[2]
+        problems = []
+        if span <= 0:
+            problems.append("the span is %.3f s" % span)
+        if span > MAX_SESSION_SECONDS:
+            problems.append("the widest span is %.1f days, between row "
+                            "%d (%s) and row %d (%s)"
+                            % (span / 86400.0, oldest[1], oldest[3],
+                               newest[1], newest[3]))
+        if oldest[2] < EARLIEST_PLAUSIBLE:
+            problems.append("row %d claims %s, which predates this "
+                            "pipeline" % (oldest[1], oldest[3]))
+        if problems:
+            bad("the record's real-time span is one plausible session",
+                ", ".join(problems),
+                "a positive span no longer than %d days, beginning no "
+                "earlier than %s -- judged against the record itself "
+                "rather than against this host's clock, because a "
+                "skewed clock here is not a fault in the evidence"
+                % (MAX_SESSION_SECONDS // 86400, EARLIEST_LABEL))
+        else:
+            ok("the record's real-time span is one plausible session",
+               "%.3f h from the first capture to the last"
+               % (span / 3600.0))
+    else:
+        bad("the record's real-time span is one plausible session",
+            "%d usable timestamp(s)" % len(stamps),
+            "at least two, so a span exists to judge")
+
+    check_timeline_timestamps(rows, timeline_path)
+    check_attestations(stamps, digests_path)
+
+
+def parse_instant(value):
+    """Seconds since the epoch for an ISO-8601 instant, or None.
+
+    The pipeline writes UTC with a trailing 'Z', which
+    datetime.fromisoformat did not accept before Python 3.11, so the
+    suffix is normalised before parsing rather than assuming the
+    interpreter is new enough.  A naive value is read as UTC, which is
+    what the producers write.
+    """
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    if text.endswith(("Z", "z")):
+        text = text[:-1] + "+00:00"
+    try:
+        moment = datetime.datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=datetime.timezone.utc)
+    return moment.timestamp()
+
+
+def check_timeline_timestamps(rows, timeline_path):
+    """The timeline's copy of each row, against the row itself."""
+    try:
+        with open(timeline_path, "r", encoding="utf-8") as handle:
+            document = json.load(handle)
+    except (OSError, ValueError) as err:
+        bad("the timeline's per-frame timestamps are the record's own",
+            str(err), "a readable timeline to compare against")
+        return
+    entries = document.get("frames") if isinstance(document, dict) \
+        else document
+    if not isinstance(entries, list) or not entries:
+        bad("the timeline's per-frame timestamps are the record's own",
+            "the timeline carries no frames array",
+            "one entry per row, each naming the same instant")
+        return
+    by_frame = {}
+    for _, row in rows:
+        by_frame[row.get("frame")] = row
+    problems = []
+    compared = 0
+    for entry in entries:
+        if not isinstance(entry, dict):
+            problems.append("an entry that is not an object")
+            continue
+        frame = entry.get("frame")
+        row = by_frame.get(frame)
+        if row is None:
+            problems.append("frame %r is in the timeline and not in the "
+                            "record" % frame)
+            continue
+        compared += 1
+        for field in ("real_ts", "ingame_clock"):
+            if entry.get(field) != row.get(field):
+                problems.append(
+                    "frame %r %s: the timeline says %r, the record says "
+                    "%r" % (frame, field, entry.get(field),
+                            row.get(field)))
+    missing = [frame for frame in by_frame
+               if frame not in {e.get("frame") for e in entries
+                                if isinstance(e, dict)}]
+    for frame in sorted(missing, key=lambda f: (f is None, f)):
+        problems.append("frame %r is in the record and not in the "
+                        "timeline" % frame)
+    if problems:
+        bad("the timeline's per-frame timestamps are the record's own",
+            summarise(problems),
+            "%d entries agreeing with their rows on real_ts and on the "
+            "clock reading -- action and commentary may differ, because "
+            "the amendment ledger corrects those in the timeline while "
+            "the record stays immutable" % len(entries))
+        return
+    ok("the timeline's per-frame timestamps are the record's own",
+       "%d entries agree with their rows on real_ts and on the clock "
+       "reading" % compared)
+
+
+def check_attestations(stamps, digests_path):
+    """The digest sidecar's own attestation, against the record."""
+    if not os.path.exists(digests_path):
+        bad("each capture was hashed just after the row that recorded "
+            "it", "%s is not there" % digests_path,
+            "the capture-digest sidecar, whose attested_ts is the second "
+            "witness to when each frame was taken")
+        return
+    attested = {}
+    malformed = []
+    try:
+        with open(digests_path, "r", encoding="utf-8") as handle:
+            for number, line in enumerate(handle, 1):
+                if not line.strip():
+                    continue
+                try:
+                    row = json.loads(line)
+                except ValueError as err:
+                    malformed.append("line %d: %s" % (number, err))
+                    continue
+                moment = parse_instant(row.get("attested_ts"))
+                if moment is None:
+                    malformed.append("line %d attests %r"
+                                     % (number, row.get("attested_ts")))
+                    continue
+                attested[row.get("frame")] = (moment,
+                                              row.get("attested_ts"))
+    except OSError as err:
+        bad("each capture was hashed just after the row that recorded "
+            "it", str(err), "a readable capture-digest sidecar")
+        return
+    problems = list(malformed)
+    compared = 0
+    widest = 0.0
+    for frame, number, moment, value in stamps:
+        entry = attested.get(frame)
+        if entry is None:
+            problems.append("frame %r has no attestation" % frame)
+            continue
+        compared += 1
+        delta = entry[0] - moment
+        if delta < 0:
+            problems.append("frame %r was attested %s, BEFORE its row's "
+                            "%s" % (frame, entry[1], value))
+        elif delta > ATTESTATION_WINDOW_SECONDS:
+            problems.append("frame %r was attested %.1f s after its row"
+                            % (frame, delta))
+        elif delta > widest:
+            widest = delta
+    if problems:
+        bad("each capture was hashed just after the row that recorded "
+            "it", summarise(problems),
+            "an attestation at or after every row's real_ts and within "
+            "%d s of it (row %d onwards) -- an attestation before the "
+            "row, or hours after it, means one of the two was written "
+            "from something other than the session"
+            % (ATTESTATION_WINDOW_SECONDS,
+               stamps[0][1] if stamps else 0))
+        return
+    ok("each capture was hashed just after the row that recorded it",
+       "%d attestations, every one at or after its row and within "
+       "%.1f s of it" % (compared, widest))
 
 
 def finish(rows, line_count, frames_dir, facts):
@@ -1154,6 +1716,7 @@ def finish(rows, line_count, frames_dir, facts):
     # create pressure to guess, which is the one thing forbidden
     # outright.  So it is reported, with the count, and never failed.
     kinds = {}
+    in_game = []
     for _, row in rows:
         value = row.get("ingame_clock")
         if value is None:
@@ -1161,6 +1724,8 @@ def finish(rows, line_count, frames_dir, facts):
                 kinds.get("not readable (null)", 0) + 1
         elif isinstance(value, str) and CLOCK_RE.match(value):
             kinds["exact"] = kinds.get("exact", 0) + 1
+            if isinstance(row.get("frame"), int):
+                in_game.append(row["frame"])
         else:
             kinds["verbatim coarse phrase"] = \
                 kinds.get("verbatim coarse phrase", 0) + 1
@@ -1171,6 +1736,16 @@ def finish(rows, line_count, frames_dir, facts):
     facts.write("manifest_rows=%d\n" % len(rows))
     facts.write("manifest_lines=%d\n" % line_count)
     facts.write("capture_count=%d\n" % len(captures))
+    # WHICH CAPTURES SHOW THE GAME BEING PLAYED.  A frame whose sidebar
+    # clock was legible is a frame of the play screen rather than of a
+    # menu, a loading screen or the character creator, and group 9's
+    # colour-depth reading needs exactly that distinction: an ASCII
+    # session's menus and a tiles session's menus look alike, and only
+    # the map is drawn from the tileset.  Published as a fact so the
+    # selection is made from the record that was already parsed here
+    # rather than by a second, possibly divergent, reading of it.
+    facts.write("in_game_frames=%s\n"
+                % ",".join(str(n) for n in in_game))
     facts.close()
     return 0
 
@@ -1188,7 +1763,9 @@ group_record() {
         "${PLAYTHROUGH_MANIFEST}" \
         "${PLAYTHROUGH_FRAMES_DIR}" \
         "${PLAYTHROUGH_TOOLING_DIR}" \
-        "${SCRATCH}/facts"
+        "${SCRATCH}/facts" \
+        "$(rel "${PLAYTHROUGH_TIMELINE}")" \
+        "$(rel "${PLAYTHROUGH_FRAME_DIGESTS}")"
 }
 
 
@@ -1352,10 +1929,21 @@ def check_capture_digests(document):
     """
     block = document.get("captures")
     if not isinstance(block, dict) or not block.get("path"):
-        info("every committed capture still hashes to the digest taken "
-             "when it was captured",
-             "the timeline declares no capture-digest sidecar, so the "
-             "captures cannot be checked against one")
+        # A FAILURE, NOT A NOTE.  This used to report an INFO, which
+        # meant the strongest integrity assertion in the gate -- the
+        # whole-set digest sweep -- could be REMOVED by editing the very
+        # artifact under inspection: deleting the `captures` block turned
+        # the sweep into a note and made a second check vanish
+        # altogether, and the report still read "all checks passed".  An
+        # assertion that the artifact can switch off is not an assertion.
+        bad("every committed capture still hashes to the digest taken "
+            "when it was captured",
+            "the timeline declares no capture-digest sidecar, so no "
+            "capture can be checked against one",
+            "a `captures` block naming the sidecar timeline.py wrote and "
+            "verified -- without it the whole-set integrity of the "
+            "captures is unestablished, and a missing declaration is "
+            "indistinguishable from a removed one")
         return
     path = block["path"]
     if not os.path.exists(path):
@@ -1429,13 +2017,19 @@ def check_provenance(document, entries):
     """
     sidecars = [key for key in ("manifest", "amendments", "captures")
                 if isinstance(document.get(key), dict)]
-    if not sidecars:
-        info("the timeline names the artifacts it was computed from",
-             "this document declares no sidecars, so its provenance "
-             "cannot be checked")
-        return
+    # THE THREE VERDICTS BELOW ARE EMITTED ON EVERY INPUT, including a
+    # document that declares nothing at all.  An early return here is
+    # what let a shrinking report read as a passing one.
     problems = []
     observed = []
+    if not sidecars:
+        # A failure rather than a note: a timeline that names nothing it
+        # was computed from is a document whose provenance is
+        # unfalsifiable, and unfalsifiable is the one state this gate
+        # must never report as satisfactory.
+        problems.append(
+            "this document declares no sidecars at all, so its "
+            "provenance cannot be checked")
     for key in sidecars:
         block = document[key]
         path = block.get("path")
@@ -1462,7 +2056,9 @@ def check_provenance(document, entries):
     if problems:
         bad("the timeline names the artifacts it was computed from, and "
             "they still hash to what it recorded", summarise(problems),
-            "every declared sha256 reproduced from the file on disk")
+            "the `manifest`, `amendments` and `captures` blocks "
+            "timeline.py writes, each declared sha256 reproduced from "
+            "the file on disk")
     else:
         ok("the timeline names the artifacts it was computed from, and "
            "they still hash to what it recorded", "; ".join(observed))
@@ -1478,24 +2074,32 @@ def check_provenance(document, entries):
 
     # The digest sidecar's own arithmetic: one verified digest per
     # capture, and as many as there are entries.
+    #
+    # UNCONDITIONAL, so the verdict cannot disappear.  It used to be
+    # nested inside `if isinstance(captures, dict)`, so a timeline with
+    # no `captures` block emitted NO verdict at all and the report simply
+    # got one check shorter -- and "82 of 82 passed" reads exactly as
+    # green as "84 of 84 passed".  Every check in this file has a defined
+    # verdict on every input, and an absent declaration is one of the
+    # inputs.
     captures = document.get("captures")
-    if isinstance(captures, dict):
-        rows = captures.get("rows")
-        verified = captures.get("verified")
-        counted = (rows is not None and verified is not None and
-                   int(rows) == int(verified) == len(entries))
-        if counted:
-            ok("every capture's digest was verified when the timeline "
-               "was computed",
-               "%d of %d verified, one per entry"
-               % (int(verified), int(rows)))
-        else:
-            bad("every capture's digest was verified when the timeline "
-                "was computed",
-                "rows=%r verified=%r against %d entries"
-                % (rows, verified, len(entries)),
-                "all three equal -- an unverified capture is a frame "
-                "whose provenance was never established")
+    rows = captures.get("rows") if isinstance(captures, dict) else None
+    verified = captures.get("verified") \
+        if isinstance(captures, dict) else None
+    counted = (rows is not None and verified is not None and
+               int(rows) == int(verified) == len(entries))
+    if counted:
+        ok("every capture's digest was verified when the timeline "
+           "was computed",
+           "%d of %d verified, one per entry"
+           % (int(verified), int(rows)))
+    else:
+        bad("every capture's digest was verified when the timeline "
+            "was computed",
+            "rows=%r verified=%r against %d entries"
+            % (rows, verified, len(entries)),
+            "all three equal -- an unverified capture is a frame "
+            "whose provenance was never established")
 
 
 def check_declared(document, entries, floor, ceil, trans, rows, eps):
@@ -1896,6 +2500,16 @@ def main(argv):
         handle.write("transition_images=%d\n" % (groups * per_group))
         handle.write("expected_images=%d\n"
                      % (len(entries) + groups * per_group))
+        # WHERE THE CARDS ARE, IN VIDEO TIME.  A transition occupies the
+        # second immediately after the flagged frame's cue window, and
+        # the pixel probes in groups 4, 5 and 6 need to know: a frame
+        # extracted from inside a fade or a title card is a legitimate
+        # near-black image, so an offset that lands there tells the
+        # luminance gate nothing about the session.
+        handle.write("transition_windows=%s\n" % " ".join(
+            "%.3f-%.3f" % (float(entry.get("cue_end", 0.0)),
+                           float(entry.get("cue_end", 0.0)) + trans)
+            for entry in entries if entry.get("transition_after")))
     return 0
 
 
@@ -1981,13 +2595,13 @@ check_container_duration() {
     local total="" duration="" delta=""
     total="$(fact timeline_total)"
     duration="$(probe_format "${PLAYTHROUGH_MOVIE}" duration)"
-    if ! is_number "${total}"; then
+    if ! is_real "${total}"; then
         record_fail "the film is as long as the timeline says" \
             "the timeline total could not be established" \
             "a numeric total from playthrough/timeline.json"
         return 0
     fi
-    if ! is_number "${duration}"; then
+    if ! is_real "${duration}"; then
         record_fail "the film is as long as the timeline says" \
             "ffprobe reported duration=${duration:-<nothing>}" \
             "a numeric container duration"
@@ -2049,18 +2663,30 @@ narration"
 # so the last duration takes effect, which yields that one extra encoded
 # frame.  So the count is the image inventory, or the inventory plus one,
 # and nothing else.
+# decoded_frames FILE -- how many pictures actually come out of it.
+#
+# A DECODE, not a header read.  `-count_frames` walks the stream and
+# reports what it could decode, which is the only reading that notices a
+# truncated or corrupt film: the header of a file cut to a third of its
+# length still declares the full count.
+decoded_frames() {
+    "${FFPROBE}" -v error -select_streams v:0 -count_frames \
+        -show_entries stream=nb_read_frames \
+        -of default=noprint_wrappers=1:nokey=1 -i "$1" 2>/dev/null |
+        head -n 1 || true
+}
+
 check_frame_count() {
     local expected="" observed=""
     expected="$(fact expected_images)"
-    observed="$(probe_value "${PLAYTHROUGH_MOVIE}" v:0 \
-        stream=nb_frames)"
-    if ! is_number "${observed}"; then
+    observed="$(decoded_frames "${PLAYTHROUGH_MOVIE}")"
+    if ! is_count "${observed}"; then
         observed="$("${FFPROBE}" -v error -select_streams v:0 \
             -count_packets -show_entries stream=nb_read_packets \
             -of default=noprint_wrappers=1:nokey=1 \
             -i "${PLAYTHROUGH_MOVIE}" 2>/dev/null | head -n 1 || true)"
     fi
-    if ! is_number "${expected}" || ! is_number "${observed}"; then
+    if ! is_count "${expected}" || ! is_count "${observed}"; then
         record_fail "the film holds one encoded frame per still it was \
 built from" \
             "expected=${expected:-?} observed=${observed:-?}" \
@@ -2071,24 +2697,703 @@ built from" \
             [ "${observed}" -eq "$((expected + 1))" ]; then
         record_pass "the film holds one encoded frame per still it was \
 built from" \
-            "${observed} encoded frames from $(fact timeline_entries) \
-captures + $(fact transition_images) transition images"
+            "${observed} frames DECODED out of it, from \
+$(fact timeline_entries) captures + $(fact transition_images) \
+transition images"
         return 0
     fi
     record_fail "the film holds one encoded frame per still it was \
 built from" \
-        "${observed} encoded frames against ${expected} stills" \
+        "${observed} frames decoded against ${expected} stills" \
         "${expected} or ${expected} + 1 (the repeated final concat \
-entry); a lower count means captures were dropped from the render"
+entry); a lower count means captures were dropped from the render, or \
+the file is truncated and the pictures past the cut cannot be decoded"
+}
+
+# THE CONTAINER'S OWN CLAIM, AGAINST WHAT COMES OUT OF IT.
+#
+# nb_frames lives in the moov atom, which -movflags +faststart puts at the
+# FRONT of the file; a film truncated to a third of its length still
+# declares every frame it once had.  So the header is read and the stream
+# is decoded, and the two must agree.  A container that declares no
+# nb_frames at all is NOT a failure -- that is ordinary under variable
+# frame rate, which is how this film is encoded -- and the honest reading
+# is reported instead.
+check_declared_frames_agree() {
+    local file="" label="" declared="" decoded=""
+    for file in "${PLAYTHROUGH_MOVIE}" "${PLAYTHROUGH_MOVIE_CC}"; do
+        label="$(rel "${file}")"
+        declared="$(probe_value "${file}" v:0 stream=nb_frames)"
+        decoded="$(decoded_frames "${file}")"
+        if ! is_count "${decoded}"; then
+            record_fail "${label} decodes as many frames as it declares" \
+                "no frame could be decoded out of it (declared \
+${declared:-N/A})" \
+                "a decodable video stream"
+            continue
+        fi
+        if ! is_count "${declared}"; then
+            record_pass "${label} decodes as many frames as it declares" \
+                "the container declares no nb_frames, which is ordinary \
+under variable frame rate, so the decoded count ${decoded} is the only \
+reading and it is the one used"
+            continue
+        fi
+        if [ "${declared}" -eq "${decoded}" ]; then
+            record_pass "${label} decodes as many frames as it declares" \
+                "${decoded} decoded == ${declared} declared"
+            continue
+        fi
+        record_fail "${label} decodes as many frames as it declares" \
+            "${decoded} decoded against ${declared} declared" \
+            "equal counts -- nb_frames comes from the moov atom at the \
+front of the file and survives truncation, so a shortfall here is data \
+that is gone"
+    done
+}
+
+# THE WHOLE FILM, DECODED.  Every packet through the decoder with
+# -xerror, so a corrupt NAL unit, a partial final packet or a missing
+# picture is a failure rather than a warning nobody sees.  Measured cost
+# on this session: about four tenths of a second per film.
+check_film_decodes() {
+    local file="" label="" log="" status=0 detail=""
+    for file in "${PLAYTHROUGH_MOVIE}" "${PLAYTHROUGH_MOVIE_CC}"; do
+        label="$(rel "${file}")"
+        log="${SCRATCH}/decode-$(basename "${file}").log"
+        # `|| status=$?` rather than `if ! cmd; then status=$?; fi`:
+        # inside the then-branch of a negated condition, `$?` is the
+        # status of the NEGATION -- which is 0 exactly when the command
+        # failed -- so the real exit code would be thrown away and every
+        # decode failure would be reported as "exited 0".  It also keeps
+        # errexit and the ERR trap out of a failure this check handles.
+        status=0
+        "${FFMPEG}" -nostdin -v error -xerror -i "${file}" \
+            -f null - >/dev/null 2>"${log}" || status=$?
+        if [ "${status}" -eq 0 ] && [ ! -s "${log}" ]; then
+            record_pass "${label} decodes from end to end" \
+                "every packet through the decoder with -xerror, no \
+diagnostic on stderr"
+            continue
+        fi
+        detail="$(head -n 2 "${log}" 2>/dev/null | tr '\n' ';' || true)"
+        record_fail "${label} decodes from end to end" \
+            "ffmpeg exited ${status} and reported: \
+${detail:-<no diagnostic>}" \
+            "a clean decode -- the container's metadata is read from the \
+moov atom and cannot see missing picture data, so the pictures \
+themselves are decoded here"
+    done
+}
+
+# ---------------------------------------------------------------------
+# THE RENDER INPUTS
+#
+# The container facts above are read from the film's own metadata, and
+# metadata is not the film.  Two whole classes of fault live in that gap:
+#
+#   * THE LIST THE ENCODER WAS GIVEN.  playthrough/build/concat.txt is
+#     what paces the film -- one `file` line and one `duration` line per
+#     still, and the final `file` line repeated so the last duration
+#     takes effect.  A list whose durations were rewritten, or whose
+#     repeated final entry was tidied away, produces a film that no
+#     longer matches the captions; and because the film is built BEFORE
+#     this gate runs, its metadata satisfies every duration check
+#     regardless of what the list says.  Measured: a list summing to
+#     212.5 s beside a timeline of 219.5 s passed every check this gate
+#     used to make.
+#
+#   * THE FILM'S OWN BYTES.  `-movflags +faststart` places the moov atom
+#     at the FRONT of the file, so codec, resolution, pixel format,
+#     duration and nb_frames all survive gross data loss: a film
+#     truncated to a third of its length still reports 1920x1080 h264,
+#     219.56 s and 339 frames.  The render stage already declares the
+#     film's sha256 and byte count in build/movie.json, so holding the
+#     file to that declaration costs nothing and closes the gap.
+#
+# The list is checked by RE-DERIVING it from the committed timeline with
+# render_movie.py's own planner and comparing byte-for-byte, which is
+# stronger than any list of properties: the list is a pure function of
+# the timeline, so anything that differs is a film built from inputs the
+# timeline does not describe.
+# ---------------------------------------------------------------------
+emit_render_checker() {
+    emit_checker render <<'PY'
+"""Assert the render inputs and the film's declared identity."""
+
+import hashlib
+import json
+import os
+import sys
+
+SEP = "\x1f"
+
+
+def verdict(kind, name, observed="", expected=""):
+    fields = [kind, name, str(observed), str(expected)]
+    print(SEP.join(f.replace(SEP, " ").replace("\n", " ")
+                   for f in fields))
+
+
+def ok(name, observed=""):
+    verdict("PASS", name, observed)
+
+
+def bad(name, observed, expected):
+    verdict("FAIL", name, observed, expected)
+
+
+def summarise(items, limit=5):
+    shown = "; ".join(str(i) for i in items[:limit])
+    if len(items) > limit:
+        shown += "; ... (%d more)" % (len(items) - limit)
+    return shown
+
+
+def digest(path):
+    """A streamed sha256, so a film is not held in memory."""
+    accumulator = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(65536), b""):
+            accumulator.update(chunk)
+    return accumulator.hexdigest()
+
+
+def read_json(path):
+    with open(path, "r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def parse_list(text, prefix, suffix, duration_prefix):
+    """The committed list, as (kind, value) pairs in file order.
+
+    Parsed with the WRITER'S OWN prefixes, imported from render_movie,
+    so the reader of these bytes cannot drift from the writer of them.
+    Anything that is neither a file line nor a duration line is returned
+    as a stray, because a concat list with a comment or a blank line in
+    it is not the list the writer produces.
+    """
+    entries = []
+    strays = []
+    for number, line in enumerate(text.splitlines(), 1):
+        if line.startswith(prefix) and line.endswith(suffix):
+            entries.append(("file", line[len(prefix):-len(suffix)]))
+        elif line.startswith(duration_prefix):
+            entries.append(("duration",
+                            line[len(duration_prefix):].strip()))
+        elif line.strip():
+            strays.append("line %d: %r" % (number, line[:60]))
+    return entries, strays
+
+
+def expected_sequence(entries, transitions_dir, seconds, per_group):
+    """The (path, duration) sequence this timeline implies.
+
+    Derived from the timeline document and the transitions directory
+    rather than from render_movie's planner, on purpose: the planner's
+    own output is compared byte-for-byte in the first check, and a
+    SECOND, independent derivation is what makes the structural verdicts
+    below meaningful when the planner cannot run at all.
+    """
+    share = seconds / float(per_group) if per_group else 0.0
+    wanted = []
+    for entry in entries:
+        index = entry.get("frame")
+        wanted.append(("../frames/%s" % os.path.basename(
+            str(entry.get("file", ""))), entry.get("duration")))
+        if not entry.get("transition_after"):
+            continue
+        for ordinal in range(per_group):
+            wanted.append(("transitions/trans_%05d_%02d.png"
+                           % (index, ordinal), share))
+    return wanted
+
+
+def check_planned(rm, document, timeline_path, concat_path, text):
+    """The committed list against the producer's own re-derivation."""
+    try:
+        plan = rm.plan_render(document, None, timeline_path)
+        rewritten = rm.format_concat_list(plan)
+    except Exception as err:                          # noqa: BLE001
+        bad("the concat list is exactly the list this timeline plans",
+            "the render stage's own planner refuses this timeline: %s"
+            % err,
+            "a plan -- render_movie.plan_render() resolves every capture "
+            "and every transition group before an encode, so a timeline "
+            "it refuses could not have produced the committed list")
+        return None
+    if rewritten == text:
+        ok("the concat list is exactly the list this timeline plans",
+           "%d bytes reproduced byte-for-byte by "
+           "render_movie.plan_render() and format_concat_list() from "
+           "%s" % (len(text.encode("utf-8")), timeline_path))
+        return plan
+    bad("the concat list is exactly the list this timeline plans",
+        "the committed list differs from the re-derived one: %s"
+        % summarise(first_differences(text, rewritten)),
+        "identical text -- the list is a pure function of the timeline, "
+        "so any difference means the film was encoded from inputs the "
+        "timeline does not describe")
+    return plan
+
+
+def first_differences(got, want, limit=3):
+    """The first few lines that differ, with their line numbers."""
+    got_lines = got.splitlines()
+    want_lines = want.splitlines()
+    out = []
+    for number, (a, b) in enumerate(zip(got_lines, want_lines), 1):
+        if a != b:
+            out.append("line %d is %r, planned %r" % (number, a, b))
+        if len(out) >= limit:
+            return out
+    if len(got_lines) != len(want_lines):
+        out.append("%d lines committed against %d planned"
+                   % (len(got_lines), len(want_lines)))
+    return out
+
+
+def check_structure(parsed, wanted, eps):
+    """One image, one duration, in timeline order."""
+    pairs = []
+    problems = []
+    index = 0
+    while index < len(parsed):
+        kind, value = parsed[index]
+        if kind != "file":
+            problems.append("a duration line with no image before it at "
+                            "position %d" % (index + 1))
+            index += 1
+            continue
+        if index + 1 < len(parsed) and parsed[index + 1][0] == "duration":
+            pairs.append((value, parsed[index + 1][1]))
+            index += 2
+            continue
+        pairs.append((value, None))
+        index += 1
+    # The final entry is the repeat and carries no duration of its own;
+    # it is judged by check_repeat, so it is dropped here.
+    if pairs and pairs[-1][1] is None:
+        repeated = pairs.pop()
+    else:
+        repeated = None
+    for position, (got, want) in enumerate(zip(pairs, wanted), 1):
+        if got[0] != want[0]:
+            problems.append("entry %d names %r, the timeline implies %r"
+                            % (position, got[0], want[0]))
+            continue
+        if got[1] is None:
+            problems.append("entry %d (%s) has no duration line"
+                            % (position, got[0]))
+            continue
+        try:
+            if abs(float(got[1]) - float(want[1])) > eps:
+                problems.append("entry %d (%s) is %s s, the timeline "
+                                "says %s s"
+                                % (position, got[0], got[1], want[1]))
+        except (TypeError, ValueError):
+            problems.append("entry %d (%s) has the unreadable duration "
+                            "%r" % (position, got[0], got[1]))
+    if len(pairs) != len(wanted):
+        problems.append("%d image entries against %d the timeline "
+                        "implies" % (len(pairs), len(wanted)))
+    if problems:
+        bad("the concat list carries one image and one duration per "
+            "capture and per transition image, in timeline order",
+            summarise(problems),
+            "%d pairs in frame order, each flagged capture followed by "
+            "its transition group" % len(wanted))
+    else:
+        ok("the concat list carries one image and one duration per "
+           "capture and per transition image, in timeline order",
+           "%d image/duration pairs, every path and every duration the "
+           "timeline's own" % len(pairs))
+    return pairs, repeated
+
+
+def check_repeat(rm, text, pairs, repeated):
+    """The repeated final entry, without which the film comes up short."""
+    try:
+        files, durations = rm.concat_counts(text)
+    except Exception as err:                          # noqa: BLE001
+        bad("the concat list repeats its final entry, so the last "
+            "duration takes effect", str(err),
+            "one more `file` line than `duration` lines")
+        return
+    if repeated is None or not pairs:
+        bad("the concat list repeats its final entry, so the last "
+            "duration takes effect",
+            "the list ends with a duration line rather than a repeated "
+            "image (%d file, %d duration)" % (files, durations),
+            "the final `file` line written once more with no duration "
+            "after it -- without it the last duration never takes "
+            "effect and the container is short by exactly that entry, "
+            "measured once as a 10.52 s film against an 11.75 s "
+            "subtitle stream")
+        return
+    if repeated[0] != pairs[-1][0]:
+        bad("the concat list repeats its final entry, so the last "
+            "duration takes effect",
+            "the list ends by repeating %r, but its last timed entry is "
+            "%r" % (repeated[0], pairs[-1][0]),
+            "the same image repeated, so ffmpeg holds the last frame "
+            "for the duration written above it")
+        return
+    ok("the concat list repeats its final entry, so the last duration "
+       "takes effect",
+       "%d file lines against %d duration lines; the repeat is %s"
+       % (files, durations, repeated[0]))
+
+
+def check_sum(pairs, total, eps):
+    """The durations the encoder was given, against the timeline."""
+    values = []
+    for _, value in pairs:
+        try:
+            values.append(float(value))
+        except (TypeError, ValueError):
+            continue
+    measured = sum(values)
+    if total is None:
+        bad("the concat list's durations sum to the timeline's own "
+            "total", "%.6f s in the list, and the timeline declares no "
+            "total" % measured,
+            "a declared total to compare against")
+        return
+    if abs(measured - float(total)) <= eps:
+        ok("the concat list's durations sum to the timeline's own total",
+           "%.6f s over %d entries against the timeline's %.3f s"
+           % (measured, len(values), float(total)))
+        return
+    bad("the concat list's durations sum to the timeline's own total",
+        "%.6f s over %d entries against the timeline's %.3f s (%+.6f s)"
+        % (measured, len(values), float(total), measured - float(total)),
+        "equal within %g s -- the list is what paces the film, so a list "
+        "that sums to something else produces a film the captions do not "
+        "fit" % eps)
+
+
+def load_capture_digests(path):
+    recorded = {}
+    if not os.path.exists(path):
+        return recorded
+    with open(path, "r", encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if row.get("file") and row.get("sha256"):
+                recorded[os.path.normpath(row["file"])] = (
+                    row["sha256"], row.get("bytes"))
+    return recorded
+
+
+def load_transition_digests(document, directory):
+    recorded = {}
+    groups = document.get("groups") if isinstance(document, dict) else []
+    for group in groups or []:
+        for output in group.get("outputs", []) or []:
+            name = output.get("name")
+            if not name or not output.get("sha256"):
+                continue
+            recorded[os.path.normpath(os.path.join(directory, name))] = (
+                output["sha256"], output.get("bytes"))
+    return recorded
+
+
+def check_named_images(pairs, repeated, base, captures, transitions):
+    """Every image the encoder was pointed at, as it was recorded."""
+    problems = []
+    checked = 0
+    seen = set()
+    listed = list(pairs)
+    if repeated is not None:
+        listed.append(repeated)
+    for name, _ in listed:
+        path = os.path.normpath(os.path.join(base, name))
+        if path in seen:
+            continue
+        seen.add(path)
+        if not os.path.exists(path):
+            problems.append("%s is named by the list and is not there"
+                            % name)
+            continue
+        recorded = captures.get(path, transitions.get(path))
+        if recorded is None:
+            problems.append("%s is named by the list and by no digest "
+                            "sidecar" % name)
+            continue
+        actual = digest(path)
+        checked += 1
+        if actual != recorded[0]:
+            problems.append("%s hashes to %s, recorded as %s"
+                            % (name, actual[:16], str(recorded[0])[:16]))
+        elif recorded[1] is not None and \
+                os.path.getsize(path) != int(recorded[1]):
+            problems.append("%s is %d bytes, recorded as %s"
+                            % (name, os.path.getsize(path), recorded[1]))
+    if problems:
+        bad("every image the concat list names is present and still "
+            "hashes to its recorded digest", summarise(problems),
+            "%d images, each present and unchanged since it was "
+            "recorded" % len(seen))
+        return
+    ok("every image the concat list names is present and still hashes "
+       "to its recorded digest",
+       "%d distinct images re-hashed -- captures against "
+       "build/frame_digests.jsonl and transition frames against "
+       "build/transitions.json" % checked)
+
+
+def check_transition_provenance(document, directory, transitions,
+                                flagged, per_group):
+    """The materialised transitions, against their own manifest."""
+    if not isinstance(document, dict) or not document.get("groups"):
+        bad("every materialised transition image is the one "
+            "make_transitions composed",
+            "no transition manifest could be read beside %s" % directory,
+            "build/transitions.json, which records the sha256 and byte "
+            "count of every image the transition stage composed")
+        return
+    problems = []
+    for path, recorded in sorted(transitions.items()):
+        if not os.path.exists(path):
+            problems.append("%s is recorded and absent"
+                            % os.path.basename(path))
+            continue
+        if digest(path) != recorded[0]:
+            problems.append("%s is not the image that was composed"
+                            % os.path.basename(path))
+        elif recorded[1] is not None and \
+                os.path.getsize(path) != int(recorded[1]):
+            problems.append("%s is %d bytes, recorded as %s"
+                            % (os.path.basename(path),
+                               os.path.getsize(path), recorded[1]))
+    declared = [group.get("frame") for group in document["groups"]]
+    if sorted(n for n in declared if n is not None) != sorted(flagged):
+        problems.append("the manifest declares groups for %s against "
+                        "flags for %s"
+                        % (sorted(n for n in declared
+                                  if n is not None) or "none",
+                           sorted(flagged) or "none"))
+    if len(transitions) != len(flagged) * per_group:
+        problems.append("%d recorded images against %d flags x %d"
+                        % (len(transitions), len(flagged), per_group))
+    if problems:
+        bad("every materialised transition image is the one "
+            "make_transitions composed", summarise(problems),
+            "%d images (%d group(s) x %d), each hashing to what the "
+            "transition stage recorded"
+            % (len(flagged) * per_group, len(flagged), per_group))
+        return
+    ok("every materialised transition image is the one make_transitions "
+       "composed",
+       "%d image(s) in %d group(s) re-hashed and unchanged, composed "
+       "from %s" % (len(transitions), len(flagged),
+                    document.get("font", {}).get("path", "the game's "
+                                                 "own font")))
+
+
+def check_declared_file(label, path, block, what):
+    """One artifact against the digest its producer declared for it."""
+    if not isinstance(block, dict) or not block.get("sha256"):
+        bad(label, "%s declares no sha256 for %s" % (what, path),
+            "a declared digest -- the render stage writes one precisely "
+            "so the bytes can be held to it later")
+        return False
+    if not os.path.exists(path):
+        bad(label, "%s is not there" % path, "the file %s describes"
+            % what)
+        return False
+    actual = digest(path)
+    size = os.path.getsize(path)
+    declared_size = block.get("bytes")
+    if actual != block["sha256"]:
+        bad(label,
+            "%s hashes to %s (%d bytes), %s declares %s (%s bytes)"
+            % (path, actual[:16], size, what,
+               str(block["sha256"])[:16], declared_size),
+            "the digest %s recorded when it produced the file -- a "
+            "truncated, re-encoded or replaced file cannot survive "
+            "this, and container metadata alone cannot see it because "
+            "-movflags +faststart puts the moov atom at the front where "
+            "gross data loss leaves it intact" % what)
+        return False
+    if declared_size is not None and size != int(declared_size):
+        bad(label, "%s is %d bytes, %s declares %s"
+            % (path, size, what, declared_size),
+            "the byte count %s recorded" % what)
+        return False
+    ok(label, "%s: %d bytes hashing to %s, exactly as %s declares"
+       % (path, size, actual[:16], what))
+    return True
+
+
+def check_manifest_describes(manifest, manifest_path, timeline_path,
+                             entries, flagged, width, height, total,
+                             eps):
+    """The render manifest, against the timeline it claims to describe."""
+    problems = []
+    block = manifest.get("timeline")
+    if not isinstance(block, dict) or not block.get("sha256"):
+        problems.append("it declares no timeline digest")
+    elif digest(timeline_path) != block["sha256"]:
+        problems.append("it was written for a timeline hashing to %s, "
+                        "and %s hashes to %s"
+                        % (str(block["sha256"])[:16], timeline_path,
+                           digest(timeline_path)[:16]))
+    for key, measured in (("capture_count", len(entries)),
+                          ("group_count", len(flagged)),
+                          ("width", width), ("height", height)):
+        value = manifest.get(key)
+        if value is None:
+            problems.append("it declares no %s" % key)
+        elif int(value) != int(measured):
+            problems.append("it declares %s=%s against %s measured"
+                            % (key, value, measured))
+    declared_total = manifest.get("expected_total")
+    if declared_total is None:
+        problems.append("it declares no expected_total")
+    elif total is not None and \
+            abs(float(declared_total) - float(total)) > eps:
+        problems.append("it declares expected_total=%s against the "
+                        "timeline's %s" % (declared_total, total))
+    if problems:
+        bad("the render manifest describes this timeline and this "
+            "capture set", summarise(problems),
+            "%s naming the committed timeline's digest, %d captures, %d "
+            "transition group(s) and %dx%d"
+            % (manifest_path, len(entries), len(flagged), width, height))
+        return
+    ok("the render manifest describes this timeline and this capture "
+       "set",
+       "%s: timeline %s, %d captures, %d group(s), %.3f s, %dx%d"
+       % (manifest_path, digest(timeline_path)[:12], len(entries),
+          len(flagged), float(declared_total), width, height))
+
+
+def main(argv):
+    (tooling_dir, timeline_path, concat_path, movie_path,
+     transitions_dir, digests_path, epsilon) = argv[1:8]
+    eps = float(epsilon)
+    sys.path.insert(0, tooling_dir)
+    import make_transitions as mt
+    import render_movie as rm
+
+    document = read_json(timeline_path)
+    entries = document.get("frames") if isinstance(document, dict) \
+        else document
+    entries = entries or []
+    flagged = [entry.get("frame") for entry in entries
+               if entry.get("transition_after")]
+    total = document.get("total") if isinstance(document, dict) else None
+    per_group = int(mt.FRAMES_PER_GROUP)
+    # The transition length is READ FROM THE DOCUMENT through the
+    # transition stage's own accessor, which additionally holds it to
+    # EXPECTED_TRANSITION; a length this pipeline cannot materialise is
+    # therefore refused rather than measured against.
+    try:
+        seconds = float(mt.transition_seconds(document))
+    except Exception:                                 # noqa: BLE001
+        seconds = float(mt.EXPECTED_TRANSITION)
+
+    with open(concat_path, "r", encoding="utf-8") as handle:
+        text = handle.read()
+
+    check_planned(rm, document, timeline_path, concat_path, text)
+
+    parsed, strays = parse_list(text, rm.CONCAT_FILE_PREFIX,
+                                rm.CONCAT_FILE_SUFFIX,
+                                rm.CONCAT_DURATION_PREFIX)
+    wanted = expected_sequence(entries, transitions_dir, seconds,
+                               per_group)
+    pairs, repeated = check_structure(parsed, wanted, eps)
+    if strays:
+        bad("the concat list repeats its final entry, so the last "
+            "duration takes effect",
+            "the list carries lines that are neither an image nor a "
+            "duration: %s" % summarise(strays),
+            "only `file` and `duration` lines, as render_movie writes "
+            "them")
+    else:
+        check_repeat(rm, text, pairs, repeated)
+    check_sum(pairs, total, eps)
+
+    base = os.path.dirname(os.path.normpath(concat_path)) or os.curdir
+    captures = load_capture_digests(digests_path)
+    transitions_manifest_path = mt.generation_manifest_path(
+        transitions_dir)
+    try:
+        transitions_manifest = read_json(transitions_manifest_path)
+    except (OSError, ValueError):
+        transitions_manifest = {}
+    transitions = load_transition_digests(transitions_manifest,
+                                          transitions_dir)
+    check_named_images(pairs, repeated, base, captures, transitions)
+    check_transition_provenance(transitions_manifest, transitions_dir,
+                                transitions, flagged, per_group)
+
+    manifest_path = rm.generation_manifest_path(None)
+    try:
+        manifest = read_json(manifest_path)
+    except (OSError, ValueError) as err:
+        for label in ("the concat list is the one the render stage "
+                      "declared",
+                      "the film is the one the render stage declared",
+                      "the render manifest describes this timeline and "
+                      "this capture set"):
+            bad(label, "%s could not be read: %s"
+                % (relative(manifest_path), err),
+                "build/movie.json, which the render stage writes to bind "
+                "the film to the list and the timeline it came from")
+        return 0
+    manifest_rel = relative(manifest_path)
+    check_declared_file("the concat list is the one the render stage "
+                        "declared", concat_path,
+                        manifest.get("concat_list"), manifest_rel)
+    check_declared_file("the film is the one the render stage declared",
+                        movie_path, manifest.get("movie"), manifest_rel)
+    check_manifest_describes(manifest, manifest_rel, timeline_path,
+                             entries, flagged,
+                             int(manifest.get("width") or 0),
+                             int(manifest.get("height") or 0), total,
+                             eps)
+    return 0
+
+
+def relative(path):
+    """The repository-relative spelling of an absolute path."""
+    root = os.getcwd() + os.sep
+    if path.startswith(root):
+        return path[len(root):]
+    return path
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
+PY
 }
 
 group_container() {
-    group "the container"
+    group "the container and the inputs it was built from"
     check_container_streams "${PLAYTHROUGH_MOVIE}" \
         "$(rel "${PLAYTHROUGH_MOVIE}")"
     check_container_duration
     check_frame_count
     check_no_audio
+    check_declared_frames_agree
+    check_film_decodes
+    run_checker render \
+        "${PLAYTHROUGH_TOOLING_DIR}" \
+        "$(rel "${PLAYTHROUGH_TIMELINE}")" \
+        "$(rel "${PLAYTHROUGH_CONCAT_LIST}")" \
+        "$(rel "${PLAYTHROUGH_MOVIE}")" \
+        "$(rel "${PLAYTHROUGH_TRANSITIONS_DIR}")" \
+        "$(rel "${PLAYTHROUGH_FRAME_DIGESTS}")" \
+        "${ARITHMETIC_EPSILON}"
     record_info "the films on disk" \
         "$(rel "${PLAYTHROUGH_MOVIE}") \
 $(wc -c <"${PLAYTHROUGH_MOVIE}" 2>/dev/null || echo '?') bytes, \
@@ -2163,44 +3468,72 @@ check_captioned_video_survived() {
 # allowed to abort the run, and the metric it prints on stderr is the
 # evidence either way.
 check_captions_not_burned_in() {
-    local plain="${SCRATCH}/plain.png"
-    local captioned="${SCRATCH}/captioned.png"
-    local metric="" status=0
-    if ! "${FFMPEG}" -nostdin -y -v error -ss "${EXTRACT_OFFSET}" \
-            -i "${PLAYTHROUGH_MOVIE}" -frames:v 1 "${plain}" \
-            >/dev/null 2>&1; then
-        record_fail "the captions are not burned into the picture" \
-            "could not extract a frame from \
-$(rel "${PLAYTHROUGH_MOVIE}") at ${EXTRACT_OFFSET}s" \
-            "one decodable frame from each film"
-        return 0
-    fi
-    if ! "${FFMPEG}" -nostdin -y -v error -ss "${EXTRACT_OFFSET}" \
-            -i "${PLAYTHROUGH_MOVIE_CC}" -frames:v 1 "${captioned}" \
-            >/dev/null 2>&1; then
-        record_fail "the captions are not burned into the picture" \
-            "could not extract a frame from \
-$(rel "${PLAYTHROUGH_MOVIE_CC}") at ${EXTRACT_OFFSET}s" \
-            "one decodable frame from each film"
-        return 0
-    fi
-    set +e
-    metric="$("${COMPARE}" -metric AE "${captioned}" "${plain}" \
-        null: 2>&1)"
-    status=$?
-    set -e
-    metric="${metric%% *}"
-    if [ "${status}" -eq 0 ] && [ "${metric}" = "0" ]; then
+    local plain="" captioned="" metric="" status=0 offset=""
+    local compared=0
+    local -a offsets=()
+    local -a problems=()
+    while read -r offset; do
+        [ -n "${offset}" ] || continue
+        offsets+=("${offset}")
+    done < <(extract_offsets)
+    for offset in "${offsets[@]}"; do
+        plain="${SCRATCH}/plain-${offset}.png"
+        captioned="${SCRATCH}/captioned-${offset}.png"
+        if ! "${FFMPEG}" -nostdin -y -v error -ss "${offset}" \
+                -i "${PLAYTHROUGH_MOVIE}" -frames:v 1 "${plain}" \
+                >/dev/null 2>&1 || [ ! -s "${plain}" ]; then
+            problems+=("no frame could be decoded out of \
+$(rel "${PLAYTHROUGH_MOVIE}") at ${offset}s")
+            continue
+        fi
+        if ! "${FFMPEG}" -nostdin -y -v error -ss "${offset}" \
+                -i "${PLAYTHROUGH_MOVIE_CC}" -frames:v 1 \
+                "${captioned}" >/dev/null 2>&1 ||
+                [ ! -s "${captioned}" ]; then
+            problems+=("no frame could be decoded out of \
+$(rel "${PLAYTHROUGH_MOVIE_CC}") at ${offset}s")
+            continue
+        fi
+        # `compare` exits non-zero when the images differ, which is a
+        # RESULT and not an error, so it runs as the condition of an `if`:
+        # inside one, a non-zero status is a value the shell was asked
+        # for, and neither errexit nor the ERR trap fires.  Capturing the
+        # status with `$?` after a bare call used to print a spurious
+        # FATAL line naming this file, twice, whenever the tool was
+        # absent.
+        status=0
+        if metric="$("${COMPARE}" -metric AE "${captioned}" "${plain}" \
+                null: 2>&1)"; then
+            status=0
+        else
+            status=$?
+        fi
+        metric="${metric%% *}"
+        # The metric is VALIDATED before it is quoted.  When `compare`
+        # cannot be executed at all, what comes back on this channel is
+        # the shell's own diagnostic, and printing that as a pixel count
+        # produced the unreadable "compare reported
+        # playthrough/tooling/verify_artifacts.sh: differing pixel(s)".
+        if ! is_count "${metric}"; then
+            problems+=("compare could not be executed at ${offset}s \
+(exit ${status}); it printed no pixel count")
+            continue
+        fi
+        compared=$((compared + 1))
+        if [ "${status}" -ne 0 ] || [ "${metric}" != "0" ]; then
+            problems+=("${metric} differing pixel(s) at ${offset}s")
+        fi
+    done
+    if [ "${#problems[@]}" -eq 0 ] && [ "${compared}" -gt 0 ]; then
         record_pass "the captions are not burned into the picture" \
-            "0 differing pixels at ${EXTRACT_OFFSET}s between \
+            "0 differing pixels at each of ${offsets[*]}s between \
 $(rel "${PLAYTHROUGH_MOVIE_CC}") and $(rel "${PLAYTHROUGH_MOVIE}")"
         return 0
     fi
     record_fail "the captions are not burned into the picture" \
-        "compare reported ${metric:-<no metric>} differing pixel(s) \
-(exit ${status})" \
-        "0 -- identical pixels, because the text is a muxed track and \
-not paint on the frame"
+        "${problems[*]:-nothing could be compared}" \
+        "0 differing pixels at every offset -- identical pixels, \
+because the text is a muxed track and not paint on the frame"
 }
 
 emit_caption_checker() {
@@ -2594,6 +3927,80 @@ sample_indices() {
     }' | sort -n -u
 }
 
+# sample_stream HOW_MANY -- an even spread of at most HOW_MANY lines from
+# stdin, always including the first and the last.
+#
+# The companion to sample_indices, for the case where the population is a
+# LIST rather than a range: group 9 measures colour depth on the in-game
+# captures group 2 published, and those are not 1..N.  The lines are held
+# in awk rather than counted first because the caller has a stream, and
+# reading it twice would mean parsing the record twice.
+sample_stream() {
+    "${AWK}" -v s="$1" '
+        NF { line[++seen] = $0 }
+        END {
+            if (seen == 0) { exit }
+            if (s > seen) { s = seen }
+            if (s < 1) { s = 1 }
+            if (seen == 1 || s == 1) { print line[1]; exit }
+            for (i = 0; i < s; i++) {
+                print line[1 + int(i * (seen - 1) / (s - 1) + 0.5)]
+            }
+        }'
+}
+
+# extract_offsets -- the seconds at which the films are sampled.
+#
+# The historical 1 s reading comes first so the report stays comparable
+# with earlier runs, then each fraction of the timeline total.  An offset
+# inside a transition window is moved to just past that window, every
+# offset is held below the end of the film, and the result is sorted and
+# de-duplicated.  All of it in awk, because it is floating-point
+# arithmetic and the shell cannot do that.
+extract_offsets() {
+    local total=""
+    total="$(fact timeline_total)"
+    if ! is_real "${total}"; then
+        printf '%s\n' "${EXTRACT_OFFSET}"
+        return 0
+    fi
+    "${AWK}" -v total="${total}" -v first="${EXTRACT_OFFSET}" \
+        -v fractions="${EXTRACT_FRACTIONS}" \
+        -v windows="$(fact transition_windows)" 'BEGIN {
+        n = split(windows, w, " ")
+        for (i = 1; i <= n; i++) {
+            split(w[i], edge, "-")
+            start[i] = edge[1] + 0
+            stop[i] = edge[2] + 0
+        }
+        limit = total - 0.25
+        if (limit < 0) { limit = 0 }
+        count = split(fractions, f, " ")
+        candidates[1] = first + 0
+        for (i = 1; i <= count; i++) {
+            candidates[i + 1] = total * f[i]
+        }
+        for (i = 1; i <= count + 1; i++) {
+            value = candidates[i]
+            moved = 1
+            passes = 0
+            while (moved && passes < 8) {
+                moved = 0
+                for (j = 1; j <= n; j++) {
+                    if (value >= start[j] - 0.05 && value <= stop[j]) {
+                        value = stop[j] + 0.15
+                        moved = 1
+                    }
+                }
+                passes++
+            }
+            if (value > limit) { value = limit }
+            if (value < 0) { value = 0 }
+            printf "%.3f\n", value
+        }
+    }' | sort -n -u
+}
+
 check_one_frame_luminance() {
     local path="$1"
     local label="$2"
@@ -2607,8 +4014,8 @@ check_one_frame_luminance() {
     reading="$(luminance "${path}")"
     mean="${reading%% *}"
     std="${reading##* }"
-    if [ -z "${reading}" ] || ! is_number "${mean}" ||
-            ! is_number "${std}"; then
+    if [ -z "${reading}" ] || ! is_real "${mean}" ||
+            ! is_real "${std}"; then
         record_fail "${label} is a real, non-blank image" \
             "could not measure grayscale statistics (read \
 '${reading}')" \
@@ -2661,13 +4068,78 @@ capture_path() {
     printf '%s' "${PLAYTHROUGH_FRAMES_DIR}/${name}"
 }
 
+# measure_captures LIST_FILE OUTPUT
+#   Read geometry and grayscale statistics for every path in LIST_FILE,
+#   in chunks, writing "path width height mean std" per line.
+#
+#   A CHUNK THAT FAILS IS RE-READ ONE FILE AT A TIME, so a single
+#   unreadable capture costs its own reading rather than the fifteen
+#   beside it: ImageMagick abandons the whole invocation when one input
+#   will not open, and a chunked reading that silently lost fifteen frames
+#   would be exactly the vacuous verdict this gate exists to prevent.
+measure_captures() {
+    local list="$1"
+    local output="$2"
+    local -a chunk=()
+    local path=""
+    : >"${output}"
+    while IFS= read -r path; do
+        [ -n "${path}" ] || continue
+        chunk+=("${path}")
+        if [ "${#chunk[@]}" -lt "${LUMINANCE_CHUNK}" ]; then
+            continue
+        fi
+        measure_chunk "${output}" "${chunk[@]}"
+        chunk=()
+    done <"${list}"
+    if [ "${#chunk[@]}" -gt 0 ]; then
+        measure_chunk "${output}" "${chunk[@]}"
+    fi
+}
+
+# measure_chunk OUTPUT PATH...
+#   One invocation for the whole chunk, falling back to one per file when
+#   the chunk does not come back with exactly one line per image.
+measure_chunk() {
+    local output="$1"
+    shift
+    local -a paths=("$@")
+    local produced="" lines=0 path="" reading=""
+    produced="$("${CONVERT}" "${paths[@]}" -colorspace Gray \
+        -format '%d/%f %w %h %[fx:mean] %[fx:standard_deviation]\n' \
+        info: 2>/dev/null || true)"
+    lines="$(printf '%s\n' "${produced}" | "${GREP}" -c . || true)"
+    if [ -n "${produced}" ] && [ "${lines}" -eq "${#paths[@]}" ]; then
+        printf '%s\n' "${produced}" >>"${output}"
+        return 0
+    fi
+    for path in "${paths[@]}"; do
+        reading="$(luminance "${path}")"
+        if [ -z "${reading}" ]; then
+            printf '%s ? ? ? ?\n' "${path}" >>"${output}"
+            continue
+        fi
+        printf '%s %s %s\n' "${path}" \
+            "$("${IDENTIFY}" -format '%w %h' "${path}" \
+                2>/dev/null || printf '? ?')" \
+            "${reading}" >>"${output}"
+    done
+}
+
 check_sampled_captures() {
-    local count="" index="" path="" failures=0 checked=0
+    local count="" index="" path="" sample_count="" summary="" kind=""
+    local detail="" checked=0
+    local list="${SCRATCH}/captures.list"
+    local readings="${SCRATCH}/captures.readings"
+    local -a blank=()
+    local -a unreadable=()
     local -a bad_geometry=()
-    local geometry="" sample_count=""
     count="$(fact capture_count)"
-    if ! is_number "${count}" || [ "${count}" -eq 0 ]; then
-        record_fail "sampled captures are real, non-blank images" \
+    if ! is_count "${count}" || [ "${count}" -eq 0 ]; then
+        record_fail "every capture is a real, non-blank image" \
+            "no capture count was established" \
+            "a non-zero capture count from group 2"
+        record_fail "every capture is at the X root's resolution" \
             "no capture count was established" \
             "a non-zero capture count from group 2"
         return 0
@@ -2676,41 +4148,183 @@ check_sampled_captures() {
     if [ "${sample_count}" = "${LUMINANCE_SAMPLES_ALL}" ]; then
         sample_count="${count}"
     fi
+    : >"${list}"
     while read -r index; do
         [ -n "${index}" ] || continue
         if ! path="$(capture_path "${index}")"; then
-            record_fail "sampled captures are real, non-blank images" \
+            record_fail "every capture is a real, non-blank image" \
                 "PLAYTHROUGH_FRAME_FORMAT='${PLAYTHROUGH_FRAME_FORMAT}' \
 did not expand" "a printf format containing %05d"
+            record_fail "every capture is at the X root's resolution" \
+                "no capture path could be built" \
+                "a printf format containing %05d"
             return 0
         fi
-        checked=$((checked + 1))
-        if ! check_one_frame_luminance "${path}" \
-                "capture $(printf '%05d' "${index}")"; then
-            failures=$((failures + 1))
-            continue
-        fi
-        if ! geometry="$(check_frame_geometry "${path}")"; then
-            bad_geometry+=("$(printf '%05d' "${index}")=${geometry}")
-        fi
+        # The REPOSITORY-RELATIVE spelling, because these paths are
+        # printed in the report when a frame fails: the gate has already
+        # chdir'd to the repository root, so they open identically, and
+        # nothing in the report ever names a directory outside the
+        # checkout.
+        printf '%s\n' "$(rel "${path}")" >>"${list}"
     done < <(sample_indices "${count}" "${sample_count}")
 
-    if [ "${failures}" -eq 0 ]; then
-        record_pass "sampled captures are real, non-blank images" \
-            "${checked} of ${count} captures read (the first, the last \
-and an even spread between; '--samples all' reads every one); each has \
-mean > 0 and std > 0"
+    measure_captures "${list}" "${readings}"
+
+    # ONE awk PROGRAM OVER EVERY READING, rather than one process per
+    # frame.  The shell cannot compare floating point at all, and
+    # ImageMagick reports a very dark frame in scientific notation --
+    # 3.78e-09 is a real number strictly greater than zero -- so the
+    # comparison is done where both facts are handled natively.  A
+    # reading that is not a number at all is reported as unreadable and
+    # never silently treated as zero.
+    summary="$("${AWK}" -v expw="${PLAYTHROUGH_SCREEN_WIDTH}" \
+        -v exph="${PLAYTHROUGH_SCREEN_HEIGHT}" '
+        function numeric(value) {
+            return value ~ \
+"^[+-]?([0-9]+\\.?[0-9]*|\\.[0-9]+)([eE][+-]?[0-9]+)?$"
+        }
+        NF >= 5 {
+            seen++
+            if (!numeric($4) || !numeric($5)) {
+                printf "UNREADABLE %s %s %s\n", $1, $4, $5
+                next
+            }
+            if (!($4 > 0 && $5 > 0)) {
+                printf "BLANK %s mean=%s std=%s\n", $1, $4, $5
+            }
+            if ($2 != expw || $3 != exph) {
+                printf "GEOMETRY %s %sx%s\n", $1, $2, $3
+            }
+        }
+        END { printf "COUNT %d\n", seen }' "${readings}")"
+    while IFS= read -r detail; do
+        kind="${detail%% *}"
+        case "${kind}" in
+            BLANK) blank+=("${detail#BLANK }") ;;
+            UNREADABLE) unreadable+=("${detail#UNREADABLE }") ;;
+            GEOMETRY) bad_geometry+=("${detail#GEOMETRY }") ;;
+            COUNT) checked="${detail#COUNT }" ;;
+        esac
+    done <<EOF
+${summary}
+EOF
+
+    local scope=""
+    if [ "${LUMINANCE_SAMPLES}" = "${LUMINANCE_SAMPLES_ALL}" ]; then
+        scope="every one of the ${count} committed captures"
+    else
+        scope="${checked} of ${count} captures (a spread; the default \
+reads every one)"
+    fi
+    if [ "${#blank[@]}" -eq 0 ] && [ "${#unreadable[@]}" -eq 0 ] &&
+            [ "${checked}" -eq \
+"$("${GREP}" -c . "${list}" || printf 0)" ]; then
+        record_pass "every capture is a real, non-blank image" \
+            "${scope} read: each has mean > 0 and std > 0"
+    else
+        record_fail "every capture is a real, non-blank image" \
+            "${checked} read of $("${GREP}" -c . "${list}" \
+|| printf 0) requested; blank: ${blank[*]:-none}; unreadable: \
+${unreadable[*]:-none}" \
+            "mean > 0 AND std > 0 on every capture read -- mean=0 std=0 \
+is the SDL_VIDEODRIVER=dummy signature, and std=0 alone is a uniform \
+solid-colour frame"
     fi
     if [ "${#bad_geometry[@]}" -eq 0 ]; then
-        record_pass "sampled captures are at the X root's resolution" \
+        record_pass "every capture is at the X root's resolution" \
             "${checked} captures at \
 ${PLAYTHROUGH_SCREEN_WIDTH}x${PLAYTHROUGH_SCREEN_HEIGHT}"
     else
-        record_fail "sampled captures are at the X root's resolution" \
+        record_fail "every capture is at the X root's resolution" \
             "${bad_geometry[*]}" \
             "${PLAYTHROUGH_SCREEN_WIDTH}x${PLAYTHROUGH_SCREEN_HEIGHT} \
-on every capture"
+on every capture -- a smaller frame means the game window was \
+photographed instead of the root"
     fi
+}
+
+# WHAT THE CAPTURE STAGE ITSELF MEASURED, AT THE MOMENT IT MEASURED IT.
+#
+# The sweep above reads the pixels as they are NOW.  This reads what
+# capture.sh recorded for each frame as it was taken -- committed in
+# playthrough/build/observations.jsonl, one row per capture, carrying the
+# frame's sha256 alongside the grayscale mean and standard deviation the
+# capturer measured before it accepted the frame.  Two independent
+# witnesses to the same property, one contemporaneous and one current,
+# and the row is bound to the bytes by its own digest so a row cannot be
+# about some other frame.
+check_recorded_luminance() {
+    local path="${PLAYTHROUGH_OBSERVATIONS}"
+    local outcome=""
+    if [ ! -f "${path}" ]; then
+        record_fail "the capture stage recorded a non-blank reading for \
+every frame as it was taken" \
+            "$(rel "${path}") is not there" \
+            "the capturer's own committed observations, one row per \
+capture with the mean and standard deviation it measured at the time"
+        return 0
+    fi
+    outcome="$("${PYTHON}" -B -c '
+import json
+import sys
+
+path, count = sys.argv[1], int(sys.argv[2])
+rows = 0
+problems = []
+frames = set()
+with open(path, "r", encoding="utf-8") as handle:
+    for number, line in enumerate(handle, 1):
+        if not line.strip():
+            continue
+        rows += 1
+        try:
+            row = json.loads(line)
+        except ValueError as err:
+            problems.append("line %d: %s" % (number, err))
+            continue
+        frames.add(row.get("frame"))
+        try:
+            mean = float(row.get("luma_mean"))
+            std = float(row.get("luma_stddev"))
+        except (TypeError, ValueError):
+            problems.append("frame %s recorded %r/%r"
+                            % (row.get("frame"), row.get("luma_mean"),
+                               row.get("luma_stddev")))
+            continue
+        if not (mean > 0 and std > 0):
+            problems.append("frame %s was already mean=%s std=%s when "
+                            "it was captured"
+                            % (row.get("frame"), mean, std))
+if rows != count or len(frames) != count:
+    problems.append("%d row(s) covering %d frame(s) against %d captures"
+                    % (rows, len(frames), count))
+if problems:
+    print("FAIL %s" % "; ".join(problems[:5]))
+else:
+    print("PASS %d rows, every one recording mean > 0 and std > 0" % rows)
+' "${path}" "$(fact capture_count 0)" 2>&1 || true)"
+    case "${outcome}" in
+        PASS*)
+            record_pass "the capture stage recorded a non-blank reading \
+for every frame as it was taken" \
+                "$(rel "${path}"): ${outcome#PASS }"
+            ;;
+        FAIL*)
+            record_fail "the capture stage recorded a non-blank reading \
+for every frame as it was taken" \
+                "${outcome#FAIL }" \
+                "a row per capture, each recording a mean and a standard \
+deviation greater than zero -- a frame that was ALREADY blank when it \
+was taken has an honest digest, so the capturer's own contemporaneous \
+reading is the witness to that"
+            ;;
+        *)
+            record_fail "the capture stage recorded a non-blank reading \
+for every frame as it was taken" \
+                "the reading could not be taken: ${outcome:-<nothing>}" \
+                "a readable observations sidecar"
+            ;;
+    esac
 }
 
 # The film is measured independently of its sources, because a black
@@ -2718,22 +4332,44 @@ on every capture"
 # mis-built concat list or a re-encode could blank the picture after the
 # captures were verified.
 check_film_luminance() {
-    local file="" label="" extracted=""
+    local file="" label="" extracted="" offset="" readings="" reading=""
+    local failures=0 taken=0
+    local -a offsets=()
+    while read -r offset; do
+        [ -n "${offset}" ] || continue
+        offsets+=("${offset}")
+    done < <(extract_offsets)
     for file in "${PLAYTHROUGH_MOVIE}" "${PLAYTHROUGH_MOVIE_CC}"; do
         label="$(rel "${file}")"
-        extracted="${SCRATCH}/luminance-$(basename "${file}").png"
-        if ! "${FFMPEG}" -nostdin -y -v error -ss "${EXTRACT_OFFSET}" \
-                -i "${file}" -frames:v 1 "${extracted}" \
-                >/dev/null 2>&1; then
-            record_fail "a frame taken out of ${label} is not blank" \
-                "no frame could be decoded at ${EXTRACT_OFFSET}s" \
-                "one decodable frame"
-            continue
-        fi
-        if check_one_frame_luminance "${extracted}" \
-                "a frame taken out of ${label}"; then
-            record_pass "a frame taken out of ${label} is not blank" \
-                "at ${EXTRACT_OFFSET}s, mean and std: ${LAST_LUMINANCE}"
+        failures=0
+        taken=0
+        readings=""
+        for offset in "${offsets[@]}"; do
+            extracted="${SCRATCH}/luminance-$(basename \
+"${file}")-${offset}.png"
+            if ! "${FFMPEG}" -nostdin -y -v error -ss "${offset}" \
+                    -i "${file}" -frames:v 1 "${extracted}" \
+                    >/dev/null 2>&1 || [ ! -s "${extracted}" ]; then
+                record_fail "frames taken out of ${label} are not \
+blank" \
+                    "no frame could be decoded at ${offset}s" \
+                    "one decodable frame at each of ${offsets[*]}s -- a \
+film that stops early cannot answer for its later seconds"
+                failures=$((failures + 1))
+                continue
+            fi
+            taken=$((taken + 1))
+            if ! check_one_frame_luminance "${extracted}" \
+                    "the frame ${offset}s into ${label}"; then
+                failures=$((failures + 1))
+                continue
+            fi
+            reading="${LAST_LUMINANCE}"
+            readings="${readings}${readings:+; }${offset}s: ${reading}"
+        done
+        if [ "${failures}" -eq 0 ] && [ "${taken}" -gt 0 ]; then
+            record_pass "frames taken out of ${label} are not blank" \
+                "${taken} reading(s) across the film -- ${readings}"
         fi
     done
 }
@@ -2743,6 +4379,7 @@ group_luminance() {
     record_info "the calibration reading behind this threshold" \
         "${LUMINANCE_REFERENCE}"
     check_sampled_captures
+    check_recorded_luminance
     check_film_luminance
 }
 
@@ -2993,7 +4630,7 @@ check_tracked_frame_count() {
     local tracked="" ondisk=""
     tracked="$(git_tracked_count "${PLAYTHROUGH_FRAMES_DIR}")"
     ondisk="$(fact capture_count)"
-    if ! is_number "${ondisk}"; then
+    if ! is_count "${ondisk}"; then
         record_fail "every capture on disk is tracked by git" \
             "the on-disk capture count was not established" \
             "a count from group 2"
@@ -3224,20 +4861,83 @@ activation" "${findings[*]}" \
 stat editing, no teleport, no map reveal, not even to avoid death"
 }
 
+# THE RECORD, READ FOR WHAT IT SAYS HAPPENED.
+#
+# The two checks above examine what was POSSIBLE (nothing was bound) and
+# what the engine LOGGED (nothing was activated).  This one reads the
+# account of what was done: the immutable record, the amendment ledger
+# that corrects it, the timeline computed from both, and the two
+# transcripts written from the timeline.  All five are committed, so a
+# stranger can repeat this check; and because the record is the direct
+# evidence of which keys were pressed and why, a debug action named in it
+# is the plainest possible failure of the no-cheating requirement.
+check_no_cheat_vocabulary() {
+    local path="" hits="" inspected=0
+    local -a findings=()
+    local -a scanned=()
+    for path in "${PLAYTHROUGH_MANIFEST}" "${PLAYTHROUGH_AMENDMENTS}" \
+            "${PLAYTHROUGH_TIMELINE}" "${PLAYTHROUGH_TRANSCRIPT_MD}" \
+            "${PLAYTHROUGH_TRANSCRIPT_SRT}"; do
+        [ -f "${path}" ] || continue
+        inspected=$((inspected + 1))
+        scanned+=("$(rel "${path}")")
+        hits="$("${GREP}" -inE "${CHEAT_VOCABULARY_PATTERN}" \
+            "${path}" 2>/dev/null | cut -c 1-120 || true)"
+        if [ -n "${hits}" ]; then
+            findings+=("$(rel "${path}"): $(printf '%s' "${hits}" |
+                head -n 3 | tr '\n' ';')")
+        fi
+    done
+    if [ "${inspected}" -eq 0 ]; then
+        record_fail "the record itself names no debug or cheat action" \
+            "none of the record, the amendment ledger, the timeline or \
+the transcripts could be read" \
+            "at least the record and the timeline present, so the \
+account of what was pressed is actually examined"
+        return 0
+    fi
+    if [ "${#findings[@]}" -eq 0 ]; then
+        record_pass "the record itself names no debug or cheat action" \
+            "${inspected} committed file(s) read -- ${scanned[*]} -- \
+none of them naming a debug action, a spawn, a teleport, god mode, \
+noclip, a map reveal or a stat edit"
+        return 0
+    fi
+    record_fail "the record itself names no debug or cheat action" \
+        "${findings[*]}" \
+        "no match for the cheat lexicon in the committed record or the \
+transcripts -- the account of what was pressed is the most direct \
+evidence there is, and a debug action named in it is the requirement \
+being broken rather than merely risked"
+}
+
 group_no_cheating() {
     group "no cheating, as a checkable property"
     check_no_debug_binding
     check_no_debug_activation
+    check_no_cheat_vocabulary
 }
 
 # ---------------------------------------------------------------------
-# 9  THE BINARY AND REPOSITORY HYGIENE
+# 9  THE BINARY, THE REQUIRED ARTWORK AND REPOSITORY HYGIENE
 #
 # The tiles-and-never-curses rule is discharged from the binary's own
 # mouth: `--version` prints the build's feature list, and `+tiles` in it
-# is the proof.  The rule is about the BINARY and not the artwork: a build
-# linked against SDL2 and rendering through the SDL tiles path satisfies
-# it whichever tileset is selected.
+# is the proof.  That rule is about the BINARY: a build linked against
+# SDL2 and rendering through the SDL tiles path satisfies it whichever
+# tileset is selected.
+#
+# WHICH ARTWORK WAS DRAWN IS A SEPARATE REQUIREMENT, AND IT IS ASSERTED
+# SEPARATELY.  Installing the CDDA-Tilesets pack and configuring MSXotto+
+# is required outright, and nothing else in this gate can see it -- a
+# session rendered in ASCIITiles satisfies every count, every duration,
+# every cue and the luminance gate identically.  So four independent
+# assertions follow the binary check: the installed pack is the one the
+# TRACKED anchor describes, the COMMITTED option values select it, the
+# ENGINE'S OWN LOG records having loaded it, and the CAPTURES THEMSELVES
+# carry colour depth that only sprite artwork can produce.  The third and
+# fourth are capture-time evidence: they describe the session that was
+# recorded rather than the host that is auditing it.
 #
 # flake8 IS SCOPED TO playthrough/ AND MUST BE.  A global exit code of
 # zero is not achievable at HEAD: measured here, flake8 7.3.0 reports four
@@ -3275,6 +4975,378 @@ build" "${banner:-<no version banner>}" \
 never an acceptable substitute"
             ;;
     esac
+}
+
+# THE INSTALLED PACK AND THE COMMITTED CONFIGURATION.
+#
+# Written in Python because both readings belong to modules that already
+# exist: tileset_provenance.py owns the TRACKED anchor and reads a
+# tileset.txt exactly the way launch_game.sh and the engine do, so the
+# id this gate judges is the id those two resolve.  A second, local
+# re-implementation of either reading is the divergence the indirection
+# exists to prevent.
+#
+# THE BYTE-LEVEL TREE COMPARISON IS REPORTED, NOT FAILED, AND THE REASON
+# IS PRECISE.  gfx/ is git-ignored (.gitignore:52), so the artwork is
+# host state rather than committed evidence: a pack legitimately
+# re-composed on the auditing host by tools/gfx_tools/compose.py differs
+# from the anchored bytes in its generated files while being the same
+# artwork from the same upstream commit.  The anchor's job is to gate the
+# RECORDING -- launch_game.sh verifies the complete tree against it
+# before every launch and refuses -- so failing a read-only audit on it
+# would be judging the host instead of the evidence.  What IS failed here
+# is identity: the pack that is installed must be the tileset the anchor
+# describes, and the committed options must select it.
+emit_tileset_checker() {
+    emit_checker tileset <<'PY'
+"""Assert the required tileset: installed, anchored and configured."""
+
+import json
+import os
+import sys
+
+SEP = "\x1f"
+
+
+def verdict(kind, name, observed="", expected=""):
+    fields = [kind, name, str(observed), str(expected)]
+    print(SEP.join(f.replace(SEP, " ").replace("\n", " ")
+                   for f in fields))
+
+
+def ok(name, observed=""):
+    verdict("PASS", name, observed)
+
+
+def bad(name, observed, expected):
+    verdict("FAIL", name, observed, expected)
+
+
+def info(name, observed):
+    verdict("INFO", name, observed)
+
+
+def warn(name, observed):
+    verdict("WARN", name, observed)
+
+
+def summarise(items, limit=4):
+    shown = "; ".join(str(i) for i in items[:limit])
+    if len(items) > limit:
+        shown += "; ... (%d more)" % (len(items) - limit)
+    return shown
+
+
+def option_values(path, wanted):
+    """The named options out of the engine's own options.json.
+
+    The engine writes an ARRAY of objects carrying `name` and `value`
+    (src/options.cpp serialises each option that way), so the shape is
+    read rather than assumed and a document of another shape is reported
+    instead of silently yielding nothing.
+    """
+    with open(path, "r", encoding="utf-8") as handle:
+        document = json.load(handle)
+    if not isinstance(document, list):
+        raise ValueError(
+            "%s is a %s, not the array of option objects the engine "
+            "writes" % (path, type(document).__name__))
+    found = {}
+    for entry in document:
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("name")
+        if name in wanted:
+            found[name] = entry.get("value")
+    return found
+
+
+def load(provenance):
+    """The tracked anchor, or a failure verdict and nothing."""
+    try:
+        return provenance.load_anchor(provenance.anchor_path(None))
+    except Exception as err:                          # noqa: BLE001
+        bad("the required tileset is installed and is the one the "
+            "tracked anchor describes", str(err),
+            "playthrough/tooling/tileset_provenance.json readable -- it "
+            "is the tracked statement of which artwork is permitted, "
+            "because gfx/ is git-ignored (.gitignore:52)")
+        return None
+
+
+def check_installed(provenance, anchor, directory, required, aliases):
+    """The pack on disk, against the tracked anchor's identity."""
+    declared = anchor.get("tileset", {})
+    problems = []
+    if not os.path.isdir(directory):
+        bad("the required tileset is installed and is the one the "
+            "tracked anchor describes",
+            "%s is not a directory, so the required artwork is not "
+            "installed at all" % (directory or "<no directory>"),
+            "the pack the anchor describes (%s, id %r) installed -- "
+            "playthrough/tooling/launch_game.sh hydrates it and refuses "
+            "to launch without it"
+            % (declared.get("directory"), declared.get("id")))
+        return False
+    name = view = None
+    try:
+        name = provenance.tileset_field(directory, "NAME")
+        view = provenance.tileset_field(directory, "VIEW")
+    except Exception as err:                          # noqa: BLE001
+        problems.append("tileset.txt could not be read: %s" % err)
+    if name is None:
+        problems.append("%s/tileset.txt declares no NAME: line"
+                        % directory)
+    elif name != declared.get("id"):
+        problems.append("the installed pack declares NAME: %r, the "
+                        "anchor describes %r"
+                        % (name, declared.get("id")))
+    elif required and name != required and name not in aliases:
+        problems.append("the installed pack declares NAME: %r, which is "
+                        "not the required %r" % (name, required))
+    if view is not None and declared.get("view") and \
+            view != declared.get("view"):
+        problems.append("the installed pack declares VIEW: %r, the "
+                        "anchor describes %r"
+                        % (view, declared.get("view")))
+    if problems:
+        bad("the required tileset is installed and is the one the "
+            "tracked anchor describes", summarise(problems),
+            "NAME: %r and VIEW: %r at %s -- the id is what the engine "
+            "reads as the TILES option value (src/options.cpp:1213-1227)"
+            % (declared.get("id"), declared.get("view"),
+               declared.get("directory")))
+        return False
+    ok("the required tileset is installed and is the one the tracked "
+       "anchor describes",
+       "%s declares NAME: %s / VIEW: %s, which is the tileset the "
+       "tracked anchor names (upstream %s at %s)"
+       % (directory, name, view,
+          anchor.get("upstream", {}).get("repo", "?"),
+          str(anchor.get("upstream", {}).get("commit", "?"))[:12]))
+    return True
+
+
+def report_anchor_bytes(provenance, anchor, directory, name, view):
+    """The anchor's byte-level comparison, as information."""
+    if anchor is None or not directory or not os.path.isdir(directory):
+        return
+    try:
+        rows = provenance.scan_tree(directory, None)
+        problems = provenance.compare(anchor, rows, name, view,
+                                      directory)
+    except Exception as err:                          # noqa: BLE001
+        warn("the installed artwork against the tracked anchor's bytes",
+             "the comparison could not be performed: %s" % err)
+        return
+    if not problems:
+        info("the installed artwork against the tracked anchor's bytes",
+             "all %d file(s) and the tree digest match the anchor"
+             % anchor.get("file_count", len(rows)))
+        return
+    warn("the installed artwork against the tracked anchor's bytes",
+         "%d difference(s) on THIS host, which is host state and not "
+         "committed evidence because gfx/ is git-ignored: %s.  "
+         "launch_game.sh verifies this tree against the anchor before "
+         "every launch, so a RECORDING cannot be made under a "
+         "mismatched pack; re-hydrate it with launch_game.sh or "
+         "regenerate the anchor with tileset_provenance.py generate if "
+         "the artwork legitimately changed"
+         % (len(problems), summarise(problems, 3)))
+
+
+def check_configured(options_path, required, aliases):
+    """The committed option values, which are what the engine obeyed."""
+    try:
+        values = option_values(options_path, ("TILES", "USE_TILES"))
+    except (OSError, ValueError) as err:
+        bad("the committed configuration selects the required tileset",
+            str(err),
+            "a readable %s carrying TILES and USE_TILES" % options_path)
+        return
+    tiles = values.get("TILES")
+    use_tiles = values.get("USE_TILES")
+    problems = []
+    if tiles is None:
+        problems.append("TILES is absent")
+    elif tiles not in aliases and tiles != required:
+        problems.append("TILES=%r" % tiles)
+    if str(use_tiles).lower() != "true":
+        problems.append("USE_TILES=%r" % use_tiles)
+    if problems:
+        bad("the committed configuration selects the required tileset",
+            ", ".join(problems),
+            "TILES one of {%s} and USE_TILES=true in %s -- this file is "
+            "committed, so which artwork the session was configured for "
+            "is a checkable property rather than a claim"
+            % (", ".join(sorted(aliases)) or required, options_path))
+        return
+    ok("the committed configuration selects the required tileset",
+       "%s carries TILES=%s and USE_TILES=%s"
+       % (options_path, tiles, use_tiles))
+
+
+def main(argv):
+    tooling_dir, options_path, required, alias_text = argv[1:5]
+    sys.path.insert(0, tooling_dir)
+    try:
+        import tileset_provenance as provenance
+    except Exception as err:                          # noqa: BLE001
+        bad("the required tileset is installed and is the one the "
+            "tracked anchor describes",
+            "tileset_provenance.py could not be imported: %s" % err,
+            "the provenance module beside this gate, which owns the "
+            "anchor and reads a tileset.txt the way the engine does")
+        bad("the committed configuration selects the required tileset",
+            "not measured, because the provenance module would not "
+            "import", "both readings performed")
+        return 0
+    aliases = set(alias_text.split())
+    if required:
+        aliases.add(required)
+    # THE ANCHOR NAMES THE DIRECTORY, and deliberately nothing else does.
+    # env.sh states that the anchor's location is not a tunable; the
+    # install location is the anchor's own `tileset.directory`, and
+    # provenance.compare() holds the pack to it, so the gate reads it
+    # from there rather than accepting one from its caller.
+    anchor = load(provenance)
+    if anchor is None:
+        bad("the committed configuration selects the required tileset",
+            "not measured, because the tracked anchor would not load",
+            "both readings performed")
+        return 0
+    directory = anchor.get("tileset", {}).get("directory", "")
+    check_installed(provenance, anchor, directory, required, aliases)
+    name = view = None
+    if directory and os.path.isdir(directory):
+        try:
+            name = provenance.tileset_field(directory, "NAME")
+            view = provenance.tileset_field(directory, "VIEW")
+        except Exception:                             # noqa: BLE001
+            name = view = None
+    report_anchor_bytes(provenance, anchor, directory, name, view)
+    check_configured(options_path, required, aliases)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
+PY
+}
+
+# THE ENGINE'S OWN WORD ON WHICH ARTWORK IT LOADED.  This is the only
+# assertion in the gate about the tileset that describes the RECORDED
+# SESSION rather than the auditing host: cata_tiles logs
+# "Loaded tileset: <id>" after the artwork is loaded
+# (src/cata_tiles.cpp:5183), the log is written into the userdir, and the
+# userdir is committed.
+check_tileset_in_engine_log() {
+    local relative="" path="" hits="" inspected=0 loaded=""
+    local -a seen=()
+    for relative in "${DEBUG_LOG_RELATIVE_PATHS[@]}"; do
+        path="${PLAYTHROUGH_USERDIR}/${relative}"
+        [ -f "${path}" ] || continue
+        inspected=$((inspected + 1))
+        hits="$("${GREP}" -F "${TILESET_LOADED_PREFIX}" "${path}" \
+            2>/dev/null || true)"
+        [ -n "${hits}" ] || continue
+        while IFS= read -r loaded; do
+            [ -n "${loaded}" ] || continue
+            seen+=("${loaded##*"${TILESET_LOADED_PREFIX}" }")
+        done <<EOF
+${hits}
+EOF
+    done
+    if [ "${inspected}" -eq 0 ]; then
+        record_fail "the engine's own log records loading the required \
+tileset" \
+            "no engine log at \
+$(rel "${PLAYTHROUGH_USERDIR}")/{config/debug.log,debug.log}" \
+            "a committed engine log carrying \
+'${TILESET_LOADED_PREFIX} ${PLAYTHROUGH_TILESET}' -- it is the game's \
+own statement of which artwork it drew"
+        return 0
+    fi
+    local entry=""
+    for entry in "${seen[@]}"; do
+        if [ "${entry}" = "${PLAYTHROUGH_TILESET}" ]; then
+            record_pass "the engine's own log records loading the \
+required tileset" \
+                "$(rel "${PLAYTHROUGH_USERDIR}"): \
+${TILESET_LOADED_PREFIX} ${entry} -- written by the engine at capture \
+time, so it describes the recorded session and not this audit"
+            return 0
+        fi
+    done
+    record_fail "the engine's own log records loading the required \
+tileset" \
+        "${#seen[@]} tileset(s) loaded: ${seen[*]:-none}" \
+        "'${TILESET_LOADED_PREFIX} ${PLAYTHROUGH_TILESET}' among them \
+-- a session rendered in other artwork does not satisfy the requirement"
+}
+
+# THE PIXELS.  Unique-colour depth on a spread of IN-GAME captures, which
+# is the one assertion here that no amount of editing configuration or
+# swapping packs after the fact can satisfy.
+check_tiles_are_visible() {
+    local list="" count=0 index="" path="" colours=""
+    local best=0 best_frame="" measured=0
+    local -a unreadable=()
+    list="$(fact in_game_frames)"
+    if [ -z "${list}" ]; then
+        record_fail "the captures were rendered from sprite artwork and \
+not from glyphs" \
+            "group 2 published no in-game captures, so there is no \
+gameplay frame to measure" \
+            "at least one capture whose sidebar clock was legible -- \
+those are the frames on which the map, and therefore the tileset, is \
+drawn"
+        return 0
+    fi
+    count="$(printf '%s' "${list}" | tr ',' '\n' | "${GREP}" -c . \
+        || true)"
+    while read -r index; do
+        [ -n "${index}" ] || continue
+        if ! path="$(capture_path "${index}")"; then
+            continue
+        fi
+        colours="$("${IDENTIFY}" -format '%k' "${path}" 2>/dev/null \
+            || true)"
+        if ! is_count "${colours}"; then
+            unreadable+=("$(printf '%05d' "${index}")")
+            continue
+        fi
+        measured=$((measured + 1))
+        if [ "${colours}" -gt "${best}" ]; then
+            best="${colours}"
+            best_frame="$(printf '%05d' "${index}")"
+        fi
+    done < <(printf '%s' "${list}" | tr ',' '\n' |
+        sample_stream "${TILE_COLOUR_SAMPLES}")
+    if [ "${measured}" -eq 0 ]; then
+        record_fail "the captures were rendered from sprite artwork and \
+not from glyphs" \
+            "no colour reading could be taken (unreadable: \
+${unreadable[*]:-none})" \
+            "at least one readable capture -- 'identify -format %k' \
+counts the distinct colours in a frame"
+        return 0
+    fi
+    if [ "${best}" -ge "${TILE_COLOUR_FLOOR}" ]; then
+        record_pass "the captures were rendered from sprite artwork and \
+not from glyphs" \
+            "capture ${best_frame} holds ${best} distinct colours \
+(${measured} of ${count} in-game captures read, threshold \
+${TILE_COLOUR_FLOOR}; ${TILE_COLOUR_REFERENCE})"
+        return 0
+    fi
+    record_fail "the captures were rendered from sprite artwork and not \
+from glyphs" \
+        "the richest of ${measured} in-game captures read holds only \
+${best} distinct colours (capture ${best_frame:-none})" \
+        "at least ${TILE_COLOUR_FLOOR} on one of them -- \
+${TILE_COLOUR_REFERENCE}, so a glyph-rendered session cannot reach this \
+threshold and a tiles-rendered one clears it by an order of magnitude"
 }
 
 check_lint_scoped() {
@@ -3423,8 +5495,20 @@ only for this feature"
 }
 
 group_hygiene() {
-    group "the binary and repository hygiene"
+    group "the binary, the required artwork and repository hygiene"
     check_binary_is_tiles
+    # The options file is handed over in its REPOSITORY-RELATIVE
+    # spelling: the gate has already chdir'd to the repository root, so
+    # it opens identically, and every path this report prints stays
+    # relative to the checkout rather than naming somebody's home
+    # directory.
+    run_checker tileset \
+        "${PLAYTHROUGH_TOOLING_DIR}" \
+        "$(rel "${PLAYTHROUGH_OPTIONS_JSON}")" \
+        "${PLAYTHROUGH_TILESET}" \
+        "${PLAYTHROUGH_TILESET_ALIASES}"
+    check_tileset_in_engine_log
+    check_tiles_are_visible
     check_lint_scoped
     check_flake8_not_weakened
     check_timeline_tests
@@ -3433,6 +5517,43 @@ group_hygiene() {
     # gate itself left no trace and not merely that none was there before.
     check_no_bytecode "this gate itself left no interpreter bytecode \
 behind"
+}
+
+
+# ---------------------------------------------------------------------
+# 10  THE INVENTORY OF THIS REPORT
+#
+# The last check, and the only one whose subject is the report itself.
+# Everything above measures the artifacts; this measures whether they
+# were all measured.  It exists because the failure it catches is
+# invisible without it: a checker that died halfway, a check that
+# returned early, or an assertion an edited artifact managed to remove
+# leaves a report that is shorter and just as green.
+# ---------------------------------------------------------------------
+check_check_inventory() {
+    # This verdict is itself one of the checks, so it counts itself in.
+    local total=$((PASSES + FAILURES + 1))
+    if [ "${total}" -ge "${EXPECTED_CHECKS}" ]; then
+        record_pass "this report contains every check this gate \
+declares" \
+            "${total} verdicts against the ${EXPECTED_CHECKS} declared \
+-- a broken set legitimately yields more, because several checks report \
+one verdict per offending item"
+        return 0
+    fi
+    record_fail "this report contains every check this gate declares" \
+        "${total} verdicts, ${EXPECTED_CHECKS} declared -- \
+$((EXPECTED_CHECKS - total)) check(s) did not report" \
+        "at least ${EXPECTED_CHECKS} -- a shorter report means a check \
+could not be performed, and a check that silently does not run is worse \
+than no check; compare this report against the group-by-group \
+derivation beside EXPECTED_CHECKS in this file to find the one that is \
+missing"
+}
+
+group_inventory() {
+    group "the inventory of this report"
+    check_check_inventory
 }
 
 
@@ -3453,19 +5574,28 @@ summarise_run() {
     local total=$((PASSES + FAILURES))
     local message=""
     printf '\n'
+    # The declared inventory is printed on the summary line as well as
+    # asserted above, because "93 of 93" tells a reader nothing about
+    # whether 93 was the number to expect.
+    local counted="${total} performed, ${EXPECTED_CHECKS} declared"
+    if [ "${total}" -eq "${EXPECTED_CHECKS}" ]; then
+        counted="${total} of ${EXPECTED_CHECKS} declared"
+    fi
     if [ "${FAILURES}" -eq 0 ]; then
-        message="SUMMARY  ${PASSES} of ${total} checks passed, "
-        message="${message}${INFOS} informational note(s); the "
-        message="${message}committed artifacts are what they claim "
-        message="${message}to be."
+        message="SUMMARY  ${PASSES} of ${total} checks passed "
+        message="${message}(${counted}), ${INFOS} informational "
+        message="${message}note(s); the committed artifacts are what "
+        message="${message}they claim to be."
     else
         message="SUMMARY  ${FAILURES} of ${total} checks FAILED "
-        message="${message}(${PASSES} passed, ${INFOS} informational "
-        message="${message}note(s)).  Each failure above prints what "
-        message="${message}was observed next to what was required."
+        message="${message}(${PASSES} passed, ${counted}, ${INFOS} "
+        message="${message}informational note(s)).  Each failure above "
+        message="${message}prints what was observed next to what was "
+        message="${message}required."
     fi
     printf '%s\n' "${message}"
     note VERIFY_CHECKS "${total}"
+    note VERIFY_EXPECTED_CHECKS "${EXPECTED_CHECKS}"
     note VERIFY_PASSES "${PASSES}"
     note VERIFY_FAILURES "${FAILURES}"
     note VERIFY_INFOS "${INFOS}"
@@ -3487,6 +5617,8 @@ main() {
     emit_record_checker
     emit_timeline_checker
     emit_caption_checker
+    emit_render_checker
+    emit_tileset_checker
 
     printf '%s\n' "verify_artifacts.sh -- the acceptance gate for the \
 playthrough capture subsystem"
@@ -3502,6 +5634,7 @@ $(rel "${PLAYTHROUGH_DIR}")/ at the repository root"
     group_version_control
     group_no_cheating
     group_hygiene
+    group_inventory
 
     summarise_run
     return "${EX_OK}"
