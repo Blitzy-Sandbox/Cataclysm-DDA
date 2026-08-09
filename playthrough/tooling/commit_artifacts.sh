@@ -43,9 +43,19 @@
 #     are not the same person
 #   * a repository that is not this checkout, a detached HEAD, or a
 #     rebase / merge / cherry-pick / revert in progress
-#   * staged changes OUTSIDE .gitignore, .gitattributes and playthrough/
-#     -- those would be swept into the checkpoint by the commit, since a
-#     commit publishes the whole index and not just this run's pathspecs
+#   * staged changes OUTSIDE playthrough/ -- those would be swept into
+#     the checkpoint by the commit, since a commit publishes the whole
+#     index and not just this run's pathspecs.  .gitignore and
+#     .gitattributes belong to whoever edited them and are reported,
+#     never staged here: this file's scope is the artifact tree
+#   * anything in the INDEX that names __pycache__, a *.pyc or a *.pyo
+#     once staging is done -- checked against the index itself and not
+#     only against the filesystem, so a bytecode file written between
+#     the hygiene sweep and the commit is still refused
+#   * a save, manifest or capture that .gitignore would EXCLUDE, asked
+#     with `git check-ignore --no-index` before anything is committed:
+#     `git add` skips an ignored path and exits 0, so this is the only
+#     honest way to learn that the terminal negation has been lost
 #   * machine-local files inside playthrough/ that .gitignore's terminal
 #     `!/playthrough/**` negation RE-INCLUDES: __pycache__, *.pyc, an
 #     ad-hoc test artifact, or a retained/quarantined film left beside
@@ -56,6 +66,10 @@
 #     exactly one survivor; at `final`, neither that live shape nor a
 #     graveyard save/log plus matching memorial pair and captured death
 #     sequence for the loaded survivor
+#   * a missing or empty survivor dossier, at either checkpoint, and at
+#     `final` one that git does not track -- the dossier is required to
+#     be in the history AHEAD of the first capture, and that ordering is
+#     unprovable if the file never reached a commit
 #   * a manifest that does not verify against the frames, or a frame
 #     count, row count and observation count that disagree
 #   * an amendment whose sha256 no longer matches the manifest line it
@@ -71,16 +85,34 @@
 #
 # WHAT IT DOES NOT DO
 # No history rewriting, no amend, no force, no push, no branch change,
-# no tag, no reset, no clean, and no `git config`.  It stages three
-# pathspecs and commits.  Every git call is an argument list; there is
-# no eval, no `shell=True` equivalent, and no unquoted glob.
+# no tag, no reset, no clean, and no `git config`.  It stages the
+# artifact tree by artifact class and commits.  Every git call is an
+# argument list; there is no eval, no `shell=True` equivalent, and no
+# unquoted glob.
 #
-# STAGING IS BY PATHSPEC, WHICH IS THE BATCHING.  `git add -A --
-# .gitignore .gitattributes playthrough` hands git three arguments and
-# lets git walk the tree, so several hundred frames never become several
-# hundred argv entries and the argument-list limit is not approached at
-# any session length.  Expanding the glob in the shell first would be
-# the version of "batching" that has a limit to respect.
+# STAGING IS EXPLICIT, BY ARTIFACT CLASS, AND BATCHED.  No blanket add
+# appears anywhere in this file: every staging call is `add --` with
+# named paths, never -A, never a bare '.', never -f, never a shell-
+# expanded glob.  Each class -- the tooling, the narrative, the userdir,
+# the captures, the record, the build intermediates, the films -- is
+# named and staged on its own, and `git add --` without -A is enough
+# because since git 2.0 a pathspec add records deletions as well as
+# additions (measured on git 2.51: `git add -- <dir>` staged a D, an M
+# and an A in one call).  The captures are additionally staged in
+# BOUNDED CHUNKS of ${STAGE_BATCH_SIZE} paths, so a session of any
+# length cannot approach the argument-list limit, and the chunk list is
+# built by `find -print0` and read NUL-delimited rather than by letting
+# a shell glob expand into thousands of words.
+#
+# EXPLICIT ENUMERATION HAS ONE FAILURE MODE, AND IT IS CLOSED HERE.  A
+# named list can omit a class somebody adds later, which would quietly
+# leave a new artifact uncommitted while every other check passed.  So
+# after staging, and after assert_index_hygiene has had the first word,
+# assert_tree_fully_staged proves the union of the
+# batches covered the WHOLE tree: any path under playthrough/ still
+# carrying an unstaged or untracked change is a refusal that names it
+# and says which list to add it to.  Explicit AND complete, rather than
+# explicit at the price of completeness.
 #
 # STDOUT IS A MACHINE CONTRACT.  KEY=value lines, one per line, nothing
 # else; all logging, warnings and diagnostics go to stderr.  The keys:
@@ -250,9 +282,19 @@ it produced"
 readonly SUBJECT_FINAL="Commit the closed session, its final save and \
 its artifacts"
 
-# The three pathspecs this file will ever stage.  Anything else in the
-# repository is somebody else's change and is left exactly as found.
-readonly -a PATHSPECS=(".gitignore" ".gitattributes" "playthrough")
+# The one pathspec this file will ever read or write the index through.
+# Anything else in the repository -- including .gitignore and
+# .gitattributes, whose terminal negation and binary attributes this
+# tree depends on -- is somebody else's change and is left exactly as
+# found.  A checkpoint that also carried an unrelated root-file edit
+# would be a checkpoint about two things.
+readonly -a PATHSPECS=("playthrough")
+
+# How many paths go into one `git add` invocation.  The captures are the
+# only class big enough to matter and 256 keeps each argv far below any
+# platform's limit while still being one call per 256 frames rather than
+# one per frame.
+readonly STAGE_BATCH_SIZE=256
 
 # ---------------------------------------------------------------------
 # THE IDENTITY GATE.
@@ -436,11 +478,19 @@ assert_repository() {
 # THE SCOPE GATE.
 #
 # A commit publishes the whole index, not the pathspecs this run added,
-# so anything already staged outside this feature's three pathspecs
-# would ride along inside a checkpoint that claims to be about the
-# playthrough.  That is refused.  Unstaged and untracked changes
-# outside them cannot ride along -- `git add` is given pathspecs and
-# cannot reach past them -- so those are reported and left alone.
+# so anything already staged outside playthrough/ would ride along
+# inside a checkpoint that claims to be about the playthrough.  That is
+# refused.  Unstaged and untracked changes outside it cannot ride along
+# -- `git add` is given pathspecs and cannot reach past them -- so those
+# are reported and left alone.
+#
+# .gitignore AND .gitattributes ARE DELIBERATELY OUT OF SCOPE.  The
+# terminal `!/playthrough/**` negation and the `*.sav`/`*.mp4`/`*.zzip`
+# binary attributes are load-bearing for this tree, and this file CHECKS
+# both -- see assert_not_ignored -- but it does not commit either.  They
+# are repository-wide configuration, they are edited by whoever owns
+# that decision, and they belong in their own commit rather than inside
+# a checkpoint whose subject is a survivor's save.
 # ---------------------------------------------------------------------
 
 # in_scope PATH -- true when a repository-relative path is one this file
@@ -448,35 +498,46 @@ assert_repository() {
 in_scope() {
     local path="$1"
     case "${path}" in
-        .gitignore|.gitattributes) return 0 ;;
         playthrough|playthrough/*) return 0 ;;
     esac
     return 1
 }
 
-assert_scope() {
-    local staged=() path
-    # -z is the only format that survives a path with a space, a quote
-    # or a newline in it; --diff-filter is deliberately absent so a
-    # staged deletion counts too.
+# staged_out_of_scope -- every staged path this file may not commit, one
+# per line.  -z is the only format that survives a path with a space, a
+# quote or a newline in it; --diff-filter is deliberately absent so a
+# staged deletion counts too.
+staged_out_of_scope() {
+    local path
     while IFS= read -r -d '' path; do
         if ! in_scope "${path}"; then
-            staged+=("${path}")
+            printf '%s\n' "${path}"
         fi
     done < <("${GIT}" diff --cached --name-only -z HEAD --)
+    return 0
+}
+
+assert_scope() {
+    local staged=() path
+    while IFS= read -r path; do
+        [ -n "${path}" ] || continue
+        staged+=("${path}")
+    done < <(staged_out_of_scope)
     if [ "${#staged[@]}" -gt 0 ]; then
         die "${EX_SCOPE}" "the index already carries changes outside" \
-            "this feature: ${staged[*]}.  A commit publishes the whole" \
-            "index, so those would be swept into a checkpoint that" \
-            "says it is about the playthrough.  Unstage them" \
-            "('git restore --staged -- <path>') and run this again." \
-            "Nothing was committed."
+            "$(rel "${PLAYTHROUGH_DIR}"): ${staged[*]}.  A commit" \
+            "publishes the whole index, so those would be swept into a" \
+            "checkpoint that says it is about the playthrough." \
+            "Unstage them ('git restore --staged -- <path>') and commit" \
+            "them separately -- .gitignore and .gitattributes in" \
+            "particular are repository-wide configuration and are never" \
+            "staged by this script.  Nothing was committed."
     fi
     return 0
 }
 
 report_foreign_worktree_changes() {
-    local foreign=() path status origin
+    local foreign=() vcs=() path status origin
     while IFS= read -r -d '' status; do
         path="${status:3}"
         case "${status}" in
@@ -491,6 +552,9 @@ report_foreign_worktree_changes() {
         esac
         if ! in_scope "${path}"; then
             foreign+=("${path}")
+            case "${path}" in
+                .gitignore|.gitattributes) vcs+=("${path}") ;;
+            esac
         fi
     done < <("${GIT}" status --porcelain -z --untracked-files=all --)
     if [ -n "${origin:-}" ]; then
@@ -501,6 +565,18 @@ report_foreign_worktree_changes() {
         playthrough_warn "leaving ${#foreign[@]} change(s) outside" \
             "this feature exactly as found (they are not staged and" \
             "the pathspecs cannot reach them): ${foreign[*]}"
+    fi
+    if [ "${#vcs[@]}" -gt 0 ]; then
+        # Named separately because these two are the ones a reader will
+        # expect a "commit everything" step to have taken: they are
+        # repository-wide configuration this tree DEPENDS on, they are
+        # checked here (assert_not_ignored) and committed elsewhere, and
+        # silence about them would look like an oversight.
+        playthrough_warn "${vcs[*]} carr(ies) uncommitted changes." \
+            "This script checks that the terminal '!/playthrough/**'" \
+            "negation still rescues the save data, and never commits" \
+            "the file that carries it -- repository-wide configuration" \
+            "belongs in its own commit.  Commit it separately."
     fi
     return 0
 }
@@ -578,7 +654,56 @@ assert_no_machine_files() {
 # persistence belongs to the survivor the session was about" a checkable
 # property rather than an assurance.  A missing live save with no full
 # death generation is still a refusal.
+#
+# BOTH SPELLINGS OF THE CHARACTER SAVE ARE ACCEPTED.  game::save_player_
+# data writes `playerfile + SAVE_EXTENSION + zzip_suffix` when the world
+# has compression enabled and the plain `playerfile + SAVE_EXTENSION`
+# when it does not (src/game_io.cpp:601-641, `zzip_suffix = ".zzip"` at
+# src/worldfactory.h:25), and WORLD_COMPRESSION2 defaults to true.  So
+# `#<b64>.sav` and `#<b64>.sav.zzip` are both the real name of a real
+# save and neither form may be the one this gate insists on.  The
+# character log is written through write_to_file either way and is
+# therefore always plain.
+#
+# `.shortcuts` IS NEVER REQUIRED, ANYWHERE HERE.  SAVE_EXTENSION_
+# SHORTCUTS exists (src/path_info.h:17) but its write sits inside
+# `#if defined(__ANDROID__)` in game::save_player_data, so it is never
+# produced on this host.  A gate that asked for it would refuse every
+# legitimate Linux session.  This comment is the only mention of it in
+# this file, on purpose.
 # ---------------------------------------------------------------------
+
+# The engine's own spellings, from the headers rather than from memory.
+readonly SAVE_EXTENSION=".sav"
+readonly SAVE_EXTENSION_LOG=".log"
+readonly SAVE_ZZIP_SUFFIX=".zzip"
+readonly SAVE_MASTER="master.gsav"
+
+# The two `find -name` predicates that between them match every form of
+# a character save this platform writes.
+readonly -a SAVE_FIND_PREDICATE=(
+    "(" -name "#*${SAVE_EXTENSION}"
+    -o -name "#*${SAVE_EXTENSION}${SAVE_ZZIP_SUFFIX}" ")"
+)
+
+# save_stem PATH -- a character save path with the optional .zzip
+# suffix and then the save extension removed, so the sibling log can be
+# named from either spelling.
+save_stem() {
+    local path="$1"
+    path="${path%"${SAVE_ZZIP_SUFFIX}"}"
+    printf '%s' "${path%"${SAVE_EXTENSION}"}"
+}
+
+# save_is_compressed PATH -- true for the zzip form.  The gate reads the
+# plain form as JSON and cannot read the archive, and that difference is
+# reported rather than glossed over.
+save_is_compressed() {
+    case "$1" in
+        *"${SAVE_EXTENSION}${SAVE_ZZIP_SUFFIX}") return 0 ;;
+    esac
+    return 1
+}
 
 WORLD_NAME=""
 CHARACTER_NAME=""
@@ -641,14 +766,26 @@ def names_avatar(value, character):
     return False
 
 
-grave_path, memorial_path, prose_path, manifest_path, character = (
-    sys.argv[1:])
-grave = load_object(grave_path, "the graveyard save")
-player = grave.get("player")
-if not isinstance(player, dict) or player.get("name") != character:
-    fail("the graveyard save does not name %r as its player" % character)
-if grave.get("debug_mode") is not False:
-    fail("the graveyard save does not record debug_mode=false")
+(grave_path, grave_form, memorial_path, prose_path, manifest_path,
+ character) = sys.argv[1:]
+if grave_form == "plain":
+    grave = load_object(grave_path, "the graveyard save")
+    player = grave.get("player")
+    if not isinstance(player, dict) or player.get("name") != character:
+        fail("the graveyard save does not name %r as its player"
+             % character)
+    if grave.get("debug_mode") is not False:
+        fail("the graveyard save does not record debug_mode=false")
+else:
+    # The .sav.zzip form is a zstd-framed archive that this reader
+    # cannot open, so the two checks above were NOT performed.  That is
+    # said out loud rather than reported as a pass; the memorial pair
+    # and the captured death sequence below are unaffected and still
+    # decide the outcome.
+    sys.stderr.write(
+        "playthrough: death evidence: %s is the compressed save form, "
+        "so its inner JSON was NOT inspected -- the memorial pair and "
+        "the captured death sequence still decide\n" % grave_path)
 
 memorial = load_object(memorial_path, "the JSON memorial")
 entries = memorial.get("log")
@@ -758,16 +895,17 @@ assert_live_save() {
     local -a saves=()
     local path
     WORLD_NAME="${world_dir##*/}"
-    if [ ! -f "${world_dir}/master.gsav" ]; then
+    if [ ! -f "${world_dir}/${SAVE_MASTER}" ]; then
         die "${EX_EVIDENCE}" "$(rel "${world_dir}") holds no" \
-            "master.gsav, so the world has not been saved.  Save and" \
+            "${SAVE_MASTER}, so the world has not been saved.  Save and" \
             "quit through the game's own menu first."
     fi
     while IFS= read -r path; do
         [ -n "${path}" ] || continue
         saves+=("${path}")
     done < <("${FIND}" "${world_dir}" -mindepth 1 -maxdepth 1 \
-        -type f -name '#*.sav' -print 2>/dev/null | "${SORT}")
+        -type f "${SAVE_FIND_PREDICATE[@]}" -print 2>/dev/null |
+        "${SORT}")
     if [ "${#saves[@]}" -ne 1 ]; then
         die "${EX_EVIDENCE}" "${#saves[@]} character save(s) in" \
             "$(rel "${world_dir}") and the requirement is one unique" \
@@ -781,21 +919,26 @@ assert_live_save() {
             "'${WORLD_NAME}'.  The artifacts and the save would be" \
             "attributed to different worlds.  Nothing was committed."
     fi
-    local expected="${world_dir}/#${LOADED_ENCODED}.sav"
-    if [ "${expected}" != "${SAVE_FILE}" ]; then
+    # Either spelling the engine may have written, and no preference
+    # between them: the world's compression setting is the engine's
+    # business, not this gate's.
+    local expected="${world_dir}/#${LOADED_ENCODED}${SAVE_EXTENSION}"
+    local expected_zzip="${expected}${SAVE_ZZIP_SUFFIX}"
+    if [ "${expected}" != "${SAVE_FILE}" ] &&
+       [ "${expected_zzip}" != "${SAVE_FILE}" ]; then
         die "${EX_EVIDENCE}" "the engine last loaded" \
             "'${LOADED_CHARACTER}', whose save file would be" \
-            "$(rel "${expected}"), and the only save on disk is" \
-            "$(rel "${SAVE_FILE}").  A checkpoint cannot say which" \
-            "survivor it is about, so it says nothing.  Nothing was" \
-            "committed."
+            "$(rel "${expected}") or $(rel "${expected_zzip}"), and the" \
+            "only save on disk is $(rel "${SAVE_FILE}").  A checkpoint" \
+            "cannot say which survivor it is about, so it says nothing." \
+            "Nothing was committed."
     fi
     CHARACTER_NAME="${LOADED_CHARACTER}"
     ENCODED_CHARACTER="${LOADED_ENCODED}"
     PERSISTENCE_KIND="live"
     REQUIRED_PERSISTENCE_FILES=(
         "${SAVE_FILE}"
-        "${world_dir}/master.gsav"
+        "${world_dir}/${SAVE_MASTER}"
     )
     return 0
 }
@@ -823,19 +966,24 @@ assert_death_persistence() {
             [ -n "${path}" ] || continue
             grave_saves+=("${path}")
         done < <("${FIND}" "${graveyard}" -mindepth 2 -maxdepth 2 \
-            -type f -name '#*.sav' -print 2>/dev/null | "${SORT}")
+            -type f "${SAVE_FIND_PREDICATE[@]}" -print 2>/dev/null |
+            "${SORT}")
     fi
-    local expected_name="#${ENCODED_CHARACTER}.sav"
+    local expected_name="#${ENCODED_CHARACTER}${SAVE_EXTENSION}"
+    local expected_zzip="${expected_name}${SAVE_ZZIP_SUFFIX}"
     if [ "${#grave_saves[@]}" -ne 1 ] ||
-       [ "${grave_saves[0]##*/}" != "${expected_name}" ]; then
+       { [ "${grave_saves[0]##*/}" != "${expected_name}" ] &&
+         [ "${grave_saves[0]##*/}" != "${expected_zzip}" ]; }; then
         die "${EX_EVIDENCE}" "the final checkpoint has no live survivor" \
             "and the graveyard holds ${#grave_saves[@]} character" \
             "save(s), not exactly the pinned survivor" \
-            "${expected_name}: ${grave_saves[*]:-none}.  A manual" \
+            "${expected_name} (or ${expected_zzip}):" \
+            "${grave_saves[*]:-none}.  A manual" \
             "deletion is not a death ending.  Nothing was committed."
     fi
     local grave_save="${grave_saves[0]}"
-    local grave_log="${grave_save%.sav}.log"
+    local grave_log
+    grave_log="$(save_stem "${grave_save}")${SAVE_EXTENSION_LOG}"
     if [ ! -f "${grave_log}" ]; then
         die "${EX_EVIDENCE}" "$(rel "${grave_save}") has no" \
             "same-generation character log at $(rel "${grave_log}")." \
@@ -869,8 +1017,12 @@ assert_death_persistence() {
             "pair.  Nothing was committed."
     fi
 
+    local grave_form="plain"
+    if save_is_compressed "${grave_save}"; then
+        grave_form="compressed"
+    fi
     if ! "${PLAYTHROUGH_PYTHON}" -c "${DEATH_EVIDENCE_READER}" \
-            "${grave_save}" "${memorial_json[0]}" \
+            "${grave_save}" "${grave_form}" "${memorial_json[0]}" \
             "${memorial_text[0]}" "${PLAYTHROUGH_MANIFEST}" \
             "${CHARACTER_NAME}"; then
         die "${EX_EVIDENCE}" "the death-generation artifacts above do" \
@@ -915,15 +1067,15 @@ assert_save_tree() {
         local world_dir="${worlds[0]}"
         local live_count
         live_count="$("${FIND}" "${world_dir}" -mindepth 1 -maxdepth 1 \
-            -type f -name '#*.sav' -print 2>/dev/null |
+            -type f "${SAVE_FIND_PREDICATE[@]}" -print 2>/dev/null |
             "${WC}" -l | "${TR}" -d ' ')"
         if [ "${live_count}" -gt 0 ]; then
             assert_live_save "${world_dir}"
         elif [ "${checkpoint}" = "${CHECKPOINT_FINAL}" ]; then
             assert_death_persistence "${world_dir}"
-        elif [ ! -f "${world_dir}/master.gsav" ]; then
+        elif [ ! -f "${world_dir}/${SAVE_MASTER}" ]; then
             die "${EX_EVIDENCE}" "$(rel "${world_dir}") holds no" \
-                "master.gsav, so the world has not been saved.  Save" \
+                "${SAVE_MASTER}, so the world has not been saved.  Save" \
                 "and quit through the game's own menu first."
         else
             die "${EX_EVIDENCE}" "0 character save(s) in" \
@@ -1143,6 +1295,152 @@ assert_observations_match() {
 }
 
 # ---------------------------------------------------------------------
+# THE DOSSIER GATE.
+#
+# The survivor's first-person dossier is required to have been written
+# BEFORE play and committed BEFORE the first gameplay frame, and that
+# ordering is read straight out of the history: the dossier's first
+# commit must be reachable from the commit carrying the first capture.
+# The `creation` checkpoint is the commit that establishes it, so at
+# `creation` a dossier that is missing -- or present but empty, which is
+# the same absence with a file in the way -- is a refusal.
+#
+# `final` inherits the property from the history rather than re-deciding
+# it, but it checks two things anyway: that the dossier is still there,
+# because a deletion between the checkpoints would erase the evidence
+# the ordering rests on, and that it is TRACKED, because a dossier that
+# reached the working tree without ever reaching a commit would leave
+# the ordering unprovable no matter what the file says.
+# ---------------------------------------------------------------------
+
+assert_dossier() {
+    local checkpoint="$1"
+    local path="${PLAYTHROUGH_DOSSIER}"
+    if [ ! -e "${path}" ]; then
+        die "${EX_EVIDENCE}" "there is no survivor dossier at" \
+            "$(rel "${path}").  It is the first-person account of who" \
+            "this person was, written BEFORE the first keystroke, and" \
+            "the checkpoint that commits the creation is what puts it" \
+            "in the history ahead of the first capture.  Write it, then" \
+            "take this checkpoint.  Nothing was committed."
+    fi
+    if [ ! -s "${path}" ]; then
+        die "${EX_EVIDENCE}" "$(rel "${path}") is empty.  An empty" \
+            "dossier is the same absence with a file in the way: the" \
+            "requirement is a written backstory, not a placeholder." \
+            "Nothing was committed."
+    fi
+    if [ "${checkpoint}" = "${CHECKPOINT_FINAL}" ] &&
+       ! "${GIT}" ls-files --error-unmatch -- "${path}" \
+            >/dev/null 2>&1; then
+        die "${EX_LIFECYCLE}" "$(rel "${path}") exists but git does" \
+            "not track it, so the '${CHECKPOINT_CREATION}' checkpoint" \
+            "cannot have carried it and the dossier-before-the-first-" \
+            "frame ordering is unprovable from this history.  That" \
+            "ordering is checked with 'git log' over the file, so a" \
+            "dossier written later reads exactly like one written" \
+            "after the fact.  Nothing was committed."
+    fi
+    playthrough_log "the survivor's dossier is at $(rel "${path}")"
+    return 0
+}
+
+# ---------------------------------------------------------------------
+# THE NOT-IGNORED GATE -- THE TRIPWIRE ON THE ONE FAILURE THAT REPORTS
+# SUCCESS.
+#
+# `git add` SKIPS an ignored path and EXITS 0.  So the failure this
+# whole feature is most exposed to is silent by construction: delete the
+# terminal `!/playthrough/**` negation and the engine's own
+# `#<b64>.sav`, `#<b64>.log` and `config/debug.log` go back to being
+# matched by `\#*` (.gitignore:131), unanchored `*.log` (.gitignore:31)
+# and `debug.log` (.gitignore:79) -- and every count in this script
+# still tallies while the save is not in the repository at all.
+#
+# `git check-ignore` is the honest question, and it has to be asked the
+# hard way (both traps measured on this checkout):
+#
+#   1. WITHOUT --no-index it CONSULTS THE INDEX and calls any TRACKED
+#      path not-ignored whatever the rules say.  It is therefore vacuous
+#      on a re-run and wrong exactly when it matters, because on a fresh
+#      session the file is not yet tracked and `git add` applies the
+#      patterns, not the index.
+#   2. WITH -v it exits 0 whenever ANY pattern matched, INCLUDING the
+#      negation -- printing `.gitignore:275:!/playthrough/**` when the
+#      negation is present and `.gitignore:131:\#*` when it is not.
+#
+# So the verdict is taken from `--no-index --quiet`, which is the one
+# form whose exit status answers "is this ignored?" (measured: 1 for the
+# character save, 0 for obj/), and the `-v` line is read only to NAME
+# the offending rule in the refusal.  This runs BEFORE anything is
+# staged, so a lost negation stops the checkpoint while the previous
+# commit is still the last word.
+# ---------------------------------------------------------------------
+
+# first_capture -- the lowest-numbered capture on disk, or nothing.  One
+# frame is enough to prove the frames directory is not excluded, and
+# asking about one keeps this gate O(1) in session length.
+first_capture() {
+    local path first=""
+    while IFS= read -r path; do
+        [ -n "${path}" ] || continue
+        first="${path}"
+        break
+    done < <("${FIND}" "${PLAYTHROUGH_FRAMES_DIR}" -mindepth 1 \
+        -maxdepth 1 -type f -name 'frame_*.png' -print 2>/dev/null |
+        "${SORT}")
+    if [ -z "${first}" ]; then
+        return 1
+    fi
+    printf '%s' "${first}"
+    return 0
+}
+
+# deciding_ignore_rule PATH -- the `source:line:pattern` git reports as
+# the rule that decided, for the refusal message.  Read with the shell
+# rather than through another tool, so this gate needs nothing beyond
+# the toolchain already verified above.
+deciding_ignore_rule() {
+    local verdict
+    verdict="$("${GIT}" check-ignore --no-index -v -- "$1" \
+        2>/dev/null || printf '')"
+    verdict="${verdict%%$'\n'*}"
+    printf '%s' "${verdict%%$'\t'*}"
+}
+
+assert_not_ignored() {
+    local -a subjects=("${PLAYTHROUGH_MANIFEST}")
+    subjects+=("${REQUIRED_PERSISTENCE_FILES[@]}")
+    local capture=""
+    if capture="$(first_capture)"; then
+        subjects+=("${capture}")
+    fi
+    local path rule
+    for path in "${subjects[@]}"; do
+        [ -e "${path}" ] || continue
+        # --quiet takes one pathname at a time, which is why this is a
+        # loop and not one call.
+        if "${GIT}" check-ignore --no-index --quiet -- "${path}"; then
+            rule="$(deciding_ignore_rule "${path}")"
+            die "${EX_SCOPE}" "$(rel "${path}") is IGNORED by" \
+                "'${rule:-an exclude rule}'.  'git add' would skip it" \
+                "and exit 0, so this checkpoint would report success" \
+                "while leaving the evidence out of the repository --" \
+                "the one failure in this feature that hides itself." \
+                "The terminal '!/playthrough/**' negation must be the" \
+                "LAST matching rule in .gitignore, and note that a" \
+                "negation cannot rescue a file whose parent DIRECTORY" \
+                "was excluded, so no directory-level ignore may cover" \
+                "this tree.  Nothing was committed."
+        fi
+    done
+    playthrough_log "the save, the record and the captures are all" \
+        "outside .gitignore's reach: the terminal negation is still" \
+        "the last matching rule"
+    return 0
+}
+
+# ---------------------------------------------------------------------
 # THE NO-CHEATING GATE.
 #
 # debug, debug_mode and debug_hour_timer ship with no `bindings` array
@@ -1237,14 +1535,246 @@ assert_creation_checkpoint() {
 # STAGING AND COMMITTING.
 # ---------------------------------------------------------------------
 
-# stage_artifacts -- add the three pathspecs, deletions included.
+# stageable PATH -- true when `git add` can be given this path: it
+# exists on disk, or it is tracked and therefore has a REMOVAL to
+# record.  A pathspec matching neither is a hard `git add` error, and a
+# checkpoint must not fall over because an optional artifact has not
+# been written yet -- playthrough/README.md before somebody writes it, a
+# graveyard before a death, an amendment ledger in a session that needed
+# no corrections.
+stageable() {
+    local path="$1"
+    if [ -e "${path}" ]; then
+        return 0
+    fi
+    if [ -n "$("${GIT}" ls-files -- "${path}" 2>/dev/null)" ]; then
+        return 0
+    fi
+    return 1
+}
+
+# stage_batch LABEL PATH... -- stage one artifact class in bounded
+# chunks.
 #
-# -A so that a file the engine removed between checkpoints is recorded
-# as removed rather than left behind in the index as a ghost.
+# `git add --` with NO -A, NO -f and NO shell glob.  Since git 2.0 a
+# pathspec add records deletions as well as additions and modifications,
+# so -A would add nothing here except the appearance of a blanket add
+# (measured on git 2.51: `git add -- <dir>` staged a D, an M and an A in
+# one call).  -f is refused on principle: if a path needed forcing, the
+# .gitignore negation is wrong and that is a bug to fix in .gitignore,
+# not to paper over here.
+stage_batch() {
+    local label="$1"
+    shift
+    local -a present=() chunk=()
+    local path
+    for path in "$@"; do
+        if stageable "${path}"; then
+            present+=("${path}")
+        fi
+    done
+    if [ "${#present[@]}" -eq 0 ]; then
+        playthrough_log "no ${label} to stage"
+        return 0
+    fi
+    for path in "${present[@]}"; do
+        chunk+=("${path}")
+        if [ "${#chunk[@]}" -ge "${STAGE_BATCH_SIZE}" ]; then
+            if ! "${GIT}" add -- "${chunk[@]}"; then
+                die "${EX_COMMIT}" "git could not stage the ${label}." \
+                    "Nothing was committed."
+            fi
+            chunk=()
+        fi
+    done
+    if [ "${#chunk[@]}" -gt 0 ]; then
+        if ! "${GIT}" add -- "${chunk[@]}"; then
+            die "${EX_COMMIT}" "git could not stage the ${label}." \
+                "Nothing was committed."
+        fi
+    fi
+    playthrough_log "staged the ${label}: ${#present[@]} path(s)"
+    return 0
+}
+
+# stage_captures -- the one class big enough to need real batching.
+#
+# The list is built by `find -print0` and read NUL-delimited, because a
+# shell glob over several thousand frames is exactly the "batching" that
+# has an argument-list limit to respect.  A capture that git tracks and
+# the filesystem no longer has is added to the list too, so a removal is
+# recorded as a removal instead of being left in the index as a ghost --
+# not that any capture may ever be removed: no decimation, no sampling,
+# no deduplication.  The point is that if one ever went missing, the
+# checkpoint would show it rather than hide it.
+stage_captures() {
+    local -a captures=()
+    local path
+    while IFS= read -r -d '' path; do
+        captures+=("${path}")
+    done < <("${FIND}" "${PLAYTHROUGH_FRAMES_DIR}" -mindepth 1 \
+        -maxdepth 1 -type f -name 'frame_*.png' -print0 2>/dev/null)
+    while IFS= read -r -d '' path; do
+        [ -n "${path}" ] || continue
+        if [ ! -e "${path}" ]; then
+            captures+=("${path}")
+        fi
+    done < <("${GIT}" ls-files -z -- "${PLAYTHROUGH_FRAMES_DIR}" \
+        2>/dev/null)
+    if [ "${#captures[@]}" -eq 0 ]; then
+        playthrough_log "no captures to stage"
+        return 0
+    fi
+    stage_batch "captured frames" "${captures[@]}"
+    return 0
+}
+
+# stage_artifacts -- every artifact class, named, one batch each.
+#
+# THE ORDER IS THE FEATURE'S OWN ORDER, and the list is exhaustive over
+# playthrough/ by design; assert_tree_fully_staged immediately below
+# proves that exhaustiveness instead of assuming it.
 stage_artifacts() {
-    if ! "${GIT}" add -A -- "${PATHSPECS[@]}"; then
-        die "${EX_COMMIT}" "git could not stage" \
-            "${PATHSPECS[*]}.  Nothing was committed."
+    # 1. The authored tooling, including requirements.txt -- the
+    #    dependency declaration the requirement wants kept out of the
+    #    game's source tree.
+    stage_batch "pipeline tooling" "${PLAYTHROUGH_TOOLING_DIR}"
+    # 2. The narrative record: the dossier written before play, the
+    #    transcript, the engineering notes, the feature readme.
+    stage_batch "narrative and documentation" \
+        "${PLAYTHROUGH_DOSSIER}" \
+        "${PLAYTHROUGH_DIR}/README.md" \
+        "${PLAYTHROUGH_TECH_NOTES}" \
+        "${PLAYTHROUGH_TRANSCRIPT_MD}" \
+        "${PLAYTHROUGH_TRANSCRIPT_SRT}"
+    # 3. The engine's own tree -- save, config, achievements, memorial,
+    #    graveyard, templates, cache.  Authored by the game, committed
+    #    here, never edited by this pipeline.
+    stage_batch "engine save and configuration" "${PLAYTHROUGH_USERDIR}"
+    # 4. The captures.
+    stage_captures
+    # 5. The record and its ledgers.
+    stage_batch "record and timeline" \
+        "${PLAYTHROUGH_MANIFEST}" \
+        "${PLAYTHROUGH_TIMELINE}" \
+        "${PLAYTHROUGH_AMENDMENTS}"
+    # 6. The render intermediates, which include the observation
+    #    sidecar, the capture attestations and the concat list.
+    stage_batch "build intermediates" "${PLAYTHROUGH_BUILD_DIR}"
+    # 7. The films.
+    stage_batch "assembled film" \
+        "${PLAYTHROUGH_MOVIE}" \
+        "${PLAYTHROUGH_MOVIE_CC}"
+    # Hygiene before completeness, so the SPECIFIC diagnosis -- this is
+    # bytecode, this is outside the feature -- reaches the operator
+    # ahead of the general one, which would otherwise report the same
+    # path as merely "not staged".
+    assert_index_hygiene
+    assert_tree_fully_staged
+    return 0
+}
+
+# assert_tree_fully_staged -- the completeness half of explicit staging.
+#
+# A named list of classes can omit one somebody adds later, and the
+# omission would be silent: every other check would pass while a new
+# artifact sat uncommitted.  So the index is held against the tree.
+# Under --porcelain -z each entry is XY<space>path; Y is the WORKTREE
+# column, so anything other than a space there is an unstaged change and
+# '??' is an untracked file.  Either means a batch above did not reach
+# it.
+#
+# --ignored=matching IS PART OF THE SWEEP, and it closes the last silent
+# gap in the whole staging path.  A directory pathspec add SKIPS an
+# ignored file without complaining (an explicit file pathspec errors, and
+# that difference is why the captures are staged by name), and an ignored
+# file is invisible to a plain porcelain status -- so a rule that landed
+# AFTER the terminal negation and re-excluded one path inside this tree
+# would otherwise be committed around in perfect silence.  Asking for the
+# ignored entries turns that into its own refusal.
+assert_tree_fully_staged() {
+    local -a pending=() ignored=()
+    local entry xy path origin=""
+    while IFS= read -r -d '' entry; do
+        xy="${entry:0:2}"
+        path="${entry:3}"
+        case "${xy}" in
+            R*|C*)
+                # A rename or copy emits its origin as a second
+                # NUL-terminated field, which must be consumed or it
+                # would be read as the next entry's status.
+                IFS= read -r -d '' origin || origin=""
+                ;;
+        esac
+        if [ "${xy}" = "!!" ]; then
+            ignored+=("${path}")
+        elif [ "${xy}" = "??" ] || [ "${xy:1:1}" != " " ]; then
+            pending+=("${path}")
+        fi
+    done < <("${GIT}" status --porcelain -z --untracked-files=all \
+        --ignored=matching -- "${PATHSPECS[@]}")
+    if [ "${#ignored[@]}" -gt 0 ]; then
+        die "${EX_SCOPE}" "${#ignored[@]} path(s) inside" \
+            "$(rel "${PLAYTHROUGH_DIR}") are IGNORED by git and would" \
+            "be committed around in silence: ${ignored[*]}.  Nothing in" \
+            "this tree may be excluded -- the terminal" \
+            "'!/playthrough/**' negation exists to make sure of it, and" \
+            "a rule placed AFTER it re-excludes whatever it matches." \
+            "Fix .gitignore so the negation is the last matching rule." \
+            "Nothing was committed."
+    fi
+    if [ "${#pending[@]}" -gt 0 ]; then
+        die "${EX_COMMIT}" "${#pending[@]} path(s) under" \
+            "$(rel "${PLAYTHROUGH_DIR}") are still not staged after" \
+            "every artifact class was staged: ${pending[*]}." \
+            "Everything in this tree is evidence and everything is" \
+            "committed, so this is not skipped quietly: either the" \
+            "path belongs to a new artifact class that must be added" \
+            "to stage_artifacts, or it does not belong in the tree at" \
+            "all.  Nothing was committed."
+    fi
+    return 0
+}
+
+# assert_index_hygiene -- the last look, at the INDEX rather than at the
+# filesystem.
+#
+# assert_no_machine_files already refuses a checkpoint while bytecode is
+# on disk, and this asks the complementary question: whatever is about
+# to be published, is any of it a machine artifact or outside this
+# feature?  It catches what the filesystem sweep cannot -- a *.pyc
+# written between that sweep and this moment, or a path an interrupted
+# earlier run left in the index -- and it is the check that has to pass
+# for `git commit` to be reached.
+assert_index_hygiene() {
+    local -a bytecode=() outside=()
+    local path
+    while IFS= read -r -d '' path; do
+        if ! in_scope "${path}"; then
+            outside+=("${path}")
+            continue
+        fi
+        case "${path}" in
+            *__pycache__*|*.pyc|*.pyo) bytecode+=("${path}") ;;
+        esac
+    done < <("${GIT}" diff --cached --name-only -z HEAD --)
+    if [ "${#bytecode[@]}" -gt 0 ]; then
+        die "${EX_SCOPE}" "the index carries interpreter bytecode:" \
+            "${bytecode[*]}.  Inside this one tree .gitignore's" \
+            "terminal '!/playthrough/**' negation RE-INCLUDES" \
+            "__pycache__ and *.pyc, so bytecode is committable here" \
+            "and nothing but this check stops it being archived as" \
+            "though it were evidence.  Remove it (test modules run" \
+            "with 'python -B', and env.sh exports" \
+            "PYTHONDONTWRITEBYTECODE=1) and run this again.  Nothing" \
+            "was committed."
+    fi
+    if [ "${#outside[@]}" -gt 0 ]; then
+        die "${EX_SCOPE}" "the index carries ${#outside[@]} path(s)" \
+            "outside $(rel "${PLAYTHROUGH_DIR}"): ${outside[*]}.  A" \
+            "commit publishes the whole index, so a checkpoint about" \
+            "the playthrough would carry them.  Unstage them and" \
+            "commit them separately.  Nothing was committed."
     fi
     return 0
 }
@@ -1267,7 +1797,6 @@ staged_classes() {
     local path
     local -a classes=()
     local save=0 frames=0 record=0 media=0 text=0 tooling=0 config=0
-    local ignore=0
     while IFS= read -r path; do
         [ -n "${path}" ] || continue
         case "${path}" in
@@ -1283,7 +1812,6 @@ playthrough/build/*) record=1 ;;
             playthrough/*.mp4) media=1 ;;
             playthrough/transcript.*|playthrough/*.md) text=1 ;;
             playthrough/tooling/*) tooling=1 ;;
-            .gitignore|.gitattributes) ignore=1 ;;
         esac
     done < <(staged_paths)
     # A false test here is deliberate flow control, not an error: in an
@@ -1297,7 +1825,6 @@ state")
     [ "${media}" -eq 1 ] && classes+=("assembled film")
     [ "${text}" -eq 1 ] && classes+=("transcript and notes")
     [ "${tooling}" -eq 1 ] && classes+=("pipeline tooling")
-    [ "${ignore}" -eq 1 ] && classes+=("version-control attributes")
     if [ "${#classes[@]}" -eq 0 ]; then
         return 0
     fi
@@ -1386,8 +1913,13 @@ verify_commit() {
             "the lifecycle does not."
     fi
     local leftover
-    leftover="$("${GIT}" status --porcelain -- "${PATHSPECS[@]}" \
-        2>/dev/null || printf '')"
+    # The same flags the pre-commit sweep uses, so "clean" means the
+    # same thing on both sides of the commit: every untracked file
+    # listed individually, and an ignored path inside the tree counted
+    # as the problem it is rather than hidden by default.
+    leftover="$("${GIT}" status --porcelain --untracked-files=all \
+        --ignored=matching -- "${PATHSPECS[@]}" 2>/dev/null ||
+        printf '')"
     if [ -n "${leftover}" ]; then
         die "${EX_COMMIT}" "these paths are still uncommitted after" \
             "the checkpoint: ${leftover}.  Everything under" \
@@ -1429,6 +1961,11 @@ assert_tracked_at_head() {
     case "${tracked_frames}" in
         ''|*[!0-9]*) tracked_frames="-1" ;;
     esac
+    # REPORTED, not merely compared.  A number a reader can see beside
+    # the other one is how decimation or a partial add becomes obvious
+    # instead of being something this script promises did not happen.
+    playthrough_log "captures: ${tracked_frames} tracked by git," \
+        "${FRAME_COUNT} on disk"
     if [ "${tracked_frames}" -ne "${FRAME_COUNT}" ]; then
         die "${EX_COMMIT}" "${tracked_frames} frame(s) are tracked" \
             "and ${FRAME_COUNT} are on disk.  Every capture is" \
@@ -1458,6 +1995,11 @@ run_common_gates() {
     assert_no_machine_files
     assert_save_tree "${checkpoint}"
     assert_evidence
+    assert_dossier "${checkpoint}"
+    # After the save and the record are known, and before anything is
+    # staged: the paths this checkpoint exists to preserve must not be
+    # ones `git add` would silently skip.
+    assert_not_ignored
     assert_no_debug_bindings
     return 0
 }
@@ -1507,8 +2049,12 @@ do_final() {
 # staging is allowed at all.  The lines are git's own "add '<path>'"
 # form rather than bare paths; every caller here treats them as a report,
 # not as a path list.
+#
+# One pathspec, no -A, and only a REPORT: this is the one place a whole
+# subtree is named in a single `git add`, and it is the place where doing
+# so cannot change anything.
 staged_paths_preview() {
-    "${GIT}" add -A --dry-run -- "${PATHSPECS[@]}" 2>/dev/null ||
+    "${GIT}" add --dry-run -- "${PATHSPECS[@]}" 2>/dev/null ||
         printf ''
 }
 
@@ -1622,12 +2168,16 @@ from" \
             "status" "report the lifecycle, changing nothing" \
             "help" "this text"
         printf '%s\n' ""
-        printf '%s\n' "It stages .gitignore, .gitattributes and \
-playthrough/ and nothing"
-        printf '%s\n' "else.  It never writes git configuration, never \
-rewrites history,"
-        printf '%s\n' "and never pushes.  An identity that does not \
-resolve is a refusal:"
+        printf '%s\n' "It stages playthrough/ and nothing else, by \
+artifact class, in bounded"
+        printf '%s\n' "batches -- never a blanket add, never -A, never \
+-f, never a shell glob."
+        printf '%s\n' ".gitignore and .gitattributes are CHECKED here \
+and committed elsewhere."
+        printf '%s\n' "It never writes git configuration, never \
+rewrites history, and never"
+        printf '%s\n' "pushes.  An identity that does not resolve is a \
+refusal:"
         printf '%s\n' "configure the platform, not the repository."
         printf '%s\n' ""
         printf '%s\n' "stdout carries KEY=value lines only; all \

@@ -27,9 +27,14 @@ WHAT IS ASSERTED
   is precisely the "one bundled commit" shape the requirement rules out.
   A second `creation` over further changes is refused, because the
   lifecycle would then name two moments.
-* IT STAGES THREE PATHSPECS AND NOTHING ELSE.  Staged work outside them
-  is a refusal (a commit publishes the whole index); unstaged work
-  outside them is reported and left alone.
+* IT STAGES playthrough/ AND NOTHING ELSE, BY ARTIFACT CLASS, IN BOUNDED
+  BATCHES.  No blanket add appears in the source: no -A, no bare '.', no
+  -f, no shell glob.  Staged work outside the tree is a refusal (a commit
+  publishes the whole index); unstaged work outside it is reported and
+  left alone; .gitignore and .gitattributes are checked here and
+  committed elsewhere.  Explicit enumeration is held to being COMPLETE by
+  a sweep that refuses a checkpoint leaving anything under playthrough/
+  unstaged.
 * THE NEGATION IS LOAD-BEARING AND IT IS CHECKED.  With .gitignore's
   terminal `!/playthrough/**` removed, `git add` skips the engine's own
   `#<name>.sav` and exits 0 -- so the checkpoint asks git for the save
@@ -851,7 +856,7 @@ class TestTheRepositoryGate(CheckpointFixture):
 
 
 class TestTheScopeGate(CheckpointFixture):
-    """Three pathspecs, and a commit publishes the whole index."""
+    """One pathspec, and a commit publishes the whole index."""
 
     def test_staged_work_outside_the_feature_is_refused(self):
         self.write_save()
@@ -860,9 +865,49 @@ class TestTheScopeGate(CheckpointFixture):
                    "// somebody else's change\n")
         self.git("add", "--", "src/other.cpp")
         message = self.refuse(EX_SCOPE, ("creation",))
-        self.assertIn("outside this feature", message)
+        self.assertIn("outside playthrough", message)
         self.assertIn("src/other.cpp", message)
         self.assertIn("publishes the whole index", message)
+
+    def test_staged_version_control_configuration_is_refused(self):
+        """The two root files are out of scope, staged or not.
+
+        The terminal negation and the binary attributes are
+        repository-wide configuration this tree depends on.  This script
+        CHECKS them and never commits them, so finding one in the index
+        is a refusal that says where it belongs instead of quietly
+        publishing it inside a checkpoint about a survivor's save.
+        """
+        self.write(self.gitignore, SANDBOX_GITIGNORE + "# an edit\n")
+        self.git("add", "--", ".gitignore")
+        self.write_save()
+        self.write_evidence(self.CREATION_ROWS)
+        message = self.refuse(EX_SCOPE, ("creation",))
+        self.assertIn(".gitignore", message)
+        self.assertIn("commit them separately", message)
+
+    def test_edited_version_control_configuration_is_only_reported(self):
+        """Unstaged, it cannot ride along -- so it is named, not fatal.
+
+        Silence would be the problem: a reader expects a step called
+        "commit the artifacts" to have taken these two, so the checkpoint
+        says out loud that it did not and why.
+        """
+        self.write(self.gitignore, SANDBOX_GITIGNORE + "# an edit\n")
+        self.write_save()
+        self.write_evidence(self.CREATION_ROWS)
+        fields, err = self.checkpoint("creation")
+        self.assertEqual(fields["COMMITTED"], "yes")
+        self.assertIn(".gitignore", err)
+        self.assertIn("its own commit", err)
+        changed = self.git("show", "--name-only", "--format=", "HEAD",
+                           identity=False)
+        self.assertNotIn(".gitignore", changed)
+        self.assertNotEqual(
+            "",
+            self.git("status", "--porcelain", "--", ".gitignore",
+                     identity=False).strip(),
+            msg="the edit should still be waiting for its own commit")
 
     def test_unstaged_work_outside_the_feature_is_only_reported(self):
         """It cannot ride along, so it is not an obstacle.
@@ -883,7 +928,7 @@ class TestTheScopeGate(CheckpointFixture):
         self.assertIn("src/other.cpp", err)
         self.assertFalse(self.is_tracked("src/other.cpp"))
 
-    def test_the_commit_holds_only_the_three_pathspecs(self):
+    def test_the_commit_holds_only_the_artifact_tree(self):
         self.write(os.path.join(self.checkout, "src", "other.cpp"),
                    "// somebody else's change\n")
         self.take_creation()
@@ -892,9 +937,8 @@ class TestTheScopeGate(CheckpointFixture):
         for path in [line for line in changed if line]:
             with self.subTest(path=path):
                 self.assertTrue(
-                    path in (".gitignore", ".gitattributes") or
                     path.startswith("playthrough/"),
-                    msg="%r is outside the three pathspecs" % path)
+                    msg="%r is outside the artifact tree" % path)
 
 
 class TestTheHygieneGate(CheckpointFixture):
@@ -953,6 +997,131 @@ class TestTheHygieneGate(CheckpointFixture):
         self.assertEqual(
             [], [path for path in self.tracked("playthrough")
                  if "__pycache__" in path or path.endswith(".pyc")])
+
+
+class TestStagingIsExplicitBatchedAndComplete(CheckpointFixture):
+    """How the index is built, which is this script's other constraint.
+
+    Explicit, by artifact class, in bounded batches -- and then held to
+    being COMPLETE, because an enumeration that quietly omitted a class
+    would leave evidence uncommitted while every other check passed.
+    """
+
+    #: The forms of `git add` that must not appear in the source at all.
+    BLANKET = re.compile(r"add\s+(?:-A\b|-f\b|--force\b|\.(?:\s|$))")
+
+    def source_lines(self):
+        """Every non-comment line of the subject, numbered."""
+        with open(os.path.join(TOOLING, SCRIPT_NAME),
+                  encoding="utf-8") as handle:
+            for number, line in enumerate(handle, start=1):
+                if line.lstrip().startswith("#"):
+                    continue
+                yield (number, line)
+
+    def test_the_source_has_no_blanket_or_forced_add(self):
+        """-A, a bare '.', and -f are all absent.
+
+        A blanket add would sweep whatever happened to be in the tree
+        into a checkpoint, and -f would paper over a broken .gitignore
+        negation instead of reporting it.  Asserted against the source,
+        because their absence is the property -- a run cannot demonstrate
+        that a command was never available to it.
+        """
+        for number, line in self.source_lines():
+            with self.subTest(line=number):
+                self.assertIsNone(
+                    self.BLANKET.search(line),
+                    msg=("line %d stages with a blanket or forced add: "
+                         "%r" % (number, line.rstrip())))
+
+    def test_each_artifact_class_is_staged_as_its_own_batch(self):
+        self.write(os.path.join(self.dir, "cata-play.mp4"),
+                   "not a real film, but a real file\n")
+        self.write(os.path.join(self.dir, "timeline.json"), "[]\n")
+        _, err = self.take_creation()
+        for label in ("pipeline tooling", "narrative and documentation",
+                      "engine save and configuration", "captured frames",
+                      "record and timeline", "build intermediates",
+                      "assembled film"):
+            with self.subTest(label=label):
+                self.assertIn("staged the %s:" % label, err)
+
+    def test_the_captures_are_staged_in_bounded_batches(self):
+        """More captures than one batch holds, staged without a limit.
+
+        A session of any length must not approach the argument-list
+        limit, so the frames are chunked.  This writes more than one
+        chunk's worth and proves every one of them is tracked.
+        """
+        with open(os.path.join(TOOLING, SCRIPT_NAME),
+                  encoding="utf-8") as handle:
+            source = handle.read()
+        match = re.search(r"STAGE_BATCH_SIZE=(\d+)", source)
+        self.assertIsNotNone(match, msg="the batch bound is declared")
+        bound = int(match.group(1))
+        self.assertGreater(bound, 0)
+        count = bound + 3
+        self.write_save()
+        self.write_evidence(count)
+        fields, err = self.checkpoint("creation")
+        self.assertEqual(fields["FRAMES"], str(count))
+        self.assertIn("staged the captured frames: %d path(s)" % count,
+                      err)
+        self.assertEqual(len(self.tracked("playthrough/frames")), count)
+        self.assertIn("%d tracked by git, %d on disk" % (count, count),
+                      err)
+
+    def test_a_class_nobody_enumerated_is_refused_not_skipped(self):
+        """Explicit staging's own failure mode, closed.
+
+        A file directly under playthrough/ that no batch names would
+        otherwise be left behind in silence.  The refusal names it and
+        says which list to add it to.
+        """
+        self.write_save()
+        self.write_evidence(self.CREATION_ROWS)
+        self.write(os.path.join(self.dir, "stray_artifact.txt"),
+                   "nobody enumerated me\n")
+        message = self.refuse(EX_COMMIT, ("creation",))
+        self.assertIn("stray_artifact.txt", message)
+        self.assertIn("stage_artifacts", message)
+
+    def test_bytecode_left_in_the_index_is_refused(self):
+        """The index, not just the filesystem, is checked.
+
+        The filesystem sweep cannot see a *.pyc that has already been
+        staged and then deleted -- an interrupted earlier run leaves
+        exactly that -- so whatever is about to be published is examined
+        as well.
+        """
+        self.write_save()
+        self.write_evidence(self.CREATION_ROWS)
+        relative = "playthrough/stray/manifest.cpython-312.pyc"
+        path = self.write(os.path.join(self.checkout, relative),
+                          "bytecode\n")
+        self.git("add", "--", relative)
+        os.unlink(path)
+        message = self.refuse(EX_SCOPE, ("creation",))
+        self.assertIn("interpreter bytecode", message)
+        self.assertIn(relative, message)
+        self.assertIn("PYTHONDONTWRITEBYTECODE", message)
+
+    def test_an_ignored_path_inside_the_tree_is_refused(self):
+        """A directory add skips an ignored file without complaining.
+
+        So the sweep asks for the ignored entries too: a rule placed
+        after the terminal negation that re-excludes one path inside this
+        tree would otherwise be committed around in perfect silence.
+        """
+        hidden = "playthrough/userdir/config/lastworld.json"
+        self.write(self.gitignore, SANDBOX_GITIGNORE + hidden + "\n")
+        self.write_save()
+        self.write_evidence(self.CREATION_ROWS)
+        message = self.refuse(EX_SCOPE, ("creation",))
+        self.assertIn(hidden, message)
+        self.assertIn("IGNORED by git", message)
+        self.assertIn(NEGATION_LINE, message)
 
 
 class TestTheSaveGate(CheckpointFixture):
@@ -1040,6 +1209,46 @@ class TestTheSaveGate(CheckpointFixture):
         fields, _ = self.take_creation()
         self.assertEqual(fields["WORLD"], WORLD)
         self.assertEqual(fields["CHARACTER"], CHARACTER)
+
+    def test_the_compressed_save_form_is_accepted(self):
+        """`#<b64>.sav.zzip` is a real save, not a stray file.
+
+        game::save_player_data writes `playerfile + SAVE_EXTENSION +
+        zzip_suffix` when the world has compression enabled
+        (src/game_io.cpp:601-641, src/worldfactory.h:25) and
+        WORLD_COMPRESSION2 defaults to true, so a gate that insisted on
+        the plain spelling would refuse a perfectly ordinary session.
+        """
+        self.write_save()
+        compressed = self.save_file + ".zzip"
+        os.rename(self.save_file, compressed)
+        self.write_evidence(self.CREATION_ROWS)
+        fields, err = self.checkpoint("creation")
+        self.assertEqual(fields["CHARACTER"], CHARACTER)
+        self.assertIn("%s.zzip" % SAVE_BASENAME, err)
+        self.assertTrue(self.is_tracked(
+            os.path.relpath(compressed, self.checkout)))
+
+    def test_final_accepts_a_compressed_graveyard_save(self):
+        """The same tolerance after a death.
+
+        The archive's inner JSON cannot be read by the gate, so the two
+        checks that need it are SKIPPED and said out loud rather than
+        reported as passes; the memorial pair and the captured death
+        sequence still decide.
+        """
+        self.take_creation()
+        self.play_session()
+        persistence = self.write_death_persistence()
+        compressed = persistence[0] + ".zzip"
+        os.rename(persistence[0], compressed)
+
+        fields, err = self.checkpoint("final")
+
+        self.assertEqual(fields["CHARACTER"], CHARACTER)
+        self.assertIn("NOT inspected", err)
+        self.assertTrue(self.is_tracked(
+            os.path.relpath(compressed, self.checkout)))
 
     def test_final_accepts_the_engine_death_generation(self):
         """Death moves the survivor; it does not erase persistence."""
@@ -1491,23 +1700,52 @@ class TestTheCommitItself(CheckpointFixture):
         self.assertEqual(len(self.tracked("playthrough/frames")),
                          self.CREATION_ROWS)
 
-    def test_the_negation_failing_is_caught_by_name(self):
-        """The failure that hides itself, made loud.
+    def test_the_negation_failing_is_caught_before_anything_is_staged(
+            self):
+        """The failure that hides itself, made loud -- and made EARLY.
 
         Without the terminal `!/playthrough/**`, .gitignore's `\\#*` rule
         matches the engine's own character save, `git add` skips it and
         exits 0 -- so every count still tallies and the checkpoint looks
-        successful.  The only way to know is to ask git for the file BY
-        NAME afterwards, which is what assert_tracked_at_head does.
+        successful.  `git check-ignore --no-index` is the only honest
+        question, and asking it BEFORE staging means the previous commit
+        is still the last word when the answer is bad.
+
+        The by-name `git ls-files --error-unmatch` check after the commit
+        is kept as the belt-and-braces it always was; it is no longer the
+        first line of defence, and its subject matter is proved by
+        test_every_artifact_class_is_tracked.
         """
         self.write(self.gitignore,
                    SANDBOX_GITIGNORE.replace(NEGATION_LINE, ""))
         self.write_save()
         self.write_evidence(self.CREATION_ROWS)
-        status, _, err = self.run_script(("creation",))
-        self.assertEqual(status, EX_COMMIT, msg=err)
-        self.assertIn("is NOT tracked", err)
-        self.assertIn(NEGATION_LINE, err)
+        message = self.refuse(EX_SCOPE, ("creation",))
+        self.assertIn("is IGNORED by", message)
+        self.assertIn("exit 0", message)
+        self.assertIn(NEGATION_LINE, message)
+        self.assertFalse(
+            self.is_tracked("playthrough/userdir/save/%s/%s"
+                            % (WORLD, SAVE_BASENAME)),
+            msg="the refusal must leave the save untracked, not commit "
+                "a checkpoint without it")
+
+    def test_a_rule_after_the_negation_cannot_hide_one_capture(self):
+        """Re-exclusion of a single path, which is the subtler form.
+
+        The captures are staged BY NAME, and `git add` given an explicit
+        ignored path fails loudly instead of skipping it -- which is the
+        whole reason this script does not hand a directory to one blanket
+        add.  Nothing is committed.
+        """
+        hidden = "playthrough/frames/frame_00003.png"
+        self.write(self.gitignore, SANDBOX_GITIGNORE + hidden + "\n")
+        self.write_save()
+        self.write_evidence(self.CREATION_ROWS)
+        message = self.refuse(EX_COMMIT, ("creation",))
+        self.assertIn(hidden, message)
+        self.assertIn("captured frames", message)
+        self.assertFalse(self.is_tracked(hidden))
 
     def test_the_body_names_what_was_actually_staged(self):
         """Generated from the index, not written from a template.
@@ -1540,8 +1778,8 @@ class TestTheCommitItself(CheckpointFixture):
         self.take_creation()
         self.assertEqual(
             "",
-            self.git("status", "--porcelain", "--", ".gitignore",
-                     ".gitattributes", "playthrough",
+            self.git("status", "--porcelain", "--untracked-files=all",
+                     "--ignored=matching", "--", "playthrough",
                      identity=False).strip())
 
     def test_the_subjects_read_as_the_two_moments(self):
@@ -1603,6 +1841,132 @@ class TestTheStatusReport(CheckpointFixture):
         _, _, err = self.run_script(("status",))
         self.assertIn("would stage", err)
         self.assertIn("playthrough/manifest.jsonl", err)
+
+
+class TestTheDossierGate(CheckpointFixture):
+    """Written before play, and in the history before the first frame.
+
+    The acceptance gate reads that ordering out of `git log`, so the
+    checkpoint that commits the creation is what establishes it and a
+    dossier that is not there when it runs cannot be put back into the
+    right place afterwards.
+    """
+
+    def dossier(self):
+        return os.path.join(self.dir, "dossier.md")
+
+    def test_creation_without_a_dossier_is_refused(self):
+        self.write_save()
+        self.write_evidence(self.CREATION_ROWS)
+        os.unlink(self.dossier())
+        message = self.refuse(EX_EVIDENCE, ("creation",))
+        self.assertIn("playthrough/dossier.md", message)
+        self.assertIn("BEFORE the first keystroke", message)
+
+    def test_an_empty_dossier_is_refused(self):
+        """A placeholder is the same absence with a file in the way."""
+        self.write_save()
+        self.write_evidence(self.CREATION_ROWS)
+        self.write(self.dossier(), "")
+        message = self.refuse(EX_EVIDENCE, ("creation",))
+        self.assertIn("is empty", message)
+
+    def test_final_refuses_a_dossier_that_was_never_committed(self):
+        """Untracked, the ordering is unprovable whatever it says."""
+        self.take_creation()
+        self.play_session()
+        self.git("rm", "--cached", "--quiet", "--",
+                 "playthrough/dossier.md")
+        message = self.refuse(EX_LIFECYCLE, ("final",))
+        self.assertIn("git does not track it", message)
+
+    def test_final_refuses_a_dossier_deleted_between_checkpoints(self):
+        self.take_creation()
+        self.play_session()
+        os.unlink(self.dossier())
+        message = self.refuse(EX_EVIDENCE, ("final",))
+        self.assertIn("playthrough/dossier.md", message)
+
+    def test_the_dossier_is_committed_by_the_creation_checkpoint(self):
+        """And its commit is an ancestor of the first capture's.
+
+        `git merge-base --is-ancestor` holds for a commit and itself, so
+        the two landing together is the earliest the ordering allows --
+        which is exactly what the creation checkpoint is for.
+        """
+        self.take_creation()
+        self.assertTrue(self.is_tracked("playthrough/dossier.md"))
+        dossier_commit = self.first_commit_touching(
+            "playthrough/dossier.md")
+        frame_commit = self.first_commit_touching(
+            "playthrough/frames/frame_00001.png")
+        self.assertNotEqual("", dossier_commit)
+        self.assertNotEqual("", frame_commit)
+        self.assertEqual(0, self.git_status_of(
+            ("merge-base", "--is-ancestor", dossier_commit,
+             frame_commit)))
+
+    def first_commit_touching(self, path):
+        """The OLDEST commit that touched one path."""
+        history = [line for line in self.git(
+            "log", "--format=%H", "--", path,
+            identity=False).split("\n") if line]
+        return history[-1] if history else ""
+
+    def git_status_of(self, args):
+        """git's exit status, for a question with a boolean answer."""
+        result = subprocess.run(
+            [os.path.join(self.bin, "git")] + list(args),
+            cwd=self.checkout, capture_output=True,
+            env={"PATH": self.bin, "GIT_CONFIG_GLOBAL": "/dev/null",
+                 "GIT_CONFIG_NOSYSTEM": "1"},
+            timeout=60)
+        return result.returncode
+
+
+class TestTheScriptItself(unittest.TestCase):
+    """Properties of the file, not of a run.
+
+    The same three the sibling scripts' suites assert, because a script
+    that no longer parses, no longer passes shellcheck or is no longer
+    executable is broken before any behaviour of it can be tested.
+    """
+
+    def test_it_parses(self):
+        result = subprocess.run(
+            ["/bin/bash", "-n", os.path.join(TOOLING, SCRIPT_NAME)],
+            capture_output=True, timeout=120)
+        self.assertEqual(result.returncode, 0,
+                         msg=result.stderr.decode("utf-8", "replace"))
+
+    def test_it_is_shellcheck_clean(self):
+        if shutil.which("shellcheck") is None:
+            self.skipTest("shellcheck is not installed")
+        result = subprocess.run(
+            ["shellcheck", "-x", SCRIPT_NAME],
+            cwd=TOOLING, capture_output=True, timeout=300)
+        self.assertEqual(
+            result.returncode, 0,
+            msg="this script is shellcheck-clean, including the -x pass "
+                "that follows env.sh:\n%s"
+                % result.stdout.decode("utf-8", "replace"))
+
+    def test_it_is_executable(self):
+        path = os.path.join(TOOLING, SCRIPT_NAME)
+        self.assertTrue(os.stat(path).st_mode & stat.S_IXUSR)
+
+    def test_it_is_strict(self):
+        """`set -euo pipefail`, and errtrace on top of it.
+
+        Every other executable in this folder sets those options itself,
+        because env.sh deliberately does not: shell options set at the
+        top level of a SOURCED file are imposed on the calling shell.
+        """
+        with open(os.path.join(TOOLING, SCRIPT_NAME),
+                  encoding="utf-8") as handle:
+            source = handle.read()
+        self.assertIn("set -euo pipefail", source)
+        self.assertIn("set -o errtrace", source)
 
 
 class TestTheUsage(CheckpointFixture):

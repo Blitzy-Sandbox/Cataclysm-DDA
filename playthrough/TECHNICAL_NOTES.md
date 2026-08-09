@@ -2087,15 +2087,29 @@ gate is the one somebody takes when the other refuses:
 | --- | --- |
 | identity | no resolvable identity; `Name <>`; author ≠ committer |
 | repository | a different checkout; detached HEAD; no history; a rebase, merge, cherry-pick, revert or bisect in progress |
-| scope | staged changes outside `.gitignore`, `.gitattributes`, `playthrough/` — a commit publishes the whole index, so those would ride along |
-| hygiene | `__pycache__`, `*.pyc`, `blitzy_adhoc_test_*`, a retained or quarantined film |
+| scope | staged changes outside `playthrough/` — a commit publishes the whole index, so those would ride along. `.gitignore` and `.gitattributes` are repository-wide configuration: this script *checks* them and never stages them, and an edit to either is reported so its absence from the checkpoint cannot look like an oversight |
+| hygiene | `__pycache__`, `*.pyc`, `blitzy_adhoc_test_*`, a retained or quarantined film — on disk before staging, and again in the **index** afterwards, because a `*.pyc` written between those two moments is still not evidence |
+| not-ignored | a save, manifest or capture that `git check-ignore --no-index` reports as excluded, asked **before** anything is staged: `git add` skips an ignored path and exits 0, so this is the only honest way to learn the terminal negation has been lost |
+| staging completeness | anything under `playthrough/` left unstaged, untracked or **ignored** after every artifact class was staged — explicit enumeration is held to being complete instead of being trusted |
 | persistence | at `creation`, not exactly one live world and survivor; at `final`, neither that live shape nor one matching graveyard save/log, memorial pair and captured death sequence; `lastworld.json` missing, unreadable, or naming a different survivor |
 | evidence | `manifest.py verify --require-frames` reporting anything; frames ≠ rows; a missing or short observation sidecar |
 | no-cheating | a `keybindings.json` naming `debug`, `debug_mode` or `debug_hour_timer` |
 | lifecycle (`final` only) | no `creation` checkpoint; a record that has not grown since it |
 
 Four of those are worth explaining, because each exists for a failure that is
-otherwise silent.
+otherwise silent. A fifth property runs underneath all of them and is set out
+after the table: **staging is explicit, by artifact class, in bounded batches,
+and then held to being complete.** No blanket add appears in the file — no
+`-A`, no bare `.`, no `-f`, no shell-expanded glob — because a blanket add
+sweeps in whatever happens to be in the tree, and `-f` would paper over a
+broken ignore rule instead of reporting it. The captures are chunked
+256 paths at a time and the chunk list is built with `find -print0`, so a
+session of any length stays far below the argument-list limit; and since git 2.0
+a pathspec add records deletions too, so `-A` would buy nothing but the
+appearance of one. Explicit enumeration has exactly one failure mode — a class
+somebody adds later and nobody lists — and `assert_tree_fully_staged` closes it
+by refusing any checkpoint that would leave a path under `playthrough/`
+unstaged, untracked or ignored.
 
 **The hygiene gate exists because of the negation.** `.gitignore` ends with
 `!/playthrough/**`, without which the engine's own `#<name>.sav` and `*.log`
@@ -2107,16 +2121,34 @@ committable there. So is a `*.pyc`, an ad-hoc validation file, and the
 uses around its atomic publication. None of them is evidence, and a checkpoint
 that archived them has to be undone by hand.
 
-**The same negation is why the commit is verified by name afterwards.** Counting
-staged paths cannot detect the negation being lost, because `git add` reports
-success either way and every count still tallies. So after committing, the
-checkpoint asks git for the manifest and every selected persistence file
-*individually* with `git ls-files --error-unmatch` — live save plus
-`master.gsav`, or graveyard save/log plus both memorial files — and compares
-the tracked frame count against the count on disk.
+**The same negation is why the checkpoint asks about exclusion twice — once
+before it stages and once after it commits.** Counting staged paths cannot
+detect the negation being lost, because `git add` reports success either way
+and every count still tallies. So:
+
+- **Before staging**, `git check-ignore --no-index --quiet` is asked about the
+  manifest, every selected persistence file and the first capture. That form is
+  the only one whose answer means anything: *without* `--no-index` git consults
+  the index and calls any tracked path not-ignored whatever the rules say
+  (vacuous on a re-run, and wrong exactly when it matters), and *with* `-v` the
+  exit status is 0 even when the pattern that matched was the negation — so the
+  `-v` line is read only to name the offending rule in the refusal.
+- **Because the captures are staged by name**, a rule that re-excluded a single
+  frame makes `git add` *fail* rather than skip it. A blanket directory add is
+  what would have skipped it in silence.
+- **After staging**, the completeness sweep asks `git status --porcelain -uall
+  --ignored=matching` over the tree, so an ignored path anywhere inside it is
+  its own refusal rather than something the commit goes quietly around.
+- **After committing**, the checkpoint still asks git for the manifest and every
+  selected persistence file *individually* with `git ls-files --error-unmatch` —
+  live save plus `master.gsav`, or graveyard save/log plus both memorial files —
+  and reports the tracked capture count beside the count on disk.
+
 `test_commit_artifacts.py` removes the negation line from a sandbox
-`.gitignore` and asserts the checkpoint fails with exit 7 naming the missing
-rule.
+`.gitignore` and asserts the checkpoint is refused with exit 4 naming the rule
+that decided and the negation that must come last, with the save left
+untracked; a second test re-excludes one capture after the negation and asserts
+the refusal happens at staging.
 
 **The save gate can name the survivor because the engine writes it down.**
 `<userdir>/config/lastworld.json` carries the world name and the *decoded*
@@ -5788,6 +5820,58 @@ that combined them added a few more where two fixes met.
 
 The figures sum to **2284** and the discovery run collects 2284, which is the
 check that no module was silently missed.
+
+#### Re-measured on Sunday, August 9, 2026, after the staging pass on `commit_artifacts.sh`
+
+The block above is dated on purpose and is left exactly as it was measured. This
+is a **later** measurement, taken after the pass that made
+`commit_artifacts.sh` stage by artifact class in bounded batches, restricted its
+scope to `playthrough/`, added the pre-staging `check-ignore` tripwire, the
+index-hygiene and completeness sweeps, the dossier gate, and acceptance of the
+`#<b64>.sav.zzip` save spelling:
+
+```console
+$ python -B -m unittest discover -s playthrough/tooling -p 'test_*.py'
+Ran 2415 tests in 729.597s
+FAILED (errors=1, skipped=5)
+```
+
+- **`test_commit_artifacts` moved from 88 to 108**, counted mechanically with
+  `TestLoader.loadTestsFromName(...).countTestCases()`. The twenty are the new
+  `TestStagingIsExplicitBatchedAndComplete` class (no blanket or forced add in
+  the source; each class staged as its own batch; the captures staged in bounded
+  batches at `STAGE_BATCH_SIZE + 3`; an unenumerated class refused rather than
+  skipped; bytecode left in the *index* refused; an ignored path inside the tree
+  refused), `TestTheDossierGate` (missing, empty, deleted between checkpoints,
+  never committed, and the ordering against the first capture),
+  `TestTheScriptItself` (parses, shellcheck-clean, executable, strict — the same
+  four the sibling suites assert), a capture re-excluded after the negation, the
+  two version-control-configuration scope tests, and the two `.sav.zzip` tests.
+  Module alone: **108 tests, 0 failures**.
+- **The one error is the tileset provenance anchor**, analysed in full under
+  *The provenance anchor is refusing a re-composition, not the film's artwork*
+  above. It is independent of this pass: the pass changed
+  `playthrough/tooling/commit_artifacts.sh`,
+  `playthrough/tooling/test_commit_artifacts.py` and this file, and
+  `test_tileset_provenance` reads none of them — it compares the git-**ignored**
+  `gfx/MShockXotto+` tree against the tracked anchor. It was searched for rather
+  than argued about: no `tile_config.json` matching the anchor's 774 731 bytes
+  exists anywhere on this host, every copy is the locally composed 625 336-byte
+  one, and there is no network to fetch the upstream pack from. Re-hashing the
+  anchor to match what is installed would delete the only tracked statement of
+  what the film's pixels are, which is the "re-attest whatever is on disk" move
+  this pipeline refuses everywhere else. So it is recorded, not closed.
+- **The five skips are conditional guards, and each is named.** Four are
+  `test_session.TheRouteIsGuardedByThePhotograph`, whose own message is *"the
+  committed record contains no capture that classifies as 'main-menu', so this
+  test has no screen to read"*; the fifth is
+  `test_tileset_provenance.EveryFailureToReadIsARefusal.test_an_unreadable_file_is_refused`,
+  which declines rather than pass vacuously because the run is root. Nothing was
+  disabled.
+- **`flake8 playthrough/` reports 0 findings**, and `shellcheck -x` reports 0
+  over `commit_artifacts.sh`. Note that `W503` is *not* in `.flake8`'s ignore
+  list (only `E265, W504` are), so a continuation must break **after** a binary
+  operator, never before it.
 
 **Shell and lint, measured in the same pass.** The surface is **five** `.sh`
 files — `capture.sh`, `commit_artifacts.sh`, `embed_captions.sh`, `env.sh`,
