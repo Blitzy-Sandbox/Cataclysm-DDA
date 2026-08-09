@@ -2845,6 +2845,54 @@ playthrough_mkdirs() {
     return 0
 }
 
+# playthrough_checkout_lock_name BASENAME
+#   BASENAME with a short digest of THIS CHECKOUT's root appended, so a
+#   lock taken under it excludes a second run over the same working tree
+#   and nothing else.
+#
+#   WHY THE NAME HAS TO CARRY THE CHECKOUT.  PLAYTHROUGH_LOCK_DIR lives
+#   under the runtime root, and the runtime root is derived from
+#   CLONE_INDEX rather than from the working tree -- so two clones that
+#   were both started without CLONE_INDEX share one lock directory, and a
+#   bare name like `pipeline` or `checkpoint` therefore serialises two
+#   runs that share NOTHING.  Measured: a second checkout's run refused
+#   with a message about "this checkout" while the holder was a different
+#   checkout entirely, which is a diagnosis that sends an operator to
+#   look in the wrong place.
+#
+#   The digest is of the ABSOLUTE root path, taken with sha256sum and cut
+#   to eight hex characters: long enough that two checkouts on one host
+#   will not collide, short enough to read in a diagnostic, and stable
+#   across runs so the same tree always takes the same lock.  The name is
+#   held to playthrough_acquire_lock's own character class -- lowercase
+#   hex satisfies it -- and the derivation is here rather than in each
+#   caller so the two consumers cannot drift apart.
+playthrough_checkout_lock_name() {
+    local base="${1-}"
+    case "${base}" in
+        ''|*[!a-z0-9_-]*)
+            playthrough_die "'${base}' is not a usable lock basename" \
+                "(lowercase letters, digits, '-' and '_' only)"
+            return 1
+            ;;
+    esac
+    playthrough_require_tools sha256sum || return 1
+    local digest=""
+    digest="$(printf '%s' "${PLAYTHROUGH_REPO_ROOT}" |
+        "${PLAYTHROUGH_BIN_SHA256SUM}" 2>/dev/null || printf '')"
+    digest="${digest%% *}"
+    case "${digest}" in
+        ''|*[!0-9a-f]*)
+            playthrough_die "the checkout digest for the '${base}'" \
+                "lock could not be computed, so a lock name that" \
+                "names this working tree cannot be built"
+            return 1
+            ;;
+    esac
+    printf '%s-%s' "${base}" "${digest:0:8}"
+    return 0
+}
+
 # playthrough_acquire_lock NAME [TIMEOUT_SECONDS]
 #   Take an exclusive advisory lock and leave its descriptor in
 #   PLAYTHROUGH_LOCK_FD.

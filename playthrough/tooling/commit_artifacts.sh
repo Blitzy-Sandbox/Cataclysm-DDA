@@ -85,10 +85,20 @@
 #
 # WHAT IT DOES NOT DO
 # No history rewriting, no amend, no force, no push, no branch change,
-# no tag, no reset, no clean, and no `git config`.  It stages the
-# artifact tree by artifact class and commits.  Every git call is an
-# argument list; there is no eval, no `shell=True` equivalent, and no
-# unquoted glob.
+# no tag, no reset, and no clean.  It stages the artifact tree by
+# artifact class and commits.  Every git call is an argument list; there
+# is no eval, no `shell=True` equivalent, and no unquoted glob.
+#
+# THE ONE CONFIGURATION IT WRITES, AND THE FENCE AROUND IT
+# `git config --local user.name` / `user.email`, and only when this
+# repository does not already record them.  Never --global, never
+# --system, never --worktree; the value written is exactly the one `git
+# var` had already resolved, so the attribution of the commit is
+# identical whether or not the write happened.  The reason it happens at
+# all is that the render and capture stages run inside the declared
+# container, which mounts this checkout, sets its own HOME and forwards
+# no GIT_* -- so an identity living only in the invoking user's
+# ~/.gitconfig does not exist in there.  See persist_identity_locally.
 #
 # STAGING IS EXPLICIT, BY ARTIFACT CLASS, AND BATCHED.  No blanket add
 # appears anywhere in this file: every staging call is `add --` with
@@ -250,7 +260,12 @@ rel() {
 # writability of each one and of every directory above it, so the paths
 # below are checked paths rather than another PATH search.
 # ---------------------------------------------------------------------
-if ! playthrough_require_tools git find wc sort grep tr; then
+# awk reads HEAD's own ignore and attribute rules, and sha256sum derives
+# the checkout-scoped lock name; both are named here rather than left to
+# fail at their call site, so a host missing one is told about it in the
+# same consolidated diagnosis as the rest.
+if ! playthrough_require_tools git find wc sort grep tr awk \
+        sha256sum; then
     die "${EX_PREREQ}" "the toolchain above is incomplete, so the" \
         "checkpoint gates cannot be performed.  A checkpoint whose" \
         "preconditions were not checked is not taken."
@@ -261,26 +276,62 @@ readonly WC="${PLAYTHROUGH_BIN_WC}"
 readonly SORT="${PLAYTHROUGH_BIN_SORT}"
 readonly GREP="${PLAYTHROUGH_BIN_GREP}"
 readonly TR="${PLAYTHROUGH_BIN_TR}"
+readonly AWK="${PLAYTHROUGH_BIN_AWK}"
 
 # ---------------------------------------------------------------------
 # The lifecycle vocabulary.
 # ---------------------------------------------------------------------
 
-# The trailer key and the two checkpoint names.  `final` searches the
-# history for the `creation` trailer, so these three strings are the
+# The trailer key and the THREE checkpoint names.  `final` searches the
+# history for the `creation` trailer, so these strings are the
 # lifecycle's entire persistent state -- there is no side file to fall
 # out of step with the history it describes.
+#
+# WHY `dossier` IS A CHECKPOINT OF ITS OWN, AND NOT A TIDINESS
+# PREFERENCE.  The requirement is that the survivor is described BEFORE
+# play, and the way that is checked is `git log` over
+# playthrough/dossier.md against `git log` over the first capture: the
+# dossier's introducing commit must be a STRICT ANCESTOR of the first
+# frame's.  `creation` stages the narrative class and the captures in one
+# commit, so when both arrive together their introducing commit is the
+# SAME commit -- and an ordering assertion over one commit can never
+# hold, however the history is read.  Measured: a documented lifecycle of
+# `creation` then `final` left the ordering permanently unprovable.
+#
+# So the dossier gets its own, earlier commit.  Three steps, in this
+# order, and each refuses to run out of turn:
+#
+#     dossier    the survivor described, before a single frame exists
+#     creation   the survivor and the save she starts from
+#     final      the closed session and its artifacts
 readonly TRAILER_KEY="Playthrough-Checkpoint"
+readonly CHECKPOINT_DOSSIER="dossier"
 readonly CHECKPOINT_CREATION="creation"
 readonly CHECKPOINT_FINAL="final"
 
 # The subjects.  Written here rather than passed in, because a
 # checkpoint whose message a caller chooses is a checkpoint whose
 # meaning drifts between runs.
+readonly SUBJECT_DOSSIER="Commit the survivor's dossier before the first \
+frame of play"
 readonly SUBJECT_CREATION="Commit the survivor's creation and the save \
 it produced"
 readonly SUBJECT_FINAL="Commit the closed session, its final save and \
 its artifacts"
+
+# The lock this step takes, as a BASENAME: env.sh appends a digest of
+# this checkout's root so that two runs over ONE working tree serialise
+# and two runs over different ones do not.  The three mutating
+# subcommands take it; `status` does not, because it only reads.
+#
+# The wait is overridable because how long a checkpoint takes depends on
+# how many captures it stages, and because a refusal nobody can reach in
+# a test is a refusal nobody has read.  It is validated as an integer
+# through env.sh's helper rather than used raw: bash evaluates command
+# substitution inside $(( )), so an unchecked number from the environment
+# is code execution and not a number.
+readonly CHECKPOINT_LOCK_BASENAME="checkpoint"
+readonly CHECKPOINT_LOCK_TIMEOUT_DEFAULT=120
 
 # The one pathspec this file will ever read or write the index through.
 # Anything else in the repository -- including .gitignore and
@@ -378,12 +429,11 @@ assert_identity() {
     if ! resolve_identity; then
         die "${EX_IDENTITY}" "git cannot determine who would be" \
             "making this commit: 'git var GIT_AUTHOR_IDENT' produced" \
-            "nothing.  THIS SCRIPT WILL NOT SET user.name OR" \
-            "user.email, in any scope -- the identity a commit is made" \
-            "under belongs to the platform, and a script that" \
-            "configures it around a missing one hides the very thing" \
-            "that needs fixing.  Supply it the way the platform" \
-            "supplies it: its own git configuration, or the standard" \
+            "nothing.  THIS SCRIPT WILL NOT INVENT AN IDENTITY -- it" \
+            "persists the one git already resolves into this" \
+            "repository's own configuration, and there is nothing here" \
+            "to persist.  Supply it the way the platform supplies it:" \
+            "its own git configuration, or the standard" \
             "GIT_AUTHOR_NAME / GIT_AUTHOR_EMAIL /" \
             "GIT_COMMITTER_NAME / GIT_COMMITTER_EMAIL environment." \
             "Nothing was staged and nothing was committed."
@@ -410,6 +460,83 @@ assert_identity() {
     fi
     playthrough_log "the commit would be authored and committed by" \
         "${IDENT_AUTHOR}"
+    return 0
+}
+
+# ---------------------------------------------------------------------
+# PERSISTING THAT IDENTITY INTO THIS REPOSITORY, AND ONLY THIS ONE.
+#
+# The identity a commit is made under must not merely be RESOLVABLE
+# somewhere; it has to be recorded in the repository that carries the
+# evidence.  The reason is concrete rather than tidy: this pipeline's
+# render and capture stages run inside the declared container, which
+# mounts the checkout and sets HOME=/tmp/playthrough-home and forwards no
+# GIT_* variables at all.  An identity that lives only in the invoking
+# user's ~/.gitconfig therefore DOES NOT EXIST in there -- measured, as
+# `git var GIT_AUTHOR_IDENT` failing and this step exiting 3 inside the
+# only environment where the later stages may legally run.  Written into
+# the repository's own config it travels with the mounted tree, because
+# it lives in the working tree's .git rather than in a home directory.
+#
+# THREE PROPERTIES MAKE THIS SAFE, AND EACH IS A DELIBERATE LIMIT:
+#
+#   1. THE VALUE IS NEVER CHOSEN HERE.  What is written is exactly what
+#      `git var` already resolved a moment earlier, so the author and
+#      committer of the commit that follows are identical whether or not
+#      this function ran.  It cannot re-attribute a commit; it can only
+#      make an existing attribution durable.
+#   2. THE SCOPE IS `--local` AND NOTHING ELSE.  Never --global, never
+#      --system, never --worktree.  A tool that reaches into a user's
+#      home directory to fix its own environment is a tool nobody can
+#      run twice safely.
+#   3. AN EXISTING LOCAL PAIR IS LEFT ALONE.  If this repository already
+#      says who commits here, that answer wins and this function only
+#      reports it.  Only a MISSING half is filled in.
+# ---------------------------------------------------------------------
+
+# local_config_value KEY -- the value from the repository's own config
+# file only, ignoring every other scope.  Empty when unset.
+local_config_value() {
+    "${GIT}" config --local --get "$1" 2>/dev/null || printf ''
+}
+
+persist_identity_locally() {
+    local name mail existing_name existing_mail
+    # IDENT_AUTHOR is "Name <mail>" and has already been validated by
+    # ident_is_wellformed, so these two expansions cannot come back
+    # empty or unbalanced.
+    name="${IDENT_AUTHOR%% <*}"
+    mail="${IDENT_AUTHOR#*<}"
+    mail="${mail%>}"
+    existing_name="$(local_config_value user.name)"
+    existing_mail="$(local_config_value user.email)"
+    if [ -n "${existing_name}" ] && [ -n "${existing_mail}" ]; then
+        playthrough_log "this repository already records its own" \
+            "committer identity (${existing_name} <${existing_mail}>);" \
+            "leaving it exactly as found"
+        return 0
+    fi
+    if [ -z "${existing_name}" ] &&
+            ! "${GIT}" config --local user.name "${name}"; then
+        die "${EX_IDENTITY}" "user.name could not be written into" \
+            "this repository's own configuration.  The identity has to" \
+            "live in the repository so it survives into the container," \
+            "which mounts this checkout and carries no GIT_*" \
+            "environment of its own; and a configuration that cannot" \
+            "be written is a repository the commit itself would fail" \
+            "in a moment later.  Nothing was committed."
+    fi
+    if [ -z "${existing_mail}" ] &&
+            ! "${GIT}" config --local user.email "${mail}"; then
+        die "${EX_IDENTITY}" "user.email could not be written into" \
+            "this repository's own configuration.  Nothing was" \
+            "committed."
+    fi
+    playthrough_log "recorded ${name} <${mail}> as this REPOSITORY's" \
+        "committer identity (git config --local, never --global and" \
+        "never --system) -- the same identity git already resolved, so" \
+        "the attribution of the commit is unchanged and now travels" \
+        "with the checkout into the container"
     return 0
 }
 
@@ -578,6 +705,106 @@ report_foreign_worktree_changes() {
             "the file that carries it -- repository-wide configuration" \
             "belongs in its own commit.  Commit it separately."
     fi
+    return 0
+}
+
+# ---------------------------------------------------------------------
+# THE COMMITTED RULES, WHICH ARE A DIFFERENT QUESTION FROM THE WORKING
+# TREE'S.
+#
+# assert_not_ignored asks `git check-ignore` about the files on disk,
+# which is exactly the right question for "will the next `git add` skip
+# the save".  It is the WRONG question for "will a fresh clone of this
+# history still carry the save", and that second question is the one a
+# reader of the repository actually asks.  A history whose terminal
+# negation was only ever in somebody's working tree passes every
+# check-ignore in this file and re-ignores the save data the moment
+# anybody clones it.
+#
+# So HEAD's own copies are read.  The negation must be the LAST effective
+# rule in the committed .gitignore, because git applies the last matching
+# pattern; and the six attribute rows must be committed, because `* 
+# text=auto` alone leaves the film, the save and the map archives to
+# content detection.  This is a REFUSAL rather than a warning: a
+# checkpoint taken over a history that does not carry these rules is a
+# checkpoint whose evidence a clone will not have.
+#
+# The remedy is never "force the add".  .gitignore and .gitattributes are
+# repository-wide configuration this script deliberately does not commit,
+# so the fix is to commit them separately, first -- which is what
+# report_foreign_worktree_changes above says when they are merely dirty.
+# ---------------------------------------------------------------------
+readonly IGNORE_NEGATION="!/playthrough/**"
+readonly -a REQUIRED_ATTRIBUTES=(
+    "*.mp4 binary"
+    "*.zzip binary"
+    "*.sav binary"
+    "*.gsav binary"
+    "*.srt text"
+    "*.jsonl text"
+)
+
+# committed_lines PATH -- the file as HEAD carries it, with blank lines
+# and comments dropped and surrounding whitespace collapsed, so a rule
+# written with a tab is recognised as the rule it is.  Empty when HEAD
+# does not carry the path at all.
+committed_lines() {
+    # SC2016: the single quotes are deliberate and required.  This is an
+    # awk PROGRAM, and its '$' characters -- the end-of-line anchor and
+    # $0 -- belong to awk; letting the shell expand them would rewrite
+    # the program before awk ever saw it.
+    # shellcheck disable=SC2016
+    "${GIT}" show "HEAD:$1" 2>/dev/null |
+        "${AWK}" '{ gsub(/^[ \t]+|[ \t]+$/, "");
+                    gsub(/[ \t]+/, " ");
+                    if ($0 != "" && $0 !~ /^#/) { print } }' ||
+        printf ''
+}
+
+assert_committed_vcs_rules() {
+    local ignore_rules="" last="" attributes="" row=""
+    local -a missing=()
+    ignore_rules="$(committed_lines ".gitignore")"
+    if [ -z "${ignore_rules}" ]; then
+        die "${EX_PREREQ}" "HEAD carries no .gitignore, so the" \
+            "terminal '${IGNORE_NEGATION}' negation this tree depends" \
+            "on is not in the history at all.  Commit .gitignore" \
+            "first: without that negation a fresh clone re-ignores the" \
+            "engine's own '#<name>.sav' and '*.log' files and the save" \
+            "data is simply absent from it.  Nothing was committed."
+    fi
+    last="${ignore_rules##*$'\n'}"
+    if [ "${last}" != "${IGNORE_NEGATION}" ]; then
+        die "${EX_PREREQ}" "the last effective rule in HEAD's" \
+            ".gitignore is '${last}', not '${IGNORE_NEGATION}'.  git" \
+            "applies the LAST matching pattern, so anything after the" \
+            "negation re-excludes what it rescued -- and a history" \
+            "without it re-ignores the save data on every fresh clone" \
+            "while every working-tree check here still passes.  Commit" \
+            "a .gitignore whose final effective line is the negation," \
+            "then take this checkpoint.  Nothing was committed."
+    fi
+    attributes="$(committed_lines ".gitattributes")"
+    for row in "${REQUIRED_ATTRIBUTES[@]}"; do
+        if ! printf '%s\n' "${attributes}" |
+                "${GREP}" -Fqx -- "${row}"; then
+            missing+=("${row}")
+        fi
+    done
+    if [ "${#missing[@]}" -gt 0 ]; then
+        die "${EX_PREREQ}" "HEAD's .gitattributes is missing" \
+            "${#missing[@]} row(s) this feature depends on:" \
+            "${missing[*]}.  The film, the save and the compressed map" \
+            "archives are binary and the cue file and the record are" \
+            "text; without those rows they are left to '* text=auto'," \
+            "which is content detection rather than a declaration." \
+            "Commit .gitattributes first.  Nothing was committed."
+    fi
+    playthrough_log "HEAD's own .gitignore ends with" \
+        "'${IGNORE_NEGATION}' and its .gitattributes carries all" \
+        "${#REQUIRED_ATTRIBUTES[@]} of this feature's rows, so a fresh" \
+        "clone of this history keeps the save data and the binary" \
+        "artifacts intact"
     return 0
 }
 
@@ -1320,9 +1547,9 @@ assert_dossier() {
         die "${EX_EVIDENCE}" "there is no survivor dossier at" \
             "$(rel "${path}").  It is the first-person account of who" \
             "this person was, written BEFORE the first keystroke, and" \
-            "the checkpoint that commits the creation is what puts it" \
-            "in the history ahead of the first capture.  Write it, then" \
-            "take this checkpoint.  Nothing was committed."
+            "the '${CHECKPOINT_DOSSIER}' checkpoint is what puts it in" \
+            "the history ahead of the first capture.  Write it, then" \
+            "take that checkpoint.  Nothing was committed."
     fi
     if [ ! -s "${path}" ]; then
         die "${EX_EVIDENCE}" "$(rel "${path}") is empty.  An empty" \
@@ -1334,12 +1561,13 @@ assert_dossier() {
        ! "${GIT}" ls-files --error-unmatch -- "${path}" \
             >/dev/null 2>&1; then
         die "${EX_LIFECYCLE}" "$(rel "${path}") exists but git does" \
-            "not track it, so the '${CHECKPOINT_CREATION}' checkpoint" \
-            "cannot have carried it and the dossier-before-the-first-" \
-            "frame ordering is unprovable from this history.  That" \
-            "ordering is checked with 'git log' over the file, so a" \
-            "dossier written later reads exactly like one written" \
-            "after the fact.  Nothing was committed."
+            "not track it, so no earlier commit can have carried it" \
+            "and the dossier-before-the-first-frame ordering is" \
+            "unprovable from this history.  That ordering is checked" \
+            "with 'git log' over the file, so a dossier written later" \
+            "reads exactly like one written after the fact.  Take" \
+            "'commit_artifacts.sh ${CHECKPOINT_DOSSIER}' before the" \
+            "session, not after it.  Nothing was committed."
     fi
     playthrough_log "the survivor's dossier is at $(rel "${path}")"
     return 0
@@ -1492,10 +1720,110 @@ creation_commit() {
         2>/dev/null || printf ''
 }
 
+# creation_commits -- EVERY creation checkpoint, newest first.
+creation_commits() {
+    "${GIT}" log --format=%H \
+        --grep="^${TRAILER_KEY}: ${CHECKPOINT_CREATION}\$" HEAD -- \
+        2>/dev/null || printf ''
+}
+
+# ---------------------------------------------------------------------
+# WHICH SURVIVOR A COMMIT IS ABOUT.
+#
+# The trailer says a commit is a checkpoint; it does not say WHOSE.  That
+# gap is not theoretical: a `final` checkpoint was accepted whose
+# anchoring `creation` recorded a DIFFERENT survivor entirely, because
+# the only lifecycle assertion was that the record had grown -- and a
+# record re-recorded from scratch for a new survivor has "grown" by that
+# measure too.  The history that leaves behind is one whose two lifecycle
+# commits describe somebody whose files are no longer in the tree.
+#
+# The engine itself writes the answer.  config/lastworld.json names the
+# world and character last loaded, it is a committed artifact, and so it
+# can be read out of any commit's tree.  A fixed program on stdin, with
+# no interpolation, so nothing a world or character name contains can
+# reach the interpreter.
+# ---------------------------------------------------------------------
+readonly LASTWORLD_STDIN_READER='
+import json
+import sys
+
+record = json.load(sys.stdin)
+if not isinstance(record, dict):
+    raise SystemExit(1)
+world = record.get("world_name") or ""
+character = record.get("character_name") or ""
+if not world or not character:
+    raise SystemExit(1)
+sys.stdout.write("%s / %s" % (world, character))
+'
+
+# survivor_at COMMIT -- "<world> / <character>" as that commit's own tree
+# records it, or nothing when the tree carries no readable record.
+survivor_at() {
+    local content=""
+    content="$("${GIT}" show \
+        "$1:playthrough/userdir/config/lastworld.json" 2>/dev/null ||
+        printf '')"
+    if [ -z "${content}" ]; then
+        return 1
+    fi
+    printf '%s\n' "${content}" |
+        "${PLAYTHROUGH_PYTHON}" -c "${LASTWORLD_STDIN_READER}" \
+            2>/dev/null || return 1
+}
+
+# loaded_survivor -- the survivor THIS run is about, in the same spelling
+# survivor_at returns, so the two are directly comparable.
+loaded_survivor() {
+    printf '%s / %s' "${LOADED_WORLD}" "${LOADED_CHARACTER}"
+}
+
+# creation_commit_for_survivor -- the newest creation checkpoint whose
+# own tree names the survivor this run is about, or nothing.
+#
+# This is what makes the anchor SURVIVOR-SPECIFIC rather than merely
+# newest, and it fixes the cause as well as the symptom: because
+# do_creation refuses a second creation only when one exists FOR THIS
+# SURVIVOR, a genuinely new survivor can now take a creation checkpoint
+# of her own instead of being blocked by a previous recording's.
+creation_commit_for_survivor() {
+    local commit="" mine=""
+    mine="$(loaded_survivor)"
+    while IFS= read -r commit; do
+        [ -n "${commit}" ] || continue
+        if [ "$(survivor_at "${commit}" || printf '')" = "${mine}" ]
+        then
+            printf '%s' "${commit}"
+            return 0
+        fi
+    done < <(creation_commits)
+    return 1
+}
+
 assert_creation_checkpoint() {
-    CREATION_COMMIT="$(creation_commit)"
+    local newest="" theirs=""
+    if ! CREATION_COMMIT="$(creation_commit_for_survivor)"; then
+        CREATION_COMMIT=""
+    fi
     readonly CREATION_COMMIT
     if [ -z "${CREATION_COMMIT}" ]; then
+        newest="$(creation_commit)"
+        if [ -n "${newest}" ]; then
+            theirs="$(survivor_at "${newest}" ||
+                printf 'a survivor its own tree does not record')"
+            die "${EX_LIFECYCLE}" "the newest" \
+                "'${CHECKPOINT_CREATION}' checkpoint" \
+                "${newest:0:10} records ${theirs}, and this session is" \
+                "$(loaded_survivor).  Anchoring this" \
+                "'${CHECKPOINT_FINAL}' to it would produce a history" \
+                "whose two lifecycle commits describe somebody whose" \
+                "files are not in the tree -- and a row count cannot" \
+                "tell the two apart, because a record re-recorded from" \
+                "scratch has 'grown' too.  Take" \
+                "'${CHECKPOINT_CREATION}' for THIS survivor before" \
+                "playing her session.  Nothing was committed."
+        fi
         die "${EX_LIFECYCLE}" "there is no '${CHECKPOINT_CREATION}'" \
             "checkpoint in this branch's history, so a" \
             "'${CHECKPOINT_FINAL}' one would be the single bundled" \
@@ -1525,8 +1853,11 @@ assert_creation_checkpoint() {
             "session happening between them; it is not taken over an" \
             "unchanged record.  Nothing was committed."
     fi
-    playthrough_log "the session grew from ${before} to ${ROW_COUNT}" \
-        "row(s) since ${CREATION_COMMIT:0:10}"
+    playthrough_log "anchored to the '${CHECKPOINT_CREATION}'" \
+        "checkpoint ${CREATION_COMMIT:0:10}, which records" \
+        "$(survivor_at "${CREATION_COMMIT}" || printf 'no survivor')" \
+        "-- the same survivor as this session -- and the record grew" \
+        "from ${before} to ${ROW_COUNT} row(s) between the two"
     return 0
 }
 
@@ -1566,13 +1897,29 @@ stageable() {
 stage_batch() {
     local label="$1"
     shift
-    local -a present=() chunk=()
+    local -a present=() chunk=() absent=()
     local path
     for path in "$@"; do
         if stageable "${path}"; then
             present+=("${path}")
+        else
+            absent+=("$(rel "${path}")")
         fi
     done
+    # WHICH NAMED PATHS WERE NOT THERE, SAID OUT LOUD.  stageable()
+    # skipping an absent path is deliberate -- a checkpoint must not fall
+    # over because an optional artifact has not been written -- but the
+    # skip used to be entirely silent, so a MANDATED artifact that had
+    # never been written (playthrough/README.md was exactly this) was
+    # omitted from every commit with nothing in the log to show it.
+    # Reported rather than refused, because which of these classes are
+    # optional is a judgement this function is the wrong place to make;
+    # what it can do is make the omission visible.
+    if [ "${#absent[@]}" -gt 0 ]; then
+        playthrough_log "not staging ${#absent[@]} named path(s) in" \
+            "the ${label} because they are neither on disk nor" \
+            "tracked: ${absent[*]}"
+    fi
     if [ "${#present[@]}" -eq 0 ]; then
         playthrough_log "no ${label} to stage"
         return 0
@@ -1582,7 +1929,7 @@ stage_batch() {
         if [ "${#chunk[@]}" -ge "${STAGE_BATCH_SIZE}" ]; then
             if ! "${GIT}" add -- "${chunk[@]}"; then
                 die "${EX_COMMIT}" "git could not stage the ${label}." \
-                    "Nothing was committed."
+                    "This run committed nothing."
             fi
             chunk=()
         fi
@@ -1590,7 +1937,7 @@ stage_batch() {
     if [ "${#chunk[@]}" -gt 0 ]; then
         if ! "${GIT}" add -- "${chunk[@]}"; then
             die "${EX_COMMIT}" "git could not stage the ${label}." \
-                "Nothing was committed."
+                "This run committed nothing."
         fi
     fi
     playthrough_log "staged the ${label}: ${#present[@]} path(s)"
@@ -1890,7 +2237,11 @@ ${ROW_COUNT} keystroke(s) captured.")
 # the fact that the commit command succeeded.
 # ---------------------------------------------------------------------
 
-verify_commit() {
+# verify_attribution_and_trailer NAME -- the two properties EVERY
+# checkpoint has, whatever else it carries.  Shared, so the dossier
+# commit is held to the same attribution rule as the other two rather
+# than to a looser one written beside it.
+verify_attribution_and_trailer() {
     local name="$1"
     local author committer message
     author="$("${GIT}" log -1 --format='%an <%ae>' HEAD)"
@@ -1912,6 +2263,146 @@ verify_commit() {
             "cannot find it again.  The commit exists; its place in" \
             "the lifecycle does not."
     fi
+    return 0
+}
+
+# ---------------------------------------------------------------------
+# WHAT THE `final` CHECKPOINT MUST HAVE RECORDED, AND WHY THIS IS HERE
+# RATHER THAN ONLY IN THE GATE.
+#
+# The acceptance gate reads the finished history and asserts, among other
+# things, that at least two commits touch the userdir and that the
+# dossier's introducing commit precedes the first capture's.  This step
+# used to assert NEITHER, so it could certify a checkpoint the gate would
+# then reject -- and the operator would learn about it one stage later,
+# from a different tool, with the commit already taken.  A committer whose
+# self-verification is weaker than the gate that follows it is a committer
+# that hands over work it knows nothing about.
+#
+# So both properties are checked HERE too, immediately after the commit
+# and before this step claims success.
+# ---------------------------------------------------------------------
+
+# commit_touched COMMIT PATHSPEC -- the paths that commit recorded under
+# PATHSPEC, or nothing.  diff-tree against the first parent, which is
+# what "this commit changed" means for a linear history.
+commit_touched() {
+    "${GIT}" diff-tree --no-commit-id --name-only -r "$1" -- "$2" \
+        2>/dev/null || printf ''
+}
+
+# introducing_commit PATH -- the oldest commit that touched PATH.
+introducing_commit() {
+    "${GIT}" log --format=%H -- "$1" 2>/dev/null |
+        "${TR}" -d '\r' | tail -n 1 || printf ''
+}
+
+# assert_staged_records_the_save -- the same property as
+# assert_final_recorded_the_save, asserted BEFORE the commit instead of
+# after it.
+#
+# Both exist deliberately.  The post-commit form is the certification
+# that matches the acceptance gate; on its own, though, it can only
+# report a bad commit that has already been taken, which leaves the
+# operator to undo history this script is otherwise careful never to
+# touch.  Read off the INDEX the answer is available a moment earlier,
+# while refusing still costs nothing.
+#
+# It fires only when a commit is actually going to be made.  A `final`
+# re-run over an unchanged tree stages nothing, commit_checkpoint makes
+# no empty commit, and there is no claim to check.
+assert_staged_records_the_save() {
+    if [ -z "$(staged_paths)" ]; then
+        return 0
+    fi
+    # Named for the userdir rather than "staged": staged_out_of_scope
+    # already uses `staged` as a local ARRAY, and shellcheck reads one
+    # name used both ways across this file as SC2178/SC2128.
+    local staged_save=""
+    staged_save="$("${GIT}" diff --cached --name-only HEAD -- \
+        "${PLAYTHROUGH_USERDIR}" 2>/dev/null || printf '')"
+    if [ -n "${staged_save}" ]; then
+        return 0
+    fi
+    die "${EX_LIFECYCLE}" "this '${CHECKPOINT_FINAL}' checkpoint would" \
+        "record changes, but none of them is under" \
+        "$(rel "${PLAYTHROUGH_USERDIR}").  This checkpoint exists to" \
+        "publish the save the survivor left behind after the in-game" \
+        "Save and Quit, and the requirement is read as a commit after" \
+        "character creation AND a commit after the session closed -- so" \
+        "a final commit carrying no save is the second of those two in" \
+        "name only, and the acceptance gate rejects it.  Save and quit" \
+        "inside the game first, so the engine rewrites the save, then" \
+        "take this checkpoint.  NOTHING WAS COMMITTED; the index is" \
+        "left staged so what would have been recorded can be inspected" \
+        "with 'git diff --cached', and nothing was rewritten."
+}
+
+assert_final_recorded_the_save() {
+    local touched=""
+    touched="$(commit_touched HEAD "${PLAYTHROUGH_USERDIR}")"
+    if [ -z "${touched}" ]; then
+        die "${EX_COMMIT}" "the '${CHECKPOINT_FINAL}' checkpoint" \
+            "${COMMIT_HASH:0:10} records no change anywhere under" \
+            "$(rel "${PLAYTHROUGH_USERDIR}").  This checkpoint exists" \
+            "to publish the save the survivor left behind after the" \
+            "in-game Save and Quit, and the requirement is read as a" \
+            "commit after creation AND a commit after the session" \
+            "closed -- a final commit that carries no save is the" \
+            "second of those two in name only.  Save and quit inside" \
+            "the game first, so the engine rewrites the save, then" \
+            "take this checkpoint."
+    fi
+    local recorded=0
+    # Same reason as tracked_capture_count: one number, always, whatever
+    # the input looked like.
+    recorded="$(printf '%s\n' "${touched}" | "${GREP}" -c .)" ||
+        recorded=0
+    playthrough_log "the checkpoint records ${recorded} path(s) under" \
+        "$(rel "${PLAYTHROUGH_USERDIR}")"
+    return 0
+}
+
+assert_dossier_precedes_captures() {
+    local dossier="" capture="" frame=""
+    dossier="$(introducing_commit "${PLAYTHROUGH_DOSSIER}")"
+    if ! capture="$(first_capture)"; then
+        return 0
+    fi
+    frame="$(introducing_commit "${capture}")"
+    if [ -z "${dossier}" ] || [ -z "${frame}" ]; then
+        die "${EX_COMMIT}" "the dossier's introducing commit is" \
+            "'${dossier:-none}' and the first capture's is" \
+            "'${frame:-none}', so the ordering the requirement asks" \
+            "for cannot be read out of this history at all."
+    fi
+    if [ "${dossier}" = "${frame}" ]; then
+        die "${EX_COMMIT}" "${dossier:0:10} introduced BOTH" \
+            "$(rel "${PLAYTHROUGH_DOSSIER}") and $(rel "${capture}")," \
+            "so 'the dossier was written before the first gameplay" \
+            "frame' is unprovable from this history -- one commit" \
+            "cannot precede itself.  Commit the dossier on its own" \
+            "first ('commit_artifacts.sh ${CHECKPOINT_DOSSIER}'), then" \
+            "'${CHECKPOINT_CREATION}', then this one."
+    fi
+    if ! "${GIT}" merge-base --is-ancestor "${dossier}" "${frame}" \
+            2>/dev/null; then
+        die "${EX_COMMIT}" "${dossier:0:10} introduced the dossier and" \
+            "${frame:0:10} introduced the first capture, and" \
+            "${dossier:0:10} is not an ancestor of it.  The" \
+            "requirement is an ORDER, and on separate branches neither" \
+            "commit precedes the other."
+    fi
+    playthrough_log "the dossier's introducing commit" \
+        "${dossier:0:10} is a strict ancestor of the first capture's" \
+        "${frame:0:10}, so the before-play ordering is provable from" \
+        "this history"
+    return 0
+}
+
+verify_commit() {
+    local name="$1"
+    verify_attribution_and_trailer "${name}"
     local leftover
     # The same flags the pre-commit sweep uses, so "clean" means the
     # same thing on both sides of the commit: every untracked file
@@ -1927,8 +2418,47 @@ verify_commit() {
             "that left some of it behind has not done its job."
     fi
     assert_tracked_at_head
+    # The two properties the acceptance gate will look for next, asserted
+    # here so this step cannot certify what that one rejects.
+    if [ "${name}" = "${CHECKPOINT_FINAL}" ]; then
+        assert_final_recorded_the_save
+        assert_dossier_precedes_captures
+    fi
     playthrough_log "the checkpoint is verified: attribution," \
         "trailer, a clean tree and every artifact class tracked"
+    return 0
+}
+
+# verify_dossier_commit -- the narrower verification the FIRST commit of
+# the lifecycle can actually satisfy.
+#
+# It deliberately does NOT assert a clean tree or the tracked artifact
+# classes, and the reason is the point of the commit: at this moment the
+# session has not been played, so the captures, the record, the timeline
+# and the films do not exist and the rest of playthrough/ is legitimately
+# uncommitted.  Demanding the `final` checkpoint's conditions here would
+# make the first step of the lifecycle impossible to take, which is the
+# shape of the defect this whole subcommand exists to remove.
+verify_dossier_commit() {
+    verify_attribution_and_trailer "${CHECKPOINT_DOSSIER}"
+    if ! "${GIT}" ls-files --error-unmatch -- \
+            "${PLAYTHROUGH_DOSSIER}" >/dev/null 2>&1; then
+        die "${EX_COMMIT}" "the commit was taken but git still does" \
+            "not track $(rel "${PLAYTHROUGH_DOSSIER}").  That is the" \
+            "one thing this checkpoint exists to publish."
+    fi
+    local touched=""
+    touched="$(commit_touched HEAD "${PLAYTHROUGH_DOSSIER}")"
+    if [ -z "${touched}" ]; then
+        die "${EX_COMMIT}" "the '${CHECKPOINT_DOSSIER}' checkpoint" \
+            "${COMMIT_HASH:0:10} records no change to" \
+            "$(rel "${PLAYTHROUGH_DOSSIER}"), so it is not the commit" \
+            "that introduced the dossier and the ordering it exists to" \
+            "establish is not established by it."
+    fi
+    playthrough_log "the '${CHECKPOINT_DOSSIER}' checkpoint is" \
+        "verified: attribution, trailer, and the dossier now tracked" \
+        "at HEAD ahead of any capture"
     return 0
 }
 
@@ -1980,18 +2510,33 @@ assert_tracked_at_head() {
 # ---------------------------------------------------------------------
 # THE SUBCOMMANDS.
 #
-# The two checkpoints run the SAME gates in the same order, and differ
-# only in the lifecycle assertion `final` adds.  Keeping the gate list
+# `creation` and `final` run the SAME gates in the same order, and differ
+# only in the lifecycle assertions `final` adds.  Keeping that gate list
 # identical is deliberate: a checkpoint with a weaker gate is a
 # checkpoint somebody takes when the other one refuses.
+#
+# `dossier` is the exception, and deliberately so rather than by
+# oversight: it is taken BEFORE the session is played, when there is no
+# manifest, no capture, no timeline and no film, so the finished-session
+# evidence gates would refuse a perfectly correct dossier commit.  Its
+# own gate set is spelled out at do_dossier, and it is narrower in
+# exactly one direction -- it asserts everything that can be true this
+# early, plus one thing the other two cannot: that no capture is tracked
+# yet.
 # ---------------------------------------------------------------------
 
 run_common_gates() {
     local checkpoint="$1"
     assert_identity
     assert_repository
+    # After the repository is the one we expect, and before anything is
+    # staged: record the resolved identity in THIS repository's own
+    # configuration, so the attribution survives into the container that
+    # mounts this checkout and carries no GIT_* of its own.
+    persist_identity_locally
     assert_scope
     report_foreign_worktree_changes
+    assert_committed_vcs_rules
     assert_no_machine_files
     assert_save_tree "${checkpoint}"
     assert_evidence
@@ -2004,30 +2549,135 @@ run_common_gates() {
     return 0
 }
 
+# ---------------------------------------------------------------------
+# THE DOSSIER CHECKPOINT -- the first of the three, and the one that
+# makes the other two provable.
+#
+# Its gate set is deliberately its own rather than run_common_gates:
+# at this moment the session has NOT been played, so there is no
+# manifest, no capture, no timeline and no film, and every evidence gate
+# written for a finished session would refuse a perfectly correct dossier
+# commit.  What IS asserted is everything that can be true this early --
+# the identity, the repository, the scope, the committed ignore rules --
+# plus the two properties specific to this step: the dossier exists and
+# is not empty, and NO CAPTURE IS TRACKED YET.
+#
+# That last one is the whole point.  "Before the first gameplay frame" is
+# a statement about ORDER, and the only moment at which this commit can
+# establish it is before any frame is in the history.  Taken afterwards it
+# would be a commit of the same file that proves nothing, so it is
+# refused rather than allowed to look like it worked.
+# ---------------------------------------------------------------------
+# tracked_capture_count -- how many captures git has in the index.
+#
+# `wc -l` rather than `grep -c .`, and the difference is not cosmetic:
+# `grep -c .` on empty input PRINTS "0" and EXITS 1, so a `|| printf 0`
+# fallback fires as well and the substitution comes back as two lines.
+# Emitted into the KEY=value block that made a stray bare "0" line of its
+# own and broke the contract stdout is held to.  wc -l always exits 0 and
+# always prints exactly one number, which is why the rest of this file
+# already counts that way.
+tracked_capture_count() {
+    "${GIT}" ls-files -- "${PLAYTHROUGH_FRAMES_DIR}" 2>/dev/null |
+        "${WC}" -l | "${TR}" -d ' '
+}
+
+do_dossier() {
+    assert_identity
+    assert_repository
+    persist_identity_locally
+    assert_scope
+    report_foreign_worktree_changes
+    assert_committed_vcs_rules
+    assert_no_machine_files
+    # Existence and substance only: the tracked-at-HEAD half of
+    # assert_dossier is what THIS commit is about to establish.
+    assert_dossier "${CHECKPOINT_DOSSIER}"
+    local tracked=0
+    tracked="$(tracked_capture_count)"
+    if [ "${tracked}" -gt 0 ]; then
+        die "${EX_LIFECYCLE}" "${tracked} capture(s) are already" \
+            "tracked, so a '${CHECKPOINT_DOSSIER}' checkpoint taken" \
+            "now could not put the dossier ahead of the first gameplay" \
+            "frame -- and putting it ahead of them is the only thing" \
+            "this checkpoint does.  It belongs immediately after the" \
+            "dossier is written and before the session is played." \
+            "Nothing was committed."
+    fi
+    if "${GIT}" ls-files --error-unmatch -- "${PLAYTHROUGH_DOSSIER}" \
+            >/dev/null 2>&1 &&
+            [ -z "$(commit_touched HEAD "${PLAYTHROUGH_DOSSIER}")" ] &&
+            [ -z "$("${GIT}" status --porcelain -- \
+                "${PLAYTHROUGH_DOSSIER}" 2>/dev/null)" ]; then
+        playthrough_log "$(rel "${PLAYTHROUGH_DOSSIER}") is already" \
+            "tracked and unchanged, and no capture is tracked yet, so" \
+            "the ordering this checkpoint establishes is already in" \
+            "the history"
+    fi
+    # ONE path, by name.  A dossier commit that also swept up the tooling
+    # or the notes would be the bundled commit this step exists to split.
+    stage_batch "the survivor's dossier" "${PLAYTHROUGH_DOSSIER}"
+    commit_checkpoint "${CHECKPOINT_DOSSIER}" "${SUBJECT_DOSSIER}"
+    if [ "${COMMITTED}" = "yes" ]; then
+        verify_dossier_commit
+    fi
+    report "${CHECKPOINT_DOSSIER}" ""
+    return 0
+}
+
 do_creation() {
     run_common_gates "${CHECKPOINT_CREATION}"
-    # A `creation` checkpoint taken when one already exists is either a
-    # re-run over an unchanged tree -- which commit_checkpoint handles by
-    # doing nothing -- or a second creation in one history, which would
-    # make the trailer search ambiguous for every later `final`.
-    local existing
-    existing="$(creation_commit)"
-    if [ -n "${existing}" ] && has_pending_changes; then
-        die "${EX_LIFECYCLE}" "a '${CHECKPOINT_CREATION}' checkpoint" \
-            "already exists (${existing}) and there are further" \
-            "changes to record.  A second creation checkpoint would" \
-            "make '${TRAILER_KEY}: ${CHECKPOINT_CREATION}' match two" \
-            "commits and the lifecycle would no longer name a single" \
-            "moment.  Those changes belong to the" \
-            "'${CHECKPOINT_FINAL}' checkpoint or to an ordinary" \
-            "commit.  Nothing was committed."
+    # THE DOSSIER MUST ALREADY BE IN THE HISTORY.  This checkpoint stages
+    # the captures, so if the dossier arrived in the same commit the two
+    # would share an introducing commit and the before-play ordering
+    # would be permanently unprovable -- which is exactly what happened
+    # while the narrative class and the captures were staged together.
+    if ! "${GIT}" ls-files --error-unmatch -- \
+            "${PLAYTHROUGH_DOSSIER}" >/dev/null 2>&1; then
+        die "${EX_LIFECYCLE}" "$(rel "${PLAYTHROUGH_DOSSIER}") is not" \
+            "tracked yet, and this checkpoint stages the captures --" \
+            "so the dossier and the first frame would arrive in ONE" \
+            "commit and 'the dossier was written before the first" \
+            "gameplay frame' could never be read out of the history," \
+            "because one commit cannot precede itself.  Take" \
+            "'commit_artifacts.sh ${CHECKPOINT_DOSSIER}' first, which" \
+            "commits it alone.  Nothing was committed."
+    fi
+    # A `creation` checkpoint taken when one already exists FOR THIS
+    # SURVIVOR is either a re-run over an unchanged tree -- which
+    # commit_checkpoint handles by doing nothing -- or a second creation
+    # for one survivor, which would make the trailer search ambiguous for
+    # every later `final`.
+    #
+    # SURVIVOR-SCOPED, and that is the fix rather than a nicety: the
+    # unscoped form refused a NEW survivor's creation checkpoint whenever
+    # ANY previous recording had one, which is precisely why a
+    # re-recorded session ended up with no checkpoint of its own and the
+    # history's lifecycle commits described somebody else.
+    local existing=""
+    if existing="$(creation_commit_for_survivor)"; then
+        if has_pending_changes; then
+            die "${EX_LIFECYCLE}" "a '${CHECKPOINT_CREATION}'" \
+                "checkpoint for $(loaded_survivor) already exists" \
+                "(${existing}) and there are further changes to" \
+                "record.  A second creation checkpoint for one" \
+                "survivor would make" \
+                "'${TRAILER_KEY}: ${CHECKPOINT_CREATION}' match two" \
+                "commits about the same person and the lifecycle would" \
+                "no longer name a single moment.  Those changes belong" \
+                "to the '${CHECKPOINT_FINAL}' checkpoint or to an" \
+                "ordinary commit.  Nothing was committed."
+        fi
+    else
+        existing=""
     fi
     stage_artifacts
     commit_checkpoint "${CHECKPOINT_CREATION}" "${SUBJECT_CREATION}"
     if [ "${COMMITTED}" = "yes" ]; then
         verify_commit "${CHECKPOINT_CREATION}"
     fi
-    report "${CHECKPOINT_CREATION}" "$(creation_commit)"
+    report "${CHECKPOINT_CREATION}" \
+        "$(creation_commit_for_survivor || printf '')"
     return 0
 }
 
@@ -2035,6 +2685,10 @@ do_final() {
     run_common_gates "${CHECKPOINT_FINAL}"
     assert_creation_checkpoint
     stage_artifacts
+    # After staging and before committing: what this commit WOULD record
+    # has to include the save, and refusing here costs nothing where
+    # refusing afterwards would leave the bad commit behind.
+    assert_staged_records_the_save
     commit_checkpoint "${CHECKPOINT_FINAL}" "${SUBJECT_FINAL}"
     if [ "${COMMITTED}" = "yes" ]; then
         verify_commit "${CHECKPOINT_FINAL}"
@@ -2082,9 +2736,11 @@ do_status() {
     # describable here instead of ending the call.
     if ! resolve_identity; then
         playthrough_warn "git cannot determine an author identity, so" \
-            "both checkpoints would refuse.  Configure the platform's" \
-            "identity; this script will not write user.name or" \
-            "user.email into the repository."
+            "every checkpoint would refuse.  Supply it the way the" \
+            "platform supplies it -- its own git configuration or the" \
+            "GIT_AUTHOR_* environment; a checkpoint records the" \
+            "identity it resolves into this repository's own" \
+            "configuration, but it will not invent one."
     fi
     assert_repository
     local pending creation
@@ -2124,6 +2780,36 @@ do_status() {
             character="${fields[1]-}"
         fi
     fi
+    # WHOSE creation checkpoint that is, which is a different question
+    # from whether one exists.  A `final` anchors to the creation of THE
+    # SURVIVOR IT IS ABOUT, so a history whose newest creation names
+    # somebody else is a history in which `final` will refuse -- and an
+    # operator running `status` to find out why deserves to be told that
+    # here rather than from the refusal.
+    local anchor_survivor=""
+    if [ -n "${creation}" ] && [ -n "${world}" ] &&
+            [ -n "${character}" ]; then
+        anchor_survivor="$(survivor_at "${creation}" || printf '')"
+        if [ -z "${anchor_survivor}" ]; then
+            playthrough_log "the '${CHECKPOINT_CREATION}' checkpoint" \
+                "${creation:0:10} records no survivor its own tree can" \
+                "be read for"
+        elif [ "${anchor_survivor}" = "${world} / ${character}" ]; then
+            playthrough_log "that checkpoint records" \
+                "${anchor_survivor}, which is this session's own" \
+                "survivor, so '${CHECKPOINT_FINAL}' would anchor to it"
+        else
+            playthrough_warn "that checkpoint records" \
+                "${anchor_survivor} while this userdir has" \
+                "${world} / ${character} loaded, so" \
+                "'${CHECKPOINT_FINAL}' would REFUSE: it anchors to the" \
+                "creation of the survivor it is about, and a row count" \
+                "cannot tell two survivors apart.  Take" \
+                "'${CHECKPOINT_DOSSIER}' and then" \
+                "'${CHECKPOINT_CREATION}' for this survivor before" \
+                "playing her session."
+        fi
+    fi
     emit "CHECKPOINT" "status"
     emit "COMMITTED" "no"
     emit "COMMIT" ""
@@ -2133,6 +2819,8 @@ do_status() {
     emit "FRAMES" "${frames}"
     emit "ROWS" "${rows}"
     emit "CREATION" "${creation}"
+    emit "CREATION_SURVIVOR" "${anchor_survivor}"
+    emit "TRACKED_CAPTURES" "$(tracked_capture_count)"
     return 0
 }
 
@@ -2162,23 +2850,54 @@ usage() {
 playthrough/tooling/commit_artifacts.sh <checkpoint>"
         printf '%s\n' ""
         printf '  %-9s %s\n' \
+            "dossier" "commit the survivor's dossier alone, BEFORE the \
+first frame" \
             "creation" "commit the survivor and the save she starts \
 from" \
             "final" "commit the closed session and its artifacts" \
             "status" "report the lifecycle, changing nothing" \
             "help" "this text"
         printf '%s\n' ""
+        printf '%s\n' "THE THREE MUTATING STEPS ARE ORDERED AND EACH \
+REFUSES TO RUN OUT OF TURN:"
+        printf '%s\n' "  dossier -> creation -> play the session -> \
+final."
+        printf '%s\n' "The dossier is its own commit because 'written \
+before the first gameplay"
+        printf '%s\n' "frame' is checked as ANCESTRY between two \
+commits, and one commit cannot"
+        printf '%s\n' "precede itself -- so 'creation' refuses until \
+the dossier is tracked."
+        printf '%s\n' "'final' anchors to the 'creation' checkpoint of \
+THE SAME survivor and"
+        printf '%s\n' "refuses across a survivor change, which a row \
+count cannot detect."
+        printf '%s\n' ""
         printf '%s\n' "It stages playthrough/ and nothing else, by \
 artifact class, in bounded"
         printf '%s\n' "batches -- never a blanket add, never -A, never \
 -f, never a shell glob."
         printf '%s\n' ".gitignore and .gitattributes are CHECKED here \
-and committed elsewhere."
-        printf '%s\n' "It never writes git configuration, never \
-rewrites history, and never"
-        printf '%s\n' "pushes.  An identity that does not resolve is a \
-refusal:"
-        printf '%s\n' "configure the platform, not the repository."
+-- in the working tree AND"
+        printf '%s\n' "as HEAD carries them -- and committed elsewhere."
+        printf '%s\n' "It records the identity git already resolves in \
+THIS repository's own"
+        printf '%s\n' "configuration (git config --local, never \
+--global and never --system), so"
+        printf '%s\n' "the attribution travels with the checkout into \
+the container.  It never"
+        printf '%s\n' "invents an identity, never rewrites history and \
+never pushes."
+        printf '%s\n' "A mutating step takes a lock scoped to this \
+checkout, so two runs over one"
+        printf '%s\n' "working tree serialise and two runs over \
+different ones do not."
+        printf '%s\n' ""
+        printf '%s\n' "Environment:"
+        printf '  %s\n' \
+            "PLAYTHROUGH_CHECKPOINT_LOCK_TIMEOUT  seconds to wait for \
+that lock (default \
+${CHECKPOINT_LOCK_TIMEOUT_DEFAULT})"
         printf '%s\n' ""
         printf '%s\n' "stdout carries KEY=value lines only; all \
 logging goes to stderr."
@@ -2189,6 +2908,63 @@ logging goes to stderr."
 # ---------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------
+# take_checkpoint_lock -- serialise the MUTATING subcommands against
+# another run over the same working tree.
+#
+# Two checkpoints running at once share one index and one HEAD, and the
+# loser of that race did not merely fail: it reported "Nothing was
+# committed" while the other process was committing, which is a
+# diagnosis that describes the wrong repository state.  The lock removes
+# the race, and its name carries a digest of this checkout so a run over a
+# DIFFERENT tree is not serialised against this one -- a bare name would
+# block two runs that share nothing, because the lock directory is derived
+# from CLONE_INDEX rather than from the working tree.
+#
+# `status` deliberately does NOT take it: it only reads, and a read that
+# blocks behind a commit is a reporting tool that stops working exactly
+# when an operator needs it.
+take_checkpoint_lock() {
+    local name="" timeout=""
+    if ! playthrough_validate_int \
+            "${PLAYTHROUGH_CHECKPOINT_LOCK_TIMEOUT:-\
+${CHECKPOINT_LOCK_TIMEOUT_DEFAULT}}" \
+            "the checkpoint lock timeout" 0 86400; then
+        die "${EX_USAGE}" "PLAYTHROUGH_CHECKPOINT_LOCK_TIMEOUT must be" \
+            "a whole number of seconds from 0 to 86400.  Nothing was" \
+            "committed."
+    fi
+    timeout="${PLAYTHROUGH_INT}"
+    if ! name="$(playthrough_checkout_lock_name \
+            "${CHECKPOINT_LOCK_BASENAME}")"; then
+        die "${EX_PREREQ}" "the checkpoint lock name for this" \
+            "checkout could not be derived, so two concurrent" \
+            "checkpoints could not be kept apart.  Nothing was" \
+            "committed."
+    fi
+    # THE SCOPE IS NAMED BY THE DIGEST, NOT BY THE PATH.  Every message
+    # this script emits goes through playthrough_redact, which rewrites
+    # the repository root to '.' so host paths stay out of the logs -- so
+    # "the checkout at ${PLAYTHROUGH_REPO_ROOT}" renders as "the checkout
+    # at .", which tells an operator nothing.  The digest already in the
+    # lock name IS the scope, and quoting it says which lock to look for
+    # and simultaneously why a different tree does not contend for it.
+    if ! playthrough_acquire_lock "${name}" "${timeout}"; then
+        die "${EX_PREREQ}" "another checkpoint is already running over" \
+            "THIS checkout -- the lock is '${name}', whose digest is" \
+            "derived from this working tree's path -- and it did not" \
+            "finish within ${timeout}s.  Two checkpoints share one" \
+            "index and one HEAD, so this run stops rather than racing" \
+            "it: THIS RUN COMMITTED NOTHING, and whether the other one" \
+            "committed is its own to report -- do not read this as a" \
+            "statement about the repository."
+    fi
+    playthrough_log "holding the '${name}' lock for up to ${timeout}s;" \
+        "the digest in that name is derived from THIS checkout's path," \
+        "so a checkpoint running over a different working tree is not" \
+        "serialised against this one"
+    return 0
+}
+
 main() {
     local subcommand="${1-}"
     if [ "$#" -gt 1 ]; then
@@ -2201,10 +2977,16 @@ main() {
             usage 1
             return "${EX_OK}"
             ;;
+        "${CHECKPOINT_DOSSIER}")
+            take_checkpoint_lock
+            do_dossier
+            ;;
         "${CHECKPOINT_CREATION}")
+            take_checkpoint_lock
             do_creation
             ;;
         "${CHECKPOINT_FINAL}")
+            take_checkpoint_lock
             do_final
             ;;
         status)
@@ -2213,9 +2995,10 @@ main() {
         '')
             usage 2
             die "${EX_USAGE}" "which checkpoint?  There is no default:" \
-                "the two commits mean different things and taking the" \
-                "wrong one is not something a default can be right" \
-                "about."
+                "the three commits mean different things, they are" \
+                "taken at three different moments of the session, and" \
+                "choosing the wrong one is not something a default can" \
+                "be right about."
             ;;
         *)
             usage 2

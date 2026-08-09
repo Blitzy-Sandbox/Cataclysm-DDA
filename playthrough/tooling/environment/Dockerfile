@@ -220,6 +220,47 @@ RUN /opt/python3.12/bin/python3.12 -m venv /opt/playthrough-venv \
 ENV PLAYTHROUGH_VENV=/opt/playthrough-venv
 
 # ---------------------------------------------------------------------
+# THE LINTER, because the acceptance gate will not run without one.
+#
+# verify_artifacts.sh asserts that the new Python satisfies the
+# repository's own lint contract, and that check is DELIBERATELY NOT
+# SKIPPABLE: a gate that quietly passed when its linter was missing would
+# certify unlinted code as linted.  Without flake8 in this image the gate
+# therefore FAILS HERE -- measured, as "no flake8 could be resolved" --
+# which left the pipeline with no environment in which it could both
+# legally render and pass its own gate.  That is the whole defect: not a
+# missing convenience, a declared production environment that could not
+# satisfy the acceptance criteria of the thing it was declared for.
+#
+# WHY APT AND NOT THE PINNED VENV.  Two reasons, and they point the same
+# way.  First, /opt/playthrough-venv holds requirements.lock's closure
+# installed with --require-hashes --only-binary :all: --no-deps; adding an
+# unlisted package to it would make `pip check` and the closure's own
+# integrity claim describe something other than what is installed, and the
+# feature plan explicitly keeps flake8 out of requirements.txt as
+# verification-only tooling rather than a runtime dependency of the
+# pipeline.  Second, a checker is not a producer: the film's byte-level
+# reproducibility rests on the render closure, and nothing flake8 does
+# reaches an artifact.  So it is installed the way this file installs
+# every other system tool, and for the reason stated at APT VERSIONS ARE
+# DELIBERATELY NOT PINNED above.
+#
+# The archive's version here is the same upstream release the host's own
+# lint environment carries, so the gate's verdict does not depend on which
+# side of the container boundary it was measured from.  Whatever version a
+# given build picks up is written into the inventory below, so the answer
+# is a fact the image carries rather than a claim in this comment.
+#
+# This layer sits AFTER the interpreter and the closure so that changing
+# it never rebuilds either -- the CPython compile is the expensive one --
+# and BEFORE the inventory so that the inventory records it.
+# ---------------------------------------------------------------------
+RUN apt-get update \
+ && apt-get -y install --no-install-recommends flake8 \
+ && rm -rf /var/lib/apt/lists/* \
+ && flake8 --version
+
+# ---------------------------------------------------------------------
 # What this image actually contains, recorded at build time.
 #
 # Not pinned, so measured: an image is only as trustworthy as the
@@ -241,13 +282,13 @@ RUN { \
         g++-14 make pkg-config ccache gettext zlib1g-dev \
         libsdl2-dev libsdl2-ttf-dev libsdl2-image-dev \
         libsdl2-mixer-dev libfreetype-dev libncurses-dev \
-        python3 coreutils util-linux git \
+        python3 coreutils util-linux git flake8 \
         | sort; \
       echo; \
       echo "## tools"; \
       for tool in Xvfb openbox xdpyinfo xwininfo xprop xdotool xauth \
                   import convert identify ffmpeg ffprobe tesseract \
-                  flock setsid nohup; do \
+                  flock setsid nohup flake8; do \
         printf '%s\t%s\n' "${tool}" "$(command -v "${tool}" \
           || echo MISSING)"; \
       done | sort; \

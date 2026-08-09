@@ -172,6 +172,27 @@ do_inventory() {
 # uid so that every file it writes into the mounted checkout belongs to
 # whoever will commit it -- root-owned artifacts in a working tree are a
 # repair job, not an artifact.
+#
+# HOW THE COMMITTER IDENTITY REACHES INSIDE, and why it is not forwarded.
+#
+# HOME is pointed at a scratch directory in the image and no GIT_* variable
+# is passed, both deliberately: an identity carried in this process's
+# environment would make the attribution of a commit depend on who invoked
+# the container, which is exactly the thing that should not vary.  The
+# consequence, measured, is that the invoking user's ~/.gitconfig DOES NOT
+# EXIST in here -- so a `git var GIT_AUTHOR_IDENT` that resolved on the
+# host resolves to nothing inside, the gate's identity check reported
+# "user.name='' user.email=''", and a checkpoint taken in the only
+# environment where rendering is legal exited 3.
+#
+# The identity therefore travels IN THE REPOSITORY rather than in the
+# environment: commit_artifacts.sh records the identity git already
+# resolved into the checkout's own configuration (git config --local,
+# never --global and never --system, and never overwriting a pair the
+# repository already carries).  That file lives in the mounted tree, so it
+# is the same file on both sides of this boundary and the commit carries
+# the same author either way.  Nothing needs forwarding, and adding a
+# --env for it here would reintroduce the variability the absence prevents.
 docker_run() {
     local -a extra=()
     while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do

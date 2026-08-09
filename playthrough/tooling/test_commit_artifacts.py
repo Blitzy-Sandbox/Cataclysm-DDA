@@ -64,10 +64,25 @@ every directory above it, and /tmp on this host is mode 2777.
 
 The identity comes from GIT_AUTHOR_* / GIT_COMMITTER_* in the sandbox's
 environment, set to the same identity the platform supplies, with
-GIT_CONFIG_GLOBAL=/dev/null and GIT_CONFIG_NOSYSTEM=1 so the host's own
-configuration cannot make a test pass.  That is also how the missing
-identity case is produced: drop those four variables and git has nothing
-to resolve.
+GIT_CONFIG_NOSYSTEM=1 and GIT_CONFIG_GLOBAL pointed at an EMPTY FILE
+INSIDE THE SANDBOX so the host's own configuration cannot make a test
+pass.  That is also how the missing identity case is produced: drop those
+four variables and git has nothing to resolve.
+
+GIT_CONFIG_GLOBAL is a sandbox file rather than /dev/null, and the reason
+is a hazard that was measured rather than imagined.  The subject writes
+`git config --local`; a regression that widened that to `--global` was
+introduced deliberately to check these tests would catch it, and git
+performed the write the way it performs every configuration write --
+create a lock file beside the target, then rename it over the target.
+With the target set to /dev/null that rename REPLACED THE HOST'S NULL
+DEVICE with a regular file containing git's error message, and every
+later `> /dev/null` on the host appended to it.  A suite whose failure
+mode is damaging the machine it runs on is not a safe suite, so the
+global scope is aimed inside the temporary directory, where a stray
+write lands harmlessly and is thrown away with the rest of the sandbox --
+and where it can be read back byte for byte as evidence that no such
+write happened.
 
 Standard library only.  Nothing outside the temporary directory is
 written.
@@ -82,6 +97,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 sys.dont_write_bytecode = True
@@ -132,7 +148,33 @@ obj
 
 NEGATION_LINE = "!/playthrough/**"
 
-SANDBOX_GITATTRIBUTES = "* text=auto\n*.sav binary\n*.gsav binary\n"
+# The attribute rows the feature depends on, all six of them.  A
+# checkpoint reads HEAD's OWN .gitattributes and refuses when they are
+# missing, because `* text=auto` alone leaves the film, the save and the
+# compressed map archives to content detection rather than to a
+# declaration -- so a sandbox without them is a sandbox in which no
+# checkpoint can be taken, which is the behaviour under test rather than
+# an obstacle to it.
+SANDBOX_GITATTRIBUTES = (
+    "* text=auto\n"
+    "*.mp4 binary\n"
+    "*.zzip binary\n"
+    "*.sav binary\n"
+    "*.gsav binary\n"
+    "*.srt text\n"
+    "*.jsonl text\n"
+)
+
+# The rows a checkpoint requires HEAD to carry, in the spelling it
+# compares against, so a test can remove exactly one of them.
+REQUIRED_ATTRIBUTE_ROWS = (
+    "*.mp4 binary",
+    "*.zzip binary",
+    "*.sav binary",
+    "*.gsav binary",
+    "*.srt text",
+    "*.jsonl text",
+)
 
 REAL_TOOLS = (
     "bash", "git", "awk", "grep", "mkdir", "mv", "rm", "wc", "tail",
@@ -242,6 +284,12 @@ class CheckpointFixture(unittest.TestCase):
         self.root = tempfile.mkdtemp(prefix="blitzy_checkpoint_",
                                      dir=SANDBOX_BASE)
         self.addCleanup(shutil.rmtree, self.root, True)
+        # The global scope, aimed inside the sandbox.  Empty, so it
+        # supplies no identity; a real file, so a write that reached it
+        # would be visible here instead of landing on the host.  See the
+        # module docstring for the incident that made this necessary.
+        self.global_config = os.path.join(self.root, "global.gitconfig")
+        self.write(self.global_config, "")
         self.checkout = os.path.join(self.root, "checkout")
         self.tooling = os.path.join(self.checkout, "playthrough",
                                     "tooling")
@@ -389,10 +437,18 @@ class CheckpointFixture(unittest.TestCase):
                 handle.write(json.dumps(self.digest_row(index)) + "\n")
         return count
 
-    def write_save(self):
-        """The engine-managed state a checkpoint records."""
-        self.write(self.master, "master state\n")
-        self.write(self.save_file, "character state\n")
+    def write_save(self, revision=""):
+        """The engine-managed state a checkpoint records.
+
+        `revision` exists so the save can be REWRITTEN with different
+        bytes, which is what the engine does on Save and Quit.  The
+        `final` checkpoint asserts that it recorded at least one path
+        under the userdir, so a fixture whose save never changes after
+        creation would model a session that never closed.
+        """
+        suffix = (" (%s)" % revision) if revision else ""
+        self.write(self.master, "master state%s\n" % suffix)
+        self.write(self.save_file, "character state%s\n" % suffix)
         self.write(self.lastworld,
                    json.dumps({"world_name": WORLD,
                                "character_name": CHARACTER},
@@ -465,7 +521,7 @@ class CheckpointFixture(unittest.TestCase):
         """Run git in the sandbox, hermetically."""
         env = {
             "PATH": self.bin,
-            "GIT_CONFIG_GLOBAL": "/dev/null",
+            "GIT_CONFIG_GLOBAL": self.global_config,
             "GIT_CONFIG_NOSYSTEM": "1",
             "GIT_TERMINAL_PROMPT": "0",
         }
@@ -485,12 +541,15 @@ class CheckpointFixture(unittest.TestCase):
     def identity_environment(self):
         """The four variables that give the sandbox an identity.
 
-        NOT `git config`.  The subject of this suite is a script that
-        must never write user.name or user.email, and a fixture that
-        wrote them into the sandbox's configuration would be modelling
-        the thing being ruled out.  These four are the mechanism git
-        itself documents for supplying an identity without configuring a
-        repository, which is exactly the platform's own arrangement.
+        NOT `git config`, and the distinction is what makes the identity
+        tests mean anything: the script's job is to take an identity that
+        already resolves and RECORD it in this repository, so a fixture
+        that had already written it locally would be handing over the
+        answer.  These four are the mechanism git itself documents for
+        supplying an identity without configuring a repository, which is
+        also the arrangement inside the container -- an identity in the
+        environment, nothing in the tree -- that the local write exists
+        to survive.
         """
         return {
             "GIT_AUTHOR_NAME": AUTHOR_NAME,
@@ -531,7 +590,7 @@ class CheckpointFixture(unittest.TestCase):
             # gating it would leave an out-of-support host unable to
             # commit the very disclosure that records the residual.
             "PLAYTHROUGH_PYTHON": INTERPRETER,
-            "GIT_CONFIG_GLOBAL": "/dev/null",
+            "GIT_CONFIG_GLOBAL": self.global_config,
             "GIT_CONFIG_NOSYSTEM": "1",
             "GIT_TERMINAL_PROMPT": "0",
         }
@@ -599,7 +658,7 @@ class CheckpointFixture(unittest.TestCase):
             [os.path.join(self.bin, "git"), "rev-parse", "--verify",
              "--quiet", "HEAD"],
             cwd=self.checkout, capture_output=True,
-            env={"PATH": self.bin, "GIT_CONFIG_GLOBAL": "/dev/null",
+            env={"PATH": self.bin, "GIT_CONFIG_GLOBAL": self.global_config,
                  "GIT_CONFIG_NOSYSTEM": "1"},
             timeout=60)
         return result.stdout.decode("utf-8", "replace").strip()
@@ -624,7 +683,7 @@ class CheckpointFixture(unittest.TestCase):
             [os.path.join(self.bin, "git"), "ls-files",
              "--error-unmatch", "--", path],
             cwd=self.checkout, capture_output=True,
-            env={"PATH": self.bin, "GIT_CONFIG_GLOBAL": "/dev/null",
+            env={"PATH": self.bin, "GIT_CONFIG_GLOBAL": self.global_config,
                  "GIT_CONFIG_NOSYSTEM": "1"},
             timeout=60)
         return result.returncode == 0
@@ -632,82 +691,218 @@ class CheckpointFixture(unittest.TestCase):
     def git_config_text(self):
         """The sandbox's own configuration file, read as a file.
 
-        Deliberately NOT `git config --get user.name`.  What is being
-        asserted is that a particular command was never run at all, and
-        reading the file it would have written is the form of that
-        assertion which cannot be confused with running it.
+        Deliberately NOT `git config --get user.name`, which would
+        resolve across every scope and answer a different question.  What
+        several tests need to know is what THIS REPOSITORY records, and
+        reading the one file the local scope lives in is the form of that
+        question with no other scope in it.
         """
         path = os.path.join(self.checkout, ".git", "config")
         with open(path, "r", encoding="utf-8") as handle:
             return handle.read()
 
+    def local_identity(self):
+        """The (name, address) pair this repository records, or blanks."""
+        return tuple(
+            self.git("config", "--local", "--get", key, identity=False,
+                     check=False).strip()
+            for key in ("user.name", "user.email"))
+
     # -- the whole lifecycle, for tests that need it in place --------
 
-    def take_creation(self):
+    def take_dossier(self, **environment):
+        """Commit the dossier alone, which is where a lifecycle starts.
+
+        The dossier is already tracked from the fixture's first commit,
+        so this is the ordering step rather than the introducing one --
+        which is the same thing a re-run does in a real checkout.
+        """
+        return self.checkpoint("dossier", **environment)
+
+    def forget_dossier(self):
+        """Take the dossier back out of the history, leaving it on disk.
+
+        The fixture's first commit tracks it, because that is the real
+        order of events.  Some tests need the moment BEFORE that -- the
+        dossier written but not yet published -- which is where the
+        `dossier` checkpoint has something to introduce and where
+        `creation` must refuse.
+        """
+        self.git("rm", "--quiet", "--cached", "--",
+                 "playthrough/dossier.md")
+        self.git("commit", "--quiet", "-m",
+                 "Take the dossier back out of the history")
+        self.assertFalse(self.is_tracked("playthrough/dossier.md"))
+
+    def commit_worktree_file(self, relative, text):
+        """Change one tracked file and commit it outside the lifecycle.
+
+        Used to put a repository into a state a checkpoint must refuse --
+        a committed .gitignore without the negation, say -- without going
+        anywhere near the subject.
+        """
+        self.write(os.path.join(self.checkout, relative), text)
+        self.git("add", "--", relative)
+        self.git("commit", "--quiet", "-m", "Change %s" % relative)
+
+    def touched_by(self, revision="HEAD"):
+        """The paths one commit recorded, as a sorted list."""
+        listing = self.git("diff-tree", "--no-commit-id", "--name-only",
+                           "-r", revision, identity=False)
+        return sorted(line for line in listing.split("\n") if line)
+
+    def introduced(self, path):
+        """The oldest commit that touched `path`.
+
+        The same reading the subject and the acceptance gate both make,
+        so an ordering assertion here is the ordering they assert.
+        """
+        log = self.git("log", "--format=%H", "--", path, identity=False)
+        commits = [line for line in log.split("\n") if line]
+        self.assertTrue(commits,
+                        msg="no commit ever touched %s" % path)
+        return commits[-1]
+
+    def take_creation(self, **environment):
         """Write the creation evidence and take the first checkpoint."""
         self.write_save()
         self.write_evidence(self.CREATION_ROWS)
-        return self.checkpoint("creation")
+        return self.checkpoint("creation", **environment)
 
     def play_session(self):
-        """Grow the record the way gameplay grows it."""
+        """Grow the record the way gameplay grows it.
+
+        AND REWRITE THE SAVE, because that is what happens: the survivor
+        plays, then saves and quits, and the engine writes the save out
+        again.  The `final` checkpoint asserts that it recorded a change
+        under the userdir -- a final commit carrying no save is the
+        second of the two mandated commits in name only -- so a fixture
+        that grew only the record would model a session nobody closed.
+        """
+        self.write_save(revision="after the session")
         return self.write_evidence(
             self.CREATION_ROWS + self.SESSION_ROWS)
 
 
-class TestItNeverWritesGitConfiguration(CheckpointFixture):
-    """The single constraint the whole design turns on.
+class TestItRecordsTheIdentityInThisRepositoryOnly(CheckpointFixture):
+    """Where the committer identity is allowed to be written, and where
+    it is not.
 
-    The identity a commit is made under belongs to the platform.  A
-    script that configures it around a missing one hides the very thing
-    that needs fixing, and on a host whose rule is that commits carry one
-    fixed identity, writing another into the repository is a violation
-    rather than a convenience.
+    THE IDENTITY MUST END UP IN THE REPOSITORY, and the reason is not
+    tidiness.  The render and capture stages run inside the declared
+    container, which mounts the checkout, sets HOME to a scratch
+    directory and forwards no GIT_* variables at all -- so an identity
+    that lives only in the invoking user's ~/.gitconfig does not exist in
+    there, and a checkpoint taken from inside the image exits 3.  Written
+    into the repository's own configuration it travels with the mounted
+    tree.
+
+    WHAT IS STILL FORBIDDEN IS EVERYTHING ELSE, and these tests are the
+    fence around it:
+
+      * the value is never CHOSEN here -- what is written is exactly what
+        `git var` already resolved, so the attribution of the commit is
+        identical whether or not the write happened;
+      * the scope is `--local` and nothing else: never --global, never
+        --system, never --worktree;
+      * an identity this repository already records is left exactly as
+        found, so a re-run cannot overwrite a deliberate local setting;
+      * a MISSING identity is still a refusal.  The script persists one;
+        it does not invent one.
     """
 
-    FORBIDDEN = ("config user.name", "config user.email",
-                 "config --local user", "config --global user")
+    # The script's one calling convention for git, with the first flag
+    # captured.  Deliberately anchored on the "${GIT}" expansion rather
+    # than on the words "git config": two log messages in the source
+    # QUOTE the command in prose to tell the operator what was written
+    # ("git config --local, never --global"), and a looser pattern reads
+    # those as invocations and fails on the script's own honesty.
+    INVOCATION = re.compile(r'"\$\{GIT\}"\s+config\s+(--\S+)')
 
-    def test_the_source_contains_no_identity_write(self):
-        with open(os.path.join(TOOLING, SCRIPT_NAME),
-                  encoding="utf-8") as handle:
-            source = handle.read()
-        for fragment in self.FORBIDDEN:
-            self.assertNotIn(
-                fragment, source,
-                msg=("commit_artifacts.sh must never write an identity; "
-                     "found %r in its source" % fragment))
-
-    def test_the_source_invokes_git_config_nowhere(self):
-        """Not even a read.
-
-        A read is harmless in itself, but `git config` is the command
-        this script is defined by not running, and a source that
-        contains it for any purpose is one where the next edit adds an
-        argument.  `git var` answers the only question there is, and it
-        answers it with the same resolution order the commit will use.
-        """
-        pattern = re.compile(r"(?:\bgit\b|GIT\}\")\s+config\b")
+    def config_invocations(self):
+        """Every `git config` the source actually runs, with its scope."""
+        found = []
         with open(os.path.join(TOOLING, SCRIPT_NAME),
                   encoding="utf-8") as handle:
             for number, line in enumerate(handle, start=1):
                 if line.lstrip().startswith("#"):
                     continue
-                self.assertIsNone(
-                    pattern.search(line),
-                    msg=("line %d invokes git config: %r"
-                         % (number, line.rstrip())))
+                match = self.INVOCATION.search(line)
+                if match:
+                    found.append((number, match.group(1), line.strip()))
+        return found
 
-    def test_a_whole_lifecycle_leaves_the_configuration_alone(self):
-        before = self.git_config_text()
+    def test_every_git_config_call_names_the_local_scope(self):
+        """The fence, read off the source itself.
+
+        A write with no scope at all would DEFAULT to --local, so this is
+        not redundant with the behavioural tests below: relying on that
+        default is one edit away from a `--global` that nobody reviewing
+        the line would notice was new.
+        """
+        invocations = self.config_invocations()
+        self.assertTrue(
+            invocations,
+            msg="the identity is never persisted anywhere")
+        for number, scope, line in invocations:
+            self.assertEqual(
+                scope, "--local",
+                msg=("line %d reaches outside this repository: %r"
+                     % (number, line)))
+
+    def test_the_global_configuration_is_byte_identical_afterwards(self):
+        """The proof that ~/.gitconfig is not the mechanism.
+
+        The global scope every test already runs with is a REAL, WRITABLE
+        file inside the sandbox -- not /dev/null, which cannot hold a
+        write and so could never show one -- and it is compared byte for
+        byte across a whole lifecycle.  The system scope is unreachable
+        in the first place because GIT_CONFIG_NOSYSTEM stays set.
+        """
+        original = "[core]\n\tpager = cat\n"
+        self.write(self.global_config, original)
         self.take_creation()
         self.play_session()
         self.checkpoint("final")
-        after = self.git_config_text()
-        self.assertEqual(
-            before, after,
-            msg="the repository's configuration was modified")
-        self.assertNotIn("user", after.replace("[core]", ""))
+        with open(self.global_config, "r", encoding="utf-8") as handle:
+            self.assertEqual(
+                handle.read(), original,
+                msg="the script wrote into the global configuration")
+
+    def test_a_lifecycle_records_the_resolved_identity_locally(self):
+        self.assertNotIn("user", self.git_config_text())
+        self.take_creation()
+        self.play_session()
+        self.checkpoint("final")
+        self.assertEqual(self.local_identity(), (AUTHOR_NAME,
+                                                 AUTHOR_EMAIL))
+
+    def test_the_value_written_is_the_one_git_already_resolved(self):
+        """It makes an attribution durable; it does not choose one."""
+        name, mail = "Marguerite Thibodeau", "marguerite@example.org"
+        self.checkpoint("dossier", GIT_AUTHOR_NAME=name,
+                        GIT_COMMITTER_NAME=name, GIT_AUTHOR_EMAIL=mail,
+                        GIT_COMMITTER_EMAIL=mail)
+        self.assertEqual(self.local_identity(), (name, mail))
+
+    def test_it_leaves_an_identity_this_repository_already_records(self):
+        self.git("config", "--local", "user.name", "Somebody Else")
+        self.git("config", "--local", "user.email", "else@example.org")
+        _, err = self.take_creation()
+        self.assertIn("already records its own", err)
+        self.assertEqual(self.local_identity(),
+                         ("Somebody Else", "else@example.org"))
+
+    def test_a_missing_identity_is_still_a_refusal(self):
+        """It persists an identity; it does not invent one.
+
+        And the refusal leaves the configuration as empty as it found
+        it, so a refused run cannot be the thing that decides who
+        commits here.
+        """
+        text = self.refuse(EX_IDENTITY, ("creation",), identity=False)
+        self.assertIn("WILL NOT INVENT AN IDENTITY", text)
+        self.assertNotIn("user", self.git_config_text())
 
     def test_the_identity_asked_for_is_the_identity_recorded(self):
         fields, _ = self.take_creation()
@@ -729,13 +924,17 @@ class TestTheIdentityGate(CheckpointFixture):
         message = self.refuse(EX_IDENTITY, ("creation",),
                               identity=False)
         self.assertIn("cannot determine who", message)
-        self.assertIn("WILL NOT SET user.name", message)
+        self.assertIn("WILL NOT INVENT AN IDENTITY", message)
+        self.assertIn("nothing here to persist", message)
 
     def test_the_refusal_names_the_environment_remedy(self):
-        """The remedy has to be the platform, not the repository.
+        """The remedy is to supply an identity, not to have one chosen.
 
-        A message that said "run git config" would be telling the
-        operator to do the thing this script refuses to do.
+        This script persists an identity that already resolves; it does
+        not decide who commits.  So the message points at the two places
+        an identity legitimately comes from -- a configuration of the
+        operator's own, or the standard GIT_* environment -- rather than
+        at a value it could have made up.
         """
         self.write_save()
         self.write_evidence(self.CREATION_ROWS)
@@ -845,7 +1044,7 @@ class TestTheRepositoryGate(CheckpointFixture):
             [os.path.join(self.bin, "git"), "init", "--quiet", "-b",
              "main", "."],
             cwd=fresh, capture_output=True,
-            env={"PATH": self.bin, "GIT_CONFIG_GLOBAL": "/dev/null",
+            env={"PATH": self.bin, "GIT_CONFIG_GLOBAL": self.global_config,
                  "GIT_CONFIG_NOSYSTEM": "1"}, timeout=120, check=True)
         self.checkout = fresh
         self.script = os.path.join(fresh, "playthrough", "tooling",
@@ -1680,6 +1879,413 @@ class TestTheLifecycle(CheckpointFixture):
         self.assertIn("no 'creation' checkpoint", message)
 
 
+class TestTheDossierCheckpoint(CheckpointFixture):
+    """The first of the three commits, and why it has to be its own.
+
+    The requirement is that the survivor's dossier is written and
+    committed BEFORE the first gameplay frame, and "before" is a
+    statement about ancestry.  A single commit carrying both the dossier
+    and frame_00001 cannot satisfy it, because one commit does not
+    precede itself -- which is exactly the state the acceptance gate
+    found in the real history and reported as unprovable.  Splitting the
+    dossier out is what makes the ordering readable from the history at
+    all.
+    """
+
+    def test_it_commits_the_dossier_and_nothing_else(self):
+        self.forget_dossier()
+        fields, _ = self.take_dossier()
+        self.assertEqual(fields["COMMITTED"], "yes")
+        self.assertEqual(self.touched_by(),
+                         ["playthrough/dossier.md"])
+
+    def test_it_carries_its_own_trailer(self):
+        self.forget_dossier()
+        self.take_dossier()
+        self.assertIn("Playthrough-Checkpoint: dossier", self.message())
+
+    def test_the_ordering_it_establishes_is_readable_afterwards(self):
+        """The property the whole split exists for, read out of git."""
+        self.forget_dossier()
+        dossier, _ = self.take_dossier()
+        self.take_creation()
+        frame = self.introduced("playthrough/frames/frame_00001.png")
+        self.assertNotEqual(dossier["COMMIT"], frame)
+        self.git("merge-base", "--is-ancestor", dossier["COMMIT"], frame,
+                 identity=False)
+
+    def test_it_is_refused_once_a_capture_is_tracked(self):
+        """Taken late it would prove nothing, so it is not allowed to
+        look like it worked."""
+        self.take_creation()
+        message = self.refuse(EX_LIFECYCLE, ("dossier",))
+        self.assertIn("already", message)
+        self.assertIn("could not put the dossier ahead", message)
+
+    def test_a_missing_dossier_is_refused(self):
+        os.unlink(os.path.join(self.dir, "dossier.md"))
+        self.refuse(EX_EVIDENCE, ("dossier",))
+
+    def test_a_re_run_commits_nothing_and_says_so(self):
+        self.forget_dossier()
+        self.take_dossier()
+        before = self.head()
+        fields, err = self.checkpoint("dossier")
+        self.assertEqual(fields["COMMITTED"], "no")
+        self.assertEqual(before, self.head())
+        self.assertIn("already", err)
+
+
+class TestCreationRequiresATrackedDossier(CheckpointFixture):
+    """The refusal that keeps the two out of one commit.
+
+    Without it the narrative class and the captures are staged together,
+    the dossier and frame_00001 share an introducing commit, and the
+    before-play ordering becomes permanently unprovable -- not fixable
+    later, because the only remedy is rewriting history.
+    """
+
+    def test_creation_before_the_dossier_is_committed_is_refused(self):
+        self.forget_dossier()
+        self.write_save()
+        self.write_evidence(self.CREATION_ROWS)
+        message = self.refuse(EX_LIFECYCLE, ("creation",))
+        self.assertIn("not", message)
+        self.assertIn("one commit cannot precede itself", message)
+
+    def test_the_refusal_names_the_subcommand_that_fixes_it(self):
+        self.forget_dossier()
+        self.write_save()
+        self.write_evidence(self.CREATION_ROWS)
+        message = self.refuse(EX_LIFECYCLE, ("creation",))
+        self.assertIn("commit_artifacts.sh dossier", message)
+
+    def test_creation_proceeds_once_the_dossier_is_in_the_history(self):
+        self.forget_dossier()
+        self.take_dossier()
+        fields, _ = self.take_creation()
+        self.assertEqual(fields["COMMITTED"], "yes")
+
+
+class TestTheLifecycleIsAnchoredOnTheSurvivor(CheckpointFixture):
+    """A row count cannot tell two survivors apart.
+
+    The check `final` used to make was that the record had more rows than
+    at the `creation` checkpoint.  A session RE-RECORDED FROM SCRATCH
+    passes that: its record grew from nothing too.  So a `final` was
+    accepted whose anchoring `creation` commit described a different
+    person entirely, and the history ended up with lifecycle commits
+    naming a survivor who is not the one in the save -- which is the
+    divergence the acceptance gate found and cannot repair without
+    rewriting history.
+
+    The anchor is now resolved by survivor: a `creation` checkpoint whose
+    tree names THIS world and character.  When none exists, the refusal
+    names both survivors rather than reporting an arithmetic result.
+    """
+
+    OTHER_WORLD = "Apshawa"
+    OTHER_CHARACTER = "Ambrose Halloran"
+    # base64 of the name above, which is how the engine spells the file.
+    OTHER_SAVE = "#QW1icm9zZSBIYWxsb3Jhbg==.sav"
+
+    def become_the_other_survivor(self):
+        """Replace the save with a different survivor's, as a re-record
+        would: the previous world's files are gone, not kept beside it."""
+        shutil.rmtree(self.world_dir)
+        other_dir = os.path.join(self.dir, "userdir", "save",
+                                 self.OTHER_WORLD)
+        self.write(os.path.join(other_dir, "master.gsav"),
+                   "master state (a different survivor)\n")
+        self.write(os.path.join(other_dir, self.OTHER_SAVE),
+                   "character state (a different survivor)\n")
+        self.write(self.lastworld,
+                   json.dumps({"world_name": self.OTHER_WORLD,
+                               "character_name": self.OTHER_CHARACTER},
+                              indent=2) + "\n")
+
+    def test_a_final_for_another_survivor_is_refused(self):
+        self.take_creation()
+        self.become_the_other_survivor()
+        self.write_evidence(self.CREATION_ROWS + self.SESSION_ROWS)
+        message = self.refuse(EX_LIFECYCLE, ("final",))
+        self.assertIn(CHARACTER, message)
+        self.assertIn(self.OTHER_CHARACTER, message)
+
+    def test_the_refusal_explains_why_a_row_count_is_not_enough(self):
+        self.take_creation()
+        self.become_the_other_survivor()
+        self.write_evidence(self.CREATION_ROWS + self.SESSION_ROWS)
+        message = self.refuse(EX_LIFECYCLE, ("final",))
+        self.assertIn("row count cannot tell the two apart", message)
+
+    def test_the_new_survivor_may_take_a_creation_of_their_own(self):
+        """The other half of the fix, and the reason the refusal above is
+        not simply a dead end.
+
+        The unscoped check ALSO refused a new survivor's `creation`
+        whenever any previous recording had one, which is precisely how a
+        re-recorded session ended up with no checkpoint of its own.
+        """
+        self.take_creation()
+        self.become_the_other_survivor()
+        self.write_evidence(self.CREATION_ROWS + self.SESSION_ROWS)
+        fields, _ = self.checkpoint("creation")
+        self.assertEqual(fields["COMMITTED"], "yes")
+        self.assertEqual(fields["CHARACTER"], self.OTHER_CHARACTER)
+
+    def test_the_anchor_that_is_found_is_reported(self):
+        self.take_creation()
+        self.play_session()
+        _, err = self.checkpoint("final")
+        self.assertIn(CHARACTER, err)
+        self.assertIn("creation", err)
+
+    def test_status_warns_when_the_newest_creation_is_someone_else(self):
+        """`status` reads and reports; it never refuses."""
+        self.take_creation()
+        self.become_the_other_survivor()
+        status, out, err = self.run_script(("status",))
+        self.assertEqual(status, EX_OK)
+        fields = self.payload(out)
+        self.assertEqual(fields["CHARACTER"], self.OTHER_CHARACTER)
+        self.assertIn(CHARACTER, fields["CREATION_SURVIVOR"])
+        self.assertIn("WARNING", err)
+
+
+class TestTheFinalCheckpointMustRecordTheSave(CheckpointFixture):
+    """The committer may not certify what the gate rejects.
+
+    The acceptance gate asserts that at least two commits touch the
+    userdir -- one after character creation, one after the in-game Save
+    and Quit.  This step used to assert nothing of the kind, so it could
+    report success on a `final` the gate would then reject, and the
+    operator learned about it one stage later from a different tool with
+    the commit already taken.
+    """
+
+    def test_a_final_carrying_no_save_change_is_refused(self):
+        self.take_creation()
+        # The record grows, so the lifecycle's row-growth assertion is
+        # satisfied -- but the engine never rewrote the save, which is
+        # what a session that was never closed looks like.
+        self.write_evidence(self.CREATION_ROWS + self.SESSION_ROWS)
+        message = self.refuse(EX_LIFECYCLE, ("final",))
+        self.assertIn("userdir", message)
+        self.assertIn("NOTHING WAS COMMITTED", message)
+
+    def test_the_refusal_happens_before_the_commit(self):
+        """Refusing afterwards would leave the bad commit behind."""
+        self.take_creation()
+        self.write_evidence(self.CREATION_ROWS + self.SESSION_ROWS)
+        before = self.head()
+        self.refuse(EX_LIFECYCLE, ("final",))
+        self.assertEqual(before, self.head())
+        self.assertNotIn("Playthrough-Checkpoint: final",
+                         self.message())
+
+    def test_a_closed_session_records_the_save_and_says_how_much(self):
+        self.take_creation()
+        self.play_session()
+        _, err = self.checkpoint("final")
+        self.assertIn("path(s) under playthrough/userdir", err)
+        self.assertTrue(
+            any(path.startswith("playthrough/userdir")
+                for path in self.touched_by()),
+            msg="the final commit recorded nothing under the userdir")
+
+    def test_the_dossier_ordering_is_asserted_by_the_committer_too(self):
+        """The gate's other post-commit property, checked here as well."""
+        self.forget_dossier()
+        self.take_dossier()
+        self.take_creation()
+        self.play_session()
+        _, err = self.checkpoint("final")
+        self.assertIn("strict ancestor", err)
+
+
+class TestTheCommittedVcsRulesGate(CheckpointFixture):
+    """The enabling rules have to be IN THE HISTORY, not just on disk.
+
+    `.gitignore`'s terminal negation is what stops git silently skipping
+    the engine's own '#<name>.sav' and '*.log' names.  A working tree that
+    carries it while HEAD does not is a repository where this history,
+    cloned, loses the save data -- and the failure is silent, because
+    `git add` skips those paths and exits 0.  So the rules are read out of
+    HEAD, not off the disk.
+    """
+
+    def test_a_head_without_the_negation_is_refused(self):
+        without = SANDBOX_GITIGNORE.replace(NEGATION_LINE + "\n", "")
+        self.assertNotIn(NEGATION_LINE, without)
+        self.commit_worktree_file(".gitignore", without)
+        # The disk still carries it, so only HEAD's copy is at issue.
+        self.write(self.gitignore, SANDBOX_GITIGNORE)
+        message = self.refuse(EX_PREREQ, ("creation",))
+        self.assertIn(NEGATION_LINE, message)
+
+    def test_the_negation_must_be_the_last_matching_rule(self):
+        """Order is the whole mechanism: git applies the last match."""
+        overridden = SANDBOX_GITIGNORE + "playthrough/userdir/**\n"
+        self.commit_worktree_file(".gitignore", overridden)
+        message = self.refuse(EX_PREREQ, ("creation",))
+        self.assertIn("last", message)
+
+    def test_a_head_missing_one_attribute_row_is_refused(self):
+        for row in REQUIRED_ATTRIBUTE_ROWS:
+            with self.subTest(row=row):
+                self.commit_worktree_file(
+                    ".gitattributes",
+                    SANDBOX_GITATTRIBUTES.replace(row + "\n", ""))
+                message = self.refuse(EX_PREREQ, ("creation",))
+                self.assertIn(row, message)
+                self.commit_worktree_file(".gitattributes",
+                                          SANDBOX_GITATTRIBUTES)
+
+    def test_a_head_that_carries_them_is_reported_as_such(self):
+        _, err = self.take_creation()
+        self.assertIn(NEGATION_LINE, err)
+        self.assertIn("fresh clone", err)
+
+    def test_the_dossier_checkpoint_is_gated_on_them_too(self):
+        """The earliest commit of the lifecycle is the one that most
+        needs them, because it is the one taken before anybody looks."""
+        self.forget_dossier()
+        self.commit_worktree_file(
+            ".gitignore", SANDBOX_GITIGNORE.replace(
+                NEGATION_LINE + "\n", ""))
+        self.refuse(EX_PREREQ, ("dossier",))
+
+
+class TestTheCheckpointLock(CheckpointFixture):
+    """Two checkpoints share one index and one HEAD.
+
+    Run concurrently, one stages while the other commits, and the loser
+    reports "nothing to commit" about a repository the winner was in the
+    middle of changing -- a diagnosis that describes the wrong state.  The
+    lock removes the race, and its name carries a digest of THIS checkout
+    so a run over a different working tree is not serialised against it.
+    """
+
+    def hold_the_lock(self, path):
+        """Hold `path` locked for the rest of the test, then let it go.
+
+        The tools are resolved off PATH rather than spelled absolutely:
+        this suite already refuses to assume where a tool lives, and a
+        hard-coded /usr/bin would make the class silently unrunnable on a
+        host that puts flock elsewhere.
+
+        The cleanup KILLS AND THEN REAPS.  A kill alone leaves a zombie
+        and Python warns about the still-running child at interpreter
+        exit, which is noise that makes a clean run look unclean -- and a
+        held lock that outlives its test would fail the next one.
+        """
+        flock = shutil.which("flock")
+        sleep = shutil.which("sleep")
+        if not flock or not sleep:
+            self.skipTest("flock and sleep are needed to hold a lock")
+        holder = subprocess.Popen([flock, path, sleep, "60"])
+
+        def release():
+            holder.kill()
+            holder.wait(timeout=30)
+
+        self.addCleanup(release)
+        # flock has to be scheduled and take the lock before the subject
+        # is asked to contend for it, or the test proves nothing.
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            if self.lock_is_held(path):
+                return holder
+            time.sleep(0.1)
+        self.fail("the lock holder never acquired %s" % path)
+
+    def lock_is_held(self, path):
+        """Whether something else currently holds `path`.
+
+        Asked by trying to take it non-blockingly and reporting the
+        failure, which is the same question flock itself answers.
+        """
+        flock = shutil.which("flock")
+        probe = subprocess.run(
+            [flock, "--nonblock", path, shutil.which("true")],
+            capture_output=True, timeout=60)
+        return probe.returncode != 0
+
+    def lock_path(self):
+        """The lock file the script will reach for, derived the same way
+        it derives it: env.sh's helper, asked directly."""
+        script = (
+            'set -eu\n'
+            '. "%s/env.sh"\n'
+            'name="$(playthrough_checkout_lock_name checkpoint)"\n'
+            'printf "%%s/%%s.lock\\n" "${PLAYTHROUGH_LOCK_DIR}" "${name}"\n'
+        ) % self.tooling
+        result = subprocess.run(
+            ["/bin/bash", "--noprofile", "--norc", "-c", script],
+            cwd=self.checkout, capture_output=True, timeout=120,
+            env={"PATH": self.bin, "HOME": self.root,
+                 "PLAYTHROUGH_PYTHON": INTERPRETER})
+        out = result.stdout.decode("utf-8", "replace").strip()
+        self.assertTrue(
+            out, msg="the lock path could not be derived: %s"
+                     % result.stderr.decode("utf-8", "replace"))
+        return out
+
+    def test_a_busy_checkout_is_refused_rather_than_raced(self):
+        self.write_save()
+        self.write_evidence(self.CREATION_ROWS)
+        path = self.lock_path()
+        self.hold_the_lock(path)
+        message = self.refuse(EX_PREREQ, ("creation",),
+                              PLAYTHROUGH_CHECKPOINT_LOCK_TIMEOUT="2")
+        self.assertIn("another checkpoint is already running", message)
+        self.assertIn("THIS RUN COMMITTED NOTHING", message)
+
+    def test_the_refusal_names_the_lock_rather_than_a_host_path(self):
+        """Every message goes through env.sh's redaction, which rewrites
+        the repository root to '.' -- so naming the path would tell an
+        operator nothing.  The digest in the lock name is the scope."""
+        self.write_save()
+        self.write_evidence(self.CREATION_ROWS)
+        path = self.lock_path()
+        name = os.path.basename(path)[:-len(".lock")]
+        self.hold_the_lock(path)
+        message = self.refuse(EX_PREREQ, ("creation",),
+                              PLAYTHROUGH_CHECKPOINT_LOCK_TIMEOUT="2")
+        self.assertIn(name, message)
+        self.assertRegex(name, r"^checkpoint-[0-9a-f]{8}$")
+
+    def test_the_lock_is_released_and_the_next_run_proceeds(self):
+        self.take_creation()
+        self.play_session()
+        fields, _ = self.checkpoint("final")
+        self.assertEqual(fields["COMMITTED"], "yes")
+
+    def test_status_does_not_take_the_lock(self):
+        """A read that blocks behind a commit is a reporting tool that
+        stops working exactly when an operator needs it."""
+        self.take_creation()
+        path = self.lock_path()
+        self.hold_the_lock(path)
+        status, out, _ = self.run_script(
+            ("status",), PLAYTHROUGH_CHECKPOINT_LOCK_TIMEOUT="2")
+        self.assertEqual(status, EX_OK)
+        self.assertEqual(self.payload(out)["CHECKPOINT"], "status")
+
+    def test_a_hostile_timeout_is_refused_before_any_arithmetic(self):
+        self.write_save()
+        self.write_evidence(self.CREATION_ROWS)
+        self.refuse(EX_USAGE, ("creation",),
+                    PLAYTHROUGH_CHECKPOINT_LOCK_TIMEOUT="3; rm -rf /")
+
+    def test_an_out_of_range_timeout_is_refused(self):
+        self.write_save()
+        self.write_evidence(self.CREATION_ROWS)
+        self.refuse(EX_USAGE, ("creation",),
+                    PLAYTHROUGH_CHECKPOINT_LOCK_TIMEOUT="86401")
+
+
 class TestTheCommitItself(CheckpointFixture):
     """What is in it, and what is proved about it afterwards."""
 
@@ -1918,7 +2524,7 @@ class TestTheDossierGate(CheckpointFixture):
         result = subprocess.run(
             [os.path.join(self.bin, "git")] + list(args),
             cwd=self.checkout, capture_output=True,
-            env={"PATH": self.bin, "GIT_CONFIG_GLOBAL": "/dev/null",
+            env={"PATH": self.bin, "GIT_CONFIG_GLOBAL": self.global_config,
                  "GIT_CONFIG_NOSYSTEM": "1"},
             timeout=60)
         return result.returncode
@@ -1984,12 +2590,47 @@ class TestTheUsage(CheckpointFixture):
         status, out, _ = self.run_script(("help",))
         self.assertEqual(status, EX_OK)
         self.assertIn("usage:", out)
-        for name in ("creation", "final", "status", "help"):
+        for name in ("dossier", "creation", "final", "status", "help"):
             with self.subTest(subcommand=name):
                 self.assertIn(name, out)
-        self.assertIn("never writes git configuration", out)
-        self.assertIn("configure the platform, not the repository", out)
         self.assertIn("stdout carries KEY=value lines only", out)
+
+    def help_prose(self):
+        """The help text as prose: lowercased, whitespace collapsed.
+
+        The block is hard-wrapped at 79 columns, so a phrase of more than
+        a word or two straddles a newline and a literal substring test
+        fails on the wrapping rather than on the content.  Collapsing
+        first asserts what the text SAYS, which is the thing worth
+        pinning; the wrapping is free to change.
+        """
+        _, out, _ = self.run_script(("help",))
+        return " ".join(out.lower().split())
+
+    def test_the_help_states_the_ordering_the_lifecycle_enforces(self):
+        """Three steps that refuse out of turn are only usable if the
+        order is written down where somebody looks for it."""
+        prose = self.help_prose()
+        self.assertIn("dossier -> creation -> play the session -> final",
+                      prose)
+        self.assertIn("checked as ancestry between two commits", prose)
+        self.assertIn("one commit cannot precede itself", prose)
+
+    def test_the_help_states_the_scope_of_the_identity_write(self):
+        """The one configuration it writes, and the fence around it.
+
+        This used to read "never writes git configuration", which was
+        true and was the defect: an identity that lives only in the
+        invoking user's home directory does not exist inside the
+        container that mounts this checkout, so a checkpoint taken there
+        could not resolve one at all.  What replaced it has to say
+        exactly how far the write reaches, or the help is worse than
+        silent.
+        """
+        prose = self.help_prose()
+        self.assertIn("git config --local, never --global and never "
+                      "--system", prose)
+        self.assertIn("never invents an identity", prose)
 
     def test_the_help_flags_are_the_same_thing(self):
         for flag in ("-h", "--help"):

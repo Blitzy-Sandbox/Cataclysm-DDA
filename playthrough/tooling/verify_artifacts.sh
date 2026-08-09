@@ -7,6 +7,8 @@
 #     cd <repository root>
 #     playthrough/tooling/verify_artifacts.sh
 #     playthrough/tooling/verify_artifacts.sh --base <commit>
+#     playthrough/tooling/verify_artifacts.sh --phase pre-commit
+#     playthrough/tooling/verify_artifacts.sh --phase post-commit
 #
 # Every acceptance criterion this feature has is a COMMAND or a
 # CHECKABLE PROPERTY rather than an adjective, and this file is where
@@ -74,6 +76,49 @@
 # cannot find is a FAILURE of the gate rather than an excuse to stop
 # measuring.  Every check below has a defined verdict on every host.
 #
+# ---------------------------------------------------------------------
+# THE TWO PHASES, AND WHY A SINGLE-PHASE GATE COULD NEVER PASS
+#
+# A dozen of the properties below are properties OF THE COMMIT: the save
+# is tracked, every artifact class is tracked, the tracked capture count
+# equals the on-disk one, nothing under playthrough/ is left
+# uncommitted, the checkpoints are ordered, the committed .gitignore
+# still carries the negation, the change surface since the base commit
+# is only this feature.  NONE OF THEM CAN HOLD BEFORE THE COMMIT THAT
+# MAKES THEM TRUE.
+#
+# Every other property -- the record, the timeline, the container, the
+# caption track, the luminance, the absence of cheating, the artwork,
+# the lint -- is a property OF THE ARTIFACTS, and holds the instant the
+# render finishes, with nothing committed at all.
+#
+# Run as one undivided gate ahead of a commit, the first dozen fail on
+# any tree that is not already fully committed, and a sequencer that
+# puts the gate before the checkpoint can therefore never reach the
+# checkpoint.  That is not a hypothetical: it was measured, on a genuine
+# post-session tree, as nine failures out of a hundred and eight, every
+# one of them a tracking, history or clean-tree property.
+#
+# So the gate has PHASES, and the workflow is
+#
+#     --phase pre-commit    the artifacts are what they claim to be
+#            commit         commit_artifacts.sh takes the checkpoint
+#     --phase post-commit   ...and the history now says so
+#
+#   pre-commit    every property of the ARTIFACTS.  The dozen
+#                 commit-shaped ones are deferred, and the deferral is
+#                 REPORTED as an informational note naming them, so a
+#                 shorter report explains its own length instead of
+#                 reading exactly as green as a complete one.
+#   post-commit   everything, the commit-shaped properties included.
+#   all           identical to post-commit, and THE DEFAULT, so an
+#                 operator auditing a committed tree runs this file
+#                 with no arguments and gets the whole gate, exactly as
+#                 before phases existed.
+#
+# The declared check count is per phase (see EXPECTED_CHECKS below), so
+# neither phase can quietly return a short report.
+#
 # EVERY VERDICT PRINTS ITS EVIDENCE.  A FAIL prints the observed value
 # next to the expected one; a PASS prints the observed value too, so the
 # report is a record of what was measured and not merely an assertion
@@ -97,7 +142,9 @@
 #   6  the luminance gate         mean > 0 and std > 0
 #   7  version control            the save is really tracked, nothing
 #                                 is silently ignored, nothing is left
-#                                 uncommitted, the commit order
+#                                 uncommitted, the commit order, the
+#                                 committed ignore rules, and the
+#                                 lifecycle checkpoints
 #   8  no cheating                no debug keybinding, no debug-mode
 #                                 activation in the engine's own log
 #   9  the binary and hygiene     +tiles, scoped flake8, the timeline
@@ -408,6 +455,59 @@ readonly TILE_COLOUR_SAMPLES="8"
 # consumed read-only.
 readonly ALLOWED_FOREIGN_PATHS=".gitignore .gitattributes"
 
+# ---------------------------------------------------------------------
+# THE TWO REPOSITORY-WIDE RULES THIS FEATURE DEPENDS ON, AND WHY THEIR
+# *COMMITTED* CONTENT IS WHAT GETS CHECKED
+#
+# `git check-ignore` answers for the WORKING TREE, which is the right
+# question for "will the next `git add` skip the save".  It is the wrong
+# question for "will a fresh clone of this history still carry the
+# save", and that second question is the one a reader of the repository
+# actually asks.  A history whose terminal negation was never committed
+# passes every working-tree check and re-ignores the save data the
+# moment somebody clones it -- measured, and reported as a finding.
+#
+# So the committed content is read out of HEAD directly.  The negation
+# must be the LAST effective rule in the committed file, because git
+# applies the last matching pattern and the file says so itself; and the
+# six attribute rows must be present, because `* text=auto` alone would
+# leave the film, the save and the archives to content detection.
+readonly IGNORE_NEGATION="!/playthrough/**"
+readonly -a REQUIRED_ATTRIBUTES=(
+    "*.mp4 binary"
+    "*.zzip binary"
+    "*.sav binary"
+    "*.gsav binary"
+    "*.srt text"
+    "*.jsonl text"
+)
+
+# The trailer commit_artifacts.sh writes, and the two checkpoint names
+# whose ordering the lifecycle is made of.  Spelled here as the strings
+# they are, because this gate READS a history somebody else wrote and
+# must not import the committer's code to do it.
+readonly CHECKPOINT_TRAILER_KEY="Playthrough-Checkpoint"
+readonly CHECKPOINT_CREATION_NAME="creation"
+readonly CHECKPOINT_FINAL_NAME="final"
+
+# The engine's record of which world and survivor were last loaded, read
+# out of a commit rather than off disk.  A fixed program with no
+# interpolation, fed on stdin, so nothing a path or a name contains can
+# reach the interpreter -- the same rule the sibling stages follow.
+readonly LASTWORLD_STDIN_READER='
+import json
+import sys
+
+record = json.load(sys.stdin)
+if not isinstance(record, dict):
+    raise SystemExit(1)
+world = record.get("world_name") or ""
+character = record.get("character_name") or ""
+if not world or not character:
+    raise SystemExit(1)
+sys.stdout.write("%s / %s" % (world, character))
+'
+
 # The unit separator, used between the fields of one verdict line.  A
 # NON-whitespace delimiter is required: bash's `read` collapses runs of
 # a whitespace IFS character and drops leading and trailing ones, so a
@@ -424,20 +524,40 @@ readonly VERDICT_SEPARATOR=$'\037'
 # check.  So the count is DECLARED here, asserted at the end of the run,
 # and printed in the summary and in the machine block.
 #
-# The derivation, group by group, on a complete artifact set:
+# The derivation, group by group, on a complete artifact set -- with the
+# COMMIT-SHAPED verdicts counted separately, because they are the ones
+# the pre-commit phase defers:
 #
-#    1  the measuring environment          6
-#    2  one frame per keystroke           13
-#    3  the timeline                      19
-#    4  the container and its inputs      20
-#    5  the caption track                 19
-#    6  the luminance gate                 5
-#    7  version control                   12
-#    8  no cheating                        3
-#    9  the binary, artwork and hygiene    10
-#   10  the inventory of this report        1
-#                                        ----
-#                                         108
+#                                        all   pre-commit
+#    1  the measuring environment          6     6
+#    2  one frame per keystroke           13    13
+#    3  the timeline                      19    19
+#    4  the container and its inputs      20    20
+#    5  the caption track                 19    19
+#    6  the luminance gate                 5     5
+#    7  version control                   15     4
+#    8  no cheating                        3     3
+#    9  the binary, artwork and hygiene    10     9
+#   10  the inventory of this report        1     1
+#                                        ----  ----
+#                                         111    99
+#
+# The twelve the pre-commit phase defers, each named by the property it
+# reports, are:
+#
+#   group 7   the world's own save file is tracked
+#             the survivor's own save file is tracked
+#             the world's option overrides are tracked
+#             every artifact class is tracked
+#             every capture on disk is tracked
+#             nothing under playthrough/ is left uncommitted
+#             the save was committed at both mandated points
+#             the dossier's first commit precedes the first capture's
+#             the committed .gitignore still rescues the save data
+#             the committed .gitattributes carries this feature's rows
+#             each checkpoint anchors to its own survivor's creation
+#   group 9   the change surface is only the two ignore files and
+#             playthrough/
 #
 # The table is maintained with the checks: adding one without adding it
 # here makes this assertion fail, which is the intended direction of that
@@ -449,7 +569,21 @@ readonly VERDICT_SEPARATOR=$'\037'
 # produces MORE verdicts than this.  Fewer is the fault being guarded
 # against: a check that returned early, a checker that died, or an
 # assertion an edited artifact managed to switch off.
-readonly EXPECTED_CHECKS=108
+readonly EXPECTED_CHECKS_ALL=111
+readonly EXPECTED_CHECKS_PRE_COMMIT=99
+
+# ---------------------------------------------------------------------
+# THE PHASES, as the three words the option accepts.  `all` and
+# `post-commit` run the same checks; they are kept as separate names
+# because the two callers mean different things by them -- an operator
+# auditing a committed tree asks for `all`, and the sequencer asks for
+# `post-commit` because that is the position it occupies in the
+# pipeline, and a report that says which one it was is easier to place.
+# ---------------------------------------------------------------------
+readonly PHASE_ALL="all"
+readonly PHASE_PRE_COMMIT="pre-commit"
+readonly PHASE_POST_COMMIT="post-commit"
+readonly PHASE_DEFAULT="${PHASE_ALL}"
 
 # ---------------------------------------------------------------------
 # THE REPORT
@@ -470,6 +604,10 @@ BASE_COMMIT=""
 # same numbers are reported that were judged.
 LAST_LUMINANCE=""
 LUMINANCE_SAMPLES="${LUMINANCE_SAMPLES_DEFAULT}"
+# The phase this run measures, and the count it therefore declares.
+# Both are set once by parse_arguments and read everywhere else.
+PHASE="${PHASE_DEFAULT}"
+EXPECTED_CHECKS="${EXPECTED_CHECKS_ALL}"
 
 # The tool paths, defaulted to the plain command names so that `set -u`
 # cannot trip before check group 1 has resolved and verified them.  A
@@ -543,6 +681,20 @@ record_info() {
 # judged on is not evidence.
 record_warn() {
     printf 'WARN  %s: %s\n' "$1" "${2:-<empty>}"
+}
+
+# tracking_phase
+#   Whether THIS run measures the commit-shaped properties: the ones
+#   that are about the history rather than about the artifacts, and that
+#   therefore cannot hold until the checkpoint has been taken.
+#
+#   One predicate, called at each of the two group call sites, rather
+#   than an `if` inside each of the eleven checks: a check that decides
+#   for itself whether to run is a check that can be talked out of
+#   running, and this way the classification is visible in one place
+#   beside the group it belongs to.
+tracking_phase() {
+    [ "${PHASE}" != "${PHASE_PRE_COMMIT}" ]
 }
 
 # ---------------------------------------------------------------------
@@ -739,6 +891,20 @@ property, and exits non-zero if any property does not hold.
     playthrough/tooling/verify_artifacts.sh [options]
 
 Options:
+  --phase PHASE     which properties to measure.  One of:
+                      all           everything.  THE DEFAULT.
+                      pre-commit    every property of the ARTIFACTS,
+                                    deferring the twelve that are
+                                    properties of the COMMIT and
+                                    cannot hold before it is taken.
+                                    This is the phase that runs AHEAD
+                                    of commit_artifacts.sh.
+                      post-commit   everything, the commit-shaped
+                                    properties included.  This is the
+                                    phase that runs AFTER it.
+                    --pre-commit and --post-commit are accepted as
+                    shorthands.  The declared check count is per phase,
+                    so neither can return a short report unnoticed.
   --base COMMIT     the commit the change surface is measured from.
                     Defaults to the parent of the first commit that
                     touched playthrough/, which is the point this
@@ -756,8 +922,13 @@ Options:
 Environment:
   PLAYTHROUGH_VERIFY_BASE     the default for --base.
   PLAYTHROUGH_VERIFY_SAMPLES  the default for --samples.
+  PLAYTHROUGH_VERIFY_PHASE    the default for --phase.
   PLAYTHROUGH_FLAKE8          the flake8 to lint with, when it is not
                               on PATH and not importable as a module.
+                              NOT forwarded into the container by
+                              supported_env.sh, so inside the image the
+                              linter must be on PATH or importable
+                              there.
 
 Notes:
   This gate READS committed evidence and writes nothing into the working
@@ -779,8 +950,31 @@ parse_arguments() {
     local base="${PLAYTHROUGH_VERIFY_BASE:-}"
     local samples="${PLAYTHROUGH_VERIFY_SAMPLES:-\
 ${LUMINANCE_SAMPLES_DEFAULT}}"
+    local phase="${PLAYTHROUGH_VERIFY_PHASE:-${PHASE_DEFAULT}}"
     while [ "$#" -gt 0 ]; do
         case "$1" in
+            --phase)
+                if [ "$#" -lt 2 ]; then
+                    usage >&2
+                    die "${EX_USAGE}" "--phase needs one of" \
+                        "${PHASE_ALL}, ${PHASE_PRE_COMMIT} or" \
+                        "${PHASE_POST_COMMIT}"
+                fi
+                phase="$2"
+                shift 2
+                ;;
+            --phase=*)
+                phase="${1#--phase=}"
+                shift
+                ;;
+            --pre-commit)
+                phase="${PHASE_PRE_COMMIT}"
+                shift
+                ;;
+            --post-commit)
+                phase="${PHASE_POST_COMMIT}"
+                shift
+                ;;
             --base)
                 if [ "$#" -lt 2 ]; then
                     usage >&2
@@ -815,6 +1009,28 @@ ${LUMINANCE_SAMPLES_DEFAULT}}"
                 ;;
         esac
     done
+
+    # The phase is resolved against literal alternatives, and an
+    # unrecognised one is REFUSED rather than defaulted: a typo that
+    # silently produced the full gate would be reported as the phase
+    # that was asked for, and a report about the wrong phase is worse
+    # than no report.
+    case "${phase}" in
+        "${PHASE_ALL}"|"${PHASE_POST_COMMIT}")
+            PHASE="${phase}"
+            EXPECTED_CHECKS="${EXPECTED_CHECKS_ALL}"
+            ;;
+        "${PHASE_PRE_COMMIT}")
+            PHASE="${phase}"
+            EXPECTED_CHECKS="${EXPECTED_CHECKS_PRE_COMMIT}"
+            ;;
+        *)
+            usage >&2
+            die "${EX_USAGE}" "'${phase}' is not a phase of this" \
+                "gate.  The phases are ${PHASE_ALL}," \
+                "${PHASE_PRE_COMMIT} and ${PHASE_POST_COMMIT}."
+            ;;
+    esac
 
     # `all` is carried through as a word and resolved against the real
     # capture count later, once that count is known.
@@ -974,6 +1190,18 @@ check_interpreter() {
 # because a virtual environment often installs it that way.  If none of
 # the four resolves, the lint check FAILS rather than being skipped, and
 # says what to do about it.
+#
+# INSIDE THE DECLARED CONTAINER, ONLY THE FIRST THREE STEPS CAN FIRE, AND
+# ONE OF THEM MUST.  supported_env.sh's docker_run passes exactly HOME,
+# TMPDIR, the cleared trust-bypass names and the image's own environment;
+# PLAYTHROUGH_FLAKE8 IS NOT AMONG THEM, so exporting it on the host has
+# no effect on a `supported_env.sh run` of this gate.  The linter has to
+# be discoverable from INSIDE the image -- on its PATH, or importable by
+# the interpreter env.sh resolves there.  That is why the image installs
+# flake8 into its own environment and exposes it on PATH, which is the
+# same shape this host uses (/usr/local/bin/flake8 -> a dedicated venv),
+# and why an image without it makes the lint check FAIL rather than
+# quietly not run.
 resolve_flake8() {
     local version=""
     # The override is TRIED, not trusted: a PLAYTHROUGH_FLAKE8 that will
@@ -4693,6 +4921,17 @@ no re-exclusion, so a stray file here WOULD become trackable"
 # whereas "this commit is reachable from that one" is a fact about the
 # graph.  The dossier had to exist before the first gameplay frame, so its
 # earliest commit must be a STRICT ancestor of the first capture's.
+#
+# BOTH VERDICTS BELOW SAY WHAT WAS MEASURED, and that is a correction
+# rather than a flourish.  The first used to read "at least one after the
+# survivor was created and one after the session was saved and quit",
+# which a COUNT OF COMMITS cannot establish: two commits that both
+# happened after the session ended satisfy the count exactly as well.
+# Which commit is which is established by the checkpoint trailers, in
+# check_lifecycle_checkpoints, and this verdict now says so instead of
+# claiming it.  The second used to be titled as though it had read the
+# dossier's prose; what it reads is the first commit that introduced each
+# path and the ancestry between them, so that is what it reports.
 first_commit_for() {
     "${GIT}" log --format='%H' -- "$1" 2>/dev/null | tail -n 1 || true
 }
@@ -4703,9 +4942,12 @@ check_commit_order() {
         "${PLAYTHROUGH_USERDIR}" 2>/dev/null | "${GREP}" -c . || true)"
     if [ "${userdir_commits:-0}" -ge 2 ]; then
         record_pass "the save was committed at both mandated points" \
-            "${userdir_commits} commits touch \
-$(rel "${PLAYTHROUGH_USERDIR}") -- at least one after the survivor was \
-created and one after the session was saved and quit"
+            "${userdir_commits} commit(s) touch \
+$(rel "${PLAYTHROUGH_USERDIR}"), which is at least the two the \
+requirement names.  This reading is a COUNT: which of them followed \
+character creation and which followed the in-game Save and Quit is \
+established by the checkpoint trailers, and is asserted separately by \
+'each checkpoint anchors to its own survivor's creation'"
     else
         record_fail "the save was committed at both mandated points" \
             "${userdir_commits:-0} commit(s) touch \
@@ -4722,33 +4964,46 @@ in-game Save and Quit"
         frame="$(first_commit_for "${capture}")"
     fi
     if [ -z "${dossier}" ] || [ -z "${frame}" ]; then
-        record_fail "the dossier was written before the first \
-gameplay frame" \
-            "dossier commit '${dossier:-none}', first capture commit \
-'${frame:-none}'" \
-            "both present in history"
+        record_fail "the dossier's first commit precedes the first \
+capture's" \
+            "$(rel "${PLAYTHROUGH_DOSSIER}") was introduced by \
+'${dossier:-no commit at all}' and \
+$(rel "${capture:-${PLAYTHROUGH_FRAMES_DIR}}") by \
+'${frame:-no commit at all}'" \
+            "a commit for each -- the ordering cannot be read off a \
+history that carries only one of them"
         return 0
     fi
     if [ "${dossier}" = "${frame}" ]; then
-        record_fail "the dossier was written before the first \
-gameplay frame" \
-            "both were introduced by the same commit \
-${dossier:0:10}" \
-            "the dossier in an EARLIER commit -- it is the survivor \
-described before play, not alongside it"
+        record_fail "the dossier's first commit precedes the first \
+capture's" \
+            "${dossier:0:10} introduced BOTH \
+$(rel "${PLAYTHROUGH_DOSSIER}") and $(rel "${capture}")" \
+            "two different commits, the dossier's the earlier of them: \
+the survivor is described BEFORE play rather than alongside it, so the \
+dossier is committed on its own first (commit_artifacts.sh dossier) and \
+the creation checkpoint follows it"
         return 0
     fi
     if "${GIT}" merge-base --is-ancestor "${dossier}" "${frame}" \
             2>/dev/null; then
-        record_pass "the dossier was written before the first \
-gameplay frame" \
-            "${dossier:0:10} is an ancestor of ${frame:0:10}"
+        record_pass "the dossier's first commit precedes the first \
+capture's" \
+            "$(rel "${PLAYTHROUGH_DOSSIER}") was introduced by \
+${dossier:0:10}, $(rel "${capture}") by ${frame:0:10}, and \
+${dossier:0:10} is a strict ancestor of ${frame:0:10} -- measured as \
+reachability in the commit graph rather than from either commit's date, \
+which can say anything"
         return 0
     fi
-    record_fail "the dossier was written before the first gameplay \
-frame" \
-        "${dossier:0:10} is not an ancestor of ${frame:0:10}" \
-        "the dossier's first commit reachable from the first capture's"
+    record_fail "the dossier's first commit precedes the first \
+capture's" \
+        "${dossier:0:10} introduced $(rel "${PLAYTHROUGH_DOSSIER}") and \
+${frame:0:10} introduced $(rel "${capture}"), and ${dossier:0:10} is \
+NOT an ancestor of ${frame:0:10}" \
+        "the dossier's introducing commit reachable from the first \
+capture's -- on separate branches neither precedes the other, and the \
+requirement is an order rather than a coexistence"
 }
 
 check_git_identity() {
@@ -4766,17 +5021,269 @@ under" "${name} <${email}>"
 outright"
 }
 
+# ---------------------------------------------------------------------
+# THE COMMITTED IGNORE RULES.
+#
+# committed_file PATH -- the contents of one path as HEAD carries it, or
+# nothing when HEAD does not carry it at all.
+committed_file() {
+    "${GIT}" show "HEAD:$1" 2>/dev/null || true
+}
+
+# last_effective_rule -- the last line of a .gitignore that git would
+# actually apply: blank lines and comments are neither patterns nor
+# matches, so they cannot be the deciding rule and are stripped.
+last_effective_rule() {
+    "${GREP}" -v -e '^[[:space:]]*$' -e '^[[:space:]]*#' |
+        tail -n 1 || true
+}
+
+check_committed_ignore_negation() {
+    local content="" last=""
+    content="$(committed_file ".gitignore")"
+    if [ -z "${content}" ]; then
+        record_fail "the committed .gitignore still rescues the save \
+data" \
+            "HEAD carries no .gitignore at all" \
+            "a committed .gitignore ending in '${IGNORE_NEGATION}'"
+        return 0
+    fi
+    last="$(printf '%s\n' "${content}" | last_effective_rule)"
+    if [ "${last}" = "${IGNORE_NEGATION}" ]; then
+        record_pass "the committed .gitignore still rescues the save \
+data" \
+            "its last effective rule is '${last}', so a fresh clone of \
+this history re-includes the engine's own '#<name>.sav' and '*.log' \
+files instead of ignoring them"
+        return 0
+    fi
+    record_fail "the committed .gitignore still rescues the save data" \
+        "the last effective rule in HEAD's .gitignore is '${last}'" \
+        "'${IGNORE_NEGATION}' -- git applies the LAST matching \
+pattern, so anything after the negation re-excludes what it rescued, \
+and a history without it re-ignores the save data on every fresh clone \
+while every working-tree check still passes"
+}
+
+check_committed_attributes() {
+    local content="" row=""
+    local -a missing=()
+    content="$(committed_file ".gitattributes")"
+    if [ -z "${content}" ]; then
+        record_fail "the committed .gitattributes carries this \
+feature's rows" \
+            "HEAD carries no .gitattributes at all" \
+            "${#REQUIRED_ATTRIBUTES[@]} rows: \
+${REQUIRED_ATTRIBUTES[*]}"
+        return 0
+    fi
+    for row in "${REQUIRED_ATTRIBUTES[@]}"; do
+        # THE WHOLE LINE, LITERALLY.  A substring match would accept
+        # '*.mp4 binary' inside a comment about it, and a pattern match
+        # would read the '*' as a glob.  The awk pass trims the ends and
+        # collapses runs of whitespace, so a row written with a tab or
+        # an extra space is recognised as the row it is.
+        if ! printf '%s\n' "${content}" |
+                "${AWK}" '{ gsub(/^[ \t]+|[ \t]+$/, "");
+                            gsub(/[ \t]+/, " "); print }' |
+                "${GREP}" -Fqx -- "${row}"; then
+            missing+=("${row}")
+        fi
+    done
+    if [ "${#missing[@]}" -eq 0 ]; then
+        record_pass "the committed .gitattributes carries this \
+feature's rows" \
+            "${#REQUIRED_ATTRIBUTES[@]} rows present: \
+${REQUIRED_ATTRIBUTES[*]}"
+        return 0
+    fi
+    record_fail "the committed .gitattributes carries this feature's \
+rows" \
+        "${#missing[@]} missing: ${missing[*]}" \
+        "all ${#REQUIRED_ATTRIBUTES[@]} -- the file's own rationale is \
+to normalise explicitly rather than rely on detection, and without \
+these rows the film, the save and the map archives are left to '* \
+text=auto'"
+}
+
+check_committed_vcs_rules() {
+    check_committed_ignore_negation
+    check_committed_attributes
+}
+
+# ---------------------------------------------------------------------
+# THE LIFECYCLE CHECKPOINTS, AND THE ONE INCONSISTENCY A ROW COUNT
+# CANNOT SEE
+#
+# commit_artifacts.sh marks two commits with a trailer: the `creation`
+# checkpoint, taken when the survivor exists and no frame does, and the
+# `final` one, taken after the session is saved and closed.  The
+# committer anchors `final` to the newest `creation` in the history.
+#
+# Anchoring by trailer alone is not enough, and the gap is not
+# theoretical: a `final` checkpoint whose anchor records a DIFFERENT
+# survivor was accepted, because the only lifecycle assertion was that
+# the record had grown -- and a record re-recorded from scratch for a
+# new survivor has "grown" by that measure too.  The result is a history
+# whose two lifecycle commits describe somebody whose files are no
+# longer in the tree.
+#
+# So the property asserted here is INTERNAL CONSISTENCY: for every
+# `final` checkpoint, the survivor its own tree names must be the
+# survivor its anchoring `creation` names.  That is exactly false in the
+# cross-survivor case and exactly true of an honest lifecycle, and it is
+# a property of the graph rather than of a count.
+#
+# Which survivor HEAD carries is reported alongside, and a divergence
+# between HEAD and the newest checkpoint is stated in full rather than
+# left for a reader to infer -- a checkpoint pair describing a
+# superseded recording is a real fact about the history and this report
+# is where it belongs.
+# ---------------------------------------------------------------------
+
+# checkpoint_commits NAME -- every commit carrying the trailer, newest
+# first.  The anchors are the same '^KEY: name$' form the committer
+# writes, so the two cannot disagree about what a checkpoint is.
+checkpoint_commits() {
+    "${GIT}" log --format='%H' \
+        --grep="^${CHECKPOINT_TRAILER_KEY}: $1\$" HEAD -- \
+        2>/dev/null || true
+}
+
+# checkpoint_anchor COMMIT -- the newest `creation` checkpoint reachable
+# from COMMIT, which is the one the committer would have anchored to.
+checkpoint_anchor() {
+    "${GIT}" log --max-count=1 --format='%H' \
+        --grep="^${CHECKPOINT_TRAILER_KEY}: \
+${CHECKPOINT_CREATION_NAME}\$" "$1" -- 2>/dev/null || true
+}
+
+# survivor_at COMMIT -- "<world> / <character>" as that commit's tree
+# records it, or nothing when the tree carries no readable record.
+survivor_at() {
+    local content=""
+    content="$("${GIT}" show \
+        "$1:playthrough/userdir/config/lastworld.json" 2>/dev/null ||
+        true)"
+    if [ -z "${content}" ]; then
+        return 1
+    fi
+    printf '%s\n' "${content}" |
+        "${PYTHON}" -B -c "${LASTWORLD_STDIN_READER}" 2>/dev/null ||
+        return 1
+}
+
+check_lifecycle_checkpoints() {
+    local -a finals=() creations=() mismatched=()
+    local commit="" anchor="" mine="" theirs="" head_survivor=""
+    mapfile -t finals < <(checkpoint_commits \
+        "${CHECKPOINT_FINAL_NAME}")
+    mapfile -t creations < <(checkpoint_commits \
+        "${CHECKPOINT_CREATION_NAME}")
+    if ! head_survivor="$(survivor_at HEAD)"; then
+        head_survivor=""
+    fi
+
+    if [ "${#creations[@]}" -eq 0 ] || [ "${#finals[@]}" -eq 0 ]; then
+        record_fail "each checkpoint anchors to its own survivor's \
+creation" \
+            "${#creations[@]} '${CHECKPOINT_CREATION_NAME}' and \
+${#finals[@]} '${CHECKPOINT_FINAL_NAME}' checkpoint(s) carry the \
+'${CHECKPOINT_TRAILER_KEY}' trailer" \
+            "at least one of each -- the lifecycle is two commits, one \
+taken when the survivor exists and no frame does, one after the \
+session was saved and closed"
+        return 0
+    fi
+
+    for commit in "${finals[@]}"; do
+        [ -n "${commit}" ] || continue
+        anchor="$(checkpoint_anchor "${commit}")"
+        if [ -z "${anchor}" ]; then
+            mismatched+=("${commit:0:10} has no \
+'${CHECKPOINT_CREATION_NAME}' checkpoint among its ancestors")
+            continue
+        fi
+        if ! mine="$(survivor_at "${commit}")"; then
+            mismatched+=("${commit:0:10} names no survivor its own \
+tree can be read for")
+            continue
+        fi
+        if ! theirs="$(survivor_at "${anchor}")"; then
+            mismatched+=("${anchor:0:10}, the anchor of \
+${commit:0:10}, names no survivor its own tree can be read for")
+            continue
+        fi
+        record_info "the '${CHECKPOINT_FINAL_NAME}' checkpoint \
+${commit:0:10}" \
+            "records ${mine}, anchored to \
+'${CHECKPOINT_CREATION_NAME}' ${anchor:0:10} which records ${theirs}"
+        if [ "${mine}" != "${theirs}" ]; then
+            mismatched+=("${commit:0:10} records '${mine}' while its \
+anchor ${anchor:0:10} records '${theirs}'")
+        fi
+    done
+
+    if [ "${#mismatched[@]}" -eq 0 ]; then
+        record_pass "each checkpoint anchors to its own survivor's \
+creation" \
+            "${#finals[@]} '${CHECKPOINT_FINAL_NAME}' checkpoint(s), \
+each anchored to a '${CHECKPOINT_CREATION_NAME}' checkpoint recording \
+the same world and survivor"
+    else
+        record_fail "each checkpoint anchors to its own survivor's \
+creation" \
+            "${#mismatched[@]}: ${mismatched[*]}" \
+            "every '${CHECKPOINT_FINAL_NAME}' checkpoint anchored to \
+the creation of the survivor it is about -- a record re-recorded from \
+scratch has 'grown' by row count too, so the row count cannot tell the \
+two apart"
+    fi
+
+    # THE DIVERGENCE IS STATED, NOT INFERRED.  A checkpoint pair that
+    # describes a superseded recording is consistent with itself and
+    # still leaves the survivor in the tree without a checkpoint of her
+    # own, so the report says which survivor each side is about.
+    if [ -n "${head_survivor}" ]; then
+        record_info "the survivor whose evidence HEAD carries" \
+            "${head_survivor}"
+        local newest="${finals[0]}"
+        if theirs="$(survivor_at "${newest}")"; then
+            if [ "${theirs}" != "${head_survivor}" ]; then
+                record_warn "the lifecycle checkpoints describe \
+another recording" \
+                    "the newest '${CHECKPOINT_FINAL_NAME}' checkpoint \
+${newest:0:10} records ${theirs} while HEAD carries ${head_survivor}, \
+so the evidence in the tree has no checkpoint pair of its own and its \
+own commits carry no trailer"
+            fi
+        fi
+    fi
+}
+
 group_version_control() {
     group "version control -- the save is really committed"
     check_git_worktree
     check_git_identity
-    check_save_tracked
     check_nothing_ignored
-    check_every_class_tracked
-    check_tracked_frame_count
-    check_nothing_uncommitted
     check_no_bytecode
-    check_commit_order
+    if tracking_phase; then
+        check_save_tracked
+        check_every_class_tracked
+        check_tracked_frame_count
+        check_nothing_uncommitted
+        check_commit_order
+        check_committed_vcs_rules
+        check_lifecycle_checkpoints
+    else
+        record_info "eleven properties of the COMMIT are deferred to \
+the ${PHASE_POST_COMMIT} phase" \
+            "the save, the artifact classes and the captures being \
+tracked; nothing being left uncommitted; the commit order; the \
+committed ignore rules; and the checkpoint anchors -- none of them can \
+hold before the checkpoint that makes them true, and this phase runs \
+ahead of it"
+    fi
 }
 
 
@@ -5355,9 +5862,13 @@ check_lint_scoped() {
         record_fail "the new Python satisfies the repository's own \
 lint contract" \
             "no flake8 could be resolved" \
-            "flake8 on PATH, importable as a module, or named by \
-PLAYTHROUGH_FLAKE8 -- the check is not skippable, because a lint gate \
-that silently does not run is not a gate"
+            "flake8 on PATH, importable by the interpreter env.sh \
+resolved, or named by PLAYTHROUGH_FLAKE8 -- the check is not skippable, \
+because a lint gate that silently does not run is not a gate.  Running \
+this gate INSIDE the declared container leaves only the first two of \
+those: supported_env.sh forwards HOME, TMPDIR and the cleared \
+trust-bypass names and nothing else, so a host-side PLAYTHROUGH_FLAKE8 \
+never arrives and the linter must be installed in the image"
         return 0
     fi
     set +e
@@ -5512,7 +6023,14 @@ group_hygiene() {
     check_lint_scoped
     check_flake8_not_weakened
     check_timeline_tests
-    check_change_surface
+    # The change surface is measured from a base commit to HEAD, so it
+    # is a property of the COMMIT: before the checkpoint, the artifacts
+    # this feature added are not in HEAD to be measured, and on a tree
+    # where nothing has been committed yet there is no base commit to
+    # measure from either.
+    if tracking_phase; then
+        check_change_surface
+    fi
     # Re-read for bytecode AFTER the suite ran, so the claim is that this
     # gate itself left no trace and not merely that none was there before.
     check_no_bytecode "this gate itself left no interpreter bytecode \
@@ -5542,13 +6060,14 @@ one verdict per offending item"
         return 0
     fi
     record_fail "this report contains every check this gate declares" \
-        "${total} verdicts, ${EXPECTED_CHECKS} declared -- \
-$((EXPECTED_CHECKS - total)) check(s) did not report" \
+        "${total} verdicts, ${EXPECTED_CHECKS} declared for the \
+'${PHASE}' phase -- $((EXPECTED_CHECKS - total)) check(s) did not \
+report" \
         "at least ${EXPECTED_CHECKS} -- a shorter report means a check \
 could not be performed, and a check that silently does not run is worse \
 than no check; compare this report against the group-by-group \
-derivation beside EXPECTED_CHECKS in this file to find the one that is \
-missing"
+derivation beside EXPECTED_CHECKS_ALL in this file to find the one that \
+is missing"
 }
 
 group_inventory() {
@@ -5581,6 +6100,7 @@ summarise_run() {
     if [ "${total}" -eq "${EXPECTED_CHECKS}" ]; then
         counted="${total} of ${EXPECTED_CHECKS} declared"
     fi
+    counted="${counted} for the '${PHASE}' phase"
     if [ "${FAILURES}" -eq 0 ]; then
         message="SUMMARY  ${PASSES} of ${total} checks passed "
         message="${message}(${counted}), ${INFOS} informational "
@@ -5594,6 +6114,7 @@ summarise_run() {
         message="${message}required."
     fi
     printf '%s\n' "${message}"
+    note VERIFY_PHASE "${PHASE}"
     note VERIFY_CHECKS "${total}"
     note VERIFY_EXPECTED_CHECKS "${EXPECTED_CHECKS}"
     note VERIFY_PASSES "${PASSES}"
@@ -5624,6 +6145,19 @@ main() {
 playthrough capture subsystem"
     printf '%s\n' "reading the committed artifacts under \
 $(rel "${PLAYTHROUGH_DIR}")/ at the repository root"
+    # THE PHASE IS THE FIRST THING THE REPORT SAYS.  A pre-commit report
+    # is legitimately shorter than a post-commit one, and a reader who
+    # was not told which phase produced it cannot tell a deferred check
+    # from a missing one.
+    if tracking_phase; then
+        printf '%s\n' "phase '${PHASE}': every property, the \
+properties of the commit included (${EXPECTED_CHECKS} checks declared)"
+    else
+        printf '%s\n' "phase '${PHASE}': every property of the \
+ARTIFACTS; the properties of the COMMIT are deferred to the \
+'${PHASE_POST_COMMIT}' phase, which runs after the checkpoint \
+(${EXPECTED_CHECKS} checks declared)"
+    fi
 
     group_environment
     group_record
