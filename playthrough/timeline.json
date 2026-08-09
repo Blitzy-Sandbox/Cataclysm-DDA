@@ -5,7 +5,12 @@
     "sha256": "ce694804dcb7463a867ceb466928c5a3b5de305588537257987665b2f58cb9af",
     "rows": 326
   },
-  "amendments": null,
+  "amendments": {
+    "path": "playthrough/amendments.jsonl",
+    "sha256": "3e93306d92ad56534f9d673aca5663a30496e3675162ad68040d74515825fb68",
+    "rows": 14,
+    "applied": 14
+  },
   "captures": {
     "path": "playthrough/build/frame_digests.jsonl",
     "sha256": "2d2a5d833bf582e15080dd5ece507fe1f320a649c1617d4a321a0d077ab22389",
@@ -1682,9 +1687,9 @@
       "transition_after": false,
       "cue_start": 19.5,
       "cue_end": 19.75,
-      "action": "press 'slash' -- narrow the list again",
+      "action": "press 'slash' -- meant to narrow the list; the athletics level box the previous Return opened took the character instead and read /",
       "commentary": "And the other one the post office paid for, after Kowalski went down.",
-      "amended": false
+      "amended": true
     },
     {
       "frame": 80,
@@ -1703,9 +1708,9 @@
       "transition_after": false,
       "cue_start": 19.75,
       "cue_end": 20.0,
-      "action": "press 'h' -- begin spelling the second",
+      "action": "press 'h' -- kept spelling into that level box, which then read /h",
       "commentary": "A man dropped in a driveway on my east route, in August, and I was first there.",
-      "amended": false
+      "amended": true
     },
     {
       "frame": 81,
@@ -1724,9 +1729,9 @@
       "transition_after": false,
       "cue_start": 20.0,
       "cue_end": 20.25,
-      "action": "press 'e' -- continue spelling it",
+      "action": "press 'e' -- kept spelling into that level box, which then read /he",
       "commentary": "They sent us all on a course after that. I did not resent it.",
-      "amended": false
+      "amended": true
     },
     {
       "frame": 82,
@@ -1745,9 +1750,9 @@
       "transition_after": false,
       "cue_start": 20.25,
       "cue_end": 20.5,
-      "action": "press 'a' -- continue spelling it",
+      "action": "press 'a' -- kept spelling into that level box, which then read /hea",
       "commentary": "I know what to do about bleeding.",
-      "amended": false
+      "amended": true
     },
     {
       "frame": 83,
@@ -1766,9 +1771,9 @@
       "transition_after": false,
       "cue_start": 20.5,
       "cue_end": 20.75,
-      "action": "press 'l' -- finish spelling it",
+      "action": "press 'l' -- kept spelling into that level box, which then read /heal",
       "commentary": "And I know what not to do about a broken bone, which matters more.",
-      "amended": false
+      "amended": true
     },
     {
       "frame": 84,
@@ -1787,9 +1792,9 @@
       "transition_after": false,
       "cue_start": 20.75,
       "cue_end": 21.0,
-      "action": "press 'Return' -- accept the narrowed list",
-      "commentary": "There. That is the whole of me on one page.",
-      "amended": false
+      "action": "press 'Return' -- the level box threw /heal away and closed, and the page came back exactly as it stood before it opened",
+      "commentary": "That did nothing. The page is exactly as I left it.",
+      "amended": true
     },
     {
       "frame": 85,
@@ -6596,9 +6601,9 @@
       "transition_after": false,
       "cue_start": 216.0,
       "cue_end": 216.25,
-      "action": "press '2' -- swing",
-      "commentary": "Again.",
-      "amended": false
+      "action": "press '2' -- there was no swing left to make; the last-words box on the end screen took the 2",
+      "commentary": "My hand went again. Nothing left to hit, and the 2 landed in my last words.",
+      "amended": true
     },
     {
       "frame": 314,
@@ -6617,9 +6622,9 @@
       "transition_after": false,
       "cue_start": 216.25,
       "cue_end": 216.5,
-      "action": "press 'BackSpace' -- clear the box, that is not what I said",
-      "commentary": "That is not what I said. Let me say it properly.",
-      "amended": false
+      "action": "press 'BackSpace' -- meant to take the stray 2 back; it stayed, and only the cursor bar moved",
+      "commentary": "That is not what I said. The 2 would not come off, so I wrote round it.",
+      "amended": true
     },
     {
       "frame": 315,
@@ -6681,8 +6686,8 @@
       "cue_start": 217.0,
       "cue_end": 217.25,
       "action": "press 'space' -- keep going; nothing on the screen changed",
-      "commentary": "On my.",
-      "amended": false
+      "commentary": "On. Then a space, and the rest of it.",
+      "amended": true
     },
     {
       "frame": 318,
@@ -6723,8 +6728,8 @@
       "cue_start": 217.5,
       "cue_end": 217.75,
       "action": "press 'y' -- keep going",
-      "commentary": "On my way.",
-      "amended": false
+      "commentary": "On my.",
+      "amended": true
     },
     {
       "frame": 320,
@@ -6828,8 +6833,8 @@
       "cue_start": 218.75,
       "cue_end": 219.0,
       "action": "press 'period' -- finish the sentence",
-      "commentary": "Full stop. Thirty-four years of putting the address on straight.",
-      "amended": false
+      "commentary": "Full stop. Thirty-four years of straight addresses, and a 2 on the last one.",
+      "amended": true
     },
     {
       "frame": 325,

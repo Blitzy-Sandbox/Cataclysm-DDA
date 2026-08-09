@@ -104,6 +104,20 @@ TRANSITIONS_DIR = os.path.join(BUILD_DIR, "transitions")
 MOVIE_MANIFEST = os.path.join(BUILD_DIR, "movie.json")
 TRANSCRIPT_MANIFEST = os.path.join(BUILD_DIR, "transcript.json")
 MOVIE = os.path.join(PLAYTHROUGH, "cata-play.mp4")
+CAPTIONED_MOVIE = os.path.join(PLAYTHROUGH, "cata-play-cc.mp4")
+
+# The two ISO base media atoms whose ORDER decides whether a player can
+# start on its first request: `moov` is the index, `mdat` is every byte
+# of picture.  `-movflags +faststart` puts the index first, and a mux
+# does not inherit it from its input -- a runtime QA pass found the
+# captioned film shipped with `moov` last, costing every viewer a tail
+# fetch before playback could begin.  Both films are held to it below.
+MOOV_ATOM = b"moov"
+MDAT_ATOM = b"mdat"
+ATOM_HEADER_BYTES = 8
+ATOM_LARGE_SIZE = 1
+ATOM_LARGE_SIZE_BYTES = 8
+MAX_TOP_LEVEL_ATOMS = 64
 
 # The frame file name, from the producer rather than restated here.
 FRAME_NAME_RE = re.compile(r"^frame_(\d{5})\.png$")
@@ -147,6 +161,42 @@ def _read_bytes(path):
     """Return a whole file as bytes."""
     with open(path, "rb") as handle:
         return handle.read()
+
+
+def _top_level_atoms(path):
+    """Return [(type, offset, size)] for an MP4's top-level atoms.
+
+    A bounded walk of the ISO base media container: four bytes of
+    big-endian size, four bytes of type, and on to the next one.  Enough
+    of the format to answer one question -- does the index come before
+    the picture -- without a parser or a dependency, and with every
+    degenerate case ending the walk rather than looping: size 1 means the
+    real length is in the following 64 bits, size 0 means "to the end of
+    the file", and anything smaller than a header is refused.
+    """
+    atoms = []
+    with open(path, "rb") as handle:
+        size_of = os.path.getsize(path)
+        offset = 0
+        while offset < size_of and len(atoms) < MAX_TOP_LEVEL_ATOMS:
+            handle.seek(offset)
+            header = handle.read(ATOM_HEADER_BYTES)
+            if len(header) < ATOM_HEADER_BYTES:
+                break
+            size = int.from_bytes(header[:4], "big")
+            kind = header[4:8]
+            if size == ATOM_LARGE_SIZE:
+                extra = handle.read(ATOM_LARGE_SIZE_BYTES)
+                if len(extra) < ATOM_LARGE_SIZE_BYTES:
+                    break
+                size = int.from_bytes(extra, "big")
+            elif size == 0:
+                size = size_of - offset
+            atoms.append((kind, offset, size))
+            if size < ATOM_HEADER_BYTES:
+                break
+            offset += size
+    return atoms
 
 
 def _fingerprint():
@@ -882,7 +932,33 @@ class TestTheTranscriptContract(ArtifactFixture):
         self.assertEqual(entries, len(self.entries))
 
     def test_the_markdown_explains_its_timestamps(self):
-        self.assertIn(make_srt.MARKDOWN_HEADER, self.markdown)
+        self.assertIn(make_srt.markdown_header(), self.markdown)
+
+    def test_the_transcript_is_titled_with_this_records_survivor(self):
+        """The committed title names the survivor of THIS session.
+
+        A runtime QA pass found the shipped transcript titled with a
+        retired survivor's name: the record had been re-captured, the
+        dossier introduced somebody else, and every other layer -- the
+        manifest's own sentences, the caption cues, the save file's
+        base64 name, the achievements file, lastworld.json -- agreed
+        with the dossier while this one heading did not.  The title is
+        derived now, and this holds the ARTIFACT to it rather than the
+        derivation: the first line of the committed transcript must be
+        the name the committed dossier gives, spelled the same way.
+        """
+        dossier = os.path.join(PLAYTHROUGH, "dossier.md")
+        self.assertTrue(os.path.isfile(dossier),
+                        msg="the survivor's own account of himself is "
+                            "what the transcript is titled from")
+        name = make_srt.read_survivor_name(dossier)
+        self.assertEqual(
+            self.markdown.splitlines()[0],
+            "# %s%s" % (name, make_srt.MARKDOWN_TITLE_SUFFIX))
+        # And nobody else is introduced anywhere in the two artifacts'
+        # generated lines: the header is the only text either file
+        # carries that the survivor did not write.
+        self.assertIn(name, self.markdown.splitlines()[0])
 
     def test_both_transcripts_regenerate_from_the_timeline(self):
         # One generation, two files: the human-readable record and the
@@ -1001,6 +1077,45 @@ class TestTheRenderContract(ArtifactFixture):
                 TRANSITIONS_DIR, TIMELINE, flagged),
             [], msg=("the group set must be attributable to the timeline "
                      "being rendered, group index for group index"))
+
+    def assert_moov_precedes_mdat(self, path):
+        """Hold one film to the streaming layout, or say why not."""
+        atoms = _top_level_atoms(path)
+        kinds = [kind for kind, _, _ in atoms]
+        self.assertIn(MOOV_ATOM, kinds,
+                      msg="%s carries no moov atom at the top level: %s"
+                          % (os.path.basename(path), kinds))
+        self.assertIn(MDAT_ATOM, kinds,
+                      msg="%s carries no mdat atom at the top level: %s"
+                          % (os.path.basename(path), kinds))
+        self.assertLess(
+            kinds.index(MOOV_ATOM), kinds.index(MDAT_ATOM),
+            msg=("%s writes moov AFTER mdat (%s), so a player must "
+                 "fetch the tail of the file before it can start.  "
+                 "-movflags +faststart is what puts the index first, "
+                 "and a mux does not inherit it from its input"
+                 % (os.path.basename(path),
+                    " ".join("%s@%d(%d)" % (kind.decode("latin-1"),
+                                            offset, size)
+                             for kind, offset, size in atoms))))
+
+    def test_the_film_is_written_for_streaming(self):
+        self.assert_moov_precedes_mdat(MOVIE)
+
+    def test_the_captioned_film_is_written_for_streaming_too(self):
+        """The captioned film is the one a viewer actually streams.
+
+        A runtime QA pass measured the shipped pair and found the base
+        render front-loaded (`ftyp moov free mdat`) while the captioned
+        film was not (`ftyp free mdat moov`): the mux had written a fresh
+        container without `-movflags +faststart`, so Chrome needed an
+        extra `Range: bytes=3735552-` tail request before it could play
+        the distribution artifact at all.  Asserted here, against the
+        committed bytes, because this is where a lost flag shows up.
+        """
+        if not os.path.isfile(CAPTIONED_MOVIE):
+            self.skipTest("no captioned film in this checkout")
+        self.assert_moov_precedes_mdat(CAPTIONED_MOVIE)
 
     def test_the_two_generation_manifests_name_the_same_timeline(self):
         for path in (MOVIE_MANIFEST, TRANSCRIPT_MANIFEST):

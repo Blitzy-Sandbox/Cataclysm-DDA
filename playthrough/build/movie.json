@@ -16,7 +16,7 @@
   "stage": "movie",
   "timeline": {
     "path": "playthrough/timeline.json",
-    "sha256": "e9f2d1388d4cdccb65cac6e4492dd570cde64555c4c196002b882f7fb9321358"
+    "sha256": "d04c2d72849d69ceef392500211e1ee67f96489b8696de1be965ca2353e48747"
   },
   "version": 1,
   "width": 1920

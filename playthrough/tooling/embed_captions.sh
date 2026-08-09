@@ -442,6 +442,18 @@ readonly SUBTITLE_CODEC="mov_text"
 readonly SUBTITLE_LANGUAGE="eng"
 readonly SUBTITLE_METADATA_KEY="-metadata:s:s:0"
 
+# The container layout flag, spelled exactly as render_movie.py spells
+# it (MOVFLAGS = "+faststart" there).  It puts the `moov` index in front
+# of `mdat` so a player can start on its first request instead of
+# fetching the tail first; see THE MUX below for the measurement that
+# put it here.  That the flag TOOK EFFECT on the published container --
+# rather than merely being asked for -- is asserted against the
+# committed artifact by test_artifacts.py, which walks both films' top
+# level atoms and requires `moov` before `mdat` in each.  It is checked
+# there rather than here because the check has to read real container
+# bytes, and this stage's own suite drives it against a stubbed ffmpeg.
+readonly MOVFLAGS="+faststart"
+
 # The container tags the published film may carry, and only these.
 #
 # WHY A WHITELIST RATHER THAN A CHECK FOR THE KNOWN BAD.  -map_metadata
@@ -1760,6 +1772,30 @@ unset _ec_kind _ec_spec _ec_name _ec_extra
 # -map_chapters -1.  Chapters are copied from the first input the same
 # way.  render_movie.py writes none, so this is the case that costs
 # nothing today and would otherwise be an unnoticed channel tomorrow.
+#
+# -movflags +faststart.  THE CAPTIONED FILM IS THE ONE A VIEWER
+# STREAMS, so it has to carry the property the base render was given.
+# render_movie.py encodes with `-movflags +faststart`, which relocates
+# the `moov` atom -- the index a player needs before it can decode
+# anything -- to the FRONT of the container, straight after `ftyp`.  A
+# mux does not inherit that: `-c copy` writes a fresh container, and
+# without this flag the MP4 muxer leaves `moov` where it naturally
+# falls, which is at the END, after every byte of `mdat`.
+#
+# A runtime QA pass measured exactly that on the shipped artifact.  Atom
+# walks: the base render read
+# `ftyp@0(32) -> moov@32(3717) -> free@3749(8) -> mdat@3757(3745389)`,
+# and the captioned film read
+# `ftyp@0(32) -> free@32(8) -> mdat@40(3763357) -> moov@3763397(11141)`.
+# Served over a Range-capable server, Chrome could start the base film
+# from its first request, while the captioned film cost an extra tail
+# fetch -- `Range: bytes=3735552-` -- before it could play at all.  That
+# is a defect of the DISTRIBUTION artifact and it gets worse, not
+# better, the larger a session is: every future viewer pays a round trip
+# for an index that could have been in the first kilobyte.
+#
+# It is asserted below like every other mandated flag, so the property
+# cannot be lost again by a quiet edit to this list.
 # ---------------------------------------------------------------------
 MUX_ARGS=(
     -y -v error
@@ -1772,6 +1808,7 @@ MUX_ARGS=(
     -c copy
     -c:s "${SUBTITLE_CODEC}"
     "${SUBTITLE_METADATA_KEY}" "language=${SUBTITLE_LANGUAGE}"
+    -movflags "${MOVFLAGS}"
     "${STAGING_FILE}"
 )
 readonly MUX_ARGS
@@ -1792,7 +1829,7 @@ readonly MUX_ARGS
 #     than a promise in a comment.  A filter, an encoder, a scale or a
 #     mapping could not be added without changing it.
 # ---------------------------------------------------------------------
-readonly MUX_ARG_COUNT=22
+readonly MUX_ARG_COUNT=24
 
 assert_recipe_contains() {
     local needle="$1"
@@ -1814,6 +1851,10 @@ assert_recipe_contains "-map 0:v:0"
 assert_recipe_contains "-map 1:s:0"
 assert_recipe_contains "-map_metadata -1"
 assert_recipe_contains "-map_chapters -1"
+# The streaming layout, asserted for the same reason: the captioned film
+# is the distribution artifact, and a mux does not inherit the base
+# render's front-loaded index.
+assert_recipe_contains "-movflags ${MOVFLAGS}"
 
 if [ "${#MUX_ARGS[@]}" -ne "${MUX_ARG_COUNT}" ]; then
     die "${EX_VERIFY}" "the mux command has ${#MUX_ARGS[@]}" \

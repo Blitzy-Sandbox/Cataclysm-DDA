@@ -1,4 +1,4 @@
-# Delphine Ouellette — what I did, and why
+# Ambrose Halloran — what I did, and why
 
 Timestamps are cumulative video time.
 
@@ -168,7 +168,7 @@ Timestamps are cumulative video time.
 
 **00:00:20,500** And I know what not to do about a broken bone, which matters more.
 
-**00:00:20,750** There. That is the whole of me on one page.
+**00:00:20,750** That did nothing. The page is exactly as I left it.
 
 **00:00:21,000** Walking is the only equipment I own that has never once failed me.
 
@@ -626,19 +626,19 @@ Timestamps are cumulative video time.
 
 **00:03:35,750** Again.
 
-**00:03:36,000** Again.
+**00:03:36,000** My hand went again. Nothing left to hit, and the 2 landed in my last words.
 
-**00:03:36,250** That is not what I said. Let me say it properly.
+**00:03:36,250** That is not what I said. The 2 would not come off, so I wrote round it.
 
 **00:03:36,500** O.
 
 **00:03:36,750** On.
 
-**00:03:37,000** On my.
+**00:03:37,000** On. Then a space, and the rest of it.
 
 **00:03:37,250** It is not much of a sentence but it is a true one.
 
-**00:03:37,500** On my way.
+**00:03:37,500** On my.
 
 **00:03:37,750** That is what I was. Four days late and on my way.
 
@@ -648,7 +648,7 @@ Timestamps are cumulative video time.
 
 **00:03:38,500** On my way.
 
-**00:03:38,750** Full stop. Thirty-four years of putting the address on straight.
+**00:03:38,750** Full stop. Thirty-four years of straight addresses, and a 2 on the last one.
 
 **00:03:39,000** Let it stand. That is the last thing I have to file.
 

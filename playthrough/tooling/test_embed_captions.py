@@ -869,6 +869,25 @@ class TestTheRecipe(MuxFixture):
         self.assertIn("-map_metadata -1", argv)
         self.assertIn("-map_chapters -1", argv)
 
+    def test_it_writes_the_container_for_streaming(self):
+        """`-movflags +faststart`, which a mux does not inherit.
+
+        render_movie.py front-loads the base film's `moov` index so a
+        player can start on its first request.  `-c copy` writes a NEW
+        container, and a runtime QA pass found the shipped captioned
+        film with `moov` last -- `ftyp free mdat moov` against the base
+        render's `ftyp moov free mdat` -- which cost Chrome an extra
+        tail fetch before playback could begin.  The captioned film is
+        the artifact a viewer streams, so it carries the flag too.
+
+        That the flag TOOK EFFECT is a property of real container bytes
+        and is asserted by test_artifacts.py against the committed
+        films; this suite drives a stubbed ffmpeg, so what it can
+        assert -- and does -- is that the command asks for it.
+        """
+        self.mux()
+        self.assertIn("-movflags +faststart", self.mux_argv())
+
     def test_nothing_touches_the_picture(self):
         """No filter, no encoder, no scale -- anywhere in the command.
 

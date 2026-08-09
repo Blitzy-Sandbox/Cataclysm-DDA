@@ -3765,6 +3765,586 @@ returned to, and the final commit follows that frame.
 
 ---
 
+
+## Runtime QA remediation of the 326-frame record
+
+**Recorded on Sunday, August 9, 2026.** A runtime QA pass took the captioned
+film as its subject and tested the seams end to end — every count, digest,
+clamp, cue, concat entry, packet-to-image mapping and decoded scene across the
+whole 326-frame population rather than a sample, both films against each other,
+the caption track through four independent decoders, and the browser playback
+surface at four widths. **Every structural invariant passed.** The film is
+provably a `-c copy` of the base render, the timeline invariant closes to the
+millisecond, the caption track round-trips bit-for-bit, there is no burned-in
+text, no hidden stream, no audio, no omission, no reordering and no unexplained
+freeze.
+
+What it found instead were **eleven findings about the record's truthfulness,
+its completeness and its packaging**, and the eleventh is the reason this
+section exists at all: ten of 326 narrated entries described something other
+than what their own frame showed. Their dispositions:
+
+| # | Finding | Disposition |
+| --- | --- | --- |
+| F1 | `transcript.md` was titled with the retired survivor's name | **fixed in code** — the heading is derived from `dossier.md` now |
+| F2 | row 313 narrated a melee swing after death | **corrected by amendment** 8 and 9 |
+| F3 | row 314 claimed the last-words box was cleared; it was not | **corrected by amendment** 10, 11 and 14 |
+| F4 | cues 317 and 319 read a word off the screen before it was typed | **corrected by amendment** 12 and 13 |
+| F5 | no in-game Save & Quit anywhere in the record | **still unmet, and not closable here** — see below |
+| F6 | the final cue was said to narrate declining a replay the frame shows playing | **measured and refused** — the frame is not the replay |
+| F7 | the captioned film lost `+faststart` | **fixed in code** — `embed_captions.sh` carries the flag |
+| F8 | `ffprobe` reports `nb_frames=328` for a 326-cue track | **container arithmetic, not a defect** — see below |
+| F9 | the tileset provenance anchor refuses this host's composed pack | **environment, and deliberately not "fixed"** — the anchor is right and the film's artwork matches it; see below |
+| F10 | six creator rows narrated narrowing a list that was never on screen | **corrected by amendments** 1 to 7 |
+| F11 | four consecutive movement keystrokes were no-ops | **disclosed, not a defect** — see below |
+
+### The narrative record was corrected through a 14-entry amendment ledger
+
+**The record itself was not edited, and could not be.** `manifest.jsonl` and
+`build/observations.jsonl` hold exactly the bytes the session wrote; no path in
+`manifest.py` or `session.py` can rewrite a recorded row. A narration is
+corrected by appending to `playthrough/amendments.jsonl`, where each row binds
+to the sha256 of the manifest LINE it concerns, quotes the recorded text,
+states the amended text, and states the MEASUREMENT that established the
+correction and why the recorded words could not stand on their own.
+`manifest.resolve_rows()` then applies the ledger — fail-closed, refusing
+rather than skipping if a digest has moved — to the timeline, the transcript
+and the caption cues. So the record and its correction are both readable, and
+which is which is never in doubt.
+
+The ledger now holds **14 amendments** covering **11 frames**
+(79, 80, 81, 82, 83, 84, 313, 314, 317, 319, 324): sha256
+`3e93306d92ad56534f9d673aca5663a30496e3675162ad68040d74515825fb68`, attested in
+`timeline.json` as `{"rows": 14, "applied": 14}`. Eight amend an `action`, six a
+`commentary`; no `frame`, `file`, `real_ts` or `ingame_clock` is amendable, by
+design, because amending one of those would be inventing evidence rather than
+correcting a narration.
+
+**What the creator frames actually show (amendments 1–7, finding F10).** Frame 77
+to 78 changes **12 052 pixels** inside `(824,506)-(1095,564)`, and OCR of that
+band across frames 78 to 83 reads the box titled `Set new athletics skill level`
+with its value reading `0`, then `/`, `/h`, `/he`, `/hea`, `/heal`. Frame 83 to
+84 removes the same 12 052 pixels in the identical box, and **frame 84 is
+byte-identical to frame 77** — both hash to
+`acdf3ea6662de87def6eeceef8511ec4fdb5520cbf721c87b84658dac7ec9524` at 13 537
+bytes, which is exactly why a full-population duplicate sweep found the pair.
+The real purchase lands one keystroke later: frame 84 to 85 changes **1 437
+pixels** at `(111,92)-(1037,231)`. So rows 79–84 were narrating the filter box
+of a list that was not on the screen; what the keystrokes actually did was spell
+an invalid number into a numeric level box, which the following `Return`
+discarded. The amended actions say that, naming the value the box carried at
+each keystroke, and row 84's commentary — which had claimed *"That is the whole
+of me on one page"* over a page that had come back unchanged — now reads *"That
+did nothing. The page is exactly as I left it."*
+
+This supersedes the third blemish disclosed in *Three blemishes in this record*:
+that entry said rows 78–84 recorded keystrokes that had no effect, which was
+true but incomplete — the rows also described a screen that was not there.
+
+**What the closing frames actually show (amendments 8–14, findings F2, F3, F4).**
+Frame 311 carries no end screen. Frame 312 carries the `The End` dialog —
+`In memory of: Ambrose Halloran`, `Survived: 2 mins 40 secs`, `Kills: 0` — with
+an **empty** `Last Words:` box, so keystroke 312 was the last swing and its row
+is correct. Then:
+
+* **frame 312 to 313 changes 20 pixels** at `(912,761)-(917,770)`: one glyph, a
+  `2`, inside that box. Row 313 had recorded another swing, and no swing was
+  reachable — the engine enters its regular actions only while the avatar is
+  alive [src/handle_action.cpp:3467-3473, guarding
+  `do_regular_action` at :2326, which is where `ACTION_SAVE` and every other
+  ordinary action lives].
+* **frame 313 to 314 changes 21 pixels** at `(917,760)-(918,773)` — a
+  two-pixel-wide cursor bar, and the `2` at x912–917 is untouched. The row had
+  said the BackSpace cleared the box. It did not, and the digit survived every
+  keystroke after it: a 3x crop reads `2O`, `2On`, `2On m`, `2On my`,
+  `2On my w`, `2On my wa`, `2On my way` and finally **`2On my way.`** on frame
+  324. The value the survivor filed carries the stray character, so the entry a
+  viewer reads at the film's climax now says so.
+* **frame 316 to 317 changes 0 pixels** of 1 920 × 1 080 — the space is
+  invisible — yet cue 317 spoke the word `my` that frame 319 is where the screen
+  first carries. **Frame 318 to 319 changes 23 pixels** at `(952,764)-(957,773)`,
+  the `y` that completes `my`, while cue 319 spoke `way`, whose letters are
+  typed on frames 321, 322 and 323. Both now say what their own frame holds.
+
+Rows 315, 316 and 320 to 323 were left alone deliberately: their sentences are
+the survivor's own words as he wrote them, not statements about the screen, and
+the stray digit is stated at 313, at 314 and at 324 — three places a reader
+cannot miss. An amendment that changed nothing false would be noise in a ledger
+somebody has to read.
+
+**What regenerating the chain moved, and what it did not.** The whole derived
+chain was recomputed in dependency order — timeline, transitions, film, both
+transcripts, captioned film — and the film came out **byte-identical**:
+`cata-play.mp4` is still `23da4ae0210a048a4324650ad4bf687bf98ef095cd1914a28e54fb34124b02e9`,
+`build/concat.txt` still `da6a4cd484fa79c0813b52b721942e0a455bb802715fd8424ca082865adc9cc5`,
+and all **12 transition PNGs** are byte-for-byte what they were. Nothing about
+the pacing or the pictures moved, because nothing about the pacing or the
+pictures was wrong: `timeline.json` changed only by gaining the amendment
+attestation and by carrying the amended sentences on those 11 entries — every
+duration, every cue window, every clock reading and every total is the number it
+was. The digests that did move, and why:
+
+| Artifact | Before | After | Why |
+| --- | --- | --- | --- |
+| `timeline.json` | `e9f2d138…21358` | `d04c2d72…e48747` | amendment attestation + 11 amended entries |
+| `transcript.srt` | `b9473b01…17e80` | `4cdec24b…0225f0` | 6 amended commentaries |
+| `transcript.md` | `0c720783…a9388` | `2ec57c3d…f65469` | the same six, plus the derived title |
+| `cata-play-cc.mp4` | `e5548147…fee22` | re-muxed | new cue text, and `+faststart` |
+| `build/movie.json` | — | — | the timeline digest it binds the film to |
+| `build/transitions.json` | — | — | the same, for the transition group |
+| `build/transcript.json` | — | — | both transcript digests and the timeline's |
+
+**How the corrected sentences were verified where a viewer meets them.** The
+`mov_text` track was extracted back out of the captioned container and compared
+with `transcript.srt`: **326 cues, zero timing and zero text mismatches**. Then
+the same 326 cues were attached to the same film in Chrome as a WebVTT track —
+Chrome does not decode `mov_text`, which is a player limitation this page has
+recorded before — and the active cue was read at eleven timestamps chosen to sit
+inside the amended windows. All eleven came back **byte-exact**, including
+`216.12` → *"My hand went again. Nothing left to hit, and the 2 landed in my
+last words."*, `216.37` → *"That is not what I said. The 2 would not come off,
+so I wrote round it."*, and `218.87` → *"Full stop. Thirty-four years of
+straight addresses, and a 2 on the last one."* The screenshots carry the
+corroboration that matters most: the caption at 216.12 is painted over a picture
+whose `Last Words:` box reads `2`, and the caption at 218.87 over one that reads
+`2On my way.` Playback then ran to `ended` with zero JavaScript errors,
+`video.error === null`, and 40 samples each carrying exactly one active cue.
+
+**One measurement worth recording so nobody loses an hour to it.** Burning the
+embedded track with `ffmpeg -vf subtitles=` and sampling single frames is a
+POOR probe of cue timing, and it is not a defect in the track. The container's
+video packets sit on a 25 fps grid at 0.24 s spacing while the cues sit on the
+0.25 s floor, so a cue window can contain no packet START at all; the subtitles
+filter only re-renders on a decoded frame boundary, so such a cue never appears
+in a burned still even though a player — which renders subtitles on its own
+clock — shows it correctly. Reading `activeCues` in a browser, or extracting the
+track and diffing it, measures what a viewer sees. Both were done.
+
+### The transcript's title is derived from the dossier now
+
+`make_srt.py` used to spell the survivor's name in a constant, under a comment
+asserting that the title was "deliberately the same opening
+`playthrough/dossier.md` uses". After the session was re-recorded that claim was
+false in the shipped tree, and the comment made the defect look intentional:
+`dossier.md` opened `# Ambrose Halloran` while `transcript.md` opened with the
+previous survivor's name. Every other layer agreed with the dossier — the
+manifest's own sentences, the caption cues, the save file's base64 name, the
+achievements file, `lastworld.json` — so one generated line was the single
+dissenting voice in nine.
+
+The heading is **read from the dossier's first level-one heading** now, and the
+derivation **fails closed**: no dossier, no heading in it, a heading long enough
+to be a paragraph, a heading carrying an out-of-character word or a
+timestamp-shaped string, a dossier reached through a symlink or from outside the
+tree — each refuses the whole generation rather than yielding a fallback. A
+transcript titled with a guess is the defect this replaces. `test_make_srt.py`
+holds the property from both directions, including a regression guard that greps
+`make_srt.py` for the shipped survivor's name and fails if it finds it, and
+`test_artifacts.py` holds the committed artifact to the committed dossier.
+
+### The final frame is the death screen's own message log, and its row is right
+
+The pass read the last cue as narrating a declined replay over a frame that
+shows the replay playing. **The measurement says otherwise, and the engine says
+why.** Frame 325 carries the query `Watch the last moments of your life…?
+(Case Sensitive)` with `[Y]es` and `[N]o`, `[N]o` highlighted — the `DEATHCAM`
+option is `ask` in the committed `options.json`. Answering it sets `QUIT_WATCH`
+for yes and `QUIT_DIED` for no [src/game.cpp:2879-2893]. `QUIT_WATCH` makes
+`is_game_over()` return **false** and the map view stays up — that is the replay
+[src/game.cpp:2844-2851]. `QUIT_DIED` ends the loop, and `cleanup_at_end()`
+[src/do_turn.cpp:112-145] calls `death_screen()`, whose **first** call is
+`Messages::display_messages()` [src/game.cpp:2911-2918].
+
+Frame 326 is that message log: the death messages, `Your limb breaks! x 6`, and
+the log viewer's own footer `< Press f, F, or / to filter, r or R to reset >`.
+It is therefore not the replay — it is what answering **No** produces, and it is
+positive proof the `N` was taken. Row 326 (`press 'N' -- no, once was enough`)
+is accurate and carries no amendment.
+
+Two things follow that a reader of the historical sections needs. This record's
+last captured frame is **that log**, not the main menu the 419-frame record
+ended on: after the death rite the engine was stopped by signal precisely so no
+post-death menu frame could enter the record, which is also why
+`cleanup_at_end()` never reached `move_save_to_graveyard()` or
+`write_memorial_file()` and why there is **no** `graveyard/` and **no**
+`memorial/` in this tree. The absence is consistent with the frames rather than
+unexplained.
+
+### The captioned film keeps `+faststart` now, because a mux does not inherit it
+
+`render_movie.py` encodes with `-movflags +faststart`, which moves the `moov`
+atom — the index a player needs before it can decode anything — to the front of
+the container. `embed_captions.sh` ran the accepted `-c copy -c:s mov_text`
+recipe verbatim, and `-c copy` writes a **new** container: the flag was never
+asked for, so the MP4 muxer left `moov` where it naturally falls, at the end,
+behind every byte of `mdat`. Measured on the shipped pair by atom walk:
+
+```text
+cata-play.mp4      ftyp@0(32)  moov@32(3717)  free@3749(8)  mdat@3757(3745389)
+cata-play-cc.mp4   ftyp@0(32)  free@32(8)  mdat@40(3763357)  moov@3763397(11141)
+```
+
+The consequence is a real one and it is paid by every viewer: served over a
+Range-capable server, Chrome could start the base film from its first request,
+while the captioned film — the artifact anybody actually watches — needed an
+extra tail fetch (`Range: bytes=3735552-`) for the index before it could play.
+
+The flag is in `MUX_ARGS` now, spelled from a `MOVFLAGS` constant that matches
+`render_movie.py`'s, asserted by `assert_recipe_contains` like every other
+mandated flag, and the argument-count gate that makes "there is nothing else in
+this command" a checked fact moved from 22 to 24. After re-muxing:
+
+```text
+cata-play-cc.mp4   ftyp@0(32)  moov@32(11141)  free@11173(8)  mdat@11181(3763496)
+```
+
+Nothing about the picture or the track moved with it. The video bitstream is
+still bit-for-bit the base render's — `-map 0:v:0 -c copy -f md5` gives
+`ab22da27cf26c986008b139588c01754` for both films and the per-packet
+`(pts_time,size)` digest `d6db63cf1164db40cbc85ace838d5e5d` for both — the
+container still carries exactly two streams (`h264` 1920×1080 and `mov_text`
+tagged `eng`, 219.500000 s), and the track still round-trips to 326 cues
+identical to `transcript.srt`.
+
+**Where the property is enforced, and why not in the script.** That the flag was
+*asked for* is asserted in `embed_captions.sh`. That it *took effect* is asserted
+by `test_artifacts.py`, which walks both films' top-level atoms out of the
+committed bytes and requires `moov` before `mdat` in each. The check needs real
+container bytes, and this stage's own suite drives a stubbed `ffmpeg` that writes
+padding rather than an MP4 — so a walk inside the script would refuse every
+stubbed mux while proving nothing about the artifact. The committed-artifact
+suite is where a lost flag actually shows up.
+
+**Verified in a browser, not only by atom walk.** Both films were served over a
+Range-capable server and played from a cold start with `preload="none"`. Each
+took **exactly one** media request, `Range: bytes=0-` answered `206`, and
+`loadedmetadata` fired **9.1 ms** (captioned) and **3.0 ms** (base) after
+`loadstart` — the index was already in the first bytes of the single response.
+No request in either session began anywhere but byte 0, against a
+last-five-percent threshold of 3 585 943 bytes; the captioned film then played
+its whole 219.56 s to `ended` on that one request. The server's own access log
+carries exactly two browser-issued media lines, one per film. Zero JavaScript
+errors, `video.error === null`, and the only status ≥ 400 anywhere is Chrome's
+unsolicited `/favicon.ico` probe.
+
+### R11's Save & Quit: already documented as UNMET, and this record stops one screen earlier than the last one
+
+The pass re-raised R11's missing exit. It is a real divergence, it was already
+recorded as one, and nothing here revisits that verdict: *AAP R11: the ending is
+legitimate, and the Save & Quit element is UNMET* is the authority on why no
+keystroke can reach `ACTION_SAVE` after a death, on both post-death branches,
+and *The ending is a death, and the engine has no Save & Quit after one* carries
+the same argument from `do_turn`'s first statement. Neither is restated here.
+The scope reasons are also already written down in both places and unchanged:
+§0.8.2 fixes "Exactly one continuous session with one survivor", and reaching a
+Save & Quit from the save that predates the death would be the death-avoidance
+§0.2.1 and R12 forbid outright.
+
+What is new is a difference between this record and the retired one, and it
+matters because the two satisfy R1 by **different routes**.
+
+Delphine's session was driven through the engine's whole exit path, so
+`cleanup_at_end()` finished: her character files ended up in
+`playthrough/userdir/graveyard/2026-08-06T06-53-53/` with the memorial pair, and
+`save/Fern Creek/` was left holding only `mods.json`, `world_timestamp.json` and
+`worldoptions.json`. Ambrose's session was stopped by signal inside
+`death_screen()` instead, precisely so no post-death menu frame could enter the
+record, and the committed userdir shows exactly where that put it:
+
+| Observed on disk | What it establishes |
+| --- | --- |
+| `achievements/Ambrose Halloran-20260808075321772953372-1.json` exists | `save_achievements()` \[src/do_turn.cpp:133\] ran |
+| `save/Apshawa/` still holds `master.gsav`, `dimension_data.gsav`, `o.0.0`, `o.1.0`, `maps/` and the whole `#QW1icm9zZSBIYWxsb3Jhbg==.*` set, the `.sav` at 333 646 bytes | `move_save_to_graveyard()` and `delete_world()` did **not** run |
+| there is no `graveyard/` and no `memorial/` directory | `move_save_to_graveyard()` creates the first unconditionally \[src/game_io.cpp:253\], so it never ran |
+
+So the process stood past `save_achievements()` \[src/do_turn.cpp:133\] and
+inside `death_screen()` \[:135\], short of `move_save_to_graveyard()` \[:142\].
+
+**And that is the reason there is a save under `save/<world>/` to commit at
+all.** `WORLD_END` is committed as `"reset"` here too — in both
+`playthrough/userdir/config/options.json` and
+`playthrough/userdir/save/Apshawa/worldoptions.json` — and Ambrose was the
+world's only character, so letting `cleanup_at_end()` finish would have done to
+`save/Apshawa/` exactly what it did to `save/Fern Creek/`: move the character
+files out to `graveyard/`, then clear the world folder of everything but
+`worldoptions.json`, `mods.json` and the dictionaries
+\[src/worldfactory.cpp:2449-2456, :2458-2496\].
+
+That revises item 3 of *Three blemishes in this record*, which reads the missing
+`graveyard/` as purely a cost. The cost is real and the caveat stands — the
+engine never ran its post-death housekeeping, `save/Apshawa/` therefore holds a
+live-shaped save for a dead man, and `session.py probe` will still report
+`SESSION_MODE=resume` for him. But the same act is also what left a populated
+`save/<world>/` in the tree. The blemish and the safeguard are one decision, and
+R1 is satisfied here by the live save directory rather than, as last time, by a
+graveyard.
+
+**Nothing in the record claims the exit happened.** A case-insensitive search
+for "save & quit", "save and quit" and "saved and quit" across `transcript.md`,
+`transcript.srt`, `manifest.jsonl`, `timeline.json`, `dossier.md` and
+`amendments.jsonl` returns zero hits in every one of them. R1's own commits are
+present and in order — `7e10721d4e` "Commit the survivor's creation and the save
+it produced" and `4e8a49879a` "Commit the closed session, its final save and its
+artifacts".
+
+The decision left for a human is the one the earlier sections already framed:
+only the sleep branch can satisfy both halves of R11 at once, and taking it
+needs §0.8.2 relaxed to authorise another session.
+
+### The provenance anchor is refusing a re-composition, not the film's artwork
+
+`tileset_provenance.py verify --directory 'gfx/MShockXotto+'` exits 1 on this
+host and names two files:
+
+```
+- 'SHA256SUMS' hashes to 9c3d302f4acb…; the anchor names ac372c1947e7…
+- 'tile_config.json' hashes to 064f4708e596…; the anchor names 9725384838a5…
+```
+
+The obvious reading is "the anchor is stale". It is not, and the difference
+matters, because `gfx/` is git-ignored \[.gitignore:52\] and the anchor is the
+only tracked statement of what the film's pixels are.
+
+**Twenty of the twenty-two files are byte-identical to the anchor**, and they
+are all of the artwork: `tiles.png` at 2 968 847 bytes, `large.png`,
+`small.png`, `tall.png`, `taller.png`, `huge.png`, `wide.png`,
+`widecenter.png`, `big.png`, `dcss.png`, `dcssTall.png`, `fallback.png`,
+`overmap.png`, `overmap_tall.png`, all four `filler*.png`, plus
+`layering.json` and `tileset.txt`. The two that differ are the generated tile
+index and the in-pack checksum list that names it — `tile_config.json`, 625 336
+bytes here against the anchor's 774 731, and `SHA256SUMS`, whose line 8 reads
+`064f4708…  ./tile_config.json`. That is, the manifest correctly attests the
+local index, so the installed pack is internally consistent and differs from
+the anchor only as a consequence of the index differing.
+
+**The film was not rendered against an unverified pack, and this is recorded
+rather than argued.** *One untracked input needed repair* — written during the
+previous pass on this worktree — records the anchor **passing** over all
+twenty-two files after a missing in-pack `SHA256SUMS` was restored, reporting
+`TILESET_PROVENANCE_TREE_SHA256=3d6c2ef4871654fd…`, `FILES=22`,
+`UPSTREAM_COMMIT=6e864adbd2c5d0e6…`. `tile_config.json` matched then. It does
+not match now, so the tree changed after that verification, not before it.
+
+The launch gate says the same thing from the other direction.
+`verify_tileset_provenance` is a hard `die` on any mismatch with no bypass for
+the required tileset; its single exemption is `TILESET_ORIGIN = fallback`, which
+means ASCIITiles, which is tracked and which `capture.sh` already refuses to
+produce a production frame under
+\[playthrough/tooling/launch_game.sh:2000-2055\]. It is called unconditionally
+from `resolve_tileset` \[launch_game.sh:2140\] on every launch, and the
+session's own log records `Loaded tileset: MshockXottoplus`
+\[playthrough/userdir/config/debug.log\], so the required tileset resolved and
+the exemption did not apply. `gfx/MShockXotto+` matched the anchor
+byte-for-byte when the game started, or the game would not have started.
+
+What refuses today is a **later re-composition of the pack on this host**. The
+installed tree is byte-identical to the composer's cache at
+`/opt/cdda-gfx-cache/MShockXotto+` for both differing files, so it faithfully
+copies what `tools/gfx_tools/compose.py` produced here — and the anchor's
+`composed_with` field records the command but pins **no version** for
+`compose.py` or its imaging library. That is the whole reproducibility gap: the
+sprite sheets are deterministic, the generated index is not.
+
+The remedy the script itself offers is `tileset_provenance.py generate`, and
+its own wording conditions it — "or — if the artwork legitimately changed —
+regenerate the anchor". The artwork did not change, and twenty files prove it,
+so the anchor is deliberately **left alone**. Re-pointing it at the current
+local composition would make the tracked provenance statement describe a tree
+the film was never rendered against, turning an external anchor into a
+self-attestation that passes by construction and certifies nothing. A refusal
+that is true is worth more than that.
+
+The installed index is not damaged, for the record: `tile_info` is 32×32 at
+pixelscale 1 and non-isometric, there are 18 `tiles-new` sheet blocks carrying
+5 211 tile ids and 16 `ascii` blocks, and the engine loaded it without a
+warning. It is a different valid index, not a broken one.
+
+For a human: re-provision `gfx/MShockXotto+` from the anchored upstream commit
+`6e864adbd2c5d0e68f8517b34e3c7d58eb22747d` of
+`https://github.com/I-am-Erk/CDDA-Tilesets.git` with a version-pinned
+composer so that a re-launch verifies, or accept this two-file divergence with
+the twenty-file artwork match as the substantive guarantee. Either way the
+anchor should keep refusing until one of them is done.
+
+### `nb_frames=328` counts container samples, and two of them are empty
+
+`ffprobe` reports three different numbers for the caption track, and all three
+are correct:
+
+| Measurement | Value |
+| --- | --- |
+| `nb_frames` — container sample count | 328 |
+| demuxed packets | 327 |
+| `nb_read_frames` — decoded cue events | 326 |
+
+Walking the `moov` sample tables directly settles it. The `sbtl` track's
+`stsz` and `stts` each hold **328** samples at a 1 000 000 timescale, totalling
+219.500 s — exactly the stream duration and exactly the final cue end. Two of
+those samples are two-byte empty samples, which is how `mov_text` clears the
+display:
+
+- **sample 140**, `pts = 51.500`, `duration = 1.000` — the transition gap. Cue
+  139 ends at 51.500 and cue 140 begins at 52.500, so the muxer fills the
+  intervening second with an empty sample rather than leave cue 139 on screen
+  across the fade. This one is demuxed, which is why the packet count is 327
+  rather than 326.
+- **sample 328**, `pts = 219.500`, `duration = 0.000` — a zero-duration
+  terminator closing the final cue's display at the end of the stream. It is
+  not surfaced as a packet, which is why the packet count is 327 rather
+  than 328.
+
+So `nb_frames` is a sample-table count that includes muxer bookkeeping and it
+is not a cue count. The cue count is 326: `nb_read_frames` says so and the SRT
+round-trip returns exactly that many. Nothing was changed here; the only
+lasting instruction is not to read `nb_frames` as a number of cues.
+
+The video track reconciles the same way, recorded because the question will be
+asked. `build/concat.txt` carries 339 `file` lines over 338 unique images, with
+338 `duration` lines summing 219.500 and the last `file` entry repeated as the
+concat demuxer requires. The 338 unique images are the 326 captured frames plus
+the 12 materialised transition frames, and the video `stsz` holds 339 coded
+pictures to match — the same figure in `cata-play.mp4` and
+`cata-play-cc.mp4`, as it must be, the second being a `-c copy` of the
+first. The `nb_frames=444` in the corrections table belongs to the retired
+419-frame film, not to this one.
+
+### Four refused moves under safe mode, and why those frames look frozen
+
+Frames 157, 159 and 160 each change **one** 12×14 tile, in the same place every
+time, 158 changes 418 pixels, and the sidebar clock reads `08:00:27` across the
+whole stretch, so no game time passed. Four movement keystrokes in a row did
+nothing at all.
+
+They were refused, not dropped, and safe mode blocking a move already appears
+once on this page: the keystroke register notes frame 406 of the retired
+record, where "safe mode stayed on and the move was blocked" until an
+explicit `shift+1` produced `Safe mode OFF!`. This is the same behaviour,
+four times in a row, and nobody turned it off.
+
+The sidebar message log — read by OCR from the
+computed crop `352x1072+1568+4` — is **textually identical** on frames 157,
+158, 159, 160 and 161, and what it carries is the safe-mode warning: the
+"… tiles to the …" distance-and-direction line and "… is on! (Pr\[ess\] … to
+ignore mo\[nsters\]". Frame 156, the move that did work, still shows the newer
+lines above it.
+
+The engine refuses the move before it costs anything:
+
+```cpp
+if( ( !g->check_safe_mode_allowed() ) || in_shell ) {
+    return false;
+}
+```
+
+\[src/avatar_action.cpp:194\]
+
+`check_safe_mode_allowed()` \[src/game.cpp:7244\] composes that warning when
+`safe_mode == SAFE_MODE_STOP` with a monster visible, sets
+`safe_mode_warning_logged` and returns false, so `avatar_action::move` returns
+before a step is taken or a move point is spent. The log does not grow across
+the four attempts because the warning is already logged and `add_msg` collapses
+repeats. The single tile that redraws each time is one tile animating in place
+while the survivor did not move.
+
+This is disclosed rather than fixed, and it is not an honesty problem. The
+action clauses on those rows are stated as intent — "keep north", "east into
+the house", "keep east" — and of the 41 movement rows that produced under a
+thousand pixels of map change with no clock advance, none asserts a completed
+move. One frame per keystroke still holds, and the frame honestly shows that
+nothing moved.
+
+### Two figures where the plan and the measurement disagree
+
+Both are recorded rather than reconciled: in each case the plan's figure was
+measured on a different machine, and the film's own pixels are the authority.
+
+**The letterbox is eight rows at the bottom, not four at the top and bottom.**
+This one is not new. §0.7.3 states that the game window sits at `+0+4` inside
+the 1920×1080 root, giving "a thin 4-pixel letterbox top and bottom", and both
+*Where the grid really sits, and which sidebar it really is*, over the retired
+395-capture set, and the corrections table, over the retired 419, had already
+measured otherwise. The QA pass raised it again against the shipped record, so
+it was re-measured against that record, and it agrees for the third time.
+
+Across the whole 326-frame population, with a running per-row maximum, the rows
+that are black in *every* frame are exactly `1072`–`1079` — eight rows, all at
+the bottom — and the first non-black row is `0`. The window occupied rows 0 to
+1071, so it sat at `+0+0`. Every frame is 1920×1080, the whole 1072-row window
+is inside it and nothing is cropped, so no requirement is touched. Only column
+`1919` is black in every frame, and it is inside the window — it simply never
+receives a lit pixel.
+
+One methodological note, because this is easy to get wrong: a per-frame
+black-row count measures content, not the letterbox. Frame 1, the title screen,
+reads 186 black rows at the top and 328 black columns at the left purely
+because the art is centred. Only a running maximum over the whole population
+isolates the band.
+
+**The transition card holds for 0.25 s, not 0.20 s.** The composition is the
+plan's 0.4 / 0.2 / 0.4, but materialising it through `iter_frames(fps = 12)`
+samples at twelfths of a second, and the card's `[0.4, 0.6)` window catches
+three of those samples. The mean luminance of the twelve PNGs in
+`build/transitions/` shows it plainly: frames 00–04 descend 0.1108 → 0.0194 as
+a monotonic fade-out, frames 05, 06 and 07 are identical at 0.000941 — the
+"…time passes…" card on black — and frames 08–11 rise 0.0184 → 0.0908 as a
+monotonic fade-in. The ramps therefore quantise to 5/12 and 4/12 of a second
+and the card to 3/12 — 0.25 s — and `build/concat.txt` charges each of the
+twelve exactly `duration 0.083333` (the last `0.083337`, so the group sums to
+`1.000000`).
+
+**In the finished film it is 0.24 s, for a second and separate reason.** The
+encode is a 25 fps grid, and twelfths of a second do not land on it. Measured
+from the container, the twelve transition pictures sit at PTS `51.520`,
+`51.600`, `51.680`, `51.760`, `51.840`, `51.920`, `52.000`, `52.080`, `52.160`,
+`52.240`, `52.320`, `52.400` — 0.080 s apart, two output frame slots each — and
+the next captured frame is at `52.520`. The three card pictures are `51.920`,
+`52.000` and `52.080`: they decode **byte-identically** to one another
+(`5cac7ff9d8133422…`, each `mean 0.000940658 std 0.0297095 max 1.0`, against
+`max 0.2549` at `51.840` and `0.2471` at `52.160`, which is how you tell the
+lettered card from the ramp frames either side of it), and `tesseract` reads
+`time passes...` off all three. So the card is on screen from `51.920` until
+`52.160`, which is **0.240 s**, and the last transition picture holds 0.120 s to
+absorb the difference.
+
+Either way the unit spans `51.520` → `52.520` = **1.000 s** exactly, which is
+precisely what `timeline.py` charges as a transition and what the cue cursor
+advances (51.500 → 52.500). No timing invariant is affected; only the card's
+share of that fixed second differs from the prose — 0.20 s planned, 0.25 s as
+composed and charged in the concat list, 0.24 s as the encoder actually shows
+it. Quote whichever figure the question is about, and say which.
+
+### The regression check that closed this pass
+
+Both films were driven in a real headless Chrome over a Range-capable server,
+the captioned one with the embedded `mov_text` cues re-attached as a WebVTT
+`<track>` — Chrome cannot decode `mov_text`, which is a player limitation and
+was disclosed as one. Each film was loaded at 375, 768, 1280 and 1920 px wide,
+seeked across the closing flow and the transition window, and played to its
+natural end.
+
+| Checked | Captioned film | Base film |
+| --- | --- | --- |
+| intrinsic size / duration | 1920×1080 / 219.56 s | 1920×1080 / 219.56 s |
+| text tracks | 1 track, **326** cues | **0** tracks, 0 cues, no `<track>` in the DOM |
+| 16:9 at 375 / 768 / 1280 / 1920 | 1.7772 / 1.7778 / 1.7778 / 1.7778 | same, `scrollWidth == clientWidth` at every width |
+| closing cues at 216.12, 216.37, 217.12, 217.62, 218.87, 219.37 | exactly one active cue each, text matching the extracted track character-for-character | `active` empty at every timestamp |
+| captions off | 5 713 caption glyph pixels → **0**; the only changed pixels in the picture are the cue box's own footprint | no caption pixels at any point |
+| transition | fade → card → fade, cue deliberately silent across 51.5–52.5 | same pictures, no cues |
+| played to the end | `ended` true, `currentTime == duration == 219.56` | `ended` true, `currentTime == duration == 219.56` |
+| console / media errors | one message, Chrome's own `/favicon.ico` 404; `video.error` null | one message, the same favicon 404; `video.error` null |
+| requests ≥ 400 | only that favicon | only that favicon; and **no** request for the caption file or the captioned film |
+
+Two things the browser reported are worth keeping because they will otherwise
+be re-discovered as defects. A WebVTT track in mode `hidden` still keeps its
+`activeCues` list populated — only `disabled` empties it — so "captions off"
+has to be judged on painted pixels, which is how it was judged here. And
+sampling the transition at 51.90 shows the last fade-to-black frame rather than
+the card, for the frame-grid reason set out just above; 52.00 is the timestamp
+to sample.
+
+
+---
+
 ## The pipeline as built
 
 Everything above is chronological. This part is the subject-ordered
@@ -5685,6 +6265,15 @@ correct when it was written.
 | "`capture.sh` refuses `PLAYTHROUGH_CAPTURE_AUDIT` *and* `PLAYTHROUGH_CAPTURE_AUDIT_PATH` outright in diagnostic mode"; "An explicit `PLAYTHROUGH_CAPTURE_AUDIT=on` still records one" | the two date-audit sections | refusing the variable's *presence* refused the pipeline's only caller: `launch_game.sh` declares `PLAYTHROUGH_CAPTURE_AUDIT=off` at its probe call site, so the probe exited `EX_USAGE`, the launcher read that as "the screen could not be read", and **every resumed launch published `INITIAL_UI_STATE=unverified`** — the resume proof was structurally disabled. Current contract, one API both scripts hold to: in diagnostic mode `=off` is **accepted** (it names the value the mode forces and can enable nothing), `=on` is **refused**, any `PLAYTHROUGH_CAPTURE_AUDIT_PATH` is **refused** at any value including beside `off`, and anything else is refused by the shared `on|off` case. The launcher additionally treats `EX_USAGE` from the probe as **fatal** rather than as an unreadable screen, so a future disagreement between the two scripts stops the run instead of quietly removing a proof |
 | "**The derived stages are deliberately unaffected** … timeline, transitions, render, transcripts and the caption mux can be re-run over an existing record" | the platform-waiver section | **two of the five DO refuse**: `render_movie.assert_trusted_render()` raises "REFUSING to encode the film while the trust state is diagnostic" [render_movie.py:605] and `embed_captions.sh` exits **8** at `playthrough_assert_trusted "the caption mux"` [embed_captions.sh:874]. `timeline.py`, `make_transitions.py` and `make_srt.py` carry no trust gate and are genuinely unaffected. Measured under this host's waiver; both films byte-identical after the probe |
 | the declared capture environment is `ubuntu:24.04`, with an eleven-stage table measured there | *The supported release is now DECLARED* | the base is **`ubuntu:26.04`** (EOL 2031-04) and every stage figure was **re-measured** there. 24.04 was rejected on a functional ground the dated table cannot express: its **SDL 2.30.0 delivers no keyboard input to the engine's ImGui screens**, so the character creator cannot be driven, and a full rebuild inside 24.04 (1570 s, 446 objects, compile and runtime both 2.30.0) did not change it. 26.04's **SDL 2.32.10** drives them. Consequences recorded with the base: `g++-14` stays pinned against 26.04's GCC 15 default; SDL3 3.4.2 is now *present* but every `make` still carries `SDL3=0`; and because 26.04 has no `python3.12` while `env.sh` pins that ABI for `requirements.lock`'s `cp312` wheels, the image **builds CPython 3.12.13 from a sha256-pinned python.org tarball** rather than relaxing the closure |
+| the 326-frame record carries **no** amendment ledger, "there is nothing to amend: the record was written once and not corrected" | the first row of this table, and *The re-recorded session* | `playthrough/amendments.jsonl` now holds **14** amendments over **11** frames (79–84, 313, 314, 317, 319, 324), sha256 `3e93306d92ad…5825fb68`, attested in `timeline.json` as `{"rows": 14, "applied": 14}`. The record itself is still byte-for-byte what the session wrote; see *Runtime QA remediation of the 326-frame record* for what each amendment corrects and the measurement behind it |
+| `transcript.md` opens `# Delphine Ouellette — what I did, and why`, and "the title is deliberately the heading `dossier.md` already uses" | two rows above, and the transcript sections | the file opens **`# Ambrose Halloran — what I did, and why`**, and the title is no longer a literal in `make_srt.py` at all: it is DERIVED from `dossier.md`'s own first heading, so the property that row asserted is now mechanical rather than manual. The earlier statement was the exact defect a runtime QA pass caught — the name in that constant had gone stale when the session was re-recorded |
+| rows 78–84 "record keystrokes that had no effect", offered as a blemish | *Three blemishes in this record* | true but incomplete: rows 79–84 also DESCRIBED a list-filter screen that was not on the display. The measurement and the seven amendments that correct it are in *Runtime QA remediation of the 326-frame record* |
+| the current `transcript.srt` / `transcript.md` / `cata-play-cc.mp4` digests, and both generation manifests binding to timeline `d04c2d72…` predecessor `e9f2d138…` | the regenerated-chain tables | superseded by the ledger regeneration: `timeline.json` **`d04c2d72849d69ce…`**, `transcript.srt` **`4cdec24bf43d7413…`**, `transcript.md` **`2ec57c3d13df3208…`**, with `cata-play.mp4` still **`23da4ae0210a048a…`**, `build/concat.txt` still **`da6a4cd484fa79c0…`** and all 12 transition PNGs byte-identical |
+| "the last captured frame is the main menu it returned to" | the R11 sections written for the 419-frame record | true of that record and NOT of this one: this session's last frame is the death screen's own message log, because the engine was stopped by signal there deliberately. That is also why this tree has no `graveyard/` and no `memorial/` |
+| item 3 reads the missing `graveyard/` as purely the *cost* of stopping the engine by signal | *Three blemishes in this record* | true as far as it goes, and the corpse-shaped save is still a real caveat for anyone resuming this world — but `WORLD_END` is committed as `"reset"`, so letting `cleanup_at_end()` finish would have moved the character files into `graveyard/` **and then**, on a now-empty character list, called `delete_world( name, false )` — "Clear out everything except options and mods and compression dictionaries" — emptying `master.gsav`, `o.0.0`, `o.1.0` and `maps/` out of `save/Apshawa/` \[src/do_turn.cpp:142-197\]\[src/worldfactory.cpp:2458-2490\]. Stopping where it stopped is also the only reason there is a save under `save/<world>/` to commit. Measured in *R11's Save & Quit: already documented as UNMET, and this record stops one screen earlier than the last one* |
+| R1 is satisfied by a graveyard save, `save/<world>/` correctly holding only `mods.json`, `world_timestamp.json` and `worldoptions.json` | *AAP R11: the ending is legitimate*, and *The ending is a death* | that is the RETIRED record's shape, produced by letting `cleanup_at_end()` finish. This record was stopped inside `death_screen()`, so it has no `graveyard/` at all and R1 is satisfied by the live save directory instead: `save/Apshawa/` still holds `master.gsav`, `dimension_data.gsav`, `o.0.0`, `o.1.0`, `maps/` and the full `#QW1icm9zZSBIYWxsb3Jhbg==.*` set. Both are committed; the route differs |
+
+
 
 
 **The binary that drew the current frames is named in the frames**, and it is

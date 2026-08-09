@@ -196,14 +196,23 @@ META_GATE_RE = re.compile(
     r"\boptions?\.json\b|\bR1[0-3]\b|\bR[1-9]\b", re.IGNORECASE)
 STYLING_RE = re.compile(r"\{\\an|<font|<i>|<b>|</i>|</b>")
 
-# The artifact paths a test redirects.  All three, not two: a class that
+# The artifact paths a test redirects.  All FOUR, not two: a class that
 # redirected only the outputs would still resolve the timeline from
 # whatever env.sh exported, land outside the temporary root it
 # nominated, and be refused by the containment guard -- a failure with
 # nothing to do with the code under test, and one that arrives only for
-# whoever sourced the pipeline's own environment first.
+# whoever sourced the pipeline's own environment first.  The dossier
+# joined them when the transcript's title stopped being a literal: the
+# survivor's name is read from it, so a temporary root without one is a
+# root the command line correctly refuses to write a transcript in.
 REDIRECTED = ("PLAYTHROUGH_TIMELINE", "PLAYTHROUGH_TRANSCRIPT_SRT",
-              "PLAYTHROUGH_TRANSCRIPT_MD")
+              "PLAYTHROUGH_TRANSCRIPT_MD", "PLAYTHROUGH_DOSSIER")
+
+# The survivor a fixture dossier introduces.  Deliberately NOT the name
+# of the shipped record's survivor: a test that used the real one would
+# pass just as happily against a module that had gone back to spelling a
+# name in its own source, which is the defect the derivation fixes.
+FIXTURE_SURVIVOR = "Wren Aldacott"
 
 
 # ---------------------------------------------------------------------
@@ -304,6 +313,7 @@ def workspace():
                                                    "transcript.srt"),
         "PLAYTHROUGH_TRANSCRIPT_MD": os.path.join(root,
                                                   "transcript.md"),
+        "PLAYTHROUGH_DOSSIER": os.path.join(root, "dossier.md"),
     }
     previous = {name: os.environ.get(name) for name in values}
     try:
@@ -318,6 +328,24 @@ def workspace():
         shutil.rmtree(root, ignore_errors=True)
 
 
+def seed_dossier(root, name=FIXTURE_SURVIVOR, heading=True):
+    """Write a fixture dossier in `root` and return its path.
+
+    Shaped like the real one: a level-one heading carrying the
+    survivor's name, then prose in his own voice.  `heading=False`
+    writes the same prose with no heading at all, which is how the
+    refusal is exercised.
+    """
+    path = os.path.join(root, "dossier.md")
+    body = ("I keep my own accounts and I keep them straight.\n"
+            "Nobody else was going to write this down for me.\n")
+    with open(path, "w", encoding="utf-8", newline="\n") as handle:
+        if heading:
+            handle.write("# %s\n\n" % name)
+        handle.write(body)
+    return path
+
+
 def seed_timeline(root, document=None):
     """Write a timeline AND the manifest it attests to.  Returns its path.
 
@@ -329,6 +357,12 @@ def seed_timeline(root, document=None):
     can be captioned, which is exactly the state the gate refuses.
     """
     document = build() if document is None else document
+    # The dossier too, for the same reason: the transcript's title is
+    # the survivor's name as HIS OWN account of himself gives it, so a
+    # root holding a timeline and no dossier is a root that names
+    # nobody and is refused.  Seeding it here keeps every command-line
+    # test exercising the mux of checks it is about rather than this one.
+    seed_dossier(root)
     manifest_path = os.path.join(root, "manifest.jsonl")
     frames = document.get("frames", [])
     with open(manifest_path, "w", encoding="utf-8",
@@ -674,8 +708,18 @@ class TestTheMarkdownContract(unittest.TestCase):
 
     def setUp(self):
         self.document = build()
+        # An EXPLICIT fixture header, built the way the module builds a
+        # real one: from a dossier this test owns.  It used to be the
+        # module's own constant, which is how a title naming a retired
+        # survivor passed this class for a whole session -- the
+        # assertion and the artifact read the same literal, so they
+        # agreed with each other and with nothing else.
+        self.header = ("# %s%s\n\n%s"
+                       % (FIXTURE_SURVIVOR,
+                          make_srt.MARKDOWN_TITLE_SUFFIX,
+                          make_srt.MARKDOWN_TIMESTAMP_LINE))
         self.srt, self.markdown, self.cues = (
-            make_srt.build_transcripts(self.document))
+            make_srt.build_transcripts(self.document, self.header))
         self.entries = [line for line in self.markdown.split("\n")
                         if line.startswith("**")]
 
@@ -701,16 +745,14 @@ class TestTheMarkdownContract(unittest.TestCase):
         # line -- a second header line that nothing looked at is
         # exactly how a meta word would get in.
         header = self.markdown.split("\n\n**")[0]
-        self.assertEqual(
-            header,
-            "# Delphine Ouellette \u2014 what I did, and why\n"
-            "\n"
-            "Timestamps are cumulative video time.")
+        self.assertEqual(header, self.header)
         self.assertEqual(MARKDOWN_STAMP_RE.findall(header), [])
         self.assertIsNone(META_GATE_RE.search(header))
-        # The name in the title is the name in the entries.  A header
-        # that introduced somebody else would still pass every count.
-        self.assertIn("Delphine", header)
+        # The name in the title is the survivor's own, as his dossier
+        # gives it.  A header that introduced somebody else would still
+        # pass every count in this class, which is why the name is read
+        # from one place and asserted here rather than written twice.
+        self.assertIn(FIXTURE_SURVIVOR, header)
 
     def test_no_cue_range_is_emitted(self):
         self.assertNotIn(" --> ", self.markdown)
@@ -799,8 +841,149 @@ class TestTheOutOfCharacterGate(unittest.TestCase):
             make_srt.assert_in_character("as of 00:00:00.000", "hdr")
 
     def test_the_sanctioned_header_passes_its_own_gate(self):
-        make_srt.assert_in_character(make_srt.MARKDOWN_HEADER,
-                                     "the header")
+        with workspace() as root:
+            seed_dossier(root)
+            make_srt.assert_in_character(
+                make_srt.markdown_header(root=root), "the header")
+
+
+class TestTheTitleNamesTheSurvivor(unittest.TestCase):
+    """The heading is READ from the dossier, never spelled in the module.
+
+    A runtime QA pass found the shipped transcript titled with a retired
+    survivor's name while every other layer of the record -- the
+    manifest's own sentences, the caption cues, the save file's name, the
+    achievements file, lastworld.json -- agreed with the dossier.  The
+    cause was a literal in this module under a comment asserting the
+    opposite, so these tests hold the property the comment used to claim:
+    the name comes from the dossier, and a dossier that names nobody
+    stops the transcript rather than producing a guess.
+    """
+
+    def test_the_name_is_the_dossiers_first_heading(self):
+        with workspace() as root:
+            seed_dossier(root)
+            self.assertEqual(make_srt.read_survivor_name(root=root),
+                             FIXTURE_SURVIVOR)
+
+    def test_the_title_carries_that_name(self):
+        with workspace() as root:
+            seed_dossier(root)
+            header = make_srt.markdown_header(root=root)
+            self.assertTrue(
+                header.startswith("# %s " % FIXTURE_SURVIVOR),
+                msg="the title must open with the survivor's own name: "
+                    "%r" % header)
+            self.assertIn(make_srt.MARKDOWN_TIMESTAMP_LINE, header)
+
+    def test_a_re_recorded_dossier_moves_the_title_with_it(self):
+        """The property a literal cannot have."""
+        with workspace() as root:
+            seed_dossier(root, name="Ida Brannigan")
+            self.assertIn("# Ida Brannigan ",
+                          make_srt.markdown_header(root=root))
+            seed_dossier(root, name="Otho Vandermeer")
+            self.assertIn("# Otho Vandermeer ",
+                          make_srt.markdown_header(root=root))
+
+    def test_the_rendered_transcript_is_titled_with_it(self):
+        with workspace() as root:
+            seed_dossier(root)
+            markdown = make_srt.render_markdown(
+                make_srt.build_cues(
+                    make_srt.timeline_entries(build())),
+                make_srt.markdown_header(root=root))
+            self.assertEqual(markdown.splitlines()[0],
+                             "# %s%s" % (FIXTURE_SURVIVOR,
+                                         make_srt.MARKDOWN_TITLE_SUFFIX))
+
+    def test_the_command_line_titles_the_artifact_with_it(self):
+        with workspace() as root:
+            seed_timeline(root)
+            self.assertEqual(make_srt.main(["-q"], root=root), 0)
+            with open(os.path.join(root, "transcript.md"),
+                      encoding="utf-8") as handle:
+                first = handle.readline().rstrip("\n")
+            self.assertEqual(first, "# %s%s" % (
+                FIXTURE_SURVIVOR, make_srt.MARKDOWN_TITLE_SUFFIX))
+
+    def test_a_missing_dossier_stops_the_transcript(self):
+        with workspace() as root:
+            seed_timeline(root)
+            os.unlink(os.path.join(root, "dossier.md"))
+            self.assertEqual(make_srt.main(["-q"], root=root), 1)
+            for name in ("transcript.srt", "transcript.md"):
+                self.assertFalse(
+                    os.path.exists(os.path.join(root, name)),
+                    msg="%s must not be written without a survivor"
+                        % name)
+
+    def test_a_dossier_with_no_heading_stops_the_transcript(self):
+        with workspace() as root:
+            seed_timeline(root)
+            seed_dossier(root, heading=False)
+            with self.assertRaises(make_srt.TranscriptError):
+                make_srt.read_survivor_name(root=root)
+            self.assertEqual(make_srt.main(["-q"], root=root), 1)
+
+    def test_a_heading_that_is_a_paragraph_is_refused(self):
+        overlong = "x" * (make_srt.MAX_SURVIVOR_NAME + 1)
+        with workspace() as root:
+            seed_dossier(root, name=overlong)
+            with self.assertRaises(make_srt.TranscriptError):
+                make_srt.read_survivor_name(root=root)
+
+    def test_a_heading_carrying_a_meta_word_is_refused(self):
+        """The gate applies to a name that came from a file too."""
+        with workspace() as root:
+            seed_dossier(root, name="Wren of the Debug Menu")
+            with self.assertRaises(make_srt.TranscriptError):
+                make_srt.markdown_header(root=root)
+
+    def test_a_deeper_heading_is_not_a_name(self):
+        with workspace() as root:
+            path = seed_dossier(root)
+            with open(path, "w", encoding="utf-8",
+                      newline="\n") as handle:
+                handle.write("## Wren Aldacott\n\nnot a title.\n")
+            with self.assertRaises(make_srt.TranscriptError):
+                make_srt.read_survivor_name(root=root)
+
+    def test_a_dossier_outside_the_tree_is_refused(self):
+        with workspace() as root:
+            seed_dossier(root)
+            with self.assertRaises(make_srt.TranscriptError):
+                make_srt.read_survivor_name("/etc/hostname", root=root)
+
+    def test_a_symlinked_dossier_is_refused(self):
+        with workspace() as root:
+            real = seed_dossier(root)
+            link = os.path.join(root, "linked.md")
+            os.symlink(real, link)
+            with self.assertRaises(make_srt.TranscriptError):
+                make_srt.read_survivor_name(link, root=root)
+
+    def test_no_survivor_name_is_spelled_in_the_module(self):
+        """The regression guard: the module names nobody.
+
+        Read against the SHIPPED dossier rather than a fixture, because
+        the defect was a literal matching the shipped record's previous
+        survivor.  If a name ever appears in this source again, the title
+        has stopped being derived and this fails.
+        """
+        source = module_source()
+        directory = os.path.dirname(
+            os.path.dirname(os.path.abspath(make_srt.__file__)))
+        dossier = os.path.join(directory, "dossier.md")
+        if not os.path.isfile(dossier):
+            self.skipTest("no dossier in this checkout")
+        name = make_srt.read_survivor_name(dossier)
+        for word in name.split():
+            self.assertNotIn(
+                word, source,
+                msg="%r appears in make_srt.py; the survivor's name "
+                    "belongs in playthrough/dossier.md and nowhere "
+                    "else" % word)
 
     def test_meta_wording_in_the_survivors_words_blocks_publication(
             self):

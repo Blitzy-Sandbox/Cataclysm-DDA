@@ -242,26 +242,59 @@ CUE_MAX_LINES = 2
 
 # The Markdown's only generated lines: a title carrying the survivor's
 # name, then the sanctioned sentence about what the stamps measure.
-# The title is deliberately the same `# Delphine Ouellette` opening
-# playthrough/dossier.md uses, so a reader arriving at either artifact
-# meets the same person under the same heading and the two read as one
-# set rather than as two unrelated documents.
 #
-# Every word here is held to BOTH gates before a byte is written.  It
-# carries no timestamp-shaped string, because the gate counts every one
-# of those and requires exactly one per entry -- a stamp here would be
-# counted as an entry that does not exist.  It carries no
-# out-of-character word: not just none of the concepts
-# assert_in_character() refuses, but none of the bare substrings the
-# blunter documented grep looks for either, which is why the title says
-# what she did rather than naming anything about how the record was
-# made.  And it is not embellished beyond the title, the name and the
-# one line, because every word added here is another word that has to
-# keep passing both gates forever.
-MARKDOWN_HEADER = (
-    "# Delphine Ouellette \u2014 what I did, and why\n"
-    "\n"
-    "Timestamps are cumulative video time.")
+# THE NAME IS READ FROM playthrough/dossier.md AND IS NEVER SPELLED
+# HERE -- not in this constant, not in a comment, not as an example.
+# It used to be a literal, under a comment claiming the title was
+# "deliberately the same opening playthrough/dossier.md uses" -- and a
+# runtime QA pass found that claim false in the shipped tree: the record
+# had been re-captured with a different survivor, the dossier opened
+# with his name, and the transcript still opened with the retired one.
+# Every other layer of the record agreed with the dossier (the
+# manifest's own sentences, the caption cues, the save file's base64
+# name, the achievements file, lastworld.json); this one file, generated
+# by this one constant, was the single dissenting voice, and the comment
+# above it made the defect look intentional to a reviewer.  So
+# test_make_srt.py greps this source for the shipped survivor's name and
+# fails if it finds it: a name written here is a name that can go stale.
+#
+# A literal cannot be right for a record that can be re-captured, so the
+# heading is DERIVED from the dossier's own first heading by
+# markdown_header() and the derivation FAILS CLOSED: no dossier, no
+# heading in it, or a heading that cannot pass the gates below means no
+# transcript is written at all.  One survivor, one name, one place it is
+# written down.
+#
+# Every word this module generates is held to BOTH gates before a byte
+# is written -- including the derived title, because the name now comes
+# from a file rather than from this source.  It must carry no
+# timestamp-shaped string, since the gate counts every one of those and
+# requires exactly one per entry (a stamp here would be counted as an
+# entry that does not exist), and no out-of-character word: not just
+# none of the concepts assert_in_character() refuses, but none of the
+# bare substrings the blunter documented grep looks for either, which is
+# why the title says what he did rather than naming anything about how
+# the record was made.  And it is not embellished beyond the title, the
+# name and the one line, because every word added here is another word
+# that has to keep passing both gates forever.
+MARKDOWN_TITLE_SUFFIX = " \u2014 what I did, and why"
+MARKDOWN_TIMESTAMP_LINE = "Timestamps are cumulative video time."
+
+# The survivor's name as playthrough/dossier.md writes it: the FIRST
+# ATX level-one heading in the file, with its hashes and surrounding
+# space removed.  Anchored to the start of a line so a `#` inside a
+# sentence cannot be mistaken for a heading, and requiring at least one
+# space after the hash so a hash run straight into the name -- which
+# Markdown does not render as a heading either -- is not silently
+# accepted.
+DOSSIER_HEADING_RE = re.compile(r"^#[ \t]+(\S[^\n]*?)[ \t]*$",
+                                re.MULTILINE)
+
+# The longest a survivor's name may be.  A dossier whose first heading
+# is a paragraph is a dossier this module has misread, and a title that
+# long would not be a title; refusing it names the problem instead of
+# publishing it.
+MAX_SURVIVOR_NAME = 120
 
 # The SubRip cue separator, spelled once.  It is also what the
 # cue-count gate greps for, which is why a commentary containing it is
@@ -321,6 +354,13 @@ ENV_SRT = "PLAYTHROUGH_TRANSCRIPT_SRT"
 ENV_MARKDOWN = "PLAYTHROUGH_TRANSCRIPT_MD"
 SRT_NAME = "transcript.srt"
 MARKDOWN_NAME = "transcript.md"
+
+# The survivor's own account of himself, which this module READS and
+# never writes: it is the source of the name the transcript is titled
+# with.  env.sh exports it as PLAYTHROUGH_DOSSIER (env.sh:1369), so the
+# same file is meant by every stage that refers to it.
+ENV_DOSSIER = "PLAYTHROUGH_DOSSIER"
+DOSSIER_NAME = "dossier.md"
 
 # LF whatever the platform, which is what the committed artifacts'
 # `*.srt text` and `*.md text` attributes in .gitattributes expect.
@@ -1035,7 +1075,8 @@ def markdown_counts(text: str) -> Tuple[int, int]:
             len(TIMESTAMP_RE.findall(text)))
 
 
-def render_markdown(cues: Sequence[Cue]) -> str:
+def render_markdown(cues: Sequence[Cue],
+                    header: Optional[str] = None) -> str:
     """Return the exact text playthrough/transcript.md holds.
 
     One line per captured frame, uniform: the cue's start in bold at
@@ -1050,15 +1091,23 @@ def render_markdown(cues: Sequence[Cue]) -> str:
     it is used.  The rendered body is then MEASURED rather than
     trusted: exactly one timestamp-shaped string per entry, and an
     entry for every cue.
+
+    `header` is the two generated lines, which name the survivor of THIS
+    record.  It is derived from playthrough/dossier.md by
+    :func:`markdown_header` when the caller does not supply it, so the
+    person a reader meets in the title is the person the dossier
+    introduces -- never a name spelled in this source.  A supplied
+    header is held to exactly the same gates as a derived one.
     """
     if not cues:
         raise TranscriptError(
             "there are no entries to write; a transcript with no "
             "entries is not a record of anything")
-    assert_in_character(MARKDOWN_HEADER, "the transcript header")
+    heading = markdown_header() if header is None else header
+    assert_in_character(heading, "the transcript header")
     entries = ["**%s** %s" % (cue.start, cue.commentary)
                for cue in cues]
-    text = "%s\n\n%s\n" % (MARKDOWN_HEADER, "\n\n".join(entries))
+    text = "%s\n\n%s\n" % (heading, "\n\n".join(entries))
     counted, stamps = markdown_counts(text)
     if counted != len(cues):
         raise TranscriptError(
@@ -1073,7 +1122,10 @@ def render_markdown(cues: Sequence[Cue]) -> str:
     return text
 
 
-def build_transcripts(document: Any) -> Tuple[str, str, List[Cue]]:
+def build_transcripts(
+    document: Any,
+    header: Optional[str] = None,
+) -> Tuple[str, str, List[Cue]]:
     """Return the SubRip text, the Markdown text and the cues.
 
     The whole of this module's work, in the order it has to happen:
@@ -1086,6 +1138,10 @@ def build_transcripts(document: Any) -> Tuple[str, str, List[Cue]]:
     Returns the cues as well because the caller prints the evidence: it
     is the same list both bodies were rendered from, not a second walk
     over the timeline.
+
+    `header` is the Markdown's two generated lines; when it is None the
+    title is derived from playthrough/dossier.md, so the survivor named
+    in the transcript is the survivor the dossier introduces.
     """
     entries = timeline_entries(document)
     problems = document_problems(document, entries)
@@ -1103,7 +1159,7 @@ def build_transcripts(document: Any) -> Tuple[str, str, List[Cue]]:
         raise TranscriptError(
             "refusing to write a transcript whose captions do not fit "
             "the cue geometry: %s" % "; ".join(overlong))
-    return render_srt(cues), render_markdown(cues), cues
+    return render_srt(cues), render_markdown(cues, header), cues
 
 
 def summarise(
@@ -1365,6 +1421,125 @@ def default_srt_path() -> str:
 def default_markdown_path() -> str:
     """Return the transcript this module writes."""
     return _default_path(ENV_MARKDOWN, MARKDOWN_NAME)
+
+
+def default_dossier_path(root: Optional[str] = None) -> str:
+    """Return the dossier this module reads the survivor's name from.
+
+    `root` is a call site's argument and nothing else, exactly as it is
+    on validated_output_path(): it relocates the approved tree for a
+    test that owns a temporary directory, and no environment variable
+    reaches it.  Without one the layout is env.sh's PLAYTHROUGH_DOSSIER,
+    falling back to the module's own playthrough/dossier.md.
+    """
+    if root is None:
+        return _default_path(ENV_DOSSIER, DOSSIER_NAME)
+    try:
+        approved = approved_root(root)
+    except TimelineError as err:
+        raise TranscriptError(str(err)) from err
+    return os.path.join(approved, DOSSIER_NAME)
+
+
+def read_survivor_name(dossier_path: Optional[str] = None,
+                       root: Optional[str] = None) -> str:
+    """Return the survivor's name as the dossier's first heading gives it.
+
+    THE ONE PLACE THE NAME IS ESTABLISHED.  playthrough/dossier.md is
+    the survivor's own account of himself, written before the first
+    keystroke, and its first level-one heading is his name -- so it is
+    the name every other layer of the record agrees with, and the name
+    this module's title has to carry.  Reading it here rather than
+    spelling it in a constant is what makes "one survivor, one name"
+    true of a record that can be re-captured.
+
+    FAILS CLOSED, IN EVERY DIRECTION.  A missing dossier, a dossier that
+    is not a regular file, one this module cannot read, one with no
+    level-one heading, or a heading long enough to be a paragraph rather
+    than a name each raise TranscriptError instead of yielding a
+    fallback: a transcript titled with a guess is exactly the defect
+    this derivation exists to make impossible.  The dossier is READ and
+    never written, and it is held to the same containment and
+    no-symlink rules as this stage's own destinations.
+    """
+    path = (default_dossier_path(root) if dossier_path is None
+            else dossier_path)
+    if isinstance(path, os.PathLike):
+        path = os.fspath(path)
+    if not isinstance(path, str) or not path.strip():
+        raise TranscriptError(
+            "the dossier path must be a non-empty string, got %r"
+            % (path,))
+    if "\x00" in path:
+        raise TranscriptError(
+            "the dossier path must not contain a NUL byte")
+    resolved = os.path.abspath(path)
+    try:
+        approved = approved_root(root)
+    except TimelineError as err:
+        raise TranscriptError(str(err)) from err
+    canonical = os.path.realpath(resolved)
+    if not _within(canonical, approved):
+        raise TranscriptError(
+            "the dossier must stay inside %s, but %s resolves to %s"
+            % (approved, resolved, canonical))
+    _refuse_symlink(resolved, approved, "the dossier")
+    if not os.path.isfile(resolved):
+        raise TranscriptError(
+            "%s does not exist or is not a regular file, so the "
+            "survivor this record belongs to cannot be established.  "
+            "The transcript is titled with the name the dossier gives "
+            "and with no other, so nothing is written"
+            % relative_to_repo(resolved))
+    try:
+        with open(resolved, "r", encoding="utf-8") as handle:
+            text = handle.read()
+    except (OSError, UnicodeDecodeError) as err:
+        raise TranscriptError(
+            "%s could not be read (%s), so the survivor's name cannot "
+            "be established and nothing is written"
+            % (relative_to_repo(resolved), err)) from err
+    match = DOSSIER_HEADING_RE.search(text)
+    if match is None:
+        raise TranscriptError(
+            "%s carries no level-one heading, so it names nobody this "
+            "transcript could be titled with.  The dossier's first "
+            "heading is the survivor's name" % relative_to_repo(resolved))
+    name = " ".join(match.group(1).split())
+    if not name:
+        raise TranscriptError(
+            "%s opens with an empty level-one heading"
+            % relative_to_repo(resolved))
+    if len(name) > MAX_SURVIVOR_NAME:
+        raise TranscriptError(
+            "%s opens with a %d-character heading, which is a paragraph "
+            "rather than a name (the ceiling is %d); nothing is written "
+            "from a heading this module has evidently misread"
+            % (relative_to_repo(resolved), len(name), MAX_SURVIVOR_NAME))
+    if CONTROL_RE.search(name):
+        raise TranscriptError(
+            "%s opens with a heading carrying a control character"
+            % relative_to_repo(resolved))
+    return name
+
+
+def markdown_header(dossier_path: Optional[str] = None,
+                    root: Optional[str] = None) -> str:
+    """Return the transcript's two generated lines.
+
+    The title names the survivor playthrough/dossier.md introduces, so a
+    reader arriving at either artifact meets the same person under the
+    same heading -- a property that is now derived rather than asserted.
+    Both lines are held to the out-of-character gate and to the
+    no-timestamp rule here, at the moment they are built, so a dossier
+    heading carrying an engineering word or a timestamp-shaped string is
+    refused with the word named instead of reaching the artifact.
+    """
+    name = read_survivor_name(dossier_path, root)
+    header = "# %s%s\n\n%s" % (name, MARKDOWN_TITLE_SUFFIX,
+                               MARKDOWN_TIMESTAMP_LINE)
+    assert_in_character(header, "the transcript header")
+    return header
 
 
 def _refuse_symlink(resolved: str, root: str, label: str) -> None:
@@ -1927,7 +2102,14 @@ def main(
         # re-recorded manifest, which is the failure no internal
         # invariant can see: a stale document is self-consistent.
         assert_timeline_document(document, root, label="timeline")
-        srt_text, markdown_text, cues = build_transcripts(document)
+        # THE SURVIVOR'S NAME, read from his own dossier before either
+        # body is rendered.  It is derived rather than spelled here so
+        # that the transcript cannot outlive the survivor it names: a
+        # re-captured record ships a new dossier, and the title follows
+        # it.  A dossier that is missing, unreadable or headingless is a
+        # refusal, reported through this function's own error path.
+        header = markdown_header(root=root)
+        srt_text, markdown_text, cues = build_transcripts(document, header)
         entries = timeline_entries(document)
         summary = summarise(document, entries, cues, markdown_text)
 
