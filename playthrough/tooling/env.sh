@@ -1620,6 +1620,28 @@ export PLAYTHROUGH_TECH_NOTES="${PLAYTHROUGH_DIR}/TECHNICAL_NOTES.md"
 # stays derived from this file, which is where every other artifact path
 # in this pipeline is declared.
 export PLAYTHROUGH_REPORT="${PLAYTHROUGH_DIR}/REPORT.md"
+# The COMMITTED acceptance report, and the scratch file it is published
+# FROM.  Two paths for one document, and the split is the whole point.
+#
+# verify_artifacts.sh used to write playthrough/acceptance-report.txt
+# itself, on a passing run, and delete it on a failing one -- writes
+# inside the tree it was measuring, taken after the very checks that
+# assert that tree is clean and fully committed.  A review measured the
+# consequence: a full-phase run after the final checkpoint left the tree
+# dirty in the one file it had just certified as committed.
+#
+# So the measurement now writes only where its caller names with
+# --report-to, which must be outside the checkout, and PUBLISHING is a
+# separate deliberate act: the attestation checkpoint copies the scratch
+# report to the committed path and commits it in the same breath, so the
+# tree is dirtied and cleaned inside one step that can be refused as a
+# whole.  The scratch path lives under the runtime root, which env.sh
+# already keeps outside the working tree and refuses to nominate inside
+# it.
+export PLAYTHROUGH_ACCEPTANCE_REPORT="${PLAYTHROUGH_DIR}/\
+acceptance-report.txt"
+export PLAYTHROUGH_ACCEPTANCE_SCRATCH="${PLAYTHROUGH_RUNTIME_DIR}/\
+acceptance-report.txt"
 export PLAYTHROUGH_REQUIREMENTS="${PLAYTHROUGH_TOOLING_DIR}/requirements.txt"
 # The install contract beside the declaration.  requirements.txt says
 # WHICH six libraries; the lock says which exact wheel of each, by

@@ -905,14 +905,27 @@ class LaunchFixture(unittest.TestCase):
         # half, src/path_info.cpp, setUp already writes).  The widget
         # tree is also where sidebar_geometry.py resolves the layout's
         # width, so the default sidebar file is staged with it.
+        #
+        # THE WHOLE WIDGET TREE IS STAGED, not just sidebar.json, because
+        # the three things the verification has to resolve live in THREE
+        # DIFFERENT FILES: the engine's default layout
+        # `legacy_labels_sidebar` is in sidebar-legacy-labels.json, the
+        # clock widgets carrying `time_text` and `sundial_time_text` are
+        # in time.json, and the layouts that reach them are in
+        # layout.json and sidebar.json.  Staging only sidebar.json made
+        # the sandbox a FRAGMENT of a widget tree, and the verification
+        # then answered a different question here than it answers in a
+        # real checkout: geometry resolution fell back to the first
+        # widget it could find and reported -- correctly -- that the
+        # layout draws no clock.  That is a true statement about the
+        # fragment and a false one about this repository, where every
+        # shipped preset does reach a clock.  668K of small JSON is a
+        # cheap price for a sandbox that resolves what production
+        # resolves.
         ui_dir = os.path.join(self.checkout, "data", "json", "ui")
-        os.makedirs(ui_dir, exist_ok=True)
-        sidebar_json = os.path.join(ui_dir, "sidebar.json")
-        if not os.path.isfile(sidebar_json):
-            shutil.copyfile(
-                os.path.join(REPO_ROOT, "data", "json", "ui",
-                             "sidebar.json"),
-                sidebar_json)
+        if not os.path.isdir(ui_dir):
+            shutil.copytree(
+                os.path.join(REPO_ROOT, "data", "json", "ui"), ui_dir)
         return seeder
 
     def seed_config(self, **overrides):

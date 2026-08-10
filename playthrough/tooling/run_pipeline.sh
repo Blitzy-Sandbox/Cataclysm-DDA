@@ -84,13 +84,17 @@
 # --phase pre-commit and guards the commit, `attest` runs
 # --phase post-commit and reports what the commit published.
 #
-# THE SECOND RUN IS THE SHORT ONE.  The gate declares its own counts, and
-# the arithmetic is worth stating rather than glossing: 111 checks in
-# all, 99 of them before the commit and 24 after it, which means 87 are
-# asked only before, 12 only after, and 12 by both.  The dozen asked
-# twice are the cheap ones it would be wrong to answer once -- the
-# measuring environment, and the version-control facts that have to hold
-# at both moments -- and no artifact is re-measured after a commit that
+# THE SECOND RUN IS THE SHORT ONE.  The gate declares its own per-phase
+# counts and this file does not keep a copy of them: the help READS those
+# declarations at the moment it prints (see gate_check_total), because a
+# comment stating them would be a second copy of somebody else's number
+# and the first thing that happens to a second copy is that one of them
+# is updated.  This one said 111, 99 and 24 while the gate declared other
+# figures entirely.  The shape, which does not go stale: most checks are
+# functional and asked before the commit, a minority are about the history
+# and can only be asked after it, and a handful -- the measuring
+# environment and the version-control facts that must hold at both moments
+# -- are asked at both.  No artifact is re-measured after a commit that
 # did not touch it.  `--phase all` is how the whole audit is asked for
 # deliberately.
 #
@@ -117,18 +121,21 @@
 # So three questions whose answers already exist are asked FIRST, and
 # each of them was previously discovered too late:
 #
-#   1 WOULD THE CHECKPOINT BE TAKEN AT ALL?  `final` anchors to the
-#     `creation` checkpoint OF THE SURVIVOR IT IS ABOUT and requires the
-#     record to have grown since it.  Both are facts about the history
-#     before anything is rendered, and when either fails the checkpoint
-#     refuses at stage 7 -- after the timeline, the transitions, the
-#     encode, the transcripts, the caption mux and the whole functional
-#     gate have run.  commit_artifacts.sh answers it read-only through
-#     its own `status` subcommand, this file reads that answer, and a
-#     plan that cannot reach its checkpoint is refused now with
-#     --no-commit named as the way to run the render half deliberately.
-#     The lifecycle logic stays where it belongs: this file reads one
-#     KEY=value line and holds no copy of the rule.
+#   1 WOULD THE CHECKPOINT BE TAKEN AT ALL?  The checkpoint this file
+#     takes is the one that commits a RENDER, and a render is about a
+#     session whose save has already been published -- so it requires a
+#     `final` checkpoint for the survivor this userdir has loaded,
+#     reached from that survivor's own `creation`.  That is a fact about
+#     the history before anything is rendered, and when it fails the
+#     checkpoint refuses at stage 7 -- after the timeline, the
+#     transitions, the encode, the transcripts, the caption mux and the
+#     whole functional gate have run.  commit_artifacts.sh answers it
+#     read-only through its own `status` subcommand, this file reads the
+#     answer for the checkpoint IT takes, and a plan that cannot reach
+#     that checkpoint is refused now with --no-commit named as the way to
+#     run the render half deliberately.  The lifecycle logic stays where
+#     it belongs: this file reads one KEY=value line and holds no copy of
+#     the rule.
 #
 #   2 IS THERE ROOM?  The artifacts are full-resolution and nothing is
 #     ever decimated to make them fit, so running out of space part way
@@ -481,11 +488,23 @@ fi
 # THE CONTRACT, spelled as constants.  Each appears exactly once.
 # ---------------------------------------------------------------------
 
-# The checkpoint the commit stage takes.  See THE CHECKPOINT THIS FILE
-# TAKES in the header: this sequencer is post-session, so `final` is the
-# only checkpoint it can be right about, and `creation` is taken by hand
-# before the session starts.
-readonly PIPELINE_CHECKPOINT_NAME="final"
+# The two checkpoints this sequencer takes.
+#
+# IT USED TO TAKE ONE, AND THAT ONE WAS `final`.  The reasoning was that
+# this sequencer is post-session, so `final` is the only checkpoint it can
+# be right about.  What that missed is that `final` also demanded the
+# three-section report -- a document whose subject is the film, the
+# caption track and the commits carrying them, so it had to cite commits
+# that the very checkpoint demanding it had not yet made.  A review found
+# the delivered report citing an EARLIER session's commits, because those
+# were the only ones that existed when the rule forced it to be written.
+#
+# The committer's lifecycle is split now, and this sequencer takes the two
+# steps that belong after a render: `media` for the derived artifacts, and
+# `attest` for the two reports.  `dossier`, `creation` and `final` are
+# still taken by hand -- they are about the session, not about the render.
+readonly PIPELINE_CHECKPOINT_NAME="media"
+readonly PIPELINE_ATTESTATION_NAME="attest"
 
 # The stage that must have passed in this invocation before the commit
 # stage may run, and the stage it guards.  Named rather than open-coded
@@ -498,17 +517,26 @@ readonly CAPTION_STAGE="captions"
 # The second gate run, after the checkpoint.  See WHY THE GATE RUNS TWICE
 # in the header.
 readonly ATTEST_STAGE="attest"
+# The stage that COMMITS what that second run measured.  It is a separate
+# stage from the measurement for the reason the measurement is read-only:
+# a gate that published its own report wrote into the tree it had just
+# certified as clean, which is the defect this sequence was closed to
+# remove.  So the order is measure, then publish, then prove the tree is
+# clean -- and each of the three can be refused without the next having
+# happened.
+readonly PUBLISH_STAGE="publish"
 
 # WHY THE GATE RUNS TWICE, AND WHAT EACH RUN IS FOR.
 #
 # The acceptance gate asks two different kinds of question.  Most of its
 # checks are FUNCTIONAL -- is the film watchable, do the captions line up
 # with the frames, does every capture match its attestation -- and those
-# can be answered the moment the artifacts exist.  Twelve of them are
+# can be answered the moment the artifacts exist.  A minority of them are
 # about the HISTORY: is the save tracked, is every artifact class
 # committed, is the tree clean, do the checkpoint trailers name one
 # survivor.  Those cannot be answered before the commit, because the
-# commit is what makes them true.
+# commit is what makes them true.  How many there are is the gate's own
+# declaration, read at help time and not copied here.
 #
 # Running the whole gate once, ahead of the commit, therefore FAILED BY
 # CONSTRUCTION: measured as "9 of 108 checks FAILED" on a genuine
@@ -519,13 +547,15 @@ readonly ATTEST_STAGE="attest"
 #
 # So the functional half runs first and guards the commit, and the
 # history half runs after it and attests to what was published.  Both are
-# the same script with a --phase argument, and the second run is the
-# short one: of the gate's 111 checks, 99 are asked before the commit and
-# 24 after it, which is 87 asked only before, 12 only after, and 12 --
-# the measuring environment and the version-control facts that must hold
-# at both moments -- asked at both.  No artifact is re-measured after a
-# commit that did not touch it.
+# the same script with a --phase argument, and the second run is the short
+# one.  The counts are the gate's own and are read from it rather than
+# repeated here -- see gate_check_total and the note above -- so that this
+# comment cannot go stale the way its previous wording did.
 readonly GATE_PHASE_ARGUMENT="--phase"
+# How the gate is told where to leave its report.  It writes nowhere by
+# default, deliberately: publishing is a separate act taken by a step that
+# can refuse a failing measurement.
+readonly GATE_REPORT_ARGUMENT="--report-to"
 readonly GATE_PRE_COMMIT_PHASE="pre-commit"
 readonly GATE_POST_COMMIT_PHASE="post-commit"
 
@@ -572,15 +602,27 @@ PIPELINE_SCRATCH=""
 # ---------------------------------------------------------------------
 # THE LIFECYCLE PROBE
 #
-# The subcommand of commit_artifacts.sh that answers "would `final` be
-# taken?" without taking it, and the three keys it answers with.  Named
-# here so the parse below reads as the contract it is; the rule those
-# keys express lives in that script and is not restated in this one.
+# The subcommand of commit_artifacts.sh that answers "would the
+# checkpoint this file takes be taken?" without taking it, and the three
+# keys it answers with.  Named here so the parse below reads as the
+# contract it is; the rule those keys express lives in that script and is
+# not restated in this one.
+#
+# THE KEYS ARE DERIVED FROM THE CHECKPOINT THIS FILE TAKES, and that is
+# not decoration.  `status` reports one triple per checkpoint an automated
+# caller takes, because they assert different things: FINAL_* answers
+# whether the session's save could be committed, MEDIA_* whether the
+# render could be.  This file takes the media checkpoint, so reading
+# FINAL_* would answer 'eligible' for a session whose save has not been
+# committed yet -- and then spend the timeline, the encode, both
+# transcripts and the whole functional gate to be refused at stage 7 by
+# the one assertion the preflight had not asked about.  Deriving the names
+# means the pair cannot come apart if the checkpoint ever moves again.
 # ---------------------------------------------------------------------
 readonly LIFECYCLE_PROBE_SUBCOMMAND="status"
-readonly LIFECYCLE_KEY_ELIGIBLE="FINAL_ELIGIBLE"
-readonly LIFECYCLE_KEY_REASON="FINAL_REASON"
-readonly LIFECYCLE_KEY_ANCHOR="FINAL_ANCHOR"
+readonly LIFECYCLE_KEY_ELIGIBLE="${PIPELINE_CHECKPOINT_NAME^^}_ELIGIBLE"
+readonly LIFECYCLE_KEY_REASON="${PIPELINE_CHECKPOINT_NAME^^}_REASON"
+readonly LIFECYCLE_KEY_ANCHOR="${PIPELINE_CHECKPOINT_NAME^^}_ANCHOR"
 readonly LIFECYCLE_ELIGIBLE_VALUE="yes"
 
 # ---------------------------------------------------------------------
@@ -635,6 +677,7 @@ readonly STAGE_ORDER=(
     "${GATE_STAGE}"
     "${COMMIT_STAGE}"
     "${ATTEST_STAGE}"
+    "${PUBLISH_STAGE}"
 )
 
 declare -rA STAGE_SCRIPT=(
@@ -646,6 +689,7 @@ declare -rA STAGE_SCRIPT=(
     [verify]="verify_artifacts.sh"
     [commit]="commit_artifacts.sh"
     [attest]="verify_artifacts.sh"
+    [publish]="commit_artifacts.sh"
 )
 
 # ---------------------------------------------------------------------
@@ -680,6 +724,7 @@ declare -rA STAGE_DERIVES_EVIDENCE=(
     [verify]=0
     [commit]=0
     [attest]=0
+    [publish]=0
 )
 
 # THE CHECKPOINT IS DELIBERATELY NOT GATED, and this is a decision the
@@ -708,6 +753,8 @@ ${GATE_PRE_COMMIT_PHASE}"
     [commit]="the ${PIPELINE_CHECKPOINT_NAME} checkpoint"
     [attest]="the acceptance gate again, ${GATE_POST_COMMIT_PHASE}: what \
 the history now proves"
+    [publish]="the ${PIPELINE_ATTESTATION_NAME} checkpoint: commit the \
+report that gate just measured"
 )
 
 # ---------------------------------------------------------------------
@@ -796,34 +843,132 @@ join_words() {
 # ---------------------------------------------------------------------
 # USAGE
 # ---------------------------------------------------------------------
+# gate_check_total TABLE -- the number of checks the acceptance gate
+# DECLARES for one phase, read out of the gate itself.
+#
+# WHY IT IS READ AND NOT WRITTEN DOWN.  The help used to state these
+# totals as literals -- "99 checks before the commit and 24 after it, out
+# of 111 in all" -- and by the time a review read them the gate declared
+# different numbers entirely.  Nothing was wrong with the numbers when
+# they were typed; they were simply a SECOND copy of a truth that lives in
+# the gate, and the first thing that happens to a second copy is that
+# somebody updates one and not the other.  The gate already refuses to
+# keep its own total in two places: it declares a per-group table and sums
+# it.  This asks that table the same question.
+#
+# PURE BASH, no awk.  The help is printed on a usage error, before the
+# measurement tools are resolved, so a helper that needed one would make
+# `--help` depend on a PATH it has no business needing.
+#
+# An unreadable gate answers '?' rather than a wrong number: the help is
+# describing the file it could not read, and a fabricated total would be
+# worse than an admitted gap.
+gate_check_total() {
+    local table="$1"
+    local script="${SCRIPT_DIR}/${STAGE_SCRIPT[${GATE_STAGE}]}"
+    local want="readonly -a GROUP_CHECKS_${table}=("
+    local line="" grab=0 total=0 value=""
+    local -a fields=()
+    if [ ! -r "${script}" ]; then
+        printf '?'
+        return 0
+    fi
+    while IFS= read -r line; do
+        if [ "${grab}" -eq 1 ]; then
+            read -r -a fields <<<"${line}"
+            for value in "${fields[@]}"; do
+                case "${value}" in
+                    ''|*[!0-9]*) continue ;;
+                esac
+                total=$(( total + value ))
+            done
+            printf '%d' "${total}"
+            return 0
+        fi
+        if [ "${line}" = "${want}" ]; then
+            grab=1
+        fi
+    done <"${script}"
+    printf '?'
+    return 0
+}
+
+
 usage() {
+    local every="" early="" late="" deferred=""
+    every="$(gate_check_total ALL)"
+    early="$(gate_check_total PRE_COMMIT)"
+    late="$(gate_check_total POST_COMMIT)"
+    deferred="?"
+    case "${every}${early}" in
+        *'?'*) ;;
+        *) deferred="$(( every - early ))" ;;
+    esac
     cat <<'USAGE'
 run_pipeline.sh -- run the post-session render stages in dependency
 order.  It sequences the modules that do the work and holds none of
 their logic itself.
 
     playthrough/tooling/run_pipeline.sh [options]
-
-Stages, in order:
-    timeline       timeline.py           -> playthrough/timeline.json
-    transitions    make_transitions.py   -> build/transitions/*.png
-    render         render_movie.py       -> playthrough/cata-play.mp4
-    srt            make_srt.py           -> transcript.srt + .md
-    captions       embed_captions.sh     -> cata-play-cc.mp4
-    verify         verify_artifacts.sh --phase pre-commit
-    commit         commit_artifacts.sh final
-    attest         verify_artifacts.sh --phase post-commit
-
-THE GATE RUNS TWICE, and the split is what makes the commit reachable.
-Most of its checks are functional -- is the film watchable, do the
-captions line up with the frames -- and can be answered as soon as the
-artifacts exist.  Twelve are about the history: is the save tracked, is
-every class committed, is the tree clean.  Those cannot pass BEFORE the
-commit, because the commit is what makes them true.  So `verify` runs the
-functional half and guards the commit, and `attest` runs the history half
-afterwards and reports what was published.  The second run is the short
-one: 99 checks before the commit and 24 after it, out of 111 in all, so
-no artifact is re-measured after a commit that did not touch it.
+USAGE
+    printf '%s\n' ""
+    printf '%s\n' "Stages, in order:"
+    printf '    %-14s %s\n' \
+        "timeline" "timeline.py           -> playthrough/timeline.json" \
+        "transitions" "make_transitions.py   -> build/transitions/*.png" \
+        "render" "render_movie.py       -> playthrough/cata-play.mp4" \
+        "srt" "make_srt.py           -> transcript.srt + .md" \
+        "captions" "embed_captions.sh     -> cata-play-cc.mp4" \
+        "${GATE_STAGE}" "verify_artifacts.sh --phase \
+${GATE_PRE_COMMIT_PHASE}" \
+        "${COMMIT_STAGE}" "commit_artifacts.sh \
+${PIPELINE_CHECKPOINT_NAME}" \
+        "${ATTEST_STAGE}" "verify_artifacts.sh --phase \
+${GATE_POST_COMMIT_PHASE} --report-to <outside the checkout>" \
+        "${PUBLISH_STAGE}" "commit_artifacts.sh \
+${PIPELINE_ATTESTATION_NAME}"
+    printf '%s\n' ""
+    printf '%s\n' "THE GATE RUNS TWICE, and the split is what makes \
+the commit reachable."
+    printf '%s\n' "Most of its checks are functional -- is the film \
+watchable, do the"
+    printf '%s\n' "captions line up with the frames -- and can be \
+answered as soon as the"
+    printf '%s\n' "artifacts exist.  ${deferred} are about the \
+history: is the save tracked, is"
+    printf '%s\n' "every class committed, is the tree clean.  Those \
+cannot pass BEFORE the"
+    printf '%s\n' "commit, because the commit is what makes them \
+true.  So \`${GATE_STAGE}\` runs the"
+    printf '%s\n' "functional half and guards the commit, and \
+\`${ATTEST_STAGE}\` runs the history half"
+    printf '%s\n' "afterwards and reports what was published.  The \
+second run is the short"
+    printf '%s\n' "one: ${early} checks before the commit and \
+${late} after it, out of ${every} in all,"
+    printf '%s\n' "so no artifact is re-measured after a commit that \
+did not touch it."
+    printf '%s\n' "These three totals are READ OUT OF THE GATE at help \
+time rather than"
+    printf '%s\n' "written down here, because a second copy of a \
+number goes stale."
+    printf '%s\n' ""
+    printf '%s\n' "COMMIT, MEASURE, PUBLISH, AND THE TREE ENDS CLEAN."
+    printf '%s\n' "The gate writes NOTHING into the tree it measures: \
+a report written there"
+    printf '%s\n' "would dirty the very file the run had just \
+certified as committed, which"
+    printf '%s\n' "is what it used to do.  So \`${ATTEST_STAGE}\` \
+writes its report to a path"
+    printf '%s\n' "outside the checkout and \`${PUBLISH_STAGE}\` \
+commits it, refusing a report"
+    printf '%s\n' "that failed, that measured no history, or that \
+names a commit other than"
+    printf '%s\n' "HEAD.  \`${PUBLISH_STAGE}\` will not run without \
+\`${ATTEST_STAGE}\` in the same"
+    printf '%s\n' "invocation, so a report an earlier run left behind \
+cannot be committed."
+    cat <<'USAGE'
 
 Options:
   --from NAME   start at that stage and run every later one, so a
@@ -847,31 +992,58 @@ Options:
 --from and --only are mutually exclusive.  Repeating either one is
 allowed and the LAST occurrence wins, which is what a shell alias with an
 appended override does.
-
-A stage may be named by its short name above, by its script, or by that
-script without the extension: render, render_movie and render_movie.py
-are the same stage.  `attest` is the exception, reachable by its short
-name only -- verify_artifacts.sh already names the `verify` stage, and one
-script cannot resolve to two stages.
-
-Two rules are enforced over the resolved plan rather than over the flags
-that produced it, so they keep holding if a flag is ever added:
-  * commit will not run unless verify runs ahead of it in the same
-    invocation.  The gate is what stops a black film or a drifted caption
-    track from reaching the history.
-  * attest will not run without commit in the same invocation.  Every
-    check it adds asks whether the history records something, so on its
-    own it fails for reasons this run did not cause.
-Asking for either of them alone is therefore refused.
+USAGE
+    printf '%s\n' ""
+    printf '%s\n' "A stage may be named by its short name above, by \
+its script, or by that"
+    printf '%s\n' "script without the extension: render, render_movie \
+and render_movie.py"
+    printf '%s\n' "are the same stage.  \`${ATTEST_STAGE}\` and \
+\`${PUBLISH_STAGE}\` are the exceptions,"
+    printf '%s\n' "reachable by their short names only: each is a \
+second run of a script an"
+    printf '%s\n' "earlier stage already owns -- verify_artifacts.sh \
+names \`${GATE_STAGE}\` and"
+    printf '%s\n' "commit_artifacts.sh names \`${COMMIT_STAGE}\` -- \
+and one script name cannot"
+    printf '%s\n' "resolve to two stages."
+    printf '%s\n' ""
+    printf '%s\n' "Three rules are enforced over the resolved plan \
+rather than over the flags"
+    printf '%s\n' "that produced it, so they keep holding if a flag is \
+ever added:"
+    printf '%s\n' "  * ${COMMIT_STAGE} will not run unless \
+${GATE_STAGE} runs ahead of it in the same"
+    printf '%s\n' "    invocation.  The gate is what stops a black \
+film or a drifted caption"
+    printf '%s\n' "    track from reaching the history."
+    printf '%s\n' "  * ${ATTEST_STAGE} will not run without \
+${COMMIT_STAGE} in the same invocation.  Every"
+    printf '%s\n' "    check it adds asks whether the history records \
+something, so on its"
+    printf '%s\n' "    own it fails for reasons this run did not cause."
+    printf '%s\n' "  * ${PUBLISH_STAGE} will not run without \
+${ATTEST_STAGE} in the same invocation.  It"
+    printf '%s\n' "    commits the report the attestation measured, so \
+without it there is"
+    printf '%s\n' "    either nothing to publish or a report from an \
+earlier run over a"
+    printf '%s\n' "    different tree."
+    printf '%s\n' "Asking for any of the three alone is therefore \
+refused."
+    cat <<'USAGE'
 
 THREE THINGS ARE SETTLED BEFORE THE FIRST STAGE RUNS, because each of
 them was previously discovered after the expensive work:
-  * WOULD THE CHECKPOINT BE TAKEN?  `final` anchors to the `creation`
-    checkpoint of the survivor this session is about and needs the record
-    to have grown since it.  commit_artifacts.sh answers that read-only
-    through its own `status` subcommand; a plan that cannot reach its
-    checkpoint is refused here with exit 4, naming --no-commit as the way
-    to run the render half deliberately.
+  * WOULD THE CHECKPOINT BE TAKEN?  The checkpoint this file takes
+    commits a render, and a render is about a session whose save has
+    already been published -- so it needs a `final` checkpoint for the
+    survivor this userdir has loaded, reached from that survivor's own
+    `creation`.  commit_artifacts.sh answers that read-only through its
+    own `status` subcommand, which reports one answer per checkpoint; this
+    file reads the one for the checkpoint it takes.  A plan that cannot
+    reach that checkpoint is refused here with exit 4, naming --no-commit
+    as the way to run the render half deliberately.
   * IS THERE ROOM?  The reserve is measured from what is on disk -- the
     artifacts a producing stage rewrites, the staging copy the caption
     mux needs, the objects the checkpoint writes -- plus a fixed margin,
@@ -933,16 +1105,26 @@ resolve_stage_name() {
             printf 'commit' ;;
         attest)
             printf 'attest' ;;
+        publish)
+            printf 'publish' ;;
         *)
             return 1 ;;
     esac
     return 0
 }
-# NOTE ON `attest`: it is the ONLY stage with no script alias, and
-# deliberately so.  `verify_artifacts.sh` and `verify_artifacts` already
-# resolve to the `verify` stage, and one script name cannot resolve to two
-# stages -- so the second run of that script is reachable by its own short
-# name alone.  Its phase argument is what distinguishes the two.
+# NOTE ON `attest` AND `publish`: they are the two stages with no script
+# alias, and deliberately so.  Each is a SECOND run of a script an earlier
+# stage already owns -- verify_artifacts.sh resolves to `verify` and
+# commit_artifacts.sh to `commit` -- and one script name cannot resolve to
+# two stages, so each second run is reachable by its own short name alone.
+# What distinguishes the pairs is the argument: --phase for the gate, the
+# checkpoint name for the committer.
+#
+# BOTH MUST BE HERE, and one of them was not.  `publish` was added to
+# STAGE_ORDER, to every stage table and to the plan rules, and left out of
+# this case statement -- so `--only publish` was refused as naming no
+# stage of this pipeline by a message that then listed publish among the
+# stages.  A name the sequencer prints as valid must resolve.
 
 # stage_index NAME
 #   The position of a canonical name in STAGE_ORDER.
@@ -1135,7 +1317,8 @@ resolve_plan() {
     if [ "${NO_COMMIT}" -eq 1 ]; then
         for name in "${PLAN[@]}"; do
             if [ "${name}" = "${COMMIT_STAGE}" ] ||
-               [ "${name}" = "${ATTEST_STAGE}" ]; then
+               [ "${name}" = "${ATTEST_STAGE}" ] ||
+               [ "${name}" = "${PUBLISH_STAGE}" ]; then
                 SKIPPED+=("${name}")
             else
                 kept+=("${name}")
@@ -1164,9 +1347,12 @@ resolve_plan() {
 
     # SECOND, and the mirror of it: the attestation reads what the
     # checkpoint published, so on its own it is a report about somebody
-    # else's commit.  Twelve of the checks it runs are exactly the ones
-    # that cannot pass before a commit, which is why asking for it alone
-    # would fail for a reason that has nothing to do with this run.
+    # else's commit.  The checks it adds are exactly the ones that cannot
+    # pass before a commit, which is why asking for it alone would fail
+    # for a reason that has nothing to do with this run.  How many of them
+    # there are is not written here: the gate declares that total and the
+    # help reads it, and a second copy in a comment is a copy that goes
+    # stale -- this one said "twelve" of fourteen.
     if plan_contains "${ATTEST_STAGE}" &&
        ! plan_contains "${COMMIT_STAGE}"; then
         die "${EX_USAGE}" "the ${ATTEST_STAGE} stage attests to what" \
@@ -1176,6 +1362,29 @@ resolve_plan() {
             "commit the answer is no for reasons this run did not" \
             "cause.  Use --from ${GATE_STAGE} to run the gate, the" \
             "checkpoint and the attestation together."
+    fi
+
+    # THIRD: the publication commits what the attestation MEASURED, so it
+    # cannot run without it.  This is the rule that closes the sequence.
+    # The gate writes its report to a scratch path outside the checkout,
+    # and this stage copies that report in and commits it -- so a publish
+    # without a measurement in the same invocation would either find
+    # nothing at that path or, worse, find a report an earlier run left
+    # there and commit a measurement of a different tree under this one's
+    # name.  commit_artifacts.sh refuses that on its own account by
+    # comparing the report's own recorded commit against HEAD; refusing it
+    # here as well means the operator is told which stage is missing
+    # rather than which comparison failed.
+    if plan_contains "${PUBLISH_STAGE}" &&
+       ! plan_contains "${ATTEST_STAGE}"; then
+        die "${EX_USAGE}" "the ${PUBLISH_STAGE} stage commits the" \
+            "report the ${ATTEST_STAGE} stage measures, so it will not" \
+            "run without it in the same invocation: the report is" \
+            "written to a path outside the checkout and published from" \
+            "there, and publishing one an earlier run left behind would" \
+            "commit a measurement of a different tree.  Use --from" \
+            "${GATE_STAGE} to run the gate, the checkpoint, the" \
+            "attestation and the publication together."
     fi
 
     if [ "${#PLAN[@]}" -eq 0 ]; then
@@ -1667,21 +1876,25 @@ assert_capacity() {
 # ---------------------------------------------------------------------
 # THE LIFECYCLE PREFLIGHT
 #
-# `final` anchors to the `creation` checkpoint OF THE SURVIVOR THIS
-# SESSION IS ABOUT and requires the record to have grown since it.
-# Both are facts about the history and the record that are true or false
-# before anything is rendered -- and when either fails, the checkpoint
-# refuses at stage 7, with the timeline, the transitions, the encode,
-# the transcripts, the caption mux and the whole functional gate already
-# spent.  Measured on this very checkout: the newest `creation` records
-# one survivor and the userdir holds another, so the default plan is
-# GUARANTEED to reach stage 7 and be refused.
+# The checkpoint this file takes commits a RENDER, and a render is about
+# a session whose save has already been published -- so it requires a
+# `final` checkpoint for the survivor this userdir has loaded, reached
+# from that survivor's own `creation` rather than from the trailer alone.
+# That is a fact about the history that is true or false before anything
+# is rendered -- and when it is false, the checkpoint refuses at stage 7,
+# with the timeline, the transitions, the encode, the transcripts, the
+# caption mux and the whole functional gate already spent.  Measured on
+# this very checkout: the newest `creation` records one survivor and the
+# userdir holds another, so the default plan is GUARANTEED to reach stage
+# 7 and be refused.
 #
 # THE ANSWER IS ASKED OF THE MODULE THAT OWNS THE RULE.
 # commit_artifacts.sh has a read-only `status` subcommand that emits it
-# as KEY=value, computed with the same two predicates its refusal uses.
-# This file reads three keys and holds no copy of the rule, so the two
-# cannot drift.
+# as KEY=value, computed with the same predicates its refusal uses, and
+# it reports one answer per checkpoint an automated caller takes.  THIS
+# FILE READS THE ONE FOR THE CHECKPOINT IT TAKES -- the key names are
+# derived from PIPELINE_CHECKPOINT_NAME, so the pair cannot come apart --
+# and holds no copy of the rule, so the two cannot drift.
 #
 # ITS STDOUT IS CONSUMED AND ITS STDERR IS NOT.  The KEY=value block
 # belongs to that script's own contract and would read here as though a
@@ -2074,6 +2287,104 @@ record_receipt() {
 # was skipped too -- which means its output is the same bytes the encode
 # was built from.  A chain of skips is therefore a chain in which
 # nothing in the middle moved.
+# resolve_omitted_producer_freshness -- a plan that starts partway through
+# the producing stages may not SKIP anything.
+#
+# THIS IS THE HOLE IN THE REASONING ABOVE, AND IT IS WORTH SPELLING OUT
+# BECAUSE THE REASONING IS OTHERWISE SOUND.  FRESH_PREFIX makes it safe to
+# leave the intermediates out of the fingerprint: freshness collapses at
+# the first stage that does any work, so a skipped encode implies a
+# skipped timeline, which implies the timeline's bytes are the ones the
+# encode was built from.  Every step of that holds for a FULL plan.
+#
+# It does not hold for `--from render`.  The timeline and transition stages
+# are then not run and not skipped -- they are ABSENT, so nothing collapses
+# FRESH_PREFIX and nothing looks at them.  A timeline.json that changed
+# since the receipt was written is invisible: the input fingerprint covers
+# the pipeline's INPUTS, not its intermediates, and the film's own digest
+# still matches what the receipt recorded.  So `render` is declared fresh,
+# skipped, and the film that survives is one built from a timeline that no
+# longer exists.
+#
+# THE REMEDY IS TO STOP SKIPPING, NOT TO REFUSE.  An earlier draft of this
+# refused the plan outright, and that was wrong in a way worth recording:
+# `--only srt` and `--from render` exist precisely so a late stage can be
+# re-run, and on any tree without a receipt -- a fresh clone, a first run
+# -- there is nothing to vouch for the earlier stages with, so every such
+# invocation would have been refused. Measured in the suite: `--only srt`
+# exited 4 on a perfectly ordinary sandbox.  The hazard was never that the
+# stage RUNS; it is that it is SKIPPED while something upstream has moved.
+# So freshness is switched off for the whole plan, every stage in it does
+# its work, and what comes out is consistent with the intermediates as
+# they actually are.
+#
+# A demonstrably stale predecessor is reported as well, because an
+# operator re-running one stage over an edited intermediate is usually
+# about to be surprised -- and the acceptance gate, which compares the
+# timeline against the film and the cue file, is what actually refuses to
+# publish an inconsistent set.  That division is deliberate: this file
+# sequences, the gate judges.
+resolve_omitted_producer_freshness() {
+    local name="" recorded="" current="" first=-1 index=0
+    local -a omitted=() stale=()
+    for name in "${PLAN[@]}"; do
+        if [ "${STAGE_DERIVES_EVIDENCE[${name}]}" = "1" ]; then
+            first="$(stage_index "${name}")"
+            break
+        fi
+    done
+    # No producing stage in the plan, or it begins at the first one:
+    # nothing was jumped over and FRESH_PREFIX's reasoning holds.
+    if [ "${first}" -le 0 ]; then
+        return 0
+    fi
+    for name in "${STAGE_ORDER[@]}"; do
+        if [ "${index}" -ge "${first}" ]; then
+            break
+        fi
+        index=$(( index + 1 ))
+        [ "${STAGE_DERIVES_EVIDENCE[${name}]}" = "1" ] || continue
+        if plan_contains "${name}"; then
+            continue
+        fi
+        omitted+=("${name}")
+        [ "${RECEIPT_READY}" -eq 1 ] || continue
+        # An empty entry is itself an answer: receipt_entry returns
+        # nothing unless the fingerprint it was recorded under is this
+        # run's, so "no entry" means the inputs have moved since that
+        # stage last ran -- or that it has never run here at all.
+        recorded="$(receipt_entry "${name}")" || recorded=""
+        [ -n "${recorded}" ] || continue
+        current="$(outputs_digest "${name}")" || current=""
+        if [ "${current}" != "${recorded}" ]; then
+            stale+=("${name}")
+        fi
+    done
+    if [ "${#omitted[@]}" -eq 0 ]; then
+        return 0
+    fi
+    FRESH_PREFIX=0
+    playthrough_log "this plan starts after" \
+        "$(join_words "${omitted[@]}"), so no stage will be skipped as" \
+        "fresh: the input fingerprint covers this pipeline's inputs and" \
+        "not its intermediates, and freshness is only sound when every" \
+        "earlier producing stage was either run or skipped in the same" \
+        "plan.  Every stage in this plan will do its work."
+    if [ "${#stale[@]}" -gt 0 ]; then
+        playthrough_warn "the output of" \
+            "$(join_words "${stale[@]}") no longer matches what the" \
+            "receipt recorded for it, so it has been changed since that" \
+            "stage last ran.  This plan does not re-run it, so what the" \
+            "stages below produce will describe the intermediate as it" \
+            "is NOW -- which may not be what the artifacts this plan" \
+            "does not touch were built from.  The acceptance gate" \
+            "compares the timeline against the film and the cue file" \
+            "and will refuse an inconsistent set; run without" \
+            "--from/--only to rebuild the whole chain."
+    fi
+    return 0
+}
+
 stage_is_fresh() {
     local name="$1" recorded="" current=""
     if [ "${RECEIPT_READY}" -ne 1 ] || [ "${REBUILD}" -eq 1 ]; then
@@ -2314,13 +2625,25 @@ build_stage_command() {
         "${COMMIT_STAGE}")
             STAGE_COMMAND+=( "${PIPELINE_CHECKPOINT_NAME}" )
             ;;
+        "${PUBLISH_STAGE}")
+            STAGE_COMMAND+=( "${PIPELINE_ATTESTATION_NAME}" )
+            ;;
         "${GATE_STAGE}")
             STAGE_COMMAND+=( "${GATE_PHASE_ARGUMENT}"
                              "${GATE_PRE_COMMIT_PHASE}" )
             ;;
         "${ATTEST_STAGE}")
+            # AND WHERE THE REPORT GOES.  The gate writes nothing into
+            # the tree it measures -- a report written there would dirty
+            # the very file the run had just certified as committed -- so
+            # the destination is named here, outside the checkout, and the
+            # publish stage commits what lands at it.  env.sh keeps that
+            # path under the runtime root and refuses a runtime root
+            # inside the working tree.
             STAGE_COMMAND+=( "${GATE_PHASE_ARGUMENT}"
-                             "${GATE_POST_COMMIT_PHASE}" )
+                             "${GATE_POST_COMMIT_PHASE}"
+                             "${GATE_REPORT_ARGUMENT}"
+                             "${PLAYTHROUGH_ACCEPTANCE_SCRATCH}" )
             ;;
     esac
 }
@@ -2478,6 +2801,11 @@ main() {
     assert_lifecycle_eligible
     assert_capacity "plan"
     open_receipt || true
+    # AFTER the receipt, because what it decides is decided FROM the
+    # receipt: a plan that jumps over a producing stage may not skip
+    # anything, because the reasoning that makes skipping sound does not
+    # hold across a stage that is absent rather than skipped.
+    resolve_omitted_producer_freshness
 
     for index in "${!PLAN[@]}"; do
         name="${PLAN[${index}]}"

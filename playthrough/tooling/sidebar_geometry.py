@@ -234,6 +234,32 @@ INVALID_LAYOUT_FALLBACK_ID = "legacy_classic_sidebar"
 MISSING_LAYOUT_FALLBACK_ID = "labels"
 LAYOUT_KEY = "current_layout_id"
 
+# THE WIDGETS THAT MAKE A LAYOUT USABLE FOR THIS PIPELINE.  What
+# identifies the clock is not a widget id but the VARIABLE a widget
+# renders, and the engine declares exactly two that carry a readable
+# time:
+#
+#   time_text          "Current time - exact if character has a watch,
+#                      approximate otherwise" [src/widget.h:92]
+#   sundial_time_text  "Current time - exact if character has a watch,
+#                      sundial otherwise" [src/widget.h:91]
+#
+# Both are exact with a watch, which is the condition this run satisfies
+# in play, so either one makes a layout readable.  Matching on the
+# variable rather than on `time_desc_label` means an alternate preset
+# that draws the clock through a differently-named widget still counts --
+# what matters is whether the clock is on the screen being cropped.
+CLOCK_WIDGET_VARS = ("time_text", "sundial_time_text")
+
+# The JSON inheritance key the content tree uses.  `time_desc_no_label`
+# carries no `var` of its own and copies `time_desc_label`
+# [data/json/ui/time.json], and the default sidebar reaches its clock
+# through exactly such a chain -- ll_place_info copies
+# all_location_info_rows_layout -- so a walk that did not follow
+# copy-from would answer "no clock" for the layout this pipeline
+# actually records under.  Measured: it did, before this was added.
+COPY_FROM_KEY = "copy-from"
+
 # The headless contract from playthrough/tooling/env.sh,
 # "Display, window and grid geometry":
 # `Xvfb :99 -screen 0 1920x1080x24`.  Capture targets the X ROOT, not
@@ -849,6 +875,85 @@ def _widget_width(
             f"widget '{widget.get('id')}' in {path} declares width "
             f"{cells}, which is not a positive cell count")
     return cells
+
+
+def _all_widgets(
+    paths: Sequence[str],
+) -> Dict[str, Tuple[str, Dict[str, object]]]:
+    """Return {widget id: (file, widget)} for the whole widget tree.
+
+    EVERY widget, not only the sidebars: a layout names its rows by id
+    and those rows name their own children the same way, so answering a
+    question about what a layout CONTAINS needs the full map.  The first
+    definition of an id wins, which is the same rule
+    :func:`resolve_sidebar_widget` applies for the layouts themselves.
+    """
+    found: Dict[str, Tuple[str, Dict[str, object]]] = {}
+    for path in paths:
+        try:
+            data = _load_json(path, "widget definition")
+        except GeometryError as err:
+            LOG.debug("skipping unreadable widget file: %s", err)
+            continue
+        if not isinstance(data, list):
+            continue
+        for entry in data:
+            if not isinstance(entry, dict):
+                continue
+            identifier = entry.get("id")
+            if isinstance(identifier, str) and identifier not in found:
+                found[identifier] = (path, entry)
+    return found
+
+
+def layout_shows_the_clock(
+    layout_id: str,
+    root: Optional[str] = None,
+    paths: Optional[Sequence[str]] = None,
+) -> bool:
+    """True when this layout draws the sidebar clock.
+
+    WHY A LAYOUT HAS TO BE ASKED THIS.  The crop this module computes is
+    where the clock is READ from, and the clock is the sole authority for
+    every duration in the film.  A layout that is perfectly resolvable
+    and simply does not include the time widget would yield a valid crop
+    over a column with no clock in it -- every reading unreadable, every
+    duration at the floor, and the pacing fiction.  So the question is
+    asked of the layout's own contents rather than of its id.
+
+    The walk follows BOTH edges of the content tree: the ``widgets``
+    list, because the engine composes rows of rows and the clock lives
+    inside a row rather than directly in the sidebar, and ``copy-from``,
+    because a widget may inherit the very ``var`` this is looking for.
+    A cycle cannot loop it: every id is visited at most once.
+
+    Never raises for a layout it cannot find -- that is
+    :func:`resolve_sidebar_widget`'s refusal to make, and it makes it
+    with the engine's own fallbacks.
+    """
+    widgets = _all_widgets(
+        list(paths) if paths is not None else _widget_files(root))
+    seen = set()
+    pending = [layout_id]
+    while pending:
+        identifier = pending.pop()
+        if identifier in seen:
+            continue
+        seen.add(identifier)
+        entry = widgets.get(identifier)
+        if entry is None:
+            continue
+        _path, widget = entry
+        if widget.get("var") in CLOCK_WIDGET_VARS:
+            return True
+        children = widget.get("widgets")
+        if isinstance(children, list):
+            pending.extend(
+                child for child in children if isinstance(child, str))
+        inherited = widget.get(COPY_FROM_KEY)
+        if isinstance(inherited, str):
+            pending.append(inherited)
+    return False
 
 
 def resolve_sidebar_widget(

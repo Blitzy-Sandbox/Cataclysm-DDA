@@ -672,11 +672,21 @@ launch_once() {
 stage_capture() {
     local step
     for step in 1 2; do
+        # THE SECOND STEP CARRIES A READING OF THE FIRST, because the
+        # step refuses to deliver a key while the capture before it is
+        # unacknowledged -- and this stage's whole purpose is to walk the
+        # production path, not a relaxed version of it.  --expect either
+        # is the honest declaration here: this stage presses Escape twice
+        # on whatever screen the calibration instance is showing, so it
+        # is in no position to predict whether the picture moves.
         if ! scratch_run "${PLAYTHROUGH_PYTHON}" \
                 "${SCRATCH}/playthrough/tooling/session.py" \
                 step --key Escape \
                 --note "hold still and look before choosing" \
                 --commentary "I hold still and look before I choose." \
+                --expect either \
+                --observed "the frame before this one was read: the \
+preflight's own calibration screen" \
                 --window-id "${WINDOW_ID}" \
                 >"${SCRATCH_BASE}/step${step}.out" \
                 2>"${SCRATCH_BASE}/step${step}.err"; then

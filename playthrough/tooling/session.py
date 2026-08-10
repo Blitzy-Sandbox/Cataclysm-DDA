@@ -1130,6 +1130,33 @@ class CapacityError(SessionError):
     """
 
 
+class ObservationRequired(SessionError):
+    """The capture before this one has not been read and classified.
+
+    Raised BEFORE the keystroke is sent.  "Observe, decide in character,
+    act" is a hard rule of this pipeline, and a rule enforced only by
+    the operator's good intentions was measurably not enforced at all:
+    frames 91-106 of the retired session were keyed into an unchanged
+    modal because nobody read the picture between the keys.  So the
+    reading is now a PRECONDITION of the next key, recorded durably
+    before that key is delivered, and this is the refusal when it is
+    missing.  Nothing was sent; supply the reading and press again.
+    """
+
+
+class GuardHalt(SessionError):
+    """The capture contradicts what the step declared it would show.
+
+    Raised AFTER the key was delivered and the frame and row were
+    recorded -- deliberately in that order, because the keystroke and
+    the photograph really happened and the record must say so.  What
+    stops is everything AFTER them: the session refuses to deliver
+    another key until an operator has read the capture and said what it
+    shows (`session.py ack`).  This is the enforcing half of the
+    observed-effect guard, which used to be advisory.
+    """
+
+
 # Keys of the advisories already emitted in this process, so that a
 # standing condition is reported once instead of once per keystroke.
 _WARNED = set()
@@ -1280,6 +1307,20 @@ def default_digests_path(root: Optional[str] = None) -> str:
     """
     return os.path.join(manifest.approved_root(root),
                         *manifest.DIGESTS_REL_PARTS)
+
+
+def default_acknowledgments_path(root: Optional[str] = None) -> str:
+    """Return the observe-before-the-next-key ledger for this tree.
+
+    It lives beside the telemetry sidecar, in playthrough/build/, because
+    it is the same kind of thing: a per-frame record about the CAPTURE
+    rather than a row of the in-character account.  It is an artifact of
+    the session and is committed with the rest, so the discipline the
+    hard rule asks for is auditable after the fact instead of resting on
+    the executing operator's word.
+    """
+    return os.path.join(manifest.approved_root(root), "build",
+                        ACKNOWLEDGMENTS_NAME)
 
 
 def manifest_target(candidate: Optional[str] = None,
@@ -3581,13 +3622,35 @@ def observed_death_frame(manifest_path: Optional[str] = None,
     broken and must not be stopped by an exception in the middle of
     building its answer.
 
-    An unreadable or absent record answers None -- "the record shows no
-    death" -- which is the safe direction here: it leaves resumability to
-    be decided by the save contents exactly as it was before, rather than
-    refusing a perfectly good tree because a manifest has not been
-    written yet.  A first run has no manifest at all.
+    AN ABSENT RECORD ANSWERS None; AN UNREADABLE ONE RAISES.  Those two
+    are not the same fact and a review found them conflated here: both
+    returned "the record shows no death", so a tree whose record
+    authority was CORRUPT read exactly like a first run, and a
+    live-shaped save that predated a death could be offered for resuming
+    on the strength of a manifest nobody could parse.  Resuming such a
+    save is the one thing this pipeline must never do -- it would be
+    reloading past a death, which the plan forbids by name (AAP
+    §0.2.1) -- so the two answers are now distinct:
 
-    :returns: the frame of the first last-words action, or None.
+    * a manifest that is genuinely ABSENT (a first run: no file at the
+      path at all) answers None, which leaves resumability to be decided
+      by the save contents exactly as it was before;
+    * a manifest that EXISTS and cannot be read, decoded, or resolved
+      against its own amendment ledger raises, because the question
+      "did this tree record a death" then has no trustworthy answer and
+      the caller must not proceed as though it were "no".
+
+    THE ROWS ARE AMENDMENT-RESOLVED, not raw.  The ledger is this
+    pipeline's only sanctioned way to correct a narration that described
+    a capture wrongly, and `action` is exactly the field the death
+    markers are read from, so a death screen NAMED correctly through the
+    ledger has to be visible here.  manifest.resolve_rows() additionally
+    fails closed on a stale amendment, which strengthens this
+    observation rather than relaxing it.
+
+    :returns: the frame of the first last-words action, or None when the
+        record is genuinely absent.
+    :raises RecordError: when a record that exists cannot be trusted.
     """
     # THE PATH IS RESOLVED AGAINST `root` BEFORE THE READ, and it has to
     # be, because neither of the obvious ways works.  manifest.read_rows
@@ -3608,10 +3671,40 @@ def observed_death_frame(manifest_path: Optional[str] = None,
         if manifest_path is None:
             manifest_path = os.path.join(
                 manifest.approved_root(root), manifest.MANIFEST_NAME)
-        rows = manifest.read_rows(manifest_path, root)
-    except (OSError, UnicodeError, ValueError,
-            manifest.ManifestError, SessionError):
+    except (OSError, ValueError, manifest.ManifestError,
+            SessionError) as err:
+        raise RecordError(
+            "the record's own location could not be resolved (%s), so "
+            "this tree cannot be asked whether it recorded a death.  A "
+            "resume decision taken without that answer could reload "
+            "past one, which is the one ending this pipeline may never "
+            "step over" % err) from err
+    # ABSENCE IS ANSWERED WITHOUT READING.  os.path.isfile is asked
+    # BEFORE the read so that a missing file cannot be reported through
+    # the same channel as a broken one: read_rows raises ManifestError
+    # for both, and telling them apart afterwards would mean matching on
+    # its message text.
+    if not os.path.isfile(manifest_path):
         return None
+    try:
+        rows, _amended = manifest.resolve_rows(
+            manifest.read_rows(manifest_path, root),
+            manifest.read_amendments(
+                os.path.join(os.path.dirname(manifest_path),
+                             manifest.AMENDMENTS_NAME),
+                root),
+            manifest.row_digests(manifest_path, root))
+    except (OSError, UnicodeError, ValueError,
+            manifest.ManifestError, SessionError) as err:
+        raise RecordError(
+            "the record at %s exists but cannot be read as evidence "
+            "(%s), so whether this tree recorded a death is UNKNOWN "
+            "rather than 'no'.  It is refused here instead of being "
+            "answered: a live-shaped save that predates a death would "
+            "otherwise be offered for resuming on the strength of a "
+            "record nobody can parse.  Repair or remove the record and "
+            "its amendment ledger, then probe again"
+            % (manifest.relative_to_repo(manifest_path), err)) from err
     for row in rows:
         frame = row.get("frame")
         action = str(row.get("action") or "").lower()
@@ -3874,6 +3967,14 @@ def probe_save_resume(save_dir: Optional[str] = None,
     # that world and to no other.  Without it the death is observed but
     # unattributable, which is reported as a note rather than used to
     # disqualify a world that may have nothing to do with it.
+    #
+    # THE READ IS ALLOWED TO REFUSE, and the refusal is deliberately not
+    # caught here.  observed_death_frame answers None only for a record
+    # that is genuinely absent -- a first run -- and raises for one that
+    # exists and cannot be trusted.  Letting that propagate is what makes
+    # this probe fail closed: the alternative, treating an unparsable
+    # record as "no death recorded", is how a live-shaped save from
+    # BEFORE a death would be offered for resuming.
     death_frame = observed_death_frame(root=root)
     cleanup_done = _death_cleanup_present(root)
     death_world: Optional[str] = None
@@ -4444,6 +4545,111 @@ EFFECT_MARKERS = {
     EFFECT_OUTSIDE_MAP: MARKER_OUTSIDE_MAP,
 }
 
+# ---------------------------------------------------------------------
+# THE ENFORCING HALF OF THE GUARD: A DECLARATION, AN ACKNOWLEDGMENT AND
+# TWO HALTS.
+#
+# Everything above this point MEASURES and REPORTS.  A review found that
+# insufficient, with evidence: the retired session's frames 91-106 show
+# two whole key sequences -- a filter that had already been cleared, and
+# a page change -- delivered into an UNCHANGED abandon-creation modal,
+# and the guard's warnings were on stderr the entire time.  A control
+# that only speaks is a report; the hard rule "never blind-spam keys"
+# needs one that refuses.  Three mechanisms now do:
+#
+#   1. EVERY STEP DECLARES WHAT ITS CAPTURE WILL SHOW.  `--expect
+#      changed` is the default because a keystroke that moves nothing on
+#      screen is the shape of a swallowed key; `--expect unchanged` is
+#      how an operator says in advance that this one legitimately will
+#      not (a trailing space in a field with no cursor block, say).  A
+#      capture that contradicts the declaration HALTS the session.
+#
+#   2. EVERY STEP ACKNOWLEDGES THE CAPTURE BEFORE IT.  `--observed TEXT`
+#      is the operator's own reading of frame N-1, appended to an
+#      append-only ledger, bound to that frame's sha256, and made
+#      durable BEFORE the next key is delivered.  A step whose
+#      predecessor is unacknowledged refuses to send anything at all, so
+#      "read the picture between the keys" is a precondition rather than
+#      an instruction.
+#
+#   3. AN UNDECLARED MODAL HALTS.  The engine's query_yn boxes are drawn
+#      in the middle of the screen, and every one of them eats keys
+#      aimed at the screen behind it.  The central band of each capture
+#      is read and matched against the prompts below; a prompt that is
+#      present without having been declared with `--expect-modal` stops
+#      the session, and a declared prompt that is NOT present stops it
+#      too, because the operator's model of the screen is then wrong in
+#      the other direction.
+#
+# All three are recorded in the telemetry sidecar, so the record shows
+# what was declared as well as what was observed.
+# ---------------------------------------------------------------------
+
+EXPECT_CHANGED = "changed"
+EXPECT_UNCHANGED = "unchanged"
+EXPECT_EITHER = "either"
+EXPECTATIONS = (EXPECT_CHANGED, EXPECT_UNCHANGED, EXPECT_EITHER)
+
+# What each declaration accepts.  EFFECT_FIRST is accepted by all three:
+# the first capture of a session has nothing to be compared against, so
+# it can contradict nothing.
+#
+# EFFECT_UNKNOWN IS REFUSED BY THE TWO PREDICTIONS AND ACCEPTED BY THE
+# ADMISSION, and the asymmetry is the whole design.  A step that
+# PREDICTED an outcome and then could not have that prediction checked
+# has not been checked -- treating the absence of an observation as a
+# satisfied one is precisely the failure this block exists to end.  A
+# step that declared EXPECT_EITHER predicted nothing, so there is
+# nothing to contradict; it is still bound by the acknowledgment
+# requirement below, which is what makes the operator read that capture
+# before the next key regardless.
+EXPECT_ACCEPTS = {
+    EXPECT_CHANGED: (EFFECT_CHANGED, EFFECT_OUTSIDE_MAP, EFFECT_FIRST),
+    EXPECT_UNCHANGED: (EFFECT_UNCHANGED, EFFECT_FIRST),
+    EXPECT_EITHER: (EFFECT_CHANGED, EFFECT_OUTSIDE_MAP,
+                    EFFECT_UNCHANGED, EFFECT_FIRST, EFFECT_UNKNOWN),
+}
+
+# The engine's own query_yn prompts, quoted from the source rather than
+# from memory, each with the token an operator declares it by.  These are
+# the boxes that eat a key aimed at the screen behind them.
+#
+# The match is on a SUBSTRING of the central band's OCR, so the trailing
+# "(Case Sensitive)" the engine appends when a prompt wants a capital
+# (src/output.cpp:873,894) does not have to be modelled separately.
+MODAL_PROMPTS = (
+    ("return-to-main-menu", "Return to main menu?",
+     "src/newcharacter.cpp:3864,3868 -- leaving character creation"),
+    ("really-quit", "Really quit?",
+     "src/main_menu.cpp:769 -- leaving the application"),
+    ("save-and-quit", "Save and quit?",
+     "src/handle_action.cpp:3031 -- the mandated in-game ending"),
+    ("abandon-character", "Abandon this character?",
+     "src/handle_action.cpp:3021 -- suicide, which this run never takes"),
+    ("kill-your-character", "This will kill your character",
+     "src/handle_action.cpp:3022 -- suicide's second confirmation"),
+)
+
+MODAL_TOKENS = tuple(token for token, _text, _why in MODAL_PROMPTS)
+
+# WHERE A QUERY BOX LANDS.  query_yn is centred, so the band is taken
+# around the middle of the capture rather than over the whole frame: one
+# tesseract call on a quarter of the pixels, measured at 0.6 s against
+# 0.9 s for a whole-frame glyph decode, and with far less of the map's
+# artwork in it to confuse the reader.  The fractions are of the
+# capture's own height, so a different terminal geometry needs no change
+# here.
+MODAL_BAND_TOP = 0.28
+MODAL_BAND_BOTTOM = 0.72
+
+# The shortest reading that says anything.  A one-word acknowledgment is
+# a box being ticked; the ledger exists to hold what the operator SAW.
+ACK_MIN_LENGTH = 12
+
+# The ledger's own name, beside the observation sidecar it belongs with.
+ACKNOWLEDGMENTS_NAME = "acknowledgments.jsonl"
+ACK_VERSION = 1
+
 # The marker joins the note with a semicolon, because ACTION_SEPARATOR
 # may appear exactly once in an action and it separates the derived
 # keystroke from the note.
@@ -4912,7 +5118,29 @@ def append_observation(path: str, row: Mapping[str, object],
 
     :raises RecordError: on any failure along that path.
     """
-    target = _confined(path, "the telemetry sidecar", root)
+    return _append_jsonl_row(
+        _confined(path, "the telemetry sidecar", root), row,
+        "the telemetry sidecar", "telemetry row", require_durable)
+
+
+def _append_jsonl_row(target: str, row: Mapping[str, object],
+                      what: str, row_label: str,
+                      require_durable: bool = True) -> Dict[str, object]:
+    """Append one JSON line to `target` under the record's discipline.
+
+    ONE IMPLEMENTATION, TWO LEDGERS.  The telemetry sidecar and the
+    acknowledgment ledger are the same kind of artifact -- an
+    append-only, one-line-per-frame JSONL file beside the record -- and
+    the discipline that makes either of them trustworthy is identical.
+    Writing it twice would let the two drift, and the weaker copy would
+    be the one nobody noticed.
+
+    `target` is already confined by the caller, because the label a
+    containment refusal should name belongs to the caller's ledger and
+    not to this shared body.
+
+    :raises RecordError: on any failure along the path.
+    """
     line = json.dumps(dict(row), ensure_ascii=False) + "\n"
     payload = line.encode("utf-8")
     directory = os.path.dirname(target)
@@ -4920,8 +5148,8 @@ def append_observation(path: str, row: Mapping[str, object],
         os.makedirs(directory, exist_ok=True)
     except OSError as err:
         raise RecordError(
-            "cannot create %s for the telemetry sidecar: %s"
-            % (directory, err)) from err
+            "cannot create %s for %s: %s"
+            % (directory, what, err)) from err
     try:
         descriptor = os.open(
             target,
@@ -4929,8 +5157,8 @@ def append_observation(path: str, row: Mapping[str, object],
             0o600)
     except OSError as err:
         raise RecordError(
-            "cannot open the telemetry sidecar %s for appending: %s"
-            % (target, err)) from err
+            "cannot open %s %s for appending: %s"
+            % (what, target, err)) from err
     try:
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX)
@@ -4938,23 +5166,24 @@ def append_observation(path: str, row: Mapping[str, object],
             written = os.write(descriptor, payload)
         except OSError as err:
             raise RecordError(
-                "could not append frame %s's telemetry row to %s: %s"
-                % (row.get("frame"), target, err)) from err
+                "could not append frame %s's %s to %s: %s"
+                % (row.get("frame"), row_label, target, err)) from err
         if written != len(payload):
             _truncate_back(descriptor, committed, target)
             raise RecordError(
-                "only %d of %d bytes of frame %s's telemetry row "
+                "only %d of %d bytes of frame %s's %s "
                 "reached %s; the partial line was removed, because a "
                 "fragment is not JSON and would stop the render"
-                % (written, len(payload), row.get("frame"), target))
+                % (written, len(payload), row.get("frame"), row_label,
+                   target))
         if require_durable:
             try:
                 os.fsync(descriptor)
             except OSError as err:
                 raise RecordError(
-                    "could not force frame %s's telemetry row to the "
+                    "could not force frame %s's %s to the "
                     "device (%s); it is not reported as recorded"
-                    % (row.get("frame"), err)) from err
+                    % (row.get("frame"), row_label, err)) from err
     finally:
         try:
             os.close(descriptor)
@@ -4963,8 +5192,220 @@ def append_observation(path: str, row: Mapping[str, object],
                 "sidecar-close",
                 "could not close %s after appending (%s); the row was "
                 "written and forced to the device before this point, "
-                "so the sidecar is intact" % (target, err))
+                "so %s is intact" % (target, err, what))
     return dict(row)
+
+
+def validate_observed(text: object) -> str:
+    """Return the operator's reading of a capture, or refuse it.
+
+    The acknowledgment ledger exists to hold what somebody SAW, so an
+    empty or perfunctory value is refused rather than recorded: a ledger
+    full of "ok" would satisfy the mechanism and defeat its purpose.
+
+    :raises ObservationRequired: when there is nothing usable to record.
+    """
+    if text is None or not str(text).strip():
+        raise ObservationRequired(
+            "no reading of the previous capture was supplied.  Look at "
+            "the frame and say what is on it -- which screen, which "
+            "selection, which prompt -- because the next keystroke is "
+            "chosen from that and the record has to show it was")
+    reading = " ".join(str(text).split())
+    if len(reading) < ACK_MIN_LENGTH:
+        raise ObservationRequired(
+            "the reading %r is %d character(s); at least %d are "
+            "required.  This ledger holds what the operator SAW on the "
+            "previous capture, and a value too short to describe a "
+            "screen records the mechanism rather than the observation"
+            % (reading, len(reading), ACK_MIN_LENGTH))
+    return reading
+
+
+def modal_band(width: int, height: int) -> "sidebar_geometry.Rect":
+    """Return the region of a capture a query box is drawn in.
+
+    query_yn centres its box, so the band is a horizontal slice through
+    the middle of the frame at the fractions declared above.  Computed
+    from the capture's own size rather than hard-coded, for the same
+    reason the sidebar crop is: a different terminal geometry must not
+    silently read the wrong pixels.
+    """
+    top = int(height * MODAL_BAND_TOP)
+    bottom = int(height * MODAL_BAND_BOTTOM)
+    return sidebar_geometry.Rect(width, max(1, bottom - top), 0, top)
+
+
+def read_modal_text(path: str) -> str:
+    """Return the OCR of `path`'s central band.  NEVER raises.
+
+    An unreadable band answers "" -- which the caller treats as "no
+    modal was detected", and which is why the declaration-versus-effect
+    halt exists beside this one rather than depending on it: an OCR pass
+    that fails is the absence of evidence, and this function is not
+    permitted to end a session on it.  The failure is logged.
+    """
+    try:
+        width, height = ocr_clock.png_size(path)
+        rect = modal_band(width, height)
+        chosen = None
+        for candidate in ocr_clock.PASSES:
+            if not candidate.row_wise:
+                chosen = candidate
+                break
+        if chosen is None:                        # pragma: no cover
+            return ""
+        strip, _band = ocr_clock.preprocess(
+            path, rect, ocr_clock.DEFAULT_ROW_HEIGHT, chosen,
+            engine=ocr_clock.ENGINE_PILLOW)
+        return ocr_clock.ocr_image(strip, chosen.psm)
+    except (ocr_clock.OcrClockError, sidebar_geometry.GeometryError,
+            OSError, ValueError) as err:
+        LOG.info("the central band of %s could not be read for a "
+                 "query box: %s", os.path.basename(path), err)
+        return ""
+
+
+def detect_modals(text: object) -> Tuple[str, ...]:
+    """Return the tokens of every declared prompt present in `text`.
+
+    Substring matching on the OCR of the central band.  The comparison
+    is case-insensitive and whitespace-collapsed, because tesseract
+    reads a proportional-looking cell grid and the engine's own strings
+    carry double spaces the reader does not always preserve.
+    """
+    if not isinstance(text, str) or not text.strip():
+        return ()
+    flat = " ".join(text.split()).lower()
+    found = []
+    for token, prompt, _why in MODAL_PROMPTS:
+        if " ".join(prompt.split()).lower() in flat:
+            found.append(token)
+    return tuple(found)
+
+
+def modal_reason(token: object) -> str:
+    """Return the source citation for one modal token, or ''."""
+    for candidate, _prompt, why in MODAL_PROMPTS:
+        if candidate == token:
+            return why
+    return ""
+
+
+def validate_modal_token(token: object) -> str:
+    """Return a declared modal token, or refuse an unknown one.
+
+    :raises RecordError: when the token names no prompt this module
+        knows, because a declaration nothing can match would silently
+        never be satisfied.
+    """
+    if token in MODAL_TOKENS:
+        return str(token)
+    raise RecordError(
+        "%r is not a query box this module knows.  The declared ones "
+        "are: %s" % (token, ", ".join(MODAL_TOKENS)))
+
+
+def acknowledgment_row(frame: int, observed: str, verdict: object,
+                       modals: Sequence[str] = (),
+                       digest: Optional[str] = None,
+                       expectation: Optional[str] = None
+                       ) -> Dict[str, object]:
+    """Build one acknowledgment row.  Pure -- nothing is written.
+
+    It binds the operator's reading to the FRAME'S OWN sha256, so an
+    acknowledgment cannot later be read as being about a different
+    capture: the digest is the same one the capture attestation ledger
+    holds for that index.
+    """
+    return {
+        "version": ACK_VERSION,
+        "frame": validated_frame(frame),
+        "file": manifest.frame_file(validated_frame(frame)),
+        "frame_sha256": digest or "",
+        "acknowledged_at": manifest.utc_timestamp(),
+        "expected": expectation or "",
+        "verdict": verdict_of(verdict),
+        "modals": list(modals),
+        "observed": validate_observed(observed),
+    }
+
+
+def append_acknowledgment(path: str, row: Mapping[str, object],
+                          require_durable: bool = True,
+                          root: Optional[str] = None
+                          ) -> Dict[str, object]:
+    """Append one acknowledgment under the record's own discipline.
+
+    Append-only, confined, O_NOFOLLOW, locked and forced to the device,
+    exactly as the telemetry sidecar is: this ledger is the evidence
+    that the picture was read between the keys, and evidence that can be
+    rewritten proves nothing.
+
+    :raises RecordError: on any failure along that path.
+    """
+    return _append_jsonl_row(
+        _confined(path, "the acknowledgment ledger", root), row,
+        "the acknowledgment ledger", "acknowledgment", require_durable)
+
+
+def read_acknowledgments(path: Optional[str] = None,
+                         root: Optional[str] = None
+                         ) -> Tuple[Dict[str, object], ...]:
+    """Return every acknowledgment on disk, in file order.  Read-only.
+
+    An absent ledger is an empty tuple -- a session that has taken no
+    step has acknowledged nothing -- but a ledger that EXISTS and cannot
+    be parsed raises, for the same reason the record does: the question
+    "was the previous capture read" then has no trustworthy answer, and
+    the caller must not proceed as though the answer were yes.
+
+    :raises RecordError: when a ledger that exists cannot be read.
+    """
+    target = _confined(path or default_acknowledgments_path(root),
+                       "the acknowledgment ledger", root)
+    if not os.path.isfile(target):
+        return ()
+    rows: List[Dict[str, object]] = []
+    try:
+        with open(target, "r", encoding="utf-8") as handle:
+            for number, raw in enumerate(handle, start=1):
+                if not raw.strip():
+                    continue
+                decoded = json.loads(raw)
+                if not isinstance(decoded, dict):
+                    raise RecordError(
+                        "line %d of %s is a %s, not an acknowledgment"
+                        % (number, target, type(decoded).__name__))
+                rows.append(decoded)
+    except (OSError, UnicodeError, ValueError) as err:
+        raise RecordError(
+            "the acknowledgment ledger %s exists but cannot be read "
+            "(%s), so whether the previous capture was read is UNKNOWN "
+            "rather than yes.  Repair it before sending another key"
+            % (manifest.relative_to_repo(target), err)) from err
+    return tuple(rows)
+
+
+def acknowledged_frames(path: Optional[str] = None,
+                        root: Optional[str] = None) -> Dict[int, str]:
+    """Return {frame: digest} for every acknowledged capture.
+
+    The digest travels with the index so a caller can prove the reading
+    was about the bytes that are on disk now, rather than about a frame
+    of the same number in an earlier, discarded attempt.
+    """
+    seen: Dict[int, str] = {}
+    for row in read_acknowledgments(path, root):
+        index = row.get("frame")
+        if isinstance(index, bool) or not isinstance(index, int):
+            raise RecordError(
+                "an acknowledgment in %s records %r as its frame index"
+                % (manifest.relative_to_repo(
+                    path or default_acknowledgments_path(root)), index))
+        digest = row.get("frame_sha256")
+        seen[index] = digest if isinstance(digest, str) else ""
+    return seen
 
 
 def _reading_or_none(row: Mapping[str, object],
@@ -5856,6 +6297,13 @@ class Session:
         # manifest.py.  Appended to once per captured frame with the
         # digest capture.sh took at publication; never rewritten.
         self._digests = default_digests_path(root)
+        # The observe-before-the-next-key ledger.  One row per capture
+        # the operator has read and classified, appended BEFORE the key
+        # that follows it is delivered, so the discipline the hard rule
+        # asks for leaves evidence rather than resting on good intent.
+        self._acks = _confined(
+            default_acknowledgments_path(root),
+            "the acknowledgment ledger", root)
         self._capture = (capture_script_path()
                          if capture_script is None
                          else _executable(capture_script))
@@ -5886,6 +6334,10 @@ class Session:
         self._verdict: str = EFFECT_UNKNOWN
         self._map_geometry: Optional[str] = None
         self._map_geometry_resolved = False
+        # The query boxes read off the last capture's central band.  Held
+        # so the CLI can report them beside the verdict: an operator who
+        # sees "save-and-quit" here knows which prompt is waiting.
+        self._modals: Tuple[str, ...] = ()
         # BOTH APPEND TARGETS ARE PRE-FLIGHTED BEFORE THE TRANSACTION
         # OPENS.  A step appends twice after the keystroke -- the
         # manifest row, then the attestation that carries the immutable
@@ -8025,10 +8477,19 @@ class Session:
         on.  So this is a refusal that leaves the session exactly where
         it was: free space and press the same key again.
 
-        A measurement that cannot be TAKEN is reported once and the step
-        proceeds.  An unreadable statvfs is a fact about the host, not
-        evidence that the disk is full, and the capturer refuses a
-        truncated frame on its own account.
+        A MEASUREMENT THAT CANNOT BE TAKEN IS A REFUSAL, NOT A WARNING.
+        This used to warn once and send the key anyway, on the reasoning
+        that an unreadable statvfs is a fact about the host rather than
+        evidence that the disk is full.  A review rejected that
+        reasoning and it was right to: the key is IRREVERSIBLE -- it
+        changes the game's state, and no later stage can un-press it --
+        while the check exists precisely because a delivered key whose
+        frame cannot be written breaks the identity the whole record
+        rests on.  Sending it on an unproved assumption trades a
+        recoverable refusal for an unrecoverable gap, which is the wrong
+        direction for the one control standing between the two.  So room
+        must be PROVED before delivery; if it cannot be measured, the
+        step refuses and the session is exactly where it was.
         """
         where = manifest.relative_to_repo(self._frames)
         previous = self._previous_capture_bytes(index)
@@ -8036,14 +8497,19 @@ class Session:
         try:
             available = free_bytes(self._frames)
         except OSError as err:
-            _warn_once(
-                "capture-room",
+            raise CapacityError(
                 "the free space where %s lives could not be read (%s), "
-                "so this session cannot tell in advance whether there "
-                "is room for the next frame.  It continues: the "
-                "capturer refuses a frame it could not write"
-                % (where, err))
-            return
+                "so there is NO PROOF that frame %d can be written -- "
+                "and this check runs before the key is sent precisely "
+                "because a delivered key whose frame cannot be written "
+                "is the one failure no later stage can repair.  THE KEY "
+                "HAS NOT BEEN SENT.  Fix the host so the filesystem "
+                "under %s can be measured (statvfs is what fails here), "
+                "then press the same key again.  There is no value of "
+                "$%s that turns this into a warning: an unmeasurable "
+                "disk is refused rather than assumed to be empty"
+                % (where, err, index, where,
+                   ENV_CAPTURE_RESERVE)) from err
         if available >= reserve:
             return
         raise CapacityError(
@@ -8251,9 +8717,275 @@ class Session:
                   "rather than a step that did not happen"
                   % (index, action, pixels, effect.map_box or "no box"))
 
+    @property
+    def acknowledgments_path(self) -> str:
+        """Where this session records its readings of the captures."""
+        return self._acks
+
+    @property
+    def modals(self) -> Tuple[str, ...]:
+        """The query boxes read off the most recent capture."""
+        return self._modals
+
+    def _frame_digest_of(self, index: int) -> str:
+        """Return the attested sha256 of a captured frame, or ''.
+
+        Read from the capture attestation ledger rather than recomputed,
+        so an acknowledgment is bound to the same digest the capture was
+        published under.  A frame with no attestation answers '' and the
+        acknowledgment records that absence honestly instead of a digest
+        taken from bytes nobody attested.
+        """
+        attested = self._attested_digest(index)
+        if not isinstance(attested, dict):
+            return ""
+        # The ledger's own column name, which is `sha256` rather than
+        # `frame_sha256`: manifest.DIGEST_FIELDS owns that schema and
+        # this reads it as written instead of restating it.
+        digest = attested.get("sha256")
+        return digest if isinstance(digest, str) else ""
+
+    def acknowledge(self, frame: int, observed: str,
+                    expectation: Optional[str] = None
+                    ) -> Dict[str, object]:
+        """Record that a capture was read, and what it showed.
+
+        The one way past a :class:`GuardHalt`, and the way every step
+        after the first satisfies its precondition.  The capture must
+        EXIST -- an acknowledgment of a frame that was never taken would
+        be a reading of nothing -- and the reading itself must say
+        something (:func:`validate_observed`).
+
+        The frame's own observed verdict and any query box detected on it
+        are recorded beside the reading, so the ledger shows what the
+        machine measured next to what the operator said, and a
+        disagreement between them is visible afterwards.
+
+        :raises RecordError: when the capture does not exist.
+        :raises ObservationRequired: when there is no usable reading.
+        """
+        index = validated_frame(frame)
+        path = os.path.join(self._frames,
+                            manifest.FRAME_NAME_FORMAT % index)
+        if not os.path.isfile(path):
+            raise RecordError(
+                "there is no capture at %s, so there is nothing to "
+                "acknowledge for frame %d.  An acknowledgment is a "
+                "reading of a photograph, not a statement about one "
+                "that was never taken"
+                % (manifest.relative_to_repo(path), index))
+        recorded = self._observation_verdict(index)
+        row = acknowledgment_row(
+            index, observed, recorded,
+            modals=detect_modals(read_modal_text(path)),
+            digest=self._frame_digest_of(index),
+            expectation=expectation)
+        appended = append_acknowledgment(
+            self._acks, row, require_durable=self._require_durable,
+            root=self._root)
+        LOG.info("frame %d acknowledged: %s", index, row["observed"])
+        return appended
+
+    def _observation_halted(self, index: int) -> bool:
+        """True when the sidecar records that this frame halted a step.
+
+        Read back from the ledger rather than recomputed, so the answer
+        is the one the halting step itself wrote: a later re-measurement
+        could differ, and the question here is historical.
+        """
+        try:
+            for row in read_observations(self._observations,
+                                         root=self._root):
+                if row.get("frame") == index:
+                    return bool(row.get("halted"))
+        except (RecordError, manifest.ManifestError, OSError,
+                ValueError) as err:
+            LOG.info("frame %d's halt state could not be read: %s",
+                     index, err)
+        return False
+
+    def _observation_verdict(self, index: int) -> str:
+        """Return the effect verdict the sidecar recorded for a frame.
+
+        Read back rather than re-measured: the verdict in the ledger is
+        the one the step wrote at capture time, and re-comparing the
+        images here could answer differently if anything had touched
+        them since -- which is precisely the sort of drift a ledger
+        exists to make impossible.
+        """
+        try:
+            for row in read_observations(self._observations,
+                                         root=self._root):
+                if row.get("frame") == index:
+                    return verdict_of(row.get("effect"))
+        except (RecordError, manifest.ManifestError, OSError,
+                ValueError) as err:
+            LOG.info("frame %d's recorded verdict could not be read: %s",
+                     index, err)
+        return EFFECT_UNKNOWN
+
+    def _assert_previous_acknowledged(
+            self, index: int, observed: Optional[str],
+            expectation: Optional[str]) -> None:
+        """Refuse the next key until the last capture has been read.
+
+        BEFORE ANYTHING IS SENT, so a missing reading costs nothing but
+        the call: supply it and press again.  This is the structural form
+        of "observe -> decide in character -> act", and it is here rather
+        than in a driver because a rule a driver can forget is a rule
+        that was measurably forgotten -- frames 91-106 of the retired
+        session were keyed into a modal nobody had looked at.
+
+        The FIRST step of a session has no predecessor and needs no
+        reading.  Every other step either carries one (`observed`) or
+        finds one already in the ledger for that exact frame, and a
+        reading recorded against a DIFFERENT digest for the same index
+        does not count: that would be a reading of a capture that is no
+        longer the one on disk.
+        """
+        previous = index - 1
+        if previous < 1:
+            return
+        path = os.path.join(self._frames,
+                            manifest.FRAME_NAME_FORMAT % previous)
+        if not os.path.isfile(path):
+            # Nothing to read.  A resumed session whose earlier frames
+            # are not in this tree is already reported by the record
+            # verification; this guard does not add a second refusal for
+            # the same condition.
+            return
+        digest = self._frame_digest_of(previous)
+        known = acknowledged_frames(self._acks, self._root)
+        recorded = known.get(previous)
+        if recorded is not None and (not digest or recorded == digest):
+            return
+        # A FRAME THAT HALTED THE SESSION NEEDS ITS OWN ACT.  For an
+        # ordinary frame the reading may travel with the next key --
+        # one call, and the reading is still recorded before anything is
+        # sent.  For a frame the guard stopped on, the two must be
+        # separate calls: combining "I have looked at the anomaly" with
+        # "and here is the next key" in a single invocation is exactly
+        # the shape of not having looked.
+        if self._observation_halted(previous):
+            raise ObservationRequired(
+                "frame %d STOPPED the session -- its telemetry row "
+                "records the halt -- and it has not been acknowledged "
+                "since, so frame %d's keystroke is REFUSED and nothing "
+                "was sent.  Read %s and record what it shows with "
+                "`session.py ack --frame %d --observed '...'`, as a "
+                "call of its own.  The reading may not travel with the "
+                "next key here: an anomaly acknowledged in the same "
+                "breath as the key that follows it has not been looked "
+                "at" % (previous, index,
+                        manifest.relative_to_repo(path), previous))
+        if observed is None:
+            raise ObservationRequired(
+                "frame %d has not been read, so frame %d's keystroke is "
+                "REFUSED and nothing was sent.  Look at %s -- which "
+                "screen is up, what is selected, is a query box open -- "
+                "then either pass --observed with what you saw or record "
+                "it with `session.py ack --frame %d --observed '...'`.  "
+                "This is the hard rule 'never blind-spam keys' as a "
+                "precondition rather than as advice: the retired "
+                "session's frames 91-106 were keyed into an unchanged "
+                "modal exactly because nothing enforced it"
+                % (previous, index, manifest.relative_to_repo(path),
+                   previous))
+        self.acknowledge(previous, observed, expectation)
+
+    def _frame_reference(self, index: int) -> str:
+        """The repository-relative path of a captured frame."""
+        return manifest.relative_to_repo(
+            os.path.join(self._frames,
+                         manifest.FRAME_NAME_FORMAT % index))
+
+    def _effect_halt(self, index: int, expect: str,
+                     effect: object) -> Optional[str]:
+        """Why this capture contradicts its declaration, or None.
+
+        EFFECT_UNKNOWN contradicts EVERY declaration.  An unmeasurable
+        pair is the absence of an observation, and the whole purpose of
+        this guard is that an absent observation must not read like a
+        satisfied one.
+        """
+        verdict = verdict_of(effect)
+        if verdict in EXPECT_ACCEPTS.get(expect, ()):
+            return None
+        if verdict == EFFECT_UNKNOWN:
+            detail = ("the two captures could not be compared, so what "
+                      "the keystroke did was not observed at all")
+        else:
+            detail = "the capture is %r" % verdict
+        return (
+            "frame %d declared --expect %s and %s.  THE KEY WAS "
+            "DELIVERED AND THE FRAME AND ROW ARE RECORDED; what stops "
+            "here is the next keystroke.  Read %s: if the screen "
+            "legitimately did not move, record that with `session.py "
+            "ack --frame %d --observed '...'` and continue; if the key "
+            "was swallowed by a box or a case-sensitive prompt, deal "
+            "with that box before sending anything else.  A session "
+            "that keys on past this is the defect this guard exists for"
+            % (index, expect, detail, self._frame_reference(index),
+               index))
+
+    def _modal_halt(self, index: int, expect_modal: Optional[str],
+                    modals: Sequence[str]) -> Optional[str]:
+        """Why this capture's query box is wrong, or None.
+
+        BOTH DIRECTIONS MATTER.  An UNDECLARED box means the operator's
+        model of the screen is wrong and the next key would go into the
+        box instead of the screen behind it -- the exact shape of the
+        retired session's worst passage.  A DECLARED box that is absent
+        means the model is wrong the other way, and a session that
+        proceeds on it is answering a prompt nobody is asking.
+        """
+        present = tuple(modals)
+        if expect_modal is None:
+            if not present:
+                return None
+            return (
+                "frame %d shows a query box nothing declared: %s.  THE "
+                "KEY WAS DELIVERED AND THE FRAME AND ROW ARE RECORDED; "
+                "what stops here is the next keystroke, because every "
+                "one of these boxes EATS a key aimed at the screen "
+                "behind it -- %s.  Read %s, acknowledge this frame with "
+                "`session.py ack --frame %d --observed '...'`, and "
+                "answer the box deliberately with --expect-modal %s on "
+                "the next step"
+                % (index, ", ".join(present),
+                   modal_reason(present[0]) or "engine query_yn",
+                   self._frame_reference(index), index, present[0]))
+        if expect_modal in present:
+            return None
+        return (
+            "frame %d declared the query box %r and the capture does "
+            "not show it%s.  THE KEY WAS DELIVERED AND THE FRAME AND "
+            "ROW ARE RECORDED; what stops here is the next keystroke, "
+            "because a step about to answer a prompt that is not being "
+            "asked will send its answer somewhere else"
+            % (index, expect_modal,
+               (" -- what it shows is %s" % ", ".join(present))
+               if present else ""))
+
+    def _halt_reason(self, index: int, expect: str, effect: object,
+                     expect_modal: Optional[str],
+                     modals: Sequence[str]) -> Optional[str]:
+        """The first reason this capture stops the session, or None.
+
+        The modal reading is consulted first because when both would
+        fire they are usually the same event seen from two sides -- a
+        swallowed key and an open box -- and the box is the more
+        actionable half.
+        """
+        return (self._modal_halt(index, expect_modal, modals) or
+                self._effect_halt(index, expect, effect))
+
     def _commit(self, index: int, key: str, action: str,
                 commentary: str, payload: Mapping[str, str],
-                attempts: int, recovered: bool) -> Dict[str, object]:
+                attempts: int, recovered: bool,
+                expect: str = EXPECT_EITHER,
+                declared_modal: Optional[str] = None
+                ) -> Dict[str, object]:
         """Append the row and its attestation, then clear the journal.
 
         The tail of the transaction, shared by an ordinary step and by
@@ -8305,6 +9037,24 @@ class Session:
             index, payload, key=key, action=action,
             capture_attempts=attempts, recovered=recovered,
             effect=effect)
+        # THE DECLARATION AND THE QUERY-BOX READING, recorded beside the
+        # measurement they will be judged against.  They are computed
+        # HERE rather than after the row so that the sidecar carries
+        # them: a halt that left no trace in the record would be a
+        # control whose firing could not be audited afterwards, and the
+        # anomaly is also what the NEXT step reads to decide whether an
+        # inline reading is enough or an explicit acknowledgment is
+        # required.
+        modals = detect_modals(read_modal_text(
+            os.path.join(self._frames,
+                         manifest.FRAME_NAME_FORMAT % index)))
+        self._modals = tuple(modals)
+        observation["expected"] = expect
+        observation["expect_modal"] = declared_modal or ""
+        observation["modals"] = list(modals)
+        observation["halted"] = bool(
+            self._halt_reason(index, expect, effect, declared_modal,
+                              modals))
         try:
             append_observation(
                 self._observations, observation,
@@ -8384,7 +9134,10 @@ class Session:
 
     def step(self, key: str, action: Optional[str] = None,
              commentary: Optional[str] = None,
-             note: Optional[str] = None) -> StepResult:
+             note: Optional[str] = None,
+             expect: str = EXPECT_CHANGED,
+             observed: Optional[str] = None,
+             expect_modal: Optional[str] = None) -> StepResult:
         """Send ONE keystroke and record ONE frame.  The whole step.
 
         THIS IS THE ONLY PLACE THE FRAME COUNTER MOVES, and it moves
@@ -8430,6 +9183,20 @@ class Session:
             playthrough/TECHNICAL_NOTES.md, never here.
         :param note: the reason half of `action`, appended to the
             derived identity.  Mutually exclusive with `action`.
+        :param expect: what this capture will show -- EXPECT_CHANGED
+            (the default), EXPECT_UNCHANGED for a key that legitimately
+            moves nothing on screen, or EXPECT_EITHER when the screen's
+            response genuinely cannot be predicted.  A capture that
+            contradicts the declaration halts the session AFTER
+            recording the frame and its row.
+        :param observed: the operator's own reading of the PREVIOUS
+            capture.  Required for every step after the first unless
+            that frame is already in the acknowledgment ledger, and
+            recorded there -- durably -- before this key is delivered.
+        :param expect_modal: the token of an engine query box this step
+            is deliberately answering (see :data:`MODAL_PROMPTS`).  An
+            undeclared box on the capture halts the session, and so does
+            a declared one that is not there.
         :returns: a :class:`StepResult` carrying the frame path and the
             clock reading, so the caller reads what happened before
             choosing the next keystroke.
@@ -8466,6 +9233,13 @@ class Session:
         """
         self._assert_usable()
         validated = validate_key(key)
+        if expect not in EXPECTATIONS:
+            raise RecordError(
+                "%r is not a declaration this module knows.  Every step "
+                "says what its capture will show, and the choices are: "
+                "%s" % (expect, ", ".join(EXPECTATIONS)))
+        declared_modal = (None if expect_modal is None
+                          else validate_modal_token(expect_modal))
         if action is not None and note is not None:
             raise RecordError(
                 "pass either the full action or the note it ends with, "
@@ -8504,6 +9278,14 @@ class Session:
         # on every key rather than occasionally, and it takes the index
         # this step already owns rather than deriving it again.
         self._assert_capture_room(index)
+
+        # AND THE PICTURE BEFORE THIS ONE MUST HAVE BEEN READ.  Also
+        # before delivery, because a missing reading is a condition to
+        # fix rather than damage to recover from: the reading is recorded
+        # durably here, and only then is a key sent on the strength of
+        # it.  This is the hard rule "never blind-spam keys" made
+        # structural.
+        self._assert_previous_acknowledged(index, observed, expect)
 
         # THE MODE-AWARE REFUSAL, before the window is even prepared: a
         # resumed session may not press a key that opens the character
@@ -8600,7 +9382,8 @@ class Session:
                                  payload))
 
         row = self._commit(index, validated, text, voice, payload,
-                           attempts, False)
+                           attempts, False, expect=expect,
+                           declared_modal=declared_modal)
 
         # THE POST-KEY INTEGRITY CHECKS, on the same step rather than the
         # next one.  The save-set comparison used to run only BEFORE a
@@ -8618,6 +9401,18 @@ class Session:
                 "frame %d is captured and recorded, and then the state "
                 "of the save tree refused the step: %s" % (index, err))
             raise
+
+        # THE ENFORCING GUARD, in the same place and for the same reason:
+        # the frame and the row are on the device, so the record is
+        # complete and honest, and what this refuses is the NEXT
+        # keystroke.  The reason was computed inside _commit, where it
+        # was also written into the telemetry row, so the halt and the
+        # record cannot disagree about whether it fired.
+        halt = self._halt_reason(index, expect, self._effect,
+                                 declared_modal, self._modals)
+        if halt is not None:
+            self._abort(halt)
+            raise GuardHalt(halt)
 
         # `action` is taken from the ROW rather than from `text`,
         # because the observed-effect guard may have appended its
@@ -8905,6 +9700,15 @@ EXIT_CHEAT = 5
 # from anything the five above ask for -- and because a driver looping
 # over keystrokes needs to tell it apart from a failed capture.
 EXIT_CAPACITY = 6
+# THE TWO HALVES OF THE OBSERVE-BEFORE-THE-NEXT-KEY GUARD.  7 means
+# nothing was sent and the remedy is to look at the previous capture and
+# say what it shows; 8 means the key WAS sent, the frame and row are
+# recorded, and the capture contradicted what the step declared -- so the
+# remedy is to read that frame, acknowledge it, and decide what to do
+# about the screen it actually shows.  Distinct statuses because a driver
+# must not retry a delivered key.
+EXIT_OBSERVATION = 7
+EXIT_GUARD = 8
 
 _EPILOG = """\
 the permitted door, and the four that are shut
@@ -9017,6 +9821,45 @@ def build_parser() -> argparse.ArgumentParser:
         "--window-id", default=None, metavar="ID",
         help="a decimal window id from launch_game.sh; the process "
              "behind it is authenticated before every keystroke")
+    step.add_argument(
+        "--expect", default=EXPECT_CHANGED, choices=list(EXPECTATIONS),
+        help="what this step's capture will show.  'changed' (the "
+             "default) is the ordinary case; 'unchanged' declares in "
+             "advance that this key legitimately moves nothing on "
+             "screen; 'either' is for a response that genuinely cannot "
+             "be predicted.  A capture that CONTRADICTS the "
+             "declaration records its frame and row and then HALTS the "
+             "session, because a key that did not land is how a record "
+             "comes to describe something that did not happen")
+    step.add_argument(
+        "--observed", default=None, metavar="TEXT",
+        help="what YOU saw on the PREVIOUS capture -- which screen, "
+             "what was selected, whether a box was open.  Required for "
+             "every step after the first unless that frame is already "
+             "acknowledged, recorded in "
+             "playthrough/build/" + ACKNOWLEDGMENTS_NAME + " before "
+             "this key is delivered, and refused if it is too short to "
+             "describe a screen.  This is 'never blind-spam keys' as a "
+             "precondition instead of as advice")
+    step.add_argument(
+        "--expect-modal", default=None, metavar="TOKEN",
+        choices=list(MODAL_TOKENS),
+        help="the engine query box this step is deliberately "
+             "answering.  An UNDECLARED box on the capture halts the "
+             "session -- every one of them eats a key aimed at the "
+             "screen behind it -- and so does a declared one that is "
+             "not there")
+
+    ack = sub.add_parser(
+        "ack",
+        help="record that a capture was READ, and what it showed")
+    ack.add_argument(
+        "--frame", type=int, required=True, metavar="N",
+        help="the captured frame being acknowledged")
+    ack.add_argument(
+        "--observed", required=True, metavar="TEXT",
+        help="what the capture shows, in enough words to identify the "
+             "screen; this is the durable record that it was looked at")
 
     probe = sub.add_parser(
         "probe", help="report create-versus-resume, before any play")
@@ -9064,6 +9907,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser(
         "status", help="report the counter and verify the record")
+    sub.add_parser(
+        "journal",
+        help=("report an outstanding step WITHOUT settling it -- the "
+              "read-only query the acceptance gate asks"))
     annotate = sub.add_parser(
         "annotate",
         help=("measure recorded captures and report -- or with "
@@ -9129,7 +9976,9 @@ def _command_step(args: argparse.Namespace) -> int:
         for note in session.recovered:
             sys.stderr.write("playthrough: recovered: %s\n" % note)
         result = session.step(
-            key, commentary=args.commentary, note=args.note)
+            key, commentary=args.commentary, note=args.note,
+            expect=args.expect, observed=args.observed,
+            expect_modal=args.expect_modal)
         _emit("FRAME_INDEX", result.frame)
         _emit("FRAME_FILE", result.file)
         _emit("FRAME_PATH", manifest.relative_to_repo(result.path))
@@ -9144,12 +9993,40 @@ def _command_step(args: argparse.Namespace) -> int:
         _emit("FRAME_GEOMETRY", result.geometry)
         _emit("LUMA_MEAN", result.luma_mean)
         _emit("LUMA_STDDEV", result.luma_stddev)
+        _emit("EXPECTED", args.expect)
+        _emit("EFFECT", result.effect)
+        _emit("MODALS", ",".join(session.modals))
         _emit("SESSION_MODE", session.pin.mode)
         _emit("SESSION_WORLD", session.pin.world)
         _emit("MANIFEST",
               manifest.relative_to_repo(session.manifest_path))
         _emit("OBSERVATIONS",
               manifest.relative_to_repo(session.observations_path))
+        _emit("ACKNOWLEDGMENTS",
+              manifest.relative_to_repo(session.acknowledgments_path))
+    return EXIT_OK
+
+
+def _command_ack(args: argparse.Namespace) -> int:
+    """Record an operator's reading of one already-captured frame.
+
+    THE ONE WAY PAST A HALT, and the reason the halt is safe to make
+    fatal: an operator who has looked at the frame says so here, in a
+    ledger that keeps the statement, and the session continues.  It
+    opens WITHOUT settling the journal for the same reason `reconcile`
+    does -- a session stopped by the guard may be holding one, and
+    reading a picture is not the act that should resolve it.
+    """
+    with _open_session(args, None, settle_journal=False) as session:
+        row = session.acknowledge(args.frame, args.observed)
+        _emit("FRAME_INDEX", row["frame"])
+        _emit("FRAME_FILE", row["file"])
+        _emit("FRAME_SHA256", row["frame_sha256"])
+        _emit("EFFECT", row["verdict"])
+        _emit("MODALS", ",".join(str(one) for one in row["modals"]))
+        _emit("OBSERVED", row["observed"])
+        _emit("ACKNOWLEDGMENTS",
+              manifest.relative_to_repo(session.acknowledgments_path))
     return EXIT_OK
 
 
@@ -9271,6 +10148,47 @@ def _command_status(args: argparse.Namespace) -> int:
     return EXIT_RECORD if problems else EXIT_OK
 
 
+def _command_journal(args: argparse.Namespace) -> int:
+    """Report an outstanding step, changing nothing.
+
+    WHY THIS EXISTS SEPARATELY FROM `status`.  `status` opens a session,
+    and opening a session SETTLES an outstanding journal -- that is
+    deliberate and documented there, because an interrupted step must be
+    completed before the record is verified.  But it makes `status`
+    useless to an acceptance gate: the gate would REPAIR the very thing
+    it came to judge, and a delivered keystroke that never became a frame
+    would be resolved by the act of asking about it.  A review found
+    exactly that gap on the other side of the same invariant -- a
+    terminal keystroke was delivered, its capture was rejected, and the
+    frame/row/line identity still read 305 == 305 == 305 because all
+    three of those counts are written only AFTER a capture succeeds.  The
+    outstanding journal was the only durable evidence that a 306th key
+    had left, and nothing was looking at it.
+
+    So this takes no lock, opens no session, recovers nothing and writes
+    nothing: it derives the journal's path exactly as a session would and
+    reads it.  A journal that exists but cannot be parsed still raises,
+    because `read_journal` treats that as a fault rather than an absence
+    -- an unreadable record of a keystroke that may have been delivered
+    is the one thing that must not read as "no keystroke".
+    """
+    path = journal_path(getattr(args, "root", None))
+    record = read_journal(path)
+    _emit("JOURNAL", path)
+    _emit("JOURNAL_PRESENT", record is not None)
+    if record is None:
+        _emit("JOURNAL_PHASE", "none")
+        _emit("JOURNAL_FRAME", "")
+        _emit("JOURNAL_VERSION", "")
+        _emit("JOURNAL_KEY", "")
+        return EXIT_OK
+    _emit("JOURNAL_PHASE", record.get("phase", ""))
+    _emit("JOURNAL_FRAME", record.get("frame", ""))
+    _emit("JOURNAL_VERSION", record.get("version", ""))
+    _emit("JOURNAL_KEY", record.get("key", ""))
+    return EXIT_OK
+
+
 def _command_annotate(args: argparse.Namespace) -> int:
     """Measure recorded captures for the observed-effect marker.
 
@@ -9316,17 +10234,28 @@ def _command_annotate(args: argparse.Namespace) -> int:
 
 _COMMANDS = {
     "step": _command_step,
+    "ack": _command_ack,
     "annotate": _command_annotate,
     "reconcile": _command_reconcile,
     "probe": _command_probe,
     "window": _command_window,
     "audit": _command_audit,
     "status": _command_status,
+    "journal": _command_journal,
 }
 
 _EXIT_FOR = (
     (CheatGuard, EXIT_CHEAT),
     (CapacityError, EXIT_CAPACITY),
+    # BOTH HALVES OF THE OBSERVE-BEFORE-THE-NEXT-KEY GUARD GET THEIR OWN
+    # STATUS, so a driver can tell "read the picture and say what it
+    # shows" apart from "the picture is not what you said it would be".
+    # They are listed before the shapes below because ObservationRequired
+    # and GuardHalt are refusals about the OBSERVATION, and a caller that
+    # confused either with a lost window or an unbelievable record would
+    # retry the wrong thing.
+    (ObservationRequired, EXIT_OBSERVATION),
+    (GuardHalt, EXIT_GUARD),
     (KeyRejected, EXIT_USAGE),
     (WindowError, EXIT_WINDOW),
     (CaptureError, EXIT_CAPTURE),

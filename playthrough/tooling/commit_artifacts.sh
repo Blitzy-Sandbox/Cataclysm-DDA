@@ -89,16 +89,20 @@
 # artifact class and commits.  Every git call is an argument list; there
 # is no eval, no `shell=True` equivalent, and no unquoted glob.
 #
-# THE ONE CONFIGURATION IT WRITES, AND THE FENCE AROUND IT
-# `git config --local user.name` / `user.email`, and only when this
-# repository does not already record them.  Never --global, never
-# --system, never --worktree; the value written is exactly the one `git
-# var` had already resolved, so the attribution of the commit is
-# identical whether or not the write happened.  The reason it happens at
-# all is that the render and capture stages run inside the declared
-# container, which mounts this checkout, sets its own HOME and forwards
-# no GIT_* -- so an identity living only in the invoking user's
-# ~/.gitconfig does not exist in there.  See persist_identity_locally.
+# HOW THE CONTAINER GETS AN IDENTITY WITHOUT ONE BEING WRITTEN
+# The render and capture stages run inside the declared container, which
+# mounts this checkout, sets its own HOME and forwards no GIT_* -- so an
+# identity living only in the invoking user's ~/.gitconfig does not exist
+# in there, and a checkpoint taken inside it used to exit 3.  This file
+# answered that by writing `git config --local user.name` / `user.email`.
+# It no longer does: the write contradicted the paragraph above it, this
+# execution environment forbids running those commands at any scope, and
+# writing the HOST-resolved pair bought no invariance that forwarding it
+# does not.  supported_env.sh forwards the resolved GIT_AUTHOR_* /
+# GIT_COMMITTER_* pair as environment instead, which is git's own
+# mechanism for this and leaves nothing behind in the tree.  See
+# report_identity_scope, which reads which scope answered and says so
+# without changing it.
 #
 # STAGING IS EXPLICIT, BY ARTIFACT CLASS, AND BATCHED.  No blanket add
 # appears anywhere in this file: every staging call is `add --` with
@@ -154,10 +158,12 @@
 #     CREATION     the hash of the `creation` checkpoint, empty when
 #                  there is not one yet
 #
-# `status` adds three more, which together are the answer to "would
-# `final` be taken?" asked without taking it -- and asked, above all, by
-# a caller that is about to spend an hour producing what a checkpoint
-# would carry:
+# `status` adds six more, which together are the answer to "would this
+# checkpoint be taken?" asked without taking it -- and asked, above all,
+# by a caller that is about to spend an hour producing what a checkpoint
+# would carry.  There is one triple per checkpoint an automated caller
+# takes, because they ask different questions and a caller must read the
+# triple for the checkpoint IT takes:
 #
 #     CREATION_SURVIVOR  the survivor the NEWEST creation records
 #     FINAL_ANCHOR       the creation checkpoint `final` would actually
@@ -170,6 +176,13 @@
 #                        no-creation-checkpoint,
 #                        no-creation-for-this-survivor,
 #                        anchor-carries-no-record, record-has-not-grown
+#     MEDIA_ANCHOR       the `final` commit `media` would be about: the
+#                        one that published THIS survivor's closed
+#                        session.  Empty when there is none.
+#     MEDIA_ELIGIBLE     yes | no
+#     MEDIA_REASON       empty when eligible; otherwise no-final-published
+#                        or whichever FINAL_REASON token explains why no
+#                        anchor could be resolved at all
 #
 # THE TRAILER IS THE LIFECYCLE'S MEMORY.  Each commit carries
 # `Playthrough-Checkpoint: <name>` as a trailer, and `final` finds the
@@ -336,8 +349,11 @@ name_sample() {
 # the checkout-scoped lock name; both are named here rather than left to
 # fail at their call site, so a host missing one is told about it in the
 # same consolidated diagnosis as the rest.
+# cat copies the measured acceptance report from the scratch path the
+# gate wrote it to into the tree this step commits; it is the only write
+# this file makes to a file's contents rather than to the index.
 if ! playthrough_require_tools git find wc sort grep tr awk \
-        sha256sum; then
+        sha256sum cat; then
     die "${EX_PREREQ}" "the toolchain above is incomplete, so the" \
         "checkpoint gates cannot be performed.  A checkpoint whose" \
         "preconditions were not checked is not taken."
@@ -349,12 +365,21 @@ readonly SORT="${PLAYTHROUGH_BIN_SORT}"
 readonly GREP="${PLAYTHROUGH_BIN_GREP}"
 readonly TR="${PLAYTHROUGH_BIN_TR}"
 readonly AWK="${PLAYTHROUGH_BIN_AWK}"
+readonly CAT="${PLAYTHROUGH_BIN_CAT}"
+
+# The two phase words of verify_artifacts.sh that a COMMITTABLE
+# acceptance report may carry.  Named here rather than spelled at the
+# comparison, because a report from the artifacts-only phase measures
+# nothing about the history and this step's whole subject is what the
+# history now proves.
+readonly GATE_HISTORY_PHASE="post-commit"
+readonly GATE_EVERY_PHASE="all"
 
 # ---------------------------------------------------------------------
 # The lifecycle vocabulary.
 # ---------------------------------------------------------------------
 
-# The trailer key and the THREE checkpoint names.  `final` searches the
+# The trailer key and the FIVE checkpoint names.  `final` searches the
 # history for the `creation` trailer, so these strings are the
 # lifecycle's entire persistent state -- there is no side file to fall
 # out of step with the history it describes.
@@ -370,16 +395,46 @@ readonly AWK="${PLAYTHROUGH_BIN_AWK}"
 # hold, however the history is read.  Measured: a documented lifecycle of
 # `creation` then `final` left the ordering permanently unprovable.
 #
-# So the dossier gets its own, earlier commit.  Three steps, in this
+# So the dossier gets its own, earlier commit.  Five steps, in this
 # order, and each refuses to run out of turn:
 #
 #     dossier    the survivor described, before a single frame exists
 #     creation   the survivor and the save they start from
-#     final      the closed session and its artifacts
+#     final      the closed session: the last save and the record
+#     media      the artifacts DERIVED from that record
+#     attest     the two reports, and what they can honestly cite
+#
+# WHY THE LAST THREE ARE THREE AND NOT ONE.  `final` used to carry all of
+# it, and it demanded playthrough/REPORT.md before it would run -- so the
+# document that must cite the commits carrying the film, the transcript
+# and the acceptance evidence was required to exist BEFORE the commit
+# that created any of them.  There is no order in which that can be
+# satisfied honestly: either the report cites hashes that do not exist
+# yet, or it cites an earlier session's.  A review found both.
+#
+# Split, each commit is about one thing and cites only what precedes it:
+#
+#   final    is taken the moment the session ends, immediately after the
+#            in-game Save & Quit.  Its subject is the RECORD -- the save,
+#            the captures, the manifest -- and it requires no report at
+#            all, because nothing derived from the record exists yet.
+#   media    is taken by run_pipeline.sh once the timeline, the
+#            transitions, the film and the transcripts have been produced.
+#            Its subject is everything DERIVED from the record, and it
+#            can cite `final` because `final` is already in the history.
+#   attest   is taken last.  Its subject is the acceptance report and
+#            REPORT.md, and it is the ONLY step that publishes the
+#            acceptance report into the tree: the measurement writes to a
+#            scratch path outside the checkout and this step copies it in
+#            and commits it in the same breath, so the tree is dirtied
+#            and cleaned within one step that can be refused as a whole.
+#            By the time it runs, every hash the report cites exists.
 readonly TRAILER_KEY="Playthrough-Checkpoint"
 readonly CHECKPOINT_DOSSIER="dossier"
 readonly CHECKPOINT_CREATION="creation"
 readonly CHECKPOINT_FINAL="final"
+readonly CHECKPOINT_MEDIA="media"
+readonly CHECKPOINT_ATTEST="attest"
 # The fourth milestone, and the only one whose subject is not the
 # session: the two repository-wide rule files the evidence depends on.
 # See do_integration for why it exists and why it is separate.
@@ -393,9 +448,34 @@ frame of play"
 readonly SUBJECT_CREATION="Commit the survivor's creation and the save \
 it produced"
 readonly SUBJECT_FINAL="Commit the closed session, its final save and \
-its artifacts"
+its record"
+readonly SUBJECT_MEDIA="Commit the film, the transcripts and the \
+timeline derived from the record"
+readonly SUBJECT_ATTEST="Commit the acceptance report and the final \
+three-section report"
 readonly SUBJECT_INTEGRATION="Commit the repository rules the \
 playthrough evidence depends on"
+
+# is_post_session_checkpoint NAME -- whether the session has already
+# ended by the time this checkpoint runs.
+#
+# `final`, `media` and `attest` all run after the survivor has saved and
+# quit, so every question of the form "is the save in its finished state"
+# has ONE answer across the three of them.  Before the split there was
+# only `final`, and these comparisons were written against it by name --
+# but each of those names meant "the session has ended", not "this
+# particular commit".  Left literal, `media` would have demanded a LIVE
+# character save from a session that ended in death, which `final` had
+# just correctly recorded as the death shape.
+is_post_session_checkpoint() {
+    local name="$1"
+    if [ "${name}" = "${CHECKPOINT_FINAL}" ] ||
+       [ "${name}" = "${CHECKPOINT_MEDIA}" ] ||
+       [ "${name}" = "${CHECKPOINT_ATTEST}" ]; then
+        return 0
+    fi
+    return 1
+}
 
 # The lock this step takes, as a BASENAME: env.sh appends a digest of
 # this checkout's root so that two runs over ONE working tree serialise
@@ -590,116 +670,93 @@ assert_identity() {
 }
 
 # ---------------------------------------------------------------------
-# PERSISTING THAT IDENTITY INTO THIS REPOSITORY, AND ONLY THIS ONE.
+# WHERE THAT IDENTITY CAME FROM -- REPORTED, AND NEVER WRITTEN.
 #
-# The identity a commit is made under must not merely be RESOLVABLE
-# somewhere; it has to be recorded in the repository that carries the
-# evidence.  The reason is concrete rather than tidy: this pipeline's
-# render and capture stages run inside the declared container, which
-# mounts the checkout and sets HOME=/tmp/playthrough-home and forwards no
-# GIT_* variables at all.  An identity that lives only in the invoking
-# user's ~/.gitconfig therefore DOES NOT EXIST in there -- measured, as
-# `git var GIT_AUTHOR_IDENT` failing and this step exiting 3 inside the
-# only environment where the later stages may legally run.  Written into
-# the repository's own config it travels with the mounted tree, because
-# it lives in the working tree's .git rather than in a home directory.
+# This block used to WRITE the resolved pair into the checkout's own
+# configuration with `git config --local user.name` / `user.email`, and
+# the reason given was concrete: the render and capture stages run inside
+# the declared container, which mounts this checkout, sets its own HOME
+# and forwards no GIT_* at all -- so an identity living only in the
+# invoking user's ~/.gitconfig does not exist in there, and a checkpoint
+# taken in the one environment where rendering is legal exited 3.
 #
-# THREE PROPERTIES MAKE THIS SAFE, AND EACH IS A DELIBERATE LIMIT:
+# THREE THINGS WERE WRONG WITH THAT, and they compounded.
 #
-#   1. THE VALUE IS NEVER CHOSEN HERE.  What is written is exactly what
-#      `git var` already resolved a moment earlier, so the author and
-#      committer of the commit that follows are identical whether or not
-#      this function ran.  It cannot re-attribute a commit; it can only
-#      make an existing attribution durable.
-#   2. THE SCOPE IS `--local` AND NOTHING ELSE.  Never --global, never
-#      --system, never --worktree.  A tool that reaches into a user's
-#      home directory to fix its own environment is a tool nobody can
-#      run twice safely.
-#   3. AN EXISTING LOCAL PAIR IS LEFT ALONE.  If this repository already
-#      says who commits here, that answer wins and this function only
-#      reports it.  Only a MISSING half is filled in.
+# It contradicted this file's own opening contract, which states in as
+# many words that it never writes git configuration -- not user.name, not
+# user.email, not in any scope.  A file that says "never" at the top and
+# does it in the middle has one of the two wrong, and a reader trusts the
+# top.
+#
+# The execution environment this evidence is produced in FORBIDS running
+# `git config user.name` or `user.email` at any scope, and fixes the
+# committer identity itself.  So the write was not a service the caller
+# wanted; it was a prohibited act that happened to be load-bearing.
+#
+# And it did not even buy the invariance it was justified by.  The value
+# written is the one the HOST resolved, so what lands in .git/config
+# still depends on who ran this first -- exactly the variability the
+# absence of --env was meant to prevent, only now persisted where the
+# acceptance gate would read it back and report it as a property of the
+# repository.  A review caught the consequence from the other end: the
+# delivered acceptance report CLAIMED a repository-local identity that
+# was not there at all.
+#
+# What replaces it: nothing is written, and the container is given the
+# identity the ordinary way -- supported_env.sh forwards the resolved
+# GIT_AUTHOR_* / GIT_COMMITTER_* pair as environment, which is the
+# mechanism git documents for exactly this and which leaves no trace in
+# the tree.  This file's responsibility is what its header always said it
+# was: ASSERT that an identity resolves, then commit under it.
+#
+# What is kept is the READING.  Which scope answered is worth saying out
+# loud, because "resolves" and "resolves from this checkout" are
+# different facts and the second one is the one the plan asked for and
+# the one this environment cannot supply.
 # ---------------------------------------------------------------------
 
 # local_config_value KEY -- the value from the repository's own config
-# file only, ignoring every other scope.  Empty when unset.
+# alone, empty when this checkout does not record one.  `--local`
+# deliberately does not fall back to the account or the system: the
+# question here is what THIS checkout says, not what git would resolve.
 local_config_value() {
     "${GIT}" config --local --get "$1" 2>/dev/null || printf ''
 }
 
-persist_identity_locally() {
-    local name mail existing_name existing_mail
-    # IDENT_AUTHOR is "Name <mail>" and has already been validated by
-    # ident_is_wellformed, so these two expansions cannot come back
-    # empty or unbalanced.
+# report_identity_scope -- say where the commit's identity came from.
+#
+# Read-only, and it never refuses: assert_identity has already established
+# that git can name an author, which is the requirement.  This only
+# records WHICH scope did so, so that a report written from this run's log
+# can state the true position instead of assuming the narrower one.
+report_identity_scope() {
+    local name mail local_name local_mail
     name="${IDENT_AUTHOR%% <*}"
     mail="${IDENT_AUTHOR#*<}"
     mail="${mail%>}"
-    existing_name="$(local_config_value user.name)"
-    existing_mail="$(local_config_value user.email)"
-    # AN EXISTING PAIR IS ONLY LEFT ALONE WHEN IT IS THE RIGHT ONE.
-    #
-    # This used to return the moment both values were present, without
-    # ever comparing them with the identity the commit was about to be
-    # made under -- so a checkout carrying a STALE local pair (a previous
-    # session's, another agent's, a hand-edited one) reported "leaving it
-    # exactly as found" and then committed under a different identity
-    # altogether.  The two are supposed to be the same fact written in
-    # two places; when they disagree, the configuration is describing
-    # somebody who did not make the commit, and the acceptance gate
-    # reads the configuration.
-    #
-    # So the pair is required to EQUAL the resolved identity, and when it
-    # does not, BOTH values are replaced -- both, because replacing one
-    # would leave a mixed identity that is neither of the two.
-    if [ "${existing_name}" = "${name}" ] &&
-            [ "${existing_mail}" = "${mail}" ]; then
-        playthrough_log "this repository already records ${name}" \
-            "<${mail}> as its own committer identity, which is the" \
-            "identity this commit will carry; leaving it exactly as" \
-            "found"
+    local_name="$(local_config_value user.name)"
+    local_mail="$(local_config_value user.email)"
+    if [ "${local_name}" = "${name}" ] &&
+            [ "${local_mail}" = "${mail}" ]; then
+        playthrough_log "the committer identity ${name} <${mail}> is" \
+            "recorded by THIS checkout's own configuration, and it is" \
+            "the identity this commit will carry"
         return 0
     fi
-    if [ -n "${existing_name}" ] || [ -n "${existing_mail}" ]; then
-        playthrough_log "this repository records" \
-            "'${existing_name}' <${existing_mail}> as its committer" \
-            "identity while git resolves this commit's author as" \
-            "${name} <${mail}>; replacing BOTH local values with the" \
-            "resolved pair, so the configuration and the history cannot" \
-            "disagree about who committed the evidence.  Neither" \
-            "--global nor --system is touched."
+    if [ -n "${local_name}" ] || [ -n "${local_mail}" ]; then
+        die "${EX_IDENTITY}" "this checkout's own configuration" \
+            "records '${local_name}' <${local_mail}> while git resolves" \
+            "this commit's author as ${name} <${mail}>.  The two are" \
+            "the same fact written in two places and they disagree, so" \
+            "the configuration describes somebody who did not make the" \
+            "commit.  This step does not rewrite git configuration --" \
+            "not in any scope -- so correct the repository-local pair" \
+            "or remove it, and run this again.  Nothing was committed."
     fi
-    if [ "${existing_name}" != "${name}" ] &&
-            ! "${GIT}" config --local user.name "${name}"; then
-        die "${EX_IDENTITY}" "user.name could not be written into" \
-            "this repository's own configuration.  The identity has to" \
-            "live in the repository so it survives into the container," \
-            "which mounts this checkout and carries no GIT_*" \
-            "environment of its own; and a configuration that cannot" \
-            "be written is a repository the commit itself would fail" \
-            "in a moment later.  Nothing was committed."
-    fi
-    if [ "${existing_mail}" != "${mail}" ] &&
-            ! "${GIT}" config --local user.email "${mail}"; then
-        die "${EX_IDENTITY}" "user.email could not be written into" \
-            "this repository's own configuration.  Nothing was" \
-            "committed."
-    fi
-    # READ BACK, because "the write returned zero" is not the same claim
-    # as "the configuration now says this".
-    if [ "$(local_config_value user.name)" != "${name}" ] ||
-            [ "$(local_config_value user.email)" != "${mail}" ]; then
-        die "${EX_IDENTITY}" "this repository's configuration still" \
-            "records '$(local_config_value user.name)'" \
-            "<$(local_config_value user.email)> after being asked for" \
-            "${name} <${mail}>, so the identity the acceptance gate" \
-            "reads would not be the identity the commit carries." \
-            "Nothing was committed."
-    fi
-    playthrough_log "recorded ${name} <${mail}> as this REPOSITORY's" \
-        "committer identity (git config --local, never --global and" \
-        "never --system) -- the same identity git already resolved, so" \
-        "the attribution of the commit is unchanged and now travels" \
-        "with the checkout into the container"
+    playthrough_log "the committer identity ${name} <${mail}> resolves" \
+        "from a BROADER scope than this checkout, which records none of" \
+        "its own; this step asserts that one resolves and never writes" \
+        "git configuration, so that is the identity the commit carries"
     return 0
 }
 
@@ -966,6 +1023,13 @@ readonly -a REQUIRED_ATTRIBUTES=(
     "*.gsav binary"
     "*.srt text"
     "*.jsonl text"
+    # The engine's own tree is committed verbatim and two of the files it
+    # writes end with a blank line, so `git diff --check` reports them.
+    # The bytes are evidence and must not be edited to please a linter, so
+    # whitespace checking is switched off for that subtree and nothing
+    # else.  It changes no byte and leaves the text/eol rules above in
+    # force, which the witnesses below measure rather than assume.
+    "playthrough/userdir/** -whitespace"
 )
 
 # ---------------------------------------------------------------------
@@ -1000,6 +1064,15 @@ readonly -a ATTRIBUTE_WITNESSES=(
     "playthrough/userdir/save/World/master.gsav|text|unset"
     "playthrough/transcript.srt|text|set"
     "playthrough/manifest.jsonl|text|set"
+    # THE WHITESPACE WAIVER, MEASURED IN BOTH DIRECTIONS.  It has to reach
+    # the engine's own tree -- otherwise `git diff --check` reports the
+    # blank line at the end of the memorial the game wrote -- and it must
+    # NOT reach anything authored here, or a trailing space in the
+    # transcript or the tooling would stop being reported.  A row scoped
+    # to a directory can only be got right by asking git about a path on
+    # each side of it.
+    "playthrough/userdir/config/debug.log|whitespace|unset"
+    "playthrough/transcript.md|whitespace|unspecified"
 )
 
 # effective_attribute PATH ATTRIBUTE [SOURCE] -- what git would apply.
@@ -1083,10 +1156,19 @@ assert_attribute_semantics() {
             "tallies.  Move this feature's rows after whatever" \
             "overrides them.  Nothing was committed."
     fi
+    # THE PATHS ARE LISTED FROM THE TABLE, not described in prose.  This
+    # sentence used to name six of them by hand -- the film, the map
+    # archive, the character save, the world save, the cue file and the
+    # record -- and the moment the whitespace waiver added two witnesses
+    # it reported "8 witness paths" and then named six, which is the same
+    # second-copy defect as a hard-coded check total.
+    local witness="" listed=""
+    for witness in "${ATTRIBUTE_WITNESSES[@]}"; do
+        listed="${listed}${listed:+, }$(rel "${witness%%|*}")"
+    done
     playthrough_log "git applies this feature's attributes to" \
-        "${label}'s ${#ATTRIBUTE_WITNESSES[@]} witness paths -- the" \
-        "film, the map archive, the character save, the world save, the" \
-        "cue file and the record -- so no later rule overrides them"
+        "${label}'s ${#ATTRIBUTE_WITNESSES[@]} witness paths --" \
+        "${listed} -- so no later rule overrides them"
     return 0
 }
 
@@ -1779,7 +1861,7 @@ assert_save_tree() {
             worlds+=("${path}")
         done < <("${FIND}" "${PLAYTHROUGH_SAVE_DIR}" -mindepth 1 \
             -maxdepth 1 -type d -print 2>/dev/null | "${SORT}")
-    elif [ "${checkpoint}" != "${CHECKPOINT_FINAL}" ]; then
+    elif ! is_post_session_checkpoint "${checkpoint}"; then
         die "${EX_EVIDENCE}" "there is no save tree at" \
             "$(rel "${PLAYTHROUGH_SAVE_DIR}").  A checkpoint records a" \
             "save that exists; it does not promise one."
@@ -1800,7 +1882,7 @@ assert_save_tree() {
             "${WC}" -l | "${TR}" -d ' ')"
         if [ "${live_count}" -gt 0 ]; then
             assert_live_save "${world_dir}"
-        elif [ "${checkpoint}" = "${CHECKPOINT_FINAL}" ]; then
+        elif is_post_session_checkpoint "${checkpoint}"; then
             assert_death_persistence "${world_dir}"
         elif [ ! -f "${world_dir}/${SAVE_MASTER}" ]; then
             die "${EX_EVIDENCE}" "$(rel "${world_dir}") holds no" \
@@ -1811,7 +1893,7 @@ assert_save_tree() {
                 "$(rel "${world_dir}") and the requirement is one unique" \
                 "survivor.  Nothing was committed."
         fi
-    elif [ "${checkpoint}" = "${CHECKPOINT_FINAL}" ]; then
+    elif is_post_session_checkpoint "${checkpoint}"; then
         assert_death_persistence
     else
         die "${EX_EVIDENCE}" "the save tree holds 0 world director(ies)" \
@@ -2059,7 +2141,7 @@ assert_dossier() {
             "requirement is a written backstory, not a placeholder." \
             "Nothing was committed."
     fi
-    if [ "${checkpoint}" = "${CHECKPOINT_FINAL}" ] &&
+    if is_post_session_checkpoint "${checkpoint}" &&
        ! "${GIT}" ls-files --error-unmatch -- "${path}" \
             >/dev/null 2>&1; then
         die "${EX_LIFECYCLE}" "$(rel "${path}") exists but git does" \
@@ -2137,12 +2219,28 @@ report_sections() {
     }' "$1" 2>/dev/null || printf ''
 }
 
+# assert_report -- the mandated three-section report, demanded at the one
+# checkpoint that can honestly carry it.
+#
+# THIS USED TO BE ASKED AT `final`, AND THAT WAS UNSATISFIABLE.  The
+# report's own subject is what the session produced -- the film, its
+# codec and duration, the caption track, the commits proving each artifact
+# class is committed -- so it cites hashes from the commits that carry
+# them.  Demanding it at `final`, which is taken the instant the session
+# ends and before a single derived artifact exists, required the document
+# to cite commits that had not been made.  A review found the predictable
+# result: the delivered report cited an EARLIER session's commits, because
+# those were the only ones available when the rule forced it to be
+# written.
+#
+# It is demanded at `attest` instead, which runs after `final` and after
+# `media`, so everything it cites is already in the history.
 assert_report() {
     local checkpoint="$1"
     local path="${PLAYTHROUGH_REPORT}"
     local -a found=()
     local heading="" expected="" index=0
-    if [ "${checkpoint}" != "${CHECKPOINT_FINAL}" ]; then
+    if [ "${checkpoint}" != "${CHECKPOINT_ATTEST}" ]; then
         return 0
     fi
     if [ ! -e "${path}" ]; then
@@ -2185,6 +2283,128 @@ assert_report() {
     done
     playthrough_log "the final report at $(rel "${path}") carries all" \
         "${#REPORT_SECTIONS[@]} of its sections, in order"
+    return 0
+}
+
+# report_note FILE KEY -- one value from a report's machine block.
+#
+# verify_artifacts.sh closes every report with `KEY=value` lines, which
+# exist so a caller can act on the verdict instead of parsing prose.  The
+# LAST occurrence wins, because a report is appended to as it runs and the
+# closing block is the authoritative one.
+report_note() {
+    local file="$1" key="$2" line="" value=""
+    while IFS= read -r line; do
+        case "${line}" in
+            "${key}="*) value="${line#*=}" ;;
+        esac
+    done <"${file}"
+    printf '%s' "${value}"
+}
+
+# assert_acceptance_report -- the measurement this checkpoint publishes,
+# validated before a byte of it is copied into the tree.
+#
+# WHY THE REPORT IS NOT SIMPLY WRITTEN WHERE IT BELONGS.  It used to be:
+# verify_artifacts.sh wrote playthrough/acceptance-report.txt on a passing
+# run and deleted it on a failing one, from inside the very tree it was
+# measuring, after the checks that assert that tree is clean and fully
+# committed.  A review measured the result -- a full-phase run taken after
+# the final checkpoint left the tree dirty in the one file it had just
+# certified as committed.  A measurement that publishes itself invalidates
+# its own last finding.
+#
+# So the gate writes to a scratch path outside the checkout and THIS step
+# publishes, which puts three questions between the measurement and the
+# commit that a self-publishing gate could not ask itself:
+#
+#   is there a report at all,
+#   did it PASS -- a failing measurement is not evidence of compliance
+#   and committing one would archive a red verdict as though it were
+#   green,
+#   and is it about THIS tree.
+#
+# The third is the one that matters most and is the easiest to lose.  The
+# report names the commit it measured in its own machine block, so a
+# report generated, left while further commits landed, and only then
+# committed is detectable here instead of being taken on trust.  A review
+# found exactly that shape: a committed report citing a HEAD and a check
+# total that had both moved on, every number in it correctly derived and
+# the citation false anyway.  A report measured over a DIRTY tree is
+# refused for the same reason -- it is provisional by construction, and
+# the gate says so in that line rather than leaving it to be inferred.
+assert_acceptance_report() {
+    local checkpoint="$1"
+    local source="${PLAYTHROUGH_ACCEPTANCE_SCRATCH}"
+    local verdict="" measured="" phase="" head=""
+    if [ "${checkpoint}" != "${CHECKPOINT_ATTEST}" ]; then
+        return 0
+    fi
+    if [ ! -s "${source}" ]; then
+        die "${EX_EVIDENCE}" "there is no acceptance report to publish" \
+            "at ${source}.  It is written by" \
+            "'verify_artifacts.sh --phase ${GATE_HISTORY_PHASE}" \
+            "--report-to ${source}', which run_pipeline.sh runs" \
+            "immediately after the '${CHECKPOINT_MEDIA}' checkpoint --" \
+            "the gate does not write inside the tree it measures, so" \
+            "this step is what puts the report in the history.  Run" \
+            "the gate, then take this checkpoint.  Nothing was" \
+            "committed."
+    fi
+    verdict="$(report_note "${source}" VERIFY)"
+    if [ "${verdict}" != "pass" ]; then
+        die "${EX_EVIDENCE}" "the acceptance report at ${source}" \
+            "records VERIFY=${verdict:-none}, so the artifacts did not" \
+            "satisfy the gate.  Committing it would archive a failing" \
+            "measurement as the evidence of a compliant run.  Fix what" \
+            "the report reports, run the gate again, then take this" \
+            "checkpoint.  Nothing was committed."
+    fi
+    phase="$(report_note "${source}" VERIFY_PHASE)"
+    if [ "${phase}" != "${GATE_HISTORY_PHASE}" ] &&
+            [ "${phase}" != "${GATE_EVERY_PHASE}" ]; then
+        die "${EX_EVIDENCE}" "the acceptance report at ${source} was" \
+            "produced by the '${phase:-unknown}' phase, which does not" \
+            "measure the history.  The report this checkpoint commits" \
+            "is the one that attests to what the commits now prove, so" \
+            "it has to come from '${GATE_HISTORY_PHASE}' or" \
+            "'${GATE_EVERY_PHASE}'.  Nothing was committed."
+    fi
+    measured="$(report_note "${source}" VERIFY_MEASURED_COMMIT)"
+    head="$("${GIT}" rev-parse --short=10 HEAD 2>/dev/null || true)"
+    if [ "${measured}" != "HEAD ${head}" ]; then
+        die "${EX_LIFECYCLE}" "the acceptance report at ${source} says" \
+            "it measured '${measured:-nothing}' while HEAD is now" \
+            "${head:-nothing}.  A report is evidence about one tree," \
+            "and committing this one would put a measurement of a" \
+            "different tree into the history under this tree's name --" \
+            "which is the defect this comparison exists to make" \
+            "impossible.  Re-run the gate against HEAD and take this" \
+            "checkpoint immediately afterwards, with no commit in" \
+            "between.  Nothing was committed."
+    fi
+    playthrough_log "the acceptance report at ${source} passed the" \
+        "'${phase}' phase over ${measured}, which is this HEAD"
+    return 0
+}
+
+# publish_acceptance_report -- the one write this step makes into the tree.
+#
+# Deliberately NOT in the gate set: the gates are reads, and a read that
+# writes is a gate an operator cannot run to find out where they stand.
+# It happens after every refusal has had its chance and immediately before
+# staging, so the file it creates is dirtied and committed inside a single
+# step that either completes or has changed nothing anybody has to undo.
+publish_acceptance_report() {
+    local source="${PLAYTHROUGH_ACCEPTANCE_SCRATCH}"
+    local target="${PLAYTHROUGH_ACCEPTANCE_REPORT}"
+    if ! "${CAT}" -- "${source}" >"${target}"; then
+        die "${EX_EVIDENCE}" "the acceptance report could not be" \
+            "copied from ${source} to $(rel "${target}").  Nothing was" \
+            "committed."
+    fi
+    playthrough_log "published the acceptance report to" \
+        "$(rel "${target}")"
     return 0
 }
 
@@ -2740,16 +2960,328 @@ stage_captures() {
     return 0
 }
 
+# ---------------------------------------------------------------------
+# WHAT MAY BE COMMITTED, AS AN ALLOWLIST.
+#
+# THREE OF THE CLASSES USED TO BE WHOLE DIRECTORIES.  `git add --
+# playthrough/tooling`, `-- playthrough/userdir` and `-- playthrough/build`
+# staged whatever those trees happened to contain, and the only thing
+# standing between an accident and a commit was HYGIENE_NAMES -- a
+# DENYLIST of the shapes somebody had already been bitten by: bytecode, an
+# ad-hoc test file, a quarantined film, the X authority cookie, a pid.
+#
+# A denylist answers "is this one of the bad things I know about".  The
+# question a checkpoint has to answer is "is this evidence", and those are
+# not the same question: every artifact a future stage invents, every
+# scratch file a debugging session leaves behind, every new cache the
+# engine starts writing is admitted by default and committed in silence.
+# .gitignore's terminal `!/playthrough/**` negation makes that worse
+# rather than better, because it re-includes everything under this tree --
+# so "it would have been ignored" is not a fallback that exists here.
+#
+# So the direction is inverted.  Every file under playthrough/ is
+# classified before anything is staged, an unclassified path is a REFUSAL
+# naming it, and staging then works from the classification rather than
+# from a subtree.  The denylist is kept as well: it fires earlier and says
+# "this is a credential" where this would only say "this is not evidence",
+# and the specific diagnosis is worth more to an operator than the general
+# one.
+#
+# THE ENGINE'S TREE IS CLASSIFIED BY POSITION, NOT BY FILENAME, and that
+# is deliberate rather than lazy.  The engine writes shapes this pipeline
+# does not choose and cannot enumerate -- `#<b64>.sav`, `.ano.json`,
+# `.pt`, `.seen.0.-1`, `.zones.json`, a `.mm1` DIRECTORY, `10.5.0.mmr`
+# memory regions, `<name>-<serial>.json.-4651329699267.fb` caches -- and a
+# per-filename allowlist over somebody else's output would refuse a
+# perfectly correct checkpoint the first time a new engine version wrote a
+# new one.  What IS pinned is where the engine may write: the eleven
+# subtrees it creates under the userdir.  A file appearing anywhere else
+# under playthrough/userdir/ is not the engine being itself, it is
+# something else having landed there.
+# ---------------------------------------------------------------------
+
+# The authored tooling, by exact basename.  The test modules are a schema
+# rather than twenty-one literals; everything else is named.
+readonly -a AUTHORED_TOOLING=(
+    "capture.sh"
+    "commit_artifacts.sh"
+    "embed_captions.sh"
+    "env.sh"
+    "launch_game.sh"
+    "make_srt.py"
+    "make_transitions.py"
+    "manifest.py"
+    "ocr_clock.py"
+    "preflight_capture.sh"
+    "render_movie.py"
+    "requirements.lock"
+    "requirements.txt"
+    "run_pipeline.sh"
+    "seed_options.py"
+    "session.py"
+    "sidebar_geometry.py"
+    "supported_env.sh"
+    "tileset_provenance.json"
+    "tileset_provenance.py"
+    "timeline.py"
+    "verify_artifacts.sh"
+)
+
+# The engine's own subtrees under the userdir.  Read off the tree the
+# engine actually produced rather than from documentation.
+readonly -a ENGINE_SUBTREES=(
+    "achievements"
+    "cache"
+    "config"
+    "font"
+    "gfx"
+    "graveyard"
+    "memorial"
+    "mods"
+    "save"
+    "sound"
+    "templates"
+)
+
+# classify_path REL -- set PATH_CLASS to the class REL belongs to.
+#
+# A GLOBAL RATHER THAN A PRINTED VALUE.  Every path under playthrough/ is
+# classified at least twice -- once by the refusal sweep and once by the
+# staging that follows it -- and on a played session that is several
+# thousand calls.  Printing the answer would mean a `$( )` fork per call.
+PATH_CLASS=""
+classify_path() {
+    local rel="$1" name="" candidate=""
+    PATH_CLASS=""
+    case "${rel}" in
+        README.md|REPORT.md|TECHNICAL_NOTES.md|dossier.md)
+            PATH_CLASS="narrative" ; return 0 ;;
+        transcript.md|transcript.srt|acceptance-report.txt)
+            PATH_CLASS="narrative" ; return 0 ;;
+        manifest.jsonl|timeline.json|amendments.jsonl)
+            PATH_CLASS="record" ; return 0 ;;
+        cata-play.mp4|cata-play-cc.mp4)
+            PATH_CLASS="film" ; return 0 ;;
+        frames/frame_[0-9][0-9][0-9][0-9][0-9].png)
+            PATH_CLASS="capture" ; return 0 ;;
+        build/transitions/trans_[0-9][0-9][0-9][0-9][0-9]_[0-9][0-9].png)
+            PATH_CLASS="build" ; return 0 ;;
+        build/concat.txt|build/movie.json|build/transitions.json)
+            PATH_CLASS="build" ; return 0 ;;
+        build/transcript.json|build/observations.jsonl)
+            PATH_CLASS="build" ; return 0 ;;
+        build/frame_digests.jsonl|build/frame_dates.jsonl)
+            PATH_CLASS="build" ; return 0 ;;
+        build/acknowledgments.jsonl)
+            PATH_CLASS="build" ; return 0 ;;
+        tooling/environment/Dockerfile)
+            PATH_CLASS="tooling" ; return 0 ;;
+        tooling/test_*.py)
+            PATH_CLASS="tooling" ; return 0 ;;
+    esac
+    case "${rel}" in
+        tooling/*)
+            name="${rel#tooling/}"
+            # One level only: an authored tooling file is a file in that
+            # directory, and a nested path that is not the Dockerfile
+            # above has no reason to be there.
+            case "${name}" in
+                */*) return 1 ;;
+            esac
+            for candidate in "${AUTHORED_TOOLING[@]}"; do
+                if [ "${name}" = "${candidate}" ]; then
+                    PATH_CLASS="tooling"
+                    return 0
+                fi
+            done
+            return 1
+            ;;
+        userdir/*)
+            name="${rel#userdir/}"
+            for candidate in "${ENGINE_SUBTREES[@]}"; do
+                case "${name}" in
+                    "${candidate}"/*)
+                        PATH_CLASS="userdir"
+                        return 0
+                        ;;
+                esac
+            done
+            return 1
+            ;;
+    esac
+    return 1
+}
+
+# playthrough_files -- every path a checkpoint has to account for.
+#
+# The filesystem, plus anything the INDEX still carries that the
+# filesystem no longer has, so a removal is recorded as a removal instead
+# of being left in the index as a ghost.  Both streams are NUL-terminated
+# because a played session is thousands of paths and this design exists to
+# avoid ever holding them as one argument list.
+# EVERY PATH IT EMITS IS ABSOLUTE, and that normalisation is not
+# cosmetic.  `find` prints paths beginning with the directory it was
+# given, which is absolute; `git ls-files` prints them relative to the
+# REPOSITORY ROOT.  The callers classify by stripping the playthrough/
+# prefix, and a relative path survives that strip unchanged -- so the
+# index half arrived at the classifier still spelled
+# `playthrough/REPORT.md` and was reported as belonging to no artifact
+# class.  Measured: five checkpoint tests refused with EX_SCOPE over
+# perfectly ordinary evidence.  The older capture_pathspecs tolerated the
+# same mixture only because it never stripped anything.
+playthrough_files() {
+    local path
+    "${FIND}" "${PLAYTHROUGH_DIR}" -type f -print0 2>/dev/null || true
+    while IFS= read -r -d '' path; do
+        [ -n "${path}" ] || continue
+        case "${path}" in
+            /*) ;;
+            *) path="${PLAYTHROUGH_REPO_ROOT}/${path}" ;;
+        esac
+        if [ ! -e "${path}" ]; then
+            printf '%s\0' "${path}"
+        fi
+    done < <("${GIT}" ls-files -z -- "${PLAYTHROUGH_DIR}" 2>/dev/null)
+}
+
+# assert_every_path_is_classified -- the refusal that replaces the
+# denylist's blind spot.
+#
+# It runs BEFORE anything is staged, so an unrecognised path costs a
+# refusal rather than a commit somebody has to undo by hand.  The count is
+# exact and the names are bounded, for the same reason every other sweep
+# here bounds them: the realistic shape of this failure on a played
+# session is one entry per capture, and eight names identify the class as
+# well as ten thousand would.
+assert_every_path_is_classified() {
+    local path rel unknown=0
+    local -a named=()
+    while IFS= read -r -d '' path; do
+        [ -n "${path}" ] || continue
+        rel="${path#"${PLAYTHROUGH_DIR}/"}"
+        if classify_path "${rel}"; then
+            continue
+        fi
+        unknown=$((unknown + 1))
+        if [ "${#named[@]}" -lt "${DIAGNOSTIC_LIMIT}" ]; then
+            named+=("${rel}")
+        fi
+    done < <(playthrough_files)
+    if [ "${unknown}" -gt 0 ]; then
+        local more=""
+        if [ "${unknown}" -gt "${#named[@]}" ]; then
+            more=" (and $((unknown - ${#named[@]})) more)"
+        fi
+        die "${EX_SCOPE}" "${unknown} path(s) under" \
+            "$(rel "${PLAYTHROUGH_DIR}") belong to no artifact class:" \
+            "${named[*]}${more}.  A checkpoint stages what it can name," \
+            "and .gitignore's terminal '!/playthrough/**' negation means" \
+            "anything left here IS committable -- so an unrecognised" \
+            "path is refused rather than admitted by default.  Either it" \
+            "is evidence, in which case add it to classify_path in" \
+            "this script -- beside stage_artifacts -- so every later run" \
+            "stages it deliberately, or" \
+            "it is not, in which case it does not belong in this tree." \
+            "Nothing was committed."
+    fi
+    return 0
+}
+
+# assert_no_ignored_paths -- nothing in this tree is excluded, asked
+# before a single `git add`.
+#
+# WHY IT MOVED IN FRONT OF STAGING.  The completeness sweep already asked
+# this at the END, and while the three big classes were staged as
+# DIRECTORY pathspecs that was the only place it could be asked: a
+# directory add SKIPS an ignored file and exits 0, so the file quietly
+# survived to be counted afterwards.  Naming every path explicitly
+# changed that -- an explicit pathspec for an ignored path makes `git add`
+# ERROR -- and the error arrives as git's own diagnosis, which says
+# nothing about the terminal negation, nothing about directory-level
+# ignores, and nothing about why this tree in particular may not have an
+# excluded file in it.  Measured: an ignored userdir/config/lastworld.json
+# went from a precise EX_SCOPE refusal to a bare EX_COMMIT.
+#
+# So it is asked here, with the diagnosis intact, before anything is
+# staged.  The sweep at the end is kept as the backstop.
+#
+# ONE `check-ignore` FOR THE WHOLE TREE.  --stdin -z reads the paths as
+# they stream and prints only those that are excluded, so this is one
+# process rather than one per path; it exits 1 when nothing is ignored,
+# which is the ordinary case and not an error.
+assert_no_ignored_paths() {
+    local path count=0
+    local -a named=()
+    while IFS= read -r -d '' path; do
+        [ -n "${path}" ] || continue
+        count=$((count + 1))
+        if [ "${#named[@]}" -lt "${DIAGNOSTIC_LIMIT}" ]; then
+            named+=("$(rel "${path}")")
+        fi
+    done < <(playthrough_files |
+        "${GIT}" check-ignore --no-index -z --stdin 2>/dev/null || true)
+    if [ "${count}" -gt 0 ]; then
+        die "${EX_SCOPE}" "${count} path(s) under" \
+            "$(rel "${PLAYTHROUGH_DIR}") are IGNORED by git and would" \
+            "be committed around in silence:" \
+            "$(name_sample "${count}" "${named[@]}")." \
+            "Nothing in" \
+            "this tree may be excluded -- the terminal" \
+            "'!/playthrough/**' negation exists to make sure of it, and" \
+            "a rule placed AFTER it re-excludes whatever it matches." \
+            "Fix .gitignore so the negation is the last matching rule." \
+            "Nothing was committed."
+    fi
+    return 0
+}
+
+# stage_class CLASS LABEL -- every path of one class, and nothing else.
+stage_class() {
+    local class="$1" label="$2"
+    stage_stream "${label}" < <(class_pathspecs "${class}")
+    return 0
+}
+
+class_pathspecs() {
+    local class="$1" path rel
+    while IFS= read -r -d '' path; do
+        [ -n "${path}" ] || continue
+        rel="${path#"${PLAYTHROUGH_DIR}/"}"
+        if classify_path "${rel}" && [ "${PATH_CLASS}" = "${class}" ]; then
+            printf '%s\0' "${path}"
+        fi
+    done < <(playthrough_files)
+}
+
 # stage_artifacts -- every artifact class, named, one batch each.
 #
 # THE ORDER IS THE FEATURE'S OWN ORDER, and the list is exhaustive over
 # playthrough/ by design; assert_tree_fully_staged immediately below
 # proves that exhaustiveness instead of assuming it.
 stage_artifacts() {
+    # 0. Three refusals before a single `git add`, in order of how
+    #    SPECIFIC their diagnosis is.
+    #
+    #    Hygiene first, because "this is interpreter bytecode" and "this
+    #    is the X authority cookie" tell an operator what to do, where
+    #    "this belongs to no artifact class" only tells them something is
+    #    wrong.  It examines the INDEX, which this run has not touched
+    #    yet -- it used to run after staging, and moving it forward is
+    #    safe precisely because the classification below now bounds what
+    #    staging can add, so a *.pyc this run could stage no longer
+    #    exists as a possibility.
+    #
+    #    Then the ignore sweep, then the classification.  A subtree
+    #    pathspec used to make the classification unnecessary by making
+    #    it unanswerable -- it staged whatever was there.
+    assert_index_hygiene
+    assert_no_ignored_paths
+    assert_every_path_is_classified
     # 1. The authored tooling, including requirements.txt -- the
     #    dependency declaration the requirement wants kept out of the
-    #    game's source tree.
-    stage_batch "pipeline tooling" "${PLAYTHROUGH_TOOLING_DIR}"
+    #    game's source tree.  BY NAME, not by directory: `git add --
+    #    playthrough/tooling` staged anything that had landed in there.
+    stage_class "tooling" "pipeline tooling"
     # 2. The narrative record: the dossier written before play, the
     #    transcript, the engineering notes, the feature readme, and the
     #    three-section report the feature is required to deliver.
@@ -2762,11 +3294,19 @@ stage_artifacts() {
     #    PLAYTHROUGH_REPORT: the mandated three-section account is one
     #    document, and a second copy of it under another name is two
     #    answers to a question that has one.
+    #    The acceptance report is named here for a reason a review
+    #    found: it was published into the tree by the gate AFTER the
+    #    final checkpoint and appeared in NO class list, so the one
+    #    document proving the artifacts were measured was the one
+    #    document no checkpoint staged.  It is now written by the
+    #    `attest` step immediately before this staging runs, and named
+    #    here so the class list stays exhaustive over playthrough/.
     stage_batch "narrative and documentation" \
         "${PLAYTHROUGH_DOSSIER}" \
         "${PLAYTHROUGH_DIR}/README.md" \
         "${PLAYTHROUGH_TECH_NOTES}" \
         "${PLAYTHROUGH_REPORT}" \
+        "${PLAYTHROUGH_ACCEPTANCE_REPORT}" \
         "${PLAYTHROUGH_TRANSCRIPT_MD}" \
         "${PLAYTHROUGH_TRANSCRIPT_SRT}"
     # 3. The engine's own tree -- save, config, achievements, memorial,
@@ -2791,26 +3331,31 @@ stage_artifacts() {
     #    which only stages what it finds -- and that narrower claim is
     #    the one worth making, because it is the one an operator is
     #    relying on when they read a checkpoint.
-    stage_batch "engine save and configuration" "${PLAYTHROUGH_USERDIR}"
+    #    Classified by POSITION -- the eleven subtrees the engine
+    #    creates -- because the engine's filenames are its own and a
+    #    per-name allowlist over them would refuse a correct checkpoint
+    #    the first time it wrote a shape nobody had enumerated.
+    stage_class "userdir" "engine save and configuration"
     # 4. The captures.
     stage_captures
-    # 5. The record and its ledgers.
+    # 5. The record and its ledgers.  Named here AND classified above:
+    #    the names are what gets staged, the classification is what makes
+    #    "did we miss one" answerable.
     stage_batch "record and timeline" \
         "${PLAYTHROUGH_MANIFEST}" \
         "${PLAYTHROUGH_TIMELINE}" \
         "${PLAYTHROUGH_AMENDMENTS}"
     # 6. The render intermediates, which include the observation
     #    sidecar, the capture attestations and the concat list.
-    stage_batch "build intermediates" "${PLAYTHROUGH_BUILD_DIR}"
+    stage_class "build" "build intermediates"
     # 7. The films.
     stage_batch "assembled film" \
         "${PLAYTHROUGH_MOVIE}" \
         "${PLAYTHROUGH_MOVIE_CC}"
-    # Hygiene before completeness, so the SPECIFIC diagnosis -- this is
-    # bytecode, this is outside the feature -- reaches the operator
-    # ahead of the general one, which would otherwise report the same
-    # path as merely "not staged".
-    assert_index_hygiene
+    # Completeness last.  Hygiene, the ignore sweep and the
+    # classification all ran before anything was staged, so what is left
+    # to establish is only that every classified path actually reached
+    # the index.
     assert_tree_fully_staged
     return 0
 }
@@ -3208,15 +3753,23 @@ tracked_at_head() {
 # survivor's creation anchor, and that is exactly the discriminator --
 # strictly, since a commit is not its own descendant.
 # ---------------------------------------------------------------------
+#
+# THE ANCHOR IS A PARAMETER, defaulting to the one a checkpoint resolved.
+# A checkpoint has already loaded CREATION_COMMIT by the time it asks; the
+# read-only `status` subcommand has not, because it answers about a
+# checkpoint it is not taking -- it resolves the anchor itself and passes
+# it in.  One implementation answers both, so the preflight cannot drift
+# from the refusal it is predicting.
 published_final_for_this_session() {
+    local anchor="${1:-${CREATION_COMMIT}}"
     local commit=""
-    if [ -z "${CREATION_COMMIT}" ]; then
+    if [ -z "${anchor}" ]; then
         return 1
     fi
     while IFS= read -r commit; do
         [ -n "${commit}" ] || continue
-        [ "${commit}" != "${CREATION_COMMIT}" ] || continue
-        "${GIT}" merge-base --is-ancestor "${CREATION_COMMIT}" \
+        [ "${commit}" != "${anchor}" ] || continue
+        "${GIT}" merge-base --is-ancestor "${anchor}" \
             "${commit}" 2>/dev/null || continue
         if [ -n "$(commit_touched "${commit}" \
                 "${PLAYTHROUGH_USERDIR}")" ]; then
@@ -3400,7 +3953,17 @@ verify_commit() {
     assert_tracked_at_head
     # The two properties the acceptance gate will look for next, asserted
     # here so this step cannot certify what that one rejects.
-    if [ "${name}" = "${CHECKPOINT_FINAL}" ]; then
+    #
+    # ASKED AT ALL THREE POST-SESSION CHECKPOINTS, not only at `final`.
+    # Both are reads of the HISTORY rather than of this one commit, so
+    # they stay true once true, and re-asking them costs nothing while
+    # catching a `media` or `attest` commit taken on a history that has
+    # since lost the save or the dossier ordering.
+    # assert_final_recorded_the_save already carries the case this needs:
+    # when HEAD itself touched no save path it looks for an earlier
+    # published `final` descending from this survivor's creation anchor,
+    # which is exactly the shape a media-only or report-only commit has.
+    if is_post_session_checkpoint "${name}"; then
         assert_final_recorded_the_save
         assert_dossier_precedes_captures
     fi
@@ -3510,10 +4073,12 @@ run_common_gates() {
     assert_identity
     assert_repository
     # After the repository is the one we expect, and before anything is
-    # staged: record the resolved identity in THIS repository's own
-    # configuration, so the attribution survives into the container that
-    # mounts this checkout and carries no GIT_* of its own.
-    persist_identity_locally
+    # staged: say which scope named the author.  A READ, not a write --
+    # this step no longer records the pair into the checkout's own
+    # configuration, and the note above report_identity_scope carries the
+    # three reasons why.  The container gets the identity forwarded as
+    # GIT_AUTHOR_* / GIT_COMMITTER_* by supported_env.sh instead.
+    report_identity_scope
     assert_scope
     report_foreign_worktree_changes
     assert_committed_vcs_rules
@@ -3530,6 +4095,10 @@ run_common_gates() {
     # are the same kind of requirement -- a written artifact whose
     # absence every other check would tolerate.
     assert_report "${checkpoint}"
+    # And the measurement that report is written from: present, passing,
+    # about the history, and about THIS tree.  Both are no-ops except at
+    # the one checkpoint each belongs to.
+    assert_acceptance_report "${checkpoint}"
     # After the save and the record are known, and before anything is
     # staged: the paths this checkpoint exists to preserve must not be
     # ones `git add` would silently skip.
@@ -3707,7 +4276,7 @@ do_integration() {
     SCOPE_MODE="${SCOPE_VCS}"
     assert_identity
     assert_repository
-    persist_identity_locally
+    report_identity_scope
     # In this mode assert_scope refuses anything staged that is NOT one
     # of the two files -- including anything under playthrough/, which
     # belongs to the session checkpoints.
@@ -3778,7 +4347,7 @@ do_integration() {
 do_dossier() {
     assert_identity
     assert_repository
-    persist_identity_locally
+    report_identity_scope
     assert_scope
     report_foreign_worktree_changes
     assert_committed_vcs_rules
@@ -3893,6 +4462,82 @@ do_final() {
     fi
     report "${CHECKPOINT_FINAL}" "${CREATION_COMMIT}"
     return 0
+}
+
+# do_media -- the artifacts DERIVED from the closed record.
+#
+# It is `final` minus the save and plus the film: the same gates, the same
+# exhaustive staging, and one extra lifecycle question -- has the session
+# actually been closed and published?  A media commit on a history with no
+# `final` in it would be a film of a session whose record was never
+# committed, so the ordering is asserted rather than assumed.
+#
+# assert_final_recorded_the_save, reached through verify_commit, is what
+# makes this legal: when HEAD itself touches nothing under the userdir it
+# looks for an earlier published `final` descending from this survivor's
+# creation anchor.  A media-only commit is exactly that shape.
+do_media() {
+    run_common_gates "${CHECKPOINT_MEDIA}"
+    assert_creation_checkpoint
+    assert_published_final "${CHECKPOINT_MEDIA}"
+    stage_artifacts
+    commit_checkpoint "${CHECKPOINT_MEDIA}" "${SUBJECT_MEDIA}"
+    if [ "${COMMITTED}" = "yes" ]; then
+        verify_commit "${CHECKPOINT_MEDIA}"
+    fi
+    report "${CHECKPOINT_MEDIA}" "${CREATION_COMMIT}"
+    return 0
+}
+
+# do_attest -- the two reports, and the only step that publishes the
+# acceptance report into the tree.
+#
+# The order inside it is the whole point of the split.  Every gate runs
+# first, including the three questions asked of the measurement itself;
+# only then is the report copied in; and the commit follows immediately,
+# so the file this step creates is dirtied and committed within one step
+# that either completes or leaves nothing for anybody to undo.  The gate
+# that measured it wrote outside the checkout and touched none of this.
+do_attest() {
+    run_common_gates "${CHECKPOINT_ATTEST}"
+    assert_creation_checkpoint
+    assert_published_final "${CHECKPOINT_ATTEST}"
+    publish_acceptance_report
+    stage_artifacts
+    commit_checkpoint "${CHECKPOINT_ATTEST}" "${SUBJECT_ATTEST}"
+    if [ "${COMMITTED}" = "yes" ]; then
+        verify_commit "${CHECKPOINT_ATTEST}"
+    fi
+    report "${CHECKPOINT_ATTEST}" "${CREATION_COMMIT}"
+    return 0
+}
+
+# assert_published_final NAME -- the session was closed and committed
+# before anything derived from it is.
+#
+# `media` and `attest` are both ABOUT the finished session, so a history
+# without a `final` in it cannot support either: the film would describe a
+# record that was never published, and the report would cite a commit that
+# does not exist.  published_final_for_this_session answers it against
+# this survivor's creation anchor rather than against the trailer alone,
+# so a previous survivor's `final` does not satisfy it.
+assert_published_final() {
+    local checkpoint="$1" published=""
+    if published="$(published_final_for_this_session)"; then
+        playthrough_log "the '${CHECKPOINT_FINAL}' checkpoint" \
+            "${published:0:10} already published this survivor's" \
+            "closed session, so '${checkpoint}' has a record to be" \
+            "about"
+        return 0
+    fi
+    die "${EX_LIFECYCLE}" "there is no '${CHECKPOINT_FINAL}'" \
+        "checkpoint for this survivor in the history, so" \
+        "'${checkpoint}' has nothing to be about: it would commit" \
+        "artifacts derived from a record that was never published, and" \
+        "the report would cite commits that do not exist.  End the" \
+        "session through the in-game Save & Quit, take" \
+        "'commit_artifacts.sh ${CHECKPOINT_FINAL}', then come back to" \
+        "'${checkpoint}'.  Nothing was committed."
 }
 
 # staged_paths_preview -- what a checkpoint WOULD add, without touching
@@ -4135,6 +4780,45 @@ do_status() {
             "'${CHECKPOINT_CREATION}' checkpoint of the survivor it is" \
             "about, and the record has to have grown between the two."
     fi
+    # AND WOULD '${CHECKPOINT_MEDIA}' BE TAKEN?  A DIFFERENT QUESTION,
+    # and the one an automated caller actually needs.
+    #
+    # run_pipeline.sh takes '${CHECKPOINT_MEDIA}', not
+    # '${CHECKPOINT_FINAL}': the film, the transcripts and the timeline
+    # are what a render produces, and the session's own save was
+    # published by hand when the session closed.  '${CHECKPOINT_MEDIA}'
+    # therefore asserts something '${CHECKPOINT_FINAL}' does not -- that
+    # a '${CHECKPOINT_FINAL}' for THIS survivor is already in the
+    # history -- and a preflight that reported only FINAL_ELIGIBLE would
+    # answer 'yes' for a session whose save has not been committed yet
+    # and let the caller spend the whole render to be refused at the
+    # checkpoint.  That is the exact failure the preflight exists to
+    # prevent, so the question is answered here too, with the same
+    # predicate the refusal uses.
+    local media_eligible="no" media_reason="" media_anchor=""
+    if [ -z "${FINAL_ANCHOR}" ]; then
+        # No anchor, so ancestry cannot be asked at all.  The reason
+        # FINAL already computed is the honest one to repeat.
+        media_reason="${FINAL_REASON:-no-creation-for-this-survivor}"
+    elif media_anchor="$(published_final_for_this_session \
+            "${FINAL_ANCHOR}")"; then
+        media_eligible="yes"
+    else
+        media_anchor=""
+        media_reason="no-final-published"
+    fi
+    if [ "${media_eligible}" = "yes" ]; then
+        playthrough_log "'${CHECKPOINT_MEDIA}' is eligible:" \
+            "'${CHECKPOINT_FINAL}' ${media_anchor:0:10} already" \
+            "published this survivor's closed session, so the render" \
+            "has a record to be about"
+    else
+        playthrough_warn "'${CHECKPOINT_MEDIA}' would REFUSE" \
+            "(${media_reason}).  It commits what a render produced," \
+            "and a render describes a session whose save has already" \
+            "been published: end the session through the in-game Save" \
+            "& Quit and take '${CHECKPOINT_FINAL}' first."
+    fi
     emit "CHECKPOINT" "status"
     emit "COMMITTED" "no"
     emit "COMMIT" ""
@@ -4149,6 +4833,9 @@ do_status() {
     emit "FINAL_ELIGIBLE" "${FINAL_ELIGIBLE}"
     emit "FINAL_ANCHOR" "${FINAL_ANCHOR}"
     emit "FINAL_REASON" "${FINAL_REASON}"
+    emit "MEDIA_ELIGIBLE" "${media_eligible}"
+    emit "MEDIA_ANCHOR" "${media_anchor}"
+    emit "MEDIA_REASON" "${media_reason}"
     return 0
 }
 
@@ -4184,14 +4871,46 @@ nothing else" \
 first frame" \
             "creation" "commit the survivor and the save they start \
 from" \
-            "final" "commit the closed session and its artifacts" \
+            "final" "commit the closed session: its last save and its \
+record" \
+            "media" "commit the film, the transcripts and the timeline \
+derived from it" \
+            "attest" "commit the acceptance report and the \
+three-section report" \
             "status" "report the lifecycle, changing nothing" \
             "help" "this text"
         printf '%s\n' ""
-        printf '%s\n' "THE FOUR MUTATING STEPS ARE ORDERED AND EACH \
+        printf '%s\n' "THE SIX MUTATING STEPS ARE ORDERED AND EACH \
 REFUSES TO RUN OUT OF TURN:"
-        printf '%s\n' "  integration -> dossier -> creation -> play the \
-session -> final."
+        printf '%s\n' "  integration -> dossier -> creation -> play \
+the session -> final -> media"
+        printf '%s\n' "  -> attest."
+        printf '%s\n' "The last three are three because ONE of them \
+could not be honest.  'final'"
+        printf '%s\n' "used to carry the record, the film and the \
+report together, and it demanded"
+        printf '%s\n' "playthrough/REPORT.md before it would run -- so \
+the document that cites the"
+        printf '%s\n' "commits carrying the film and the acceptance \
+evidence had to exist BEFORE"
+        printf '%s\n' "the commit that created any of them.  Split, \
+each commit cites only what"
+        printf '%s\n' "already precedes it: 'final' the moment the \
+session closes, 'media' once"
+        printf '%s\n' "run_pipeline.sh has produced the derived \
+artifacts, 'attest' last of all."
+        printf '%s\n' "'attest' is also the ONLY step that publishes \
+the acceptance report into"
+        printf '%s\n' "the tree.  The gate that measures it writes to \
+a scratch path OUTSIDE the"
+        printf '%s\n' "checkout, because a measurement that writes \
+into the tree it measures"
+        printf '%s\n' "invalidates its own finding that the tree is \
+clean; this step copies that"
+        printf '%s\n' "report in and commits it in one act, and \
+refuses it unless it passed, came"
+        printf '%s\n' "from a phase that measures the history, and \
+says it measured THIS HEAD."
         printf '%s\n' "'integration' is the one milestone that is not \
 about a session: it commits"
         printf '%s\n' "the two repository-wide rule files the evidence \
@@ -4223,21 +4942,27 @@ CHECKED by all of them --"
 and are committed by the"
         printf '%s\n' "'integration' milestone, which stages those two \
 paths and refuses any other."
-        printf '%s\n' "It records the identity git already resolves in \
-THIS repository's own"
-        printf '%s\n' "configuration (git config --local, never \
---global and never --system), so"
-        printf '%s\n' "the attribution travels with the checkout into \
-the container.  A local"
-        printf '%s\n' "pair that already matches is left as found; one \
-that DISAGREES with the"
-        printf '%s\n' "identity the commit will carry is replaced, both \
-values together, because"
-        printf '%s\n' "the configuration and the history are one fact \
-and the gate reads the"
-        printf '%s\n' "configuration.  It never invents an identity, \
-never rewrites history and"
-        printf '%s\n' "never pushes."
+        printf '%s\n' "IT NEVER WRITES GIT CONFIGURATION, in any \
+scope.  It asserts that an"
+        printf '%s\n' "identity RESOLVES -- 'git var \
+GIT_AUTHOR_IDENT', which is the pair git will"
+        printf '%s\n' "actually stamp -- reports which scope answered, \
+and commits under it.  It"
+        printf '%s\n' "used to record the pair with 'git config \
+--local' so the attribution would"
+        printf '%s\n' "travel into the container that mounts this \
+checkout; supported_env.sh now"
+        printf '%s\n' "forwards GIT_AUTHOR_* / GIT_COMMITTER_* \
+instead, which is git's own"
+        printf '%s\n' "mechanism and leaves nothing behind in the \
+tree.  A repository-local pair"
+        printf '%s\n' "that already matches is left as found and said \
+so; one that DISAGREES with"
+        printf '%s\n' "the resolved identity is a refusal, not a \
+rewrite -- which of the two is"
+        printf '%s\n' "wrong is the operator's call, not this script's."
+        printf '%s\n' "It never invents an identity, never rewrites \
+history and never pushes."
         printf '%s\n' "A mutating step takes a lock scoped to this \
 checkout, so two runs over one"
         printf '%s\n' "working tree serialise and two runs over \
@@ -4343,16 +5068,27 @@ main() {
             take_checkpoint_lock
             do_final
             ;;
+        "${CHECKPOINT_MEDIA}")
+            take_checkpoint_lock
+            do_media
+            ;;
+        "${CHECKPOINT_ATTEST}")
+            take_checkpoint_lock
+            do_attest
+            ;;
         status)
             do_status
             ;;
         '')
             usage 2
-            die "${EX_USAGE}" "which checkpoint?  There is no default:" \
-                "the three commits mean different things, they are" \
-                "taken at three different moments of the session, and" \
+            die "${EX_USAGE}" "which checkpoint?  There is no" \
+                "default: the commits mean different things, they are" \
+                "taken at different moments of the session, and" \
                 "choosing the wrong one is not something a default can" \
-                "be right about."
+                "be right about.  In order:" \
+                "${CHECKPOINT_DOSSIER}, ${CHECKPOINT_CREATION}," \
+                "${CHECKPOINT_FINAL}, ${CHECKPOINT_MEDIA}," \
+                "${CHECKPOINT_ATTEST}."
             ;;
         *)
             usage 2

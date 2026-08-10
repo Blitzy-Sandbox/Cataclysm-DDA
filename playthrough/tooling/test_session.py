@@ -216,7 +216,28 @@ class SessionFixture(unittest.TestCase):
             os.environ[name] = previous
 
     def open_session(self, **extra):
-        """Open a Session against the temporary tree."""
+        """Open a Session against the temporary tree.
+
+        THE TWO ARGUMENTS AN OPERATOR ALWAYS SUPPLIES ARE SUPPLIED HERE,
+        so that a test about the journal or the counter does not have to
+        restate them at every call.  `step()` refuses to deliver a key
+        while the capture before it is unread (`observed`) and halts when
+        a capture contradicts the step's own prediction (`expect`); both
+        are production behaviour and neither is stubbed out.  What this
+        does is answer them the way a driver does:
+
+        * `observed` defaults to a reading of the stubbed capture, which
+          is recorded in the real acknowledgment ledger by the real code
+          path -- the tests for that ledger read it back;
+        * `expect` defaults to EXPECT_EITHER because the stubbed
+          capturer writes four fixed bytes rather than a PNG, so
+          ImageMagick cannot compare two of them and the honest verdict
+          is EFFECT_UNKNOWN.  A test that predicts an outcome passes
+          `expect=` explicitly and gets the strict reading.
+
+        Anything a caller passes wins, so the guard's own tests are
+        written against the same entry point as everything else.
+        """
         opened = session.Session(
             manifest_path=self.manifest,
             frames_dir=self.frames,
@@ -226,6 +247,17 @@ class SessionFixture(unittest.TestCase):
             root=self.root,
             **extra)
         self.addCleanup(opened.close)
+        production_step = opened.step
+
+        def step(key, *args, **keywords):
+            """Call the real step with a driver's two declarations."""
+            keywords.setdefault(
+                "observed",
+                "the stubbed capture before this one was read")
+            keywords.setdefault("expect", session.EXPECT_EITHER)
+            return production_step(key, *args, **keywords)
+
+        opened.step = step
         return opened
 
     def stub_window(self, opened, window=4242):
@@ -2435,18 +2467,68 @@ class ADeathIsNotResumable(SessionFixture):
         self.assertTrue(world["death_pending"])
         self.assertFalse(world["resumable"])
 
-    def test_the_observation_never_raises_on_a_broken_record(self):
-        """The probe must survive a manifest it cannot parse.
+    def test_an_absent_record_is_answered_and_a_broken_one_refused(self):
+        """Absence and corruption are not the same answer.
 
-        observed_death_frame is deliberately the non-raising counterpart
-        of assert_death_cleanup_evidence: the probe asks this question
-        about trees that may be broken, and an exception mid-way through
-        building its answer would replace a usable verdict with none.
+        THE DEFECT THIS PINS.  Both used to answer "the record shows no
+        death", so a tree whose record authority was unparsable read
+        exactly like a first run -- and a live-shaped save from BEFORE a
+        death could then be offered for resuming, which is reloading past
+        a death and is forbidden by name.  A first run genuinely has no
+        manifest, so that keeps answering None; a manifest that EXISTS
+        and cannot be read as evidence refuses, because the question then
+        has no trustworthy answer.
         """
+        if os.path.exists(self.manifest):
+            os.unlink(self.manifest)
+        self.assertIsNone(
+            session.observed_death_frame(root=self.root),
+            msg="a first run has no record and no death to report")
         with open(self.manifest, "w", encoding="utf-8") as handle:
             handle.write("this is not json at all\n")
-        self.assertIsNone(
-            session.observed_death_frame(root=self.root))
+        with self.assertRaises(session.RecordError) as caught:
+            session.observed_death_frame(root=self.root)
+        self.assertIn("cannot be read as evidence", str(caught.exception))
+
+    def test_a_broken_record_stops_the_resume_probe(self):
+        """The refusal has to reach the decision, not just the reader.
+
+        probe_save_resume is where "continue or create" is decided, and
+        the point of failing closed in the reader is that this caller
+        does not get an answer it should not trust.
+        """
+        self.world("Fern Creek", characters=("#QQ==",))
+        with open(self.manifest, "w", encoding="utf-8") as handle:
+            handle.write("{not json\n")
+        with self.assertRaises(session.SessionError):
+            session.probe_save_resume(root=self.root)
+
+    def test_an_amended_death_narration_is_still_observed(self):
+        """The ledger is the sanctioned way to correct a narration.
+
+        A row whose death screen was NAMED correctly through the
+        amendment ledger has to be visible to this observation, or the
+        proof and the observation would disagree about the same tree.
+        """
+        opened = self.open_session()
+        self.stub_window(opened)
+        opened.step("Return", note="type a letter",
+                    commentary="Say it plainly.")
+        rows = self.rows()
+        recorded = rows[0]["action"]
+        manifest_module = session.manifest
+        digests = manifest_module.row_digests(self.manifest, self.root)
+        manifest_module.append_amendment(
+            os.path.join(self.root, manifest_module.AMENDMENTS_NAME),
+            1, "2026-08-10T04:00:00.000Z", 1, "action",
+            digests[1], recorded,
+            "press 'Return' -- submit my last words",
+            "the capture renders the engine's own last-words prompt",
+            "the row did not name the screen the capture shows",
+            root=self.root)
+        self.assertEqual(
+            session.observed_death_frame(root=self.root), 1,
+            msg="an amendment that names the death screen is evidence")
 
     def test_both_readers_share_one_definition_of_a_death(self):
         """The proof and the observation must not drift apart."""
@@ -4433,19 +4515,31 @@ class TheRoomForTheNextFrame(SessionFixture):
         self.assertEqual(result.frame, 1)
         self.assertEqual(self.sent, ["j"])
 
-    def test_an_unmeasurable_disk_is_reported_not_refused(self):
-        """A statvfs that fails is a fact about the host.
+    def test_an_unmeasurable_disk_refuses_before_the_key(self):
+        """Room must be PROVED, not assumed, before an irreversible key.
 
-        It is not evidence that the disk is full, and the capturer
-        refuses a frame it could not write on its own account -- so a
-        session must not be stopped by the absence of a measurement.
+        THE DEFECT THIS PINS.  A statvfs that cannot be read used to warn
+        and send the key anyway, on the reasoning that an unreadable
+        measurement is a fact about the host rather than evidence of a
+        full disk.  The trade is the wrong way round: the keystroke
+        cannot be un-pressed, while the refusal costs nothing but the
+        call, and this check exists precisely because a delivered key
+        whose frame cannot be written breaks the identity the record
+        rests on.  So an unmeasurable disk is refused, and -- the half
+        that matters most -- NOTHING IS SENT.
         """
         self.measured(OSError("no answer"))
         opened = self.open_session()
         self.stub_window(opened)
-        result = opened.step("j", commentary="South.")
-        self.assertEqual(result.frame, 1)
-        self.assertEqual(self.sent, ["j"])
+        with self.assertRaises(session.CapacityError) as caught:
+            opened.step("j", commentary="South.")
+        self.assertIn("NO PROOF", str(caught.exception))
+        self.assertIn("THE KEY HAS NOT BEEN SENT",
+                      str(caught.exception))
+        self.assertEqual(self.sent, [],
+                         msg="the keystroke must not have been sent")
+        self.assertEqual(self.rows(), [],
+                         msg="and nothing may have been recorded")
 
     def test_the_named_reserve_is_used_exactly(self):
         """An operator's figure is honoured, not adjusted."""
@@ -4560,6 +4654,305 @@ class CommittedArtifactsUntouched(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertEqual(os.path.exists(path), existed)
                 self.assertEqual(_fingerprint(path), mark)
+
+
+class TheObserveBeforeTheNextKeyGuard(SessionFixture):
+    """The enforcing half of the observed-effect guard.
+
+    Every test here pins a property a code review found MISSING: the
+    guard measured and warned, and the retired session's frames 91-106
+    show two key sequences delivered into an unchanged abandon-creation
+    modal while those warnings were on stderr the whole time.  A control
+    that only speaks is a report, so these are the refusals.
+    """
+
+    def declared(self, verdict, **extra):
+        """Make the effect comparison answer one chosen verdict."""
+        original = session.classify_effect
+        session.classify_effect = (
+            lambda previous, current, **keywords:
+            session.ObservedEffect(verdict, **extra))
+        self.addCleanup(
+            setattr, session, "classify_effect", original)
+
+    def modal(self, text):
+        """Make the central-band reading answer one chosen string."""
+        original = session.read_modal_text
+        session.read_modal_text = lambda path: text
+        self.addCleanup(
+            setattr, session, "read_modal_text", original)
+
+    def ledger(self):
+        """Return the acknowledgment rows written so far."""
+        path = os.path.join(self.build, session.ACKNOWLEDGMENTS_NAME)
+        if not os.path.isfile(path):
+            return []
+        with open(path, "r", encoding="utf-8") as handle:
+            return [json.loads(line) for line in handle if line.strip()]
+
+    def first_step(self, opened):
+        """Take the one step that needs no previous reading."""
+        return opened.step("j", commentary="South, into the hallway.")
+
+    def test_the_first_key_needs_no_reading(self):
+        """There is no capture before the first one to read."""
+        opened = self.open_session()
+        self.stub_window(opened)
+        result = session.Session.step(
+            opened, "j", commentary="South.", expect=session.EXPECT_EITHER)
+        self.assertEqual(result.frame, 1)
+        self.assertEqual(self.ledger(), [])
+
+    def test_a_second_key_is_refused_until_the_first_is_read(self):
+        """Observe, decide, act -- as a precondition, not as advice."""
+        opened = self.open_session()
+        self.stub_window(opened)
+        self.first_step(opened)
+        with self.assertRaises(session.ObservationRequired) as caught:
+            session.Session.step(
+                opened, "k", commentary="North.",
+                expect=session.EXPECT_EITHER)
+        self.assertIn("has not been read", str(caught.exception))
+        self.assertEqual(
+            self.sent, ["j"],
+            msg="the second keystroke must not have been sent")
+        self.assertEqual(len(self.rows()), 1)
+
+    def test_the_reading_is_recorded_before_the_key_is_delivered(self):
+        """A reading that only survives a successful send proves less.
+
+        The acknowledgment is the evidence that the picture was looked at
+        BEFORE the key went out, so it has to be on the device by then --
+        which is what this shows by breaking the send and finding the
+        ledger row already written.
+        """
+        opened = self.open_session()
+        self.stub_window(opened)
+        self.first_step(opened)
+
+        def refuse(identifier, key, timeout=None):
+            raise session.WindowError("the window went away")
+
+        session.send_key = refuse
+        with self.assertRaises(session.WindowError):
+            session.Session.step(
+                opened, "k", commentary="North.",
+                observed="frame 1 shows the hallway, nothing selected",
+                expect=session.EXPECT_EITHER)
+        rows = self.ledger()
+        self.assertEqual([row["frame"] for row in rows], [1])
+        self.assertEqual(rows[0]["observed"],
+                         "frame 1 shows the hallway, nothing selected")
+        self.assertEqual(rows[0]["frame_sha256"], STUB_FRAME_SHA256,
+                         msg="the reading binds the frame's own digest")
+
+    def test_a_perfunctory_reading_is_refused(self):
+        """A ledger of "ok" would record the mechanism, not the sight."""
+        opened = self.open_session()
+        self.stub_window(opened)
+        self.first_step(opened)
+        with self.assertRaises(session.ObservationRequired):
+            session.Session.step(
+                opened, "k", commentary="North.", observed="ok",
+                expect=session.EXPECT_EITHER)
+        self.assertEqual(self.sent, ["j"])
+
+    def test_a_capture_that_contradicts_the_prediction_halts(self):
+        """And the frame and its row are kept, because both happened."""
+        opened = self.open_session()
+        self.stub_window(opened)
+        self.first_step(opened)
+        self.declared(session.EFFECT_UNCHANGED, screen_pixels=0,
+                      map_pixels=0)
+        with self.assertRaises(session.GuardHalt) as caught:
+            session.Session.step(
+                opened, "k", commentary="North.",
+                observed="frame 1 shows the hallway, nothing selected",
+                expect=session.EXPECT_CHANGED)
+        self.assertIn("declared --expect changed", str(caught.exception))
+        self.assertEqual(len(self.rows()), 2,
+                         msg="the row is evidence and is kept")
+        self.assertEqual(len(os.listdir(self.frames)), 2)
+        self.assertTrue(self.sidecar()[1]["halted"])
+        self.assertEqual(self.sidecar()[1]["expected"], "changed")
+
+    def test_a_declared_unchanged_capture_is_permitted(self):
+        """Some keys legitimately move nothing, and may say so first."""
+        opened = self.open_session()
+        self.stub_window(opened)
+        self.first_step(opened)
+        self.declared(session.EFFECT_UNCHANGED, screen_pixels=0,
+                      map_pixels=0)
+        result = session.Session.step(
+            opened, "space", commentary="A space in an empty field.",
+            observed="frame 1 shows the name field, cursor at the end",
+            expect=session.EXPECT_UNCHANGED)
+        self.assertEqual(result.frame, 2)
+        self.assertFalse(self.sidecar()[1]["halted"])
+
+    def test_an_unmeasured_comparison_halts_a_prediction(self):
+        """An absent observation must not read as a satisfied one."""
+        opened = self.open_session()
+        self.stub_window(opened)
+        self.first_step(opened)
+        with self.assertRaises(session.GuardHalt) as caught:
+            session.Session.step(
+                opened, "k", commentary="North.",
+                observed="frame 1 shows the hallway, nothing selected",
+                expect=session.EXPECT_CHANGED)
+        self.assertIn("not observed at all", str(caught.exception))
+
+    def test_an_unmeasured_comparison_is_allowed_under_either(self):
+        """A step that predicted nothing has nothing to contradict."""
+        opened = self.open_session()
+        self.stub_window(opened)
+        self.first_step(opened)
+        result = session.Session.step(
+            opened, "k", commentary="North.",
+            observed="frame 1 shows the hallway, nothing selected",
+            expect=session.EXPECT_EITHER)
+        self.assertEqual(result.frame, 2)
+        self.assertEqual(self.sidecar()[1]["effect"], "unknown")
+
+    def test_an_undeclared_query_box_halts_the_session(self):
+        """The exact shape of frames 91-106: a modal eating the keys."""
+        self.modal("Return to main menu? (Case Sensitive)")
+        opened = self.open_session()
+        self.stub_window(opened)
+        with self.assertRaises(session.GuardHalt) as caught:
+            session.Session.step(
+                opened, "slash", commentary="Open the filter.",
+                expect=session.EXPECT_EITHER)
+        self.assertIn("return-to-main-menu", str(caught.exception))
+        self.assertEqual(
+            self.sidecar()[0]["modals"], ["return-to-main-menu"],
+            msg="the box is recorded, not only reported")
+        self.assertTrue(self.sidecar()[0]["halted"])
+
+    def test_a_declared_query_box_is_permitted(self):
+        """Answering a prompt deliberately is the ordinary case."""
+        self.modal("Save and quit?")
+        opened = self.open_session()
+        self.stub_window(opened)
+        result = session.Session.step(
+            opened, "S", commentary="Sleep is over; put it away.",
+            expect=session.EXPECT_EITHER,
+            expect_modal="save-and-quit")
+        self.assertEqual(result.frame, 1)
+        self.assertEqual(self.sidecar()[0]["expect_modal"],
+                         "save-and-quit")
+
+    def test_a_declared_box_that_is_not_there_halts(self):
+        """A wrong model of the screen is wrong in both directions."""
+        self.modal("nothing of the sort")
+        opened = self.open_session()
+        self.stub_window(opened)
+        with self.assertRaises(session.GuardHalt) as caught:
+            session.Session.step(
+                opened, "Y", commentary="Yes.",
+                expect=session.EXPECT_EITHER,
+                expect_modal="save-and-quit")
+        self.assertIn("does not show it", str(caught.exception))
+
+    def test_an_unknown_modal_token_is_refused_before_the_key(self):
+        """A declaration nothing can match would never be satisfied."""
+        opened = self.open_session()
+        self.stub_window(opened)
+        with self.assertRaises(session.RecordError):
+            session.Session.step(
+                opened, "Y", commentary="Yes.",
+                expect_modal="no-such-box")
+        self.assertEqual(self.sent, [])
+
+    def test_a_halted_frame_needs_an_acknowledgment_of_its_own(self):
+        """Reading an anomaly and keying past it cannot be one act."""
+        opened = self.open_session()
+        self.stub_window(opened)
+        self.first_step(opened)
+        self.declared(session.EFFECT_UNCHANGED, screen_pixels=0,
+                      map_pixels=0)
+        with self.assertRaises(session.GuardHalt):
+            session.Session.step(
+                opened, "k", commentary="North.",
+                observed="frame 1 shows the hallway, nothing selected",
+                expect=session.EXPECT_CHANGED)
+        opened.close()
+        second = self.open_session()
+        self.stub_window(second, window=4243)
+        with self.assertRaises(session.ObservationRequired) as caught:
+            session.Session.step(
+                second, "l", commentary="East.",
+                observed="frame 2 did not move; the filter is closed",
+                expect=session.EXPECT_EITHER)
+        self.assertIn("STOPPED the session", str(caught.exception))
+        self.assertEqual(self.sent, [])
+        second.acknowledge(
+            2, "frame 2 shows the same screen as frame 1; nothing moved")
+        result = session.Session.step(
+            second, "l", commentary="East.",
+            expect=session.EXPECT_EITHER)
+        self.assertEqual(result.frame, 3)
+        self.assertEqual(self.sent, ["l"])
+
+    def test_an_acknowledgment_of_a_frame_that_was_never_taken(self):
+        """A reading of nothing is not a reading."""
+        opened = self.open_session()
+        with self.assertRaises(session.RecordError):
+            opened.acknowledge(7, "a screen nobody photographed")
+
+    def test_the_ledger_is_append_only(self):
+        """A second reading is added, never a first one rewritten."""
+        opened = self.open_session()
+        self.stub_window(opened)
+        self.first_step(opened)
+        opened.acknowledge(1, "the hallway, seen once")
+        opened.acknowledge(1, "the hallway, looked at again")
+        rows = self.ledger()
+        self.assertEqual(len(rows), 2)
+        self.assertEqual([row["observed"] for row in rows],
+                         ["the hallway, seen once",
+                          "the hallway, looked at again"])
+
+    def test_an_unreadable_ledger_refuses_rather_than_reads_empty(self):
+        """"Unknown" and "unacknowledged" must not arrive as one answer."""
+        path = os.path.join(self.build, session.ACKNOWLEDGMENTS_NAME)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("{not json\n")
+        with self.assertRaises(session.RecordError):
+            session.read_acknowledgments(path, self.root)
+
+    def test_the_modal_table_is_matched_whitespace_insensitively(self):
+        """tesseract does not preserve the engine's double spaces."""
+        self.assertEqual(
+            session.detect_modals("This  will kill your character."),
+            ("kill-your-character",))
+        self.assertEqual(session.detect_modals("Really   quit ?"), ())
+        self.assertEqual(session.detect_modals(None), ())
+
+    def test_every_declared_box_names_its_source(self):
+        """A prompt quoted from memory is not evidence."""
+        for token, prompt, why in session.MODAL_PROMPTS:
+            with self.subTest(token=token):
+                self.assertTrue(prompt.strip())
+                self.assertIn("src/", why)
+                self.assertEqual(session.modal_reason(token), why)
+
+    def test_the_band_is_computed_from_the_capture(self):
+        """A hard-coded rectangle would read the wrong pixels."""
+        rect = session.modal_band(1920, 1080)
+        self.assertEqual(rect.width, 1920)
+        self.assertEqual(rect.y, int(1080 * session.MODAL_BAND_TOP))
+        self.assertGreater(rect.height, 0)
+        self.assertLessEqual(rect.y + rect.height, 1080)
+        smaller = session.modal_band(640, 384)
+        self.assertEqual(smaller.width, 640)
+        self.assertLessEqual(smaller.y + smaller.height, 384)
+
+    def test_an_unreadable_band_is_no_modal_rather_than_a_failure(self):
+        """A guard that could end a session by failing to read is worse."""
+        self.assertEqual(
+            session.read_modal_text(
+                os.path.join(self.frames, "frame_99999.png")), "")
 
 
 def _fingerprint(path):

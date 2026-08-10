@@ -53,6 +53,11 @@ set -o pipefail
 readonly EX_OK=0
 readonly EX_USAGE=1
 readonly EX_MISSING=2
+# A status of its own for "this would end a recorded session outside the
+# game's own exit".  It is not a usage error -- the command was spelled
+# correctly -- and it is not a missing dependency; it is a refusal about
+# the SESSION, and a driver has to be able to tell it apart from both.
+readonly EX_LIFECYCLE=3
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_DIR
@@ -114,6 +119,20 @@ image_exists() {
     docker image inspect "${IMAGE_TAG}" >/dev/null 2>&1
 }
 
+# The build context this process created, and the handler that removes
+# it.  Declared at file scope so `set -u` reports a missing definition
+# rather than treating it as empty, and so the EXIT trap can be a bare
+# FUNCTION NAME -- see the note at its assignment in do_build.
+BUILD_CONTEXT=""
+
+cleanup_build_context() {
+    if [ -n "${BUILD_CONTEXT}" ]; then
+        rm -rf -- "${BUILD_CONTEXT}"
+        BUILD_CONTEXT=""
+    fi
+    return 0
+}
+
 require_image() {
     image_exists ||
         die "${EX_MISSING}" "the image ${IMAGE_TAG} has not been built. \
@@ -139,8 +158,17 @@ playthrough/tooling/environment/Dockerfile in this checkout, so the \
 declared environment cannot be built"
     local context
     context="$(mktemp -d "${TMPDIR:-/tmp}/playthrough-ctx-XXXXXX")"
-    # shellcheck disable=SC2064
-    trap "rm -rf -- '${context}'" EXIT
+    # THE TRAP IS A FUNCTION NAME AND THE PATH IS DATA.  It used to be
+    # `trap "rm -rf -- '${context}'" EXIT`, which INTERPOLATES a
+    # $TMPDIR-derived path into a string bash later EXECUTES -- CWE-78.
+    # A security review demonstrated it: a $TMPDIR carrying a single
+    # quote and a command substitution executed an injected marker when
+    # the trap fired, and `rm -rf` was the command holding it.  The fix
+    # is not better quoting; it is to stop composing executable text at
+    # all.  BUILD_CONTEXT is a variable the fixed handler reads, so no
+    # part of any path is ever parsed as shell.
+    BUILD_CONTEXT="${context}"
+    trap cleanup_build_context EXIT
     cp "${ENVIRONMENT_DIR}/Dockerfile" "${context}/" ||
         die "${EX_MISSING}" "cannot stage the Dockerfile"
     cp "${SCRIPT_DIR}/requirements.txt" \
@@ -185,14 +213,19 @@ do_inventory() {
 # "user.name='' user.email=''", and a checkpoint taken in the only
 # environment where rendering is legal exited 3.
 #
-# The identity therefore travels IN THE REPOSITORY rather than in the
-# environment: commit_artifacts.sh records the identity git already
-# resolved into the checkout's own configuration (git config --local,
-# never --global and never --system, and never overwriting a pair the
-# repository already carries).  That file lives in the mounted tree, so it
-# is the same file on both sides of this boundary and the commit carries
-# the same author either way.  Nothing needs forwarding, and adding a
-# --env for it here would reintroduce the variability the absence prevents.
+# The identity therefore travels as GIT_AUTHOR_* / GIT_COMMITTER_*, which
+# forward_commit_identity below adds from `git var GIT_AUTHOR_IDENT` on the
+# host.  It used to travel IN THE REPOSITORY instead -- commit_artifacts.sh
+# wrote the resolved pair into the checkout's own configuration with `git
+# config --local` -- and that is retired for three reasons given in full
+# beside report_identity_scope in that file: it contradicted the same
+# file's stated contract never to write git configuration, this execution
+# environment forbids running those commands at any scope, and the value
+# written was the HOST's resolution anyway, so it bought persistence and
+# not the invariance it was justified by.  These four variables are
+# therefore the ONE exception to "no GIT_* is passed", they carry exactly
+# what a commit would have carried on the host, and they leave nothing
+# behind in the mounted tree.
 # THE ONE CONTRACT every way into the image uses.  `run`, `shell`,
 # `preflight` and a hosted session all take these arguments from here, so
 # none of them can quietly differ from the environment the others proved.
@@ -210,6 +243,54 @@ contract_args() {
         --user "$(id -u):$(id -g)"
         --env "HOME=/tmp/playthrough-home"
         --env "TMPDIR=/tmp"
+    )
+    forward_commit_identity
+}
+
+# forward_commit_identity -- give the container an author, in the
+# environment, because nothing writes one into the tree any more.
+#
+# commit_artifacts.sh used to record the resolved pair with `git config
+# --local` so that it travelled in the mounted checkout.  It no longer
+# does: its own opening contract says it never writes git configuration,
+# and the environment this evidence is produced in forbids running those
+# commands at any scope.  So the identity travels the way git documents,
+# as GIT_AUTHOR_* / GIT_COMMITTER_*, and leaves nothing behind.
+#
+# WHY THIS IS NOT THE VARIABILITY THE ABSENCE OF --env WAS AVOIDING.  The
+# concern was that an identity carried in the invoker's environment makes
+# a commit's attribution depend on who started the container.  Writing the
+# HOST-resolved pair into .git/config had precisely the same property --
+# what landed there was whatever the first host to run it resolved -- so
+# the write bought persistence, not invariance.  Forwarding the same
+# resolved pair is therefore no weaker, and one fact fewer is stored.
+#
+# `git var GIT_AUTHOR_IDENT` is asked rather than `git config --get`,
+# because it is the answer git will actually stamp: it resolves the
+# environment, then the repository, then the account, then the system.
+# Nothing is forwarded when it cannot answer -- an empty --env would
+# override a working identity inside the image with nothing, turning a
+# resolvable author into an unresolvable one.
+forward_commit_identity() {
+    local ident="" name="" mail=""
+    ident="$(git var GIT_AUTHOR_IDENT 2>/dev/null || true)"
+    if [ -z "${ident}" ]; then
+        return 0
+    fi
+    # "Name <mail> <unixtime> <tz>" -- drop the time and the zone by
+    # cutting at the last "> ", then take the two halves.
+    ident="${ident%> *}>"
+    name="${ident%% <*}"
+    mail="${ident#*<}"
+    mail="${mail%>}"
+    if [ -z "${name}" ] || [ -z "${mail}" ]; then
+        return 0
+    fi
+    CONTRACT_ARGS+=(
+        --env "GIT_AUTHOR_NAME=${name}"
+        --env "GIT_AUTHOR_EMAIL=${mail}"
+        --env "GIT_COMMITTER_NAME=${name}"
+        --env "GIT_COMMITTER_EMAIL=${mail}"
     )
 }
 
@@ -259,28 +340,230 @@ docker_run() {
 # `preflight` proved would mean the path was proved on one environment
 # and the record taken on another.
 #
-# THE NAME IS PER CHECKOUT, so parallel clones cannot adopt each other's
-# session: it carries CLONE_INDEX when the environment sets one and a
-# digest of the checkout path otherwise.
+# HOW A SESSION IS IDENTIFIED, AND WHY IT IS NOT BY NAME.
+#
+# It used to be: the name carried $CLONE_INDEX verbatim when set and a
+# cksum of the checkout path otherwise, and the container was found with
+# `docker ps --filter "name=^<name>$"`.  A security review found two
+# defects in that, and both were live on the host it was found on --
+# there was a container from a SIBLING clone up at the time.
+#
+#   * THE FILTER IS A REGULAR EXPRESSION (CWE-20).  docker's `name`
+#     filter matches a regex, so an unvalidated CLONE_INDEX is
+#     unvalidated regex: `CLONE_INDEX='.*'` composes
+#     `name=^playthrough-session-.*$`, which matches ANY session --
+#     including another clone's -- and `exec`, `down` and `session` then
+#     act on it.  `head -n 1` made the choice silent.
+#   * A NAME IS NOT AN IDENTITY.  Two checkouts can produce the same
+#     cksum, a stale container can hold a name this checkout wants, and
+#     nothing about a name proves the container mounts THIS tree, runs
+#     the image the preflight proved, or belongs to this user.
+#
+# So identity is now three things, and all three are checked:
+#
+#   1. CLONE_INDEX is VALIDATED as an integer 0..99 before it reaches
+#      anything -- the same range env.sh accepts.
+#   2. Containers are LABELLED with a sha256 digest of the canonical
+#      checkout path plus the clone index, and are selected by exact
+#      label equality (`--filter label=k=v` is not a regex match), never
+#      by name.  The name still exists, because a human reading
+#      `docker ps` deserves one, but nothing is selected by it.
+#   3. The match is INSPECTED before it is used: exactly one container,
+#      running the expected image, carrying a bind mount whose source and
+#      destination are both this checkout, and running as this user.
+#      Anything else is refused with a diagnosis rather than adopted.
 # ---------------------------------------------------------------------
-session_name() {
-    local suffix="${CLONE_INDEX:-}"
-    if [ -z "${suffix}" ]; then
-        suffix="$(printf '%s' "${REPO_ROOT}" | cksum | cut -d" " -f1)"
+readonly LABEL_CHECKOUT="playthrough.checkout"
+readonly LABEL_CLONE="playthrough.clone"
+readonly LABEL_ROLE="playthrough.role"
+readonly ROLE_SESSION="capture-session"
+
+# THE VALIDATED CLONE INDEX, resolved ONCE in the current shell.
+#
+# WHY IT IS A GLOBAL AND NOT A FUNCTION THAT VALIDATES ON EVERY CALL.
+# `die` calls `exit`, and `exit` inside `$( ... )` ends the SUBSHELL --
+# the caller carries on with an empty string.  Measured while writing
+# this: `CLONE_INDEX=100 supported_env.sh session` exited 0 and reported
+# no session, because every validation lived inside a command
+# substitution.  So the check runs at the top of main(), in the shell
+# that has to die, and everything below reads the resolved value.
+CLONE_INDEX_RESOLVED=""
+
+# resolve_clone_index -- validate $CLONE_INDEX or refuse the run.
+#
+# The default is 0 rather than "unset", because a session is identified
+# by (checkout, clone) and a missing index is the first clone.  Leading
+# zeros are accepted and normalised through $((10#...)) so that `07` and
+# `7` name one session rather than two.
+resolve_clone_index() {
+    local raw="${CLONE_INDEX:-0}"
+    case "${raw}" in
+        '')
+            raw=0
+            ;;
+        *[!0-9]*)
+            die "${EX_USAGE}" "CLONE_INDEX='${raw}' is not a number. \
+It selects and labels this checkout's session container, and a value \
+that is not a plain integer 0-99 is refused rather than interpreted: \
+docker's own name filter is a REGULAR EXPRESSION, so an unvalidated \
+value there can match another clone's session and this driver would \
+then exec into -- or stop -- somebody else's recording."
+            ;;
+    esac
+    if [ "$((10#${raw}))" -gt 99 ]; then
+        die "${EX_USAGE}" "CLONE_INDEX='${raw}' is above 99, which is \
+the highest index this pipeline allocates (env.sh accepts the same \
+range).  Refused rather than truncated."
     fi
-    printf 'playthrough-session-%s\n' "${suffix}"
+    CLONE_INDEX_RESOLVED="$((10#${raw}))"
+    return 0
 }
 
-session_id() {
-    docker ps --quiet --filter "name=^$(session_name)$" 2>/dev/null |
-        head -n 1
+# clone_index -- the resolved index.  Safe inside a substitution.
+clone_index() {
+    printf '%s' "${CLONE_INDEX_RESOLVED}"
+}
+
+# checkout_digest -- a stable, collision-resistant name for this tree.
+#
+# sha256 of the canonical absolute path, truncated to 16 hex characters:
+# long enough that two checkouts on one host will not collide, short
+# enough to read in `docker ps`.  cksum was the previous choice and is a
+# 32-bit CRC -- fine against typos, not against two trees.
+checkout_digest() {
+    printf '%s' "${REPO_ROOT}" | sha256sum | cut -c1-16
+}
+
+session_name() {
+    printf 'playthrough-session-%s-%s\n' \
+        "$(checkout_digest)" "$(clone_index)"
+}
+
+# session_label_filters -- the exact-match filters that identify us.
+SESSION_FILTERS=()
+session_label_filters() {
+    SESSION_FILTERS=(
+        --filter "label=${LABEL_ROLE}=${ROLE_SESSION}"
+        --filter "label=${LABEL_CHECKOUT}=$(checkout_digest)"
+        --filter "label=${LABEL_CLONE}=$(clone_index)"
+    )
+}
+
+# session_ids -- every running container carrying this session's labels.
+session_ids() {
+    session_label_filters
+    docker ps --quiet "${SESSION_FILTERS[@]}" 2>/dev/null || true
+}
+
+# inspect_field ID GO_TEMPLATE -- one field of one container, or empty.
+inspect_field() {
+    docker inspect --format "$2" "$1" 2>/dev/null || printf ''
+}
+
+# assert_session_container ID -- refuse a container that is not ours.
+#
+# The labels got us here; this proves the thing behind them is the
+# environment `preflight` was run against.  Each property is checked
+# separately so the refusal can say WHICH one failed -- "not ours" with
+# no reason is a diagnosis nobody can act on.
+assert_session_container() {
+    local id="$1"
+    local image mounted user expected_user
+    image="$(inspect_field "${id}" '{{.Config.Image}}')"
+    if [ "${image}" != "${IMAGE_TAG}" ]; then
+        die "${EX_MISSING}" "the container ${id} carries this \
+checkout's session labels but runs the image '${image}' where this \
+driver runs '${IMAGE_TAG}'.  It is REFUSED rather than adopted: the \
+supported environment is the one the preflight proved, and a session \
+hosted in a different image is a session proved on one environment and \
+recorded on another.  Remove that container, or point \
+\$PLAYTHROUGH_SUPPORTED_IMAGE at the image it runs if that is what you \
+intend."
+    fi
+    # THE TEMPLATE IS TRIVIAL AND THE COMPARISON IS BASH, deliberately.
+    # It used to be one `{{if and (eq .Source "…") (eq .Destination
+    # "…")}}` template wrapped across two lines -- and inside SINGLE
+    # quotes a backslash-newline is LITERAL, not a line continuation, so
+    # the template docker received carried a real backslash and a real
+    # newline in the middle of it.  docker exited 64 with `template
+    # parsing error: unexpected "\\" in operand`, inspect_field swallowed
+    # that into an empty string, and the check below therefore refused
+    # EVERY container -- including the one `up` had just created and
+    # labelled correctly.  Fail-closed, but it made a hosted session
+    # impossible to reach.
+    #
+    # So docker is asked only to LIST the mounts, which needs no
+    # continuation and cannot be mis-parsed, and the matching is done
+    # here.  `grep -F -x` is a fixed-string whole-line match, so a path
+    # containing regex metacharacters compares as itself.
+    mounted="$(inspect_field "${id}" \
+        '{{range .Mounts}}{{println .Source .Destination}}{{end}}')"
+    if printf '%s\n' "${mounted}" |
+            grep -Fxq -- "${REPO_ROOT} ${REPO_ROOT}"; then
+        mounted="yes"
+    else
+        mounted="no"
+    fi
+    if [ "${mounted}" != "yes" ]; then
+        die "${EX_MISSING}" "the container ${id} carries this \
+checkout's session labels but has no bind mount of ${REPO_ROOT} at its \
+own path.  It is REFUSED: every repository-relative path in this \
+pipeline resolves identically inside and outside only because that \
+mount is there, and a container mounting a DIFFERENT tree would record \
+this session's frames into somebody else's checkout."
+    fi
+    user="$(inspect_field "${id}" '{{.Config.User}}')"
+    expected_user="$(id -u):$(id -g)"
+    if [ "${user}" != "${expected_user}" ]; then
+        die "${EX_MISSING}" "the container ${id} runs as '${user}' \
+where this driver runs as '${expected_user}'.  It is REFUSED: files it \
+writes into the mounted checkout would belong to another account, and \
+an artifact tree that has to be chowned before it can be committed is a \
+repair job rather than evidence."
+    fi
+    return 0
+}
+
+# resolve_session_id -- set SESSION_ID to THE container, or to nothing.
+#
+# Exactly one, or a refusal.  Two containers carrying one session's
+# labels is an ambiguity no default can be right about: picking either
+# one (which `head -n 1` did) means a keystroke could land on a display
+# nobody is photographing.
+#
+# IT SETS A GLOBAL RATHER THAN PRINTING, for the same reason
+# resolve_clone_index does: its refusals call `die`, and a `die` inside
+# `$( ... )` would kill only the subshell and hand the caller an empty
+# string -- which reads exactly like "no session is up".
+SESSION_ID=""
+resolve_session_id() {
+    local -a found=()
+    local line
+    SESSION_ID=""
+    while IFS= read -r line; do
+        [ -z "${line}" ] || found+=("${line}")
+    done < <(session_ids)
+    if [ "${#found[@]}" -eq 0 ]; then
+        return 0
+    fi
+    if [ "${#found[@]}" -gt 1 ]; then
+        die "${EX_MISSING}" "${#found[@]} containers carry this \
+checkout's session labels (${found[*]}), and this driver will not \
+choose between them: a keystroke sent to the wrong one lands on a \
+display nothing is photographing, and the frames would be of the other \
+session.  Stop the ones that are not yours -- 'docker stop <id>' -- and \
+run this again."
+    fi
+    assert_session_container "${found[0]}"
+    SESSION_ID="${found[0]}"
+    return 0
 }
 
 do_up() {
     require_docker
     require_image
-    local existing
-    existing="$(session_id)"
+    resolve_session_id
+    local existing="${SESSION_ID}"
     if [ -n "${existing}" ]; then
         log "the session container $(session_name) is" \
             "already up (${existing}); leaving it exactly as found"
@@ -297,8 +580,15 @@ do_up() {
     contract_args
     # `sleep infinity` is PID 1 so the container outlives every exec; the
     # display started inside it reparents to this process.
+    #
+    # THE LABELS ARE THE IDENTITY and are written here, once.  Selection
+    # is by exact label equality afterwards, never by the name -- see
+    # HOW A SESSION IS IDENTIFIED above.
     if ! id="$(docker run --detach --rm \
             --name "$(session_name)" \
+            --label "${LABEL_ROLE}=${ROLE_SESSION}" \
+            --label "${LABEL_CHECKOUT}=$(checkout_digest)" \
+            --label "${LABEL_CLONE}=$(clone_index)" \
             "${CONTRACT_ARGS[@]}" \
             "${cleared[@]}" \
             "${IMAGE_TAG}" \
@@ -319,8 +609,8 @@ do_exec() {
     require_docker
     [ "$#" -gt 0 ] ||
         die "${EX_USAGE}" "exec needs a command to run in the session"
-    local id
-    id="$(session_id)"
+    resolve_session_id
+    local id="${SESSION_ID}"
     [ -n "${id}" ] ||
         die "${EX_MISSING}" "no session container is up for this" \
             "checkout; start one with 'supported_env.sh up'.  It is" \
@@ -341,36 +631,175 @@ do_exec() {
         "$@"
 }
 
+# session_engine_is_alive ID -- is a game process still running inside?
+#
+# The one question that decides whether taking this container down would
+# end a RECORDED SESSION outside the game's own exit.  Asked of the
+# container rather than of the record, because the record cannot say
+# whether the engine is still up -- and it is the live engine that a
+# `docker stop` would kill.
+#
+# A probe that cannot be run answers "alive", which is the fail-closed
+# direction: an unanswerable question about a session in progress must
+# not read as "there is no session".
+#
+# WHY IT MATCHES THE PROCESS NAME AND EXCLUDES ZOMBIES.  Two defects were
+# measured in this container, and both made the probe answer "alive"
+# forever -- which would have made `down` refuse every time and taught
+# whoever ran it to reach for --abandon by reflex, defeating the guard
+# this function exists to be.
+#
+#   * `pgrep -f "cataclysm-tiles --userdir"` MATCHED ITS OWN WRAPPER.
+#     `-f` matches the whole command line, and the `sh -c` carrying the
+#     pattern has the pattern in ITS command line.  Measured in a
+#     container with no engine at all: the probe printed `alive`, and
+#     `pgrep -af` named the shell -- `2408 sh -c pgrep -af
+#     "cataclysm-tiles --userdir"`.  So the match is on `comm`, the
+#     process NAME, which for this probe's own processes is `ps`, `awk`
+#     or `sh` and cannot collide.  (`cataclysm-tiles` is exactly 15
+#     characters and so survives Linux's TASK_COMM_LEN truncation
+#     whole; a longer binary name would need a prefix match here.)
+#   * A DEFUNCT ENGINE IS NOT A RUNNING ENGINE.  PID 1 in a session
+#     container is `sleep infinity`, which never calls wait(), so every
+#     engine that exits leaves a permanent ZOMBIE behind it -- measured:
+#     `1855 cataclysm-tiles [cataclysm-tiles] <defunct>` was still
+#     listed long after the process was killed.  A name match alone
+#     would therefore report a session in progress for the whole life of
+#     any container that had ever launched the game once.  States
+#     containing `Z` are excluded for that reason.
+#
+# Matching the name rather than the `--userdir` argument is also slightly
+# BROADER than the old pattern, which is the fail-closed direction: in a
+# container dedicated to one session, any live `cataclysm-tiles` is that
+# session's engine.
+session_engine_is_alive() {
+    local id="$1" answer=""
+    answer="$(docker exec "${id}" sh -c \
+        'ps -eo stat=,comm= | awk '\''$2 == "cataclysm-tiles" &&
+             $1 !~ /Z/ { alive = 1 }
+             END { exit alive ? 0 : 1 }'\'' >/dev/null 2>&1 &&
+             printf alive || printf gone' 2>/dev/null || printf '')"
+    case "${answer}" in
+        gone) return 1 ;;
+        alive) return 0 ;;
+        *)
+            log "WARNING: the session container ${id} could not be" \
+                "asked whether the engine is still running; treating" \
+                "it as RUNNING, which is the direction that protects" \
+                "a session in progress"
+            return 0
+            ;;
+    esac
+}
+
+# do_down [--abandon REASON] -- stop and remove this checkout's session.
+#
+# THE LIFECYCLE GUARD, which a review required and which the previous
+# version of this function actively undermined: it warned in prose, then
+# ran `docker stop ... || true` and printed "session container removed"
+# whether or not anything had been removed.  Both halves were wrong.
+#
+#   * A LIVE ENGINE IS A SESSION IN PROGRESS.  A recorded session must
+#     end INSIDE the game -- realistic sleep or death, then the in-game
+#     Save & Quit -- because that is the only exit that writes the save.
+#     Killing the container instead leaves save/<World>/ with no
+#     character file and the acceptance gate then refuses the whole run.
+#     So this refuses while the engine is up, and the refusal has to be
+#     overridden EXPLICITLY, with a reason that goes into the log.
+#   * A SUPPRESSED FAILURE IS A LIE.  `|| true` plus an unconditional
+#     success message meant a container that refused to stop was reported
+#     as removed, and the next `up` then found it still there.  The stop
+#     is now checked, and the container is confirmed GONE afterwards.
 do_down() {
     require_docker
-    local id
-    id="$(session_id)"
+    local abandon=0 reason=""
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --abandon)
+                shift
+                reason="${1-}"
+                abandon=1
+                ;;
+            --abandon=*)
+                reason="${1#--abandon=}"
+                abandon=1
+                ;;
+            *)
+                die "${EX_USAGE}" "unknown argument '$1' for down; it \
+takes only --abandon 'why', which ends a session outside the game's own \
+exit"
+                ;;
+        esac
+        shift || true
+    done
+    if [ "${abandon}" -eq 1 ] && [ -z "${reason}" ]; then
+        die "${EX_USAGE}" "--abandon needs a reason.  Ending a \
+recorded session outside the game's own Save & Quit is a decision, and \
+a decision with no stated reason is indistinguishable from an accident."
+    fi
+    resolve_session_id
+    local id="${SESSION_ID}"
     if [ -z "${id}" ]; then
         log "no session container is up for this checkout," \
             "so there is nothing to take down"
         return 0
     fi
-    # The container is --rm, so stopping it removes it.  The engine inside
-    # it is NOT killed by this on purpose being harmless: a session is
-    # closed through the game's own Save & Quit before this is called, and
-    # calling it earlier is how a recorded session would end outside that
-    # path.
-    log "WARNING: taking the session container down; do this only" \
-        "AFTER the survivor has left through the game's own Save &" \
-        "Quit, because everything inside it goes with it"
-    docker stop --time 10 "${id}" >/dev/null 2>&1 || true
-    log "session container removed"
+    if session_engine_is_alive "${id}"; then
+        if [ "${abandon}" -ne 1 ]; then
+            die "${EX_LIFECYCLE}" "REFUSING to take the session \
+container down: the engine is STILL RUNNING inside it, so this would \
+end a recorded session outside the game's own exit.  A session ends \
+INSIDE the game -- realistic sleep or death, then the in-game Save & \
+Quit -- because that is the only exit that writes the character file \
+the acceptance gate requires; a container stopped underneath it leaves \
+save/<World>/ with no survivor in it and nothing downstream can repair \
+that.  Finish the session, then run this again.  If the instance is \
+genuinely stuck and there is no session worth saving, say so \
+explicitly: 'supported_env.sh down --abandon \"<why>\"'.  Nothing was \
+stopped."
+        fi
+        log "WARNING: ABANDONING a session whose engine is still" \
+            "running, on an explicit instruction.  Reason:" \
+            "${reason}.  Whatever the survivor had not saved is gone."
+    else
+        log "no engine is running inside the session container, so" \
+            "taking it down ends no recorded session"
+    fi
+    log "stopping the session container ${id} ($(session_name))"
+    # `--timeout`, not `--time`: the latter is deprecated and docker 29
+    # prints "Flag --time has been deprecated" on every teardown.  A
+    # driver that emits a deprecation warning on its normal path trains
+    # whoever reads the log to ignore its output.
+    if ! docker stop --timeout 10 "${id}"; then
+        die "${EX_MISSING}" "docker refused to stop the session \
+container ${id}; its own diagnosis is above.  The container is STILL \
+UP -- this is reported rather than swallowed, because a driver that \
+announced a removal it did not perform is how the next 'up' comes to \
+find a container it did not expect."
+    fi
+    local remaining
+    remaining="$(session_ids | wc -l | tr -d ' ')"
+    if [ "${remaining}" != "0" ]; then
+        die "${EX_MISSING}" "docker reported the stop as successful \
+and ${remaining} container(s) carrying this checkout's session labels \
+are still running.  The removal is NOT reported as done: inspect \
+'docker ps' before starting another session."
+    fi
+    log "session container stopped and removed"
     return 0
 }
 
 do_session_status() {
     require_docker
-    local id
-    id="$(session_id)"
+    resolve_session_id
+    local id="${SESSION_ID}"
     printf 'SESSION_NAME=%s\n' "$(session_name)"
+    printf 'SESSION_CHECKOUT=%s\n' "$(checkout_digest)"
+    printf 'SESSION_CLONE=%s\n' "$(clone_index)"
     printf 'SESSION_CONTAINER=%s\n' "${id}"
     if [ -z "${id}" ]; then
         printf 'SESSION_UP=no\n'
+        printf 'SESSION_ENGINE=none\n'
         return 0
     fi
     printf 'SESSION_UP=yes\n'
@@ -378,6 +807,14 @@ do_session_status() {
         "$(docker exec "${id}" bash -c \
             'pgrep -a Xvfb >/dev/null 2>&1 && echo serving || echo down' \
             2>/dev/null)"
+    # WHETHER A SESSION IS IN PROGRESS, reported because it is what
+    # decides whether `down` will refuse -- an operator should be able to
+    # see that before they try it rather than after.
+    if session_engine_is_alive "${id}"; then
+        printf 'SESSION_ENGINE=running\n'
+    else
+        printf 'SESSION_ENGINE=none\n'
+    fi
     return 0
 }
 
@@ -456,7 +893,7 @@ usage() {
         printf '%s\n' "usage: playthrough/tooling/supported_env.sh \
 <subcommand> [argument ...]"
         printf '\n'
-        printf '  %-16s %s\n' \
+        printf '  %-22s %s\n' \
             "build" "build the declared capture image" \
             "inventory" "print what the built image contains" \
             "run CMD [ARG…]" "run CMD inside it, this checkout mounted" \
@@ -464,8 +901,32 @@ usage() {
             "preflight" "prove the production path inside it" \
             "up" "start a session container that outlives a command" \
             "exec CMD [ARG…]" "run CMD in the session container" \
-            "down" "stop and remove the session container" \
-            "session" "report whether a session container is up"
+            "down [--abandon WHY]" "stop and remove the session" \
+            "session" "report the session, and whether it is in use"
+        printf '\n'
+        printf '%s\n' "THE HOSTED-SESSION LIFECYCLE, in order:"
+        printf '%s\n' "  up -> exec launch_game.sh headless -> exec \
+seed_options.py -> exec"
+        printf '%s\n' "  launch_game.sh launch -> one exec per \
+session.py step -> the in-game"
+        printf '%s\n' "  Save & Quit -> exec commit_artifacts.sh -> \
+down.  The X server lives"
+        printf '%s\n' "  in the container, so every keystroke of one \
+session must be an exec"
+        printf '%s\n' "  into the SAME container; playthrough/README.md \
+carries the full walk-through."
+        printf '\n'
+        printf '%s\n' "A session is identified by LABELS -- the \
+checkout's path digest and"
+        printf '%s\n' "CLONE_INDEX (0-99) -- never by container name, \
+and the match is inspected"
+        printf '%s\n' "for image, mount and user before it is used, so \
+a sibling clone's or a"
+        printf '%s\n' "stale container is refused rather than adopted."
+        printf '%s\n' "'down' REFUSES while the engine is still \
+running: a recorded session ends"
+        printf '%s\n' "inside the game, and --abandon 'why' is the \
+explicit way to end one outside it."
         printf '\n'
         printf '%s\n' "The environment is declared in \
 playthrough/tooling/environment/Dockerfile."
@@ -482,6 +943,10 @@ main() {
     if [ "$#" -gt 0 ]; then
         shift
     fi
+    # BEFORE ANY DISPATCH, in the shell that can actually exit: a
+    # malformed CLONE_INDEX is refused here rather than inside a command
+    # substitution, where `exit` would end only the subshell.
+    resolve_clone_index
     case "${subcommand}" in
         build) do_build ;;
         inventory) do_inventory ;;
@@ -490,7 +955,7 @@ main() {
         preflight) do_preflight ;;
         up) do_up ;;
         exec) do_exec "$@" ;;
-        down) do_down ;;
+        down) do_down "$@" ;;
         session) do_session_status ;;
         help|--help|-h) usage 1 ;;
         "")

@@ -733,7 +733,7 @@ readonly VERDICT_SEPARATOR=$'\037'
 #
 #                                        all   pre   post
 #    1  the measuring environment         11    11    11
-#    2  one frame per keystroke           14    14     -
+#    2  one frame per keystroke           16    16     -
 #    3  the timeline                      19    19     -
 #    4  the container and its inputs      20    20     -
 #    5  the caption track                 20    20     -
@@ -743,7 +743,7 @@ readonly VERDICT_SEPARATOR=$'\037'
 #    9  the binary, artwork and hygiene    10     9     2
 #   10  the inventory of this report        1     1     1
 #                                        ----  ----  ----
-#                                         120   106    31
+#                                         122   108    31
 #
 # The post-commit column is group 1 (a gate reports what it can measure
 # before it reports what it measured), the whole of group 7, group 9's
@@ -775,10 +775,10 @@ readonly VERDICT_SEPARATOR=$'\037'
 # here makes this assertion fail, which is the intended direction of that
 # mistake.
 readonly -a GROUP_CHECKS_ALL=(
-    0 11 14 19 20 20 5 17 3 10 1
+    0 11 16 19 20 20 5 17 3 10 1
 )
 readonly -a GROUP_CHECKS_PRE_COMMIT=(
-    0 11 14 19 20 20 5 4 3 9 1
+    0 11 16 19 20 20 5 4 3 9 1
 )
 # The third phase, and the reason it is a THIRD count rather than a
 # synonym for `all`: `post-commit` used to resolve to the whole audit, so
@@ -833,13 +833,24 @@ readonly EXPECTED_CHECKS_POST_COMMIT="${_expected_post_commit}"
 unset _expected_all _expected_pre_commit _expected_post_commit
 unset _group_index
 
-# WHERE THE DURABLE REPORT LANDS.  Beside the artifacts it judges, inside
-# playthrough/, so it travels with them in the same commit and a reader
-# who has the tree has the measurement -- which is the whole point of
-# writing it down rather than streaming it at a terminal.  It is a
-# generated artifact like timeline.json and the concat list, not an
-# authored document, and it says so in its own first lines.
-readonly REPORT_BASENAME="acceptance-report.txt"
+# WHERE THE DURABLE REPORT LANDS -- AND WHY THAT IS NO LONGER THIS
+# FILE'S BUSINESS.
+#
+# It used to be a constant here, `acceptance-report.txt`, and this gate
+# wrote the report to playthrough/<that> on a passing run and deleted it
+# on a failing one.  Both were writes INSIDE the tree being measured, both
+# happened after the checks that assert that tree is clean and fully
+# committed, and a review found the consequence: a full-phase run taken
+# after the final checkpoint left the tree dirty in the very file it had
+# just certified as committed.
+#
+# A measurement does not publish itself.  This gate now writes only where
+# a caller names with --report-to, always outside the checkout, and
+# COMMITTING the report is a separate deliberate act -- the attestation
+# checkpoint, which reads what this gate measured and can refuse to
+# publish a failing one.  The artifact's own name therefore lives with
+# the stage that produces it rather than with the stage that is judged
+# by it.
 
 # ---------------------------------------------------------------------
 # THE PHASES, as the three words the option accepts.  Each measures a
@@ -938,9 +949,16 @@ TOOLS_DETAIL=""
 
 # The durable copy of this report.  Empty until open_scratch has made
 # somewhere private to write it; every line of the report is appended to
-# it as it is printed, and report_publication_target decides whether it
-# is published into the working tree.
+# it as it is printed, and report_publication_target decides whether a
+# copy is left at the destination the caller named.
 REPORT_FILE=""
+
+# WHERE THE CALLER ASKED FOR THE REPORT, or nothing.  Set only by
+# --report-to (or $PLAYTHROUGH_VERIFY_REPORT_TO), always OUTSIDE the
+# working tree, and validated in parse_arguments before any check runs --
+# a destination that would be refused is refused before the measurement
+# is paid for rather than after it.
+REPORT_DESTINATION=""
 
 # The linter as an ARRAY rather than a string, because one of the four
 # ways it resolves is a multi-word `<python> -B -m flake8`; a string
@@ -1653,12 +1671,23 @@ Options:
                     two whole-population witnesses.  About forty seconds
                     per three hundred captures, so it scales with the
                     session.
+  --report-to PATH  also write the report to PATH.  It must lie OUTSIDE
+                    this checkout, and its parent directory must already
+                    exist: this gate creates nothing and writes nothing
+                    into the tree it measures.  Without it the report
+                    exists only on this stream.  PUBLISHING the report as
+                    a committed artifact is the attestation checkpoint's
+                    act, not this measurement's -- a gate that wrote into
+                    playthrough/ would dirty a file it had just certified
+                    as committed, which is what it used to do.
   -h, --help        print this and exit.
 
 Environment:
   PLAYTHROUGH_VERIFY_BASE     the default for --base.
   PLAYTHROUGH_VERIFY_SAMPLES  the default for --samples.
   PLAYTHROUGH_VERIFY_PHASE    the default for --phase.
+  PLAYTHROUGH_VERIFY_REPORT_TO
+                              the default for --report-to.
   PLAYTHROUGH_FLAKE8          the flake8 to lint with, when it is not
                               on PATH and not importable as a module.
                               NOT forwarded into the container by
@@ -1682,11 +1711,50 @@ Exit status: 0 all checks passed, 1 a check failed, 2 usage, 3 layout.
 USAGE
 }
 
+# resolve_report_destination PATH
+#   PATH as an absolute path, with its parent resolved through the
+#   filesystem, or a non-zero status when that parent does not exist.
+#
+#   The PARENT is resolved rather than the path itself, because the
+#   report does not exist yet: `cd` into the directory that will hold it
+#   and ask where that actually is.  Resolving it is what makes the
+#   inside-the-tree test meaningful -- a relative path, a symlink or a
+#   trail of `..` would otherwise walk into the checkout while looking
+#   like somewhere else.  Nothing is created here; a caller who names a
+#   directory that does not exist is told so rather than having one made
+#   for them by a gate that promises to write nothing.
+#   The split is parameter expansion rather than `dirname`/`basename`
+#   because this file RESOLVES AND VERIFIES every external command it
+#   uses, and adding one to that machinery to cut a string in half would
+#   be a dependency bought for nothing.
+resolve_report_destination() {
+    local given="$1" parent="" leaf=""
+    case "${given}" in
+        */) return 1 ;;
+        */*)
+            parent="${given%/*}"
+            leaf="${given##*/}"
+            [ -n "${parent}" ] || parent="/"
+            ;;
+        *)
+            parent="."
+            leaf="${given}"
+            ;;
+    esac
+    [ -n "${leaf}" ] || return 1
+    parent="$(cd -- "${parent}" 2>/dev/null && pwd -P)" || return 1
+    case "${parent}" in
+        */) printf '%s%s' "${parent}" "${leaf}" ;;
+        *) printf '%s/%s' "${parent}" "${leaf}" ;;
+    esac
+}
+
 parse_arguments() {
     local base="${PLAYTHROUGH_VERIFY_BASE:-}"
     local samples="${PLAYTHROUGH_VERIFY_SAMPLES:-\
 ${LUMINANCE_SAMPLES_DEFAULT}}"
     local phase="${PLAYTHROUGH_VERIFY_PHASE:-${PHASE_DEFAULT}}"
+    local report_to="${PLAYTHROUGH_VERIFY_REPORT_TO:-}"
     while [ "$#" -gt 0 ]; do
         case "$1" in
             --phase)
@@ -1735,6 +1803,18 @@ ${LUMINANCE_SAMPLES_DEFAULT}}"
                 samples="${1#--samples=}"
                 shift
                 ;;
+            --report-to)
+                if [ "$#" -lt 2 ]; then
+                    usage >&2
+                    die "${EX_USAGE}" "--report-to needs a path"
+                fi
+                report_to="$2"
+                shift 2
+                ;;
+            --report-to=*)
+                report_to="${1#--report-to=}"
+                shift
+                ;;
             -h|--help)
                 usage
                 exit "${EX_OK}"
@@ -1771,6 +1851,49 @@ ${LUMINANCE_SAMPLES_DEFAULT}}"
                 "${PHASE_PRE_COMMIT} and ${PHASE_POST_COMMIT}."
             ;;
     esac
+
+    # WHERE THE REPORT MAY BE WRITTEN, AND WHERE IT MAY NOT.
+    #
+    # This gate is a MEASUREMENT, and a measurement that edits the thing
+    # it measures is not one.  It used to write the report to
+    # playthrough/acceptance-report.txt on a passing run and DELETE that
+    # file on a failing one -- both inside the working tree, and both
+    # after the checks that assert the tree is clean and fully
+    # committed.  A review named the consequence: a `--phase all` run
+    # taken after the final checkpoint left the tree dirty in a file the
+    # gate had just certified as committed, and a failing run silently
+    # removed a tracked artifact.  It also made the promise in this
+    # file's own usage text -- "writes nothing into the working tree" --
+    # untrue.
+    #
+    # So the destination is now the CALLER'S, named explicitly, and it
+    # must lie OUTSIDE the working tree.  Publishing the report as a
+    # committed artifact is a separate, deliberate act performed by the
+    # attestation checkpoint, which commits what this gate measured
+    # rather than having the measurement commit itself.
+    if [ -n "${report_to}" ]; then
+        local resolved="" inside=""
+        resolved="$(resolve_report_destination "${report_to}")" ||
+            die "${EX_USAGE}" "--report-to '${report_to}' cannot be" \
+                "resolved: its parent directory must already exist," \
+                "because this gate creates nothing."
+        case "${resolved}" in
+            "${PLAYTHROUGH_REPO_ROOT}"/*|"${PLAYTHROUGH_REPO_ROOT}")
+                inside="yes" ;;
+        esac
+        if [ -n "${inside}" ]; then
+            die "${EX_USAGE}" "--report-to '${report_to}' resolves to" \
+                "${resolved}, which is INSIDE the working tree." \
+                "This gate writes nothing into the tree it measures --" \
+                "a report written there would dirty a file the run had" \
+                "just certified as committed, and on a failing run the" \
+                "previous one used to be deleted outright.  Name a" \
+                "path outside the checkout; committing the report is" \
+                "the attestation checkpoint's job, not the" \
+                "measurement's."
+        fi
+        REPORT_DESTINATION="${resolved}"
+    fi
 
     # `all` is carried through as a word and resolved against the real
     # capture count later, once that count is known.
@@ -1963,84 +2086,110 @@ sweep_stale_scratch() {
 #   with its own arithmetic.  Its lines are emitted with a REPORT prefix,
 #   which reads as what it is: an act, not a measurement.
 publish_report() {
-    local target="${PLAYTHROUGH_DIR}/${REPORT_BASENAME}"
-    local lines=""
+    local target="" lines=""
     if [ -z "${REPORT_FILE}" ] || [ ! -f "${REPORT_FILE}" ]; then
-        return 0
-    fi
-    if [ "${FAILURES}" -ne 0 ]; then
-        if [ -f "${target}" ]; then
-            "${RM}" -f -- "${target}"
-            printf 'REPORT  %s\n' "removed the stale acceptance \
-report $(rel "${target}"): this run FAILED, and a report from an \
-earlier run must not stand as evidence for the artifacts as they are now"
-        else
-            printf 'REPORT  %s\n' "not published: this run FAILED, \
-and only a passing measurement is acceptance evidence"
-        fi
-        return 0
-    fi
-    # The pre-commit phase measures 106 of the 120 properties by
-    # design -- the fourteen commit-shaped ones cannot hold before the
-    # checkpoint exists -- so it is not the run that gets to publish the
-    # acceptance report.  It says so rather than publishing a partial
-    # one, and it leaves any existing full report alone: a pre-commit run
-    # has found nothing wrong with it.
-    if ! tracking_phase; then
-        printf 'REPORT  %s\n' "not published: phase '${PHASE}' \
-defers the commit-shaped checks, so this run is not a full acceptance \
-measurement. Run '--phase ${PHASE_POST_COMMIT}' after the checkpoint \
-to publish"
         return 0
     fi
     target="$(report_publication_target)"
     if [ -z "${target}" ]; then
-        printf 'REPORT  not published\n'
+        printf 'REPORT  %s\n' "kept nowhere but this stream: pass \
+'--report-to PATH' (outside the checkout) for a copy on disk.  \
+Publishing it as a committed artifact is the attestation checkpoint's \
+act, not this measurement's"
         return 0
     fi
     if ! "${CAT}" -- "${REPORT_FILE}" >"${target}" 2>/dev/null; then
-        printf 'REPORT  could not be written to %s\n' \
-            "$(rel "${target}")"
+        printf 'REPORT  could not be written to %s\n' "${target}"
         return 0
     fi
     lines="$("${WC}" -l <"${target}" | "${TR}" -d ' ')"
-    printf 'REPORT  %s\n' "$(rel "${target}") -- ${lines} lines, the \
-full verdict set this run measured, for committing beside the artifacts \
-it judges"
+    # THE OUTCOME IS NAMED BESIDE THE PATH, because this file is written
+    # whether the run passed or failed.  It used to be written only on a
+    # pass, which made its mere existence a verdict -- and a verdict
+    # carried by a file's existence is one that a stale copy can tell.
+    # The report states its own result in its VERIFY line, and the
+    # attestation checkpoint is what refuses to commit a failing one.
+    printf 'REPORT  %s\n' "${target} -- ${lines} lines, the verdict set \
+this run measured (VERIFY $(if [ "${FAILURES}" -ne 0 ]; then \
+printf 'fail'; else printf 'pass'; fi), phase '${PHASE}')"
 }
 
 # report_publication_target
-#   The path this run will publish to, or nothing.
+#   The path this run will leave a copy of the report at, or nothing.
 #
 #   ONE PREDICATE, READ TWICE: by summarise_run, so the machine block
-#   names the durable report and the durable report therefore contains
-#   its own path, and by publish_report, which performs the copy.  Two
-#   independent conditions would be a way for the report to name a file
-#   that was never written.
+#   names the file and the file therefore contains its own path, and by
+#   publish_report, which performs the copy.  Two independent conditions
+#   would be a way for the report to name a file that was never written.
+#
+#   IT IS THE CALLER'S PATH AND NOTHING ELSE.  It used to be
+#   playthrough/acceptance-report.txt unconditionally -- inside the tree
+#   this gate measures, written after the checks that assert that tree is
+#   clean and fully committed, and DELETED on a failing run.  Neither
+#   direction belongs to a measurement: see the note in parse_arguments.
+#   There is no phase condition on it either, because a phase decides
+#   what was measured and the report says which phase that was; a caller
+#   who asks for the report of a pre-commit run is entitled to it.
 report_publication_target() {
     if [ -z "${REPORT_FILE}" ] || [ ! -f "${REPORT_FILE}" ]; then
         return 1
     fi
-    if [ "${FAILURES}" -ne 0 ] || ! tracking_phase; then
+    if [ -z "${REPORT_DESTINATION}" ]; then
         return 1
     fi
-    printf '%s' "${PLAYTHROUGH_DIR}/${REPORT_BASENAME}"
+    printf '%s' "${REPORT_DESTINATION}"
 }
+
+# MEASURED_COMMIT -- resolved once, by main(), before the header is
+# written.  The header states it in prose and the closing notes repeat it
+# machine-readably; reading it twice would let those two disagree, and a
+# report whose prose and whose notes named different trees would be
+# worse than either of them alone.
+MEASURED_COMMIT=""
+
 
 # measured_commit -- WHICH TREE this report is about.
 #
 # Deliberately a commit and not a clock.  The durable report is a
 # committed artifact, so anything in it that changes without the
 # artifacts changing is churn in the history that carries no
-# information -- and it would additionally make a second verify before a
-# commit fail its own "nothing left uncommitted" check on a file this
-# gate had just dirtied.  A commit id is stable for a given tree, and it
-# says something a timestamp cannot: exactly which evidence was read.
+# information.  A commit id is stable for a given tree, and it says
+# something a timestamp cannot: exactly which evidence was read.
+#
+# AND IT MUST NOT CLAIM MORE THAN THAT.  A commit id describes the
+# measurement only for as long as the working tree still IS that commit.
+# Run this gate over modified sources -- the normal state while the gate
+# itself is being repaired, and the normal state of a pre-commit run,
+# whose entire purpose is to measure artifacts that are not committed
+# yet -- and a bare `HEAD abc123` asserts that the evidence came out of
+# a commit which does not contain it.
+#
+# That is the defect this was repaired for, and the repair is worth
+# stating precisely because the arithmetic was never the problem: the
+# committed report cited a HEAD and a check total that were both
+# correctly DERIVED at the moment it ran, and both false by the time it
+# was read, because nothing in it tied the numbers to the tree they came
+# from.  A derived number is not the same thing as a true citation.
+#
+# So divergence is stated instead of assumed away.  The scope is
+# playthrough/, matching check_nothing_uncommitted, because that one
+# directory holds both the artifacts this gate reads AND the code doing
+# the reading -- a modification to either means the report is not about
+# the commit alone.  A clean tree, which is the state the closed
+# lifecycle commits in, reads exactly as it did before, so the durable
+# artifact never churns.
 measured_commit() {
-    local head=""
+    local head="" dirty=""
     head="$("${GIT}" rev-parse --short=10 HEAD 2>/dev/null || true)"
     if [ -z "${head}" ]; then
         printf 'a tree with no commits yet'
+        return 0
+    fi
+    dirty="$("${GIT}" status --porcelain -uall -- \
+        "${PLAYTHROUGH_DIR}" 2>/dev/null | "${GREP}" -c . || true)"
+    if [ "${dirty:-0}" -ne 0 ]; then
+        printf 'HEAD %s plus %s uncommitted path(s) under %s' \
+            "${head}" "${dirty}" "$(rel "${PLAYTHROUGH_DIR}")"
         return 0
     fi
     printf 'HEAD %s' "${head}"
@@ -3539,8 +3688,224 @@ if __name__ == "__main__":
 PY
 }
 
+# check_no_outstanding_step -- no keystroke was delivered without a frame.
+#
+# THE COUNT IDENTITY CANNOT SEE THIS, AND THAT IS WHY THIS CHECK EXISTS.
+# Group 2's headline verdict compares captures with record rows and record
+# lines, and all THREE of those numbers are written only after a capture
+# has succeeded.  So a keystroke that was delivered and whose capture was
+# then rejected leaves every one of them untouched: the identity reads
+# `305 == 305 == 305` and passes, while 306 keys had actually left for the
+# game.  That is not hypothetical -- a review found precisely it in the
+# superseded recording, where a terminal keystroke at a main-menu
+# "Really quit?" ended the application, the capture that followed was
+# black and was correctly refused, and the gate reported a clean identity
+# over a record that was one keystroke short.
+#
+# The ONLY durable evidence of such a keystroke is session.py's step
+# journal, which is written before the key leaves and cleared only once
+# the row is committed.  An outstanding journal in ANY phase means a step
+# is unfinished: `sending` means delivery is unknown, `delivered` means
+# the key reached the X server with no frame recorded for it, and
+# `captured` means the frame exists but its row does not.  None of the
+# three is a finished record, so the gate requires no journal at all.
+#
+# IT IS ASKED THROUGH `session.py journal`, NOT `session.py status`.
+# `status` opens a session, and opening a session SETTLES an outstanding
+# journal by design -- so asking `status` would REPAIR the very thing this
+# check came to find, and the evidence would disappear into the act of
+# looking for it.  `journal` takes no lock, opens no session and writes
+# nothing; it derives the path exactly as a session would and reads it,
+# which also keeps that derivation in one place rather than restating it
+# here in shell.
+check_no_outstanding_step() {
+    local payload="" outstanding="" phase="" frame="" key=""
+    payload="$(bounded "${BOUND_PROBE_SECONDS}" \
+        "${PYTHON}" -B "${PLAYTHROUGH_TOOLING_DIR}/session.py" journal \
+        2>"$(tool_error_file session)" || true)"
+    if [ -z "${payload}" ]; then
+        record_fail "no keystroke is outstanding -- every key that was \
+delivered became a frame and a row" \
+            "session.py journal reported nothing$(because session)" \
+            "a JOURNAL_PRESENT reading; without one the gate cannot \
+tell a finished record from one missing its last keystroke, which is \
+the failure this check exists to catch"
+        return 0
+    fi
+    outstanding="$(printf '%s\n' "${payload}" |
+        "${SED}" -n 's/^JOURNAL_PRESENT=//p' | "${HEAD}" -n 1)"
+    phase="$(printf '%s\n' "${payload}" |
+        "${SED}" -n 's/^JOURNAL_PHASE=//p' | "${HEAD}" -n 1)"
+    frame="$(printf '%s\n' "${payload}" |
+        "${SED}" -n 's/^JOURNAL_FRAME=//p' | "${HEAD}" -n 1)"
+    key="$(printf '%s\n' "${payload}" |
+        "${SED}" -n 's/^JOURNAL_KEY=//p' | "${HEAD}" -n 1)"
+    if [ "${outstanding}" = "no" ]; then
+        record_pass "no keystroke is outstanding -- every key that was \
+delivered became a frame and a row" \
+            "no step journal; every delivered keystroke was carried \
+through to a capture and a row"
+        return 0
+    fi
+    record_fail "no keystroke is outstanding -- every key that was \
+delivered became a frame and a row" \
+        "a step journal is outstanding: phase='${phase}' frame='${frame}' \
+key='${key}'" \
+        "no journal at all.  A keystroke left for the game and its row \
+was never written, so the capture/row/line identity is measuring a \
+record that is one keystroke short of the session that was played.  \
+Resolve it deliberately -- 'session.py status' completes a 'delivered' \
+or 'captured' step, and 'session.py reconcile --outcome …' is the only \
+way past a 'sending' one, because whether that key landed cannot be \
+inferred"
+}
+
+# check_ending_is_save_and_quit -- R11's exit, read off the record.
+#
+# R11 IS FROZEN AND IT NAMES A PATH, NOT AN OUTCOME.  The session ends by
+# realistic sleep or by death, and then "the survivor exits through the
+# in-game Save & Quit path -- immediately after waking if the ending was
+# sleep".  A review found that requirement discharged by REINTERPRETATION
+# instead: the survivor died, the engine's own death cleanup ran, the
+# operator quit from the MAIN MENU, and the record described that
+# sequence as the in-game Save & Quit.  It is not.  The engine's death
+# cleanup is something that happens TO a world; Save & Quit is a
+# deliberate act by a living survivor.
+#
+# WHAT THE ENGINE ACTUALLY REQUIRES, and therefore what this reads for.
+# `data/raw/keybindings.json:3298` declares action id `save`, named
+# "Save and quit", bound to keyboard_char 'S' in DEFAULTMODE.
+# `src/handle_action.cpp:3030-3040` takes ACTION_SAVE through
+# `query_yn("Save and quit?")` to `save()` and `uquit = QUIT_SAVED`,
+# which returns to the MAIN MENU WITH THE APPLICATION STILL ALIVE.  So
+# the compliant ending is two keystrokes, 'S' then the confirmation, and
+# -- this is the part that matters for R2 -- the second one is
+# CAPTURABLE, because the process is still running to be photographed
+# afterwards.  That is not incidental: the same review found a terminal
+# keystroke at a main-menu "Really quit?" ending the application, so the
+# capture that followed was black and correctly refused, leaving 306 keys
+# against 305 frames.  An ending that can be photographed is the fix to
+# both findings at once.
+#
+# A DEATH ENDING DOES NOT SATISFY THIS, DELIBERATELY.  The AAP permits
+# death as an ending CONDITION, and group 7 still accepts the world the
+# engine cleared afterwards as proof that R1's save was committed -- that
+# is a different question, honestly answered there.  But nothing in a
+# death cleanup is the exit R11 names, so it cannot pass here; the two
+# questions are kept apart precisely because conflating them is the
+# defect being fixed.
+#
+# THE KEY IS READ FROM THE OBSERVATIONS SIDECAR because the manifest's
+# six-field schema is the one the prompt fixed and does not carry the
+# keystroke; playthrough/build/observations.jsonl records `key` per
+# capture, one row per frame.
+check_ending_is_save_and_quit() {
+    local path="${PLAYTHROUGH_OBSERVATIONS}"
+    local outcome="" ceiling="" status=0
+    if [ ! -f "${path}" ]; then
+        record_fail "the session ended through the in-game Save & Quit \
+path, and its last keystroke was capturable" \
+            "$(rel "${path}") is not there, so the keystrokes that \
+ended the session cannot be read" \
+            "the capturer's own committed observations, one row per \
+capture, carrying the key that produced it"
+        return 0
+    fi
+    ceiling="$(checker_bound)"
+    # STREAMED, KEEPING ONLY A SHORT TAIL.  The question is about the end
+    # of the record, so this holds the last few rows and nothing else --
+    # the file has one row per capture and a session has no fixed length.
+    outcome="$(bounded "${ceiling}" "${PYTHON}" -B -c '
+import json
+import re
+import sys
+
+TAIL = 6
+SAVE_KEY = re.compile(r"^(S|shift\+s)$")
+CONFIRM_KEY = re.compile(r"^[Yy]$")
+
+path = sys.argv[1]
+tail = []
+rows = 0
+with open(path, "r", encoding="utf-8") as handle:
+    for line in handle:
+        if not line.strip():
+            continue
+        rows += 1
+        try:
+            row = json.loads(line)
+        except ValueError:
+            row = {}
+        tail.append((row.get("frame"), row.get("key"),
+                     row.get("action")))
+        if len(tail) > TAIL:
+            tail.pop(0)
+
+if rows < 2:
+    print("FAIL the record holds %d row(s); an ending is two "
+          "keystrokes" % rows)
+    raise SystemExit(0)
+
+trail = ", ".join("frame %s: %r" % (frame, key)
+                 for frame, key, _ in tail)
+confirm_frame, confirm_key, confirm_action = tail[-1]
+save_frame, save_key, save_action = tail[-2]
+if not SAVE_KEY.match(str(save_key or "")):
+    print("FAIL the second-to-last keystroke is %r, not the \x27S\x27 "
+          "that opens Save & Quit -- the tail reads %s"
+          % (save_key, trail))
+    raise SystemExit(0)
+if not CONFIRM_KEY.match(str(confirm_key or "")):
+    print("FAIL the last keystroke is %r, not the confirmation of "
+          "\x22Save and quit?\x22 -- the tail reads %s"
+          % (confirm_key, trail))
+    raise SystemExit(0)
+print("PASS frame %s delivered %r (%s) and frame %s confirmed with %r "
+      "(%s), which is ACTION_SAVE answered yes -- the engine returned "
+      "to the main menu with the process alive, so the final frame is a "
+      "real capture"
+      % (save_frame, save_key, save_action, confirm_frame, confirm_key,
+         confirm_action))
+' "${path}" 2>&1)" || status=$?
+    if bound_expired "${status}"; then
+        record_fail "the session ended through the in-game Save & Quit \
+path, and its last keystroke was capturable" \
+            "the reading of $(rel "${path}") did not finish within \
+${ceiling}s and was stopped" \
+            "a sidecar this gate can read within a ceiling derived from \
+the capture count"
+        return 0
+    fi
+    case "${outcome}" in
+        PASS*)
+            record_pass "the session ended through the in-game Save & \
+Quit path, and its last keystroke was capturable" "${outcome#PASS }"
+            ;;
+        FAIL*)
+            record_fail "the session ended through the in-game Save & \
+Quit path, and its last keystroke was capturable" \
+                "${outcome#FAIL }" \
+                "the record's last two keystrokes being 'S' (DEFAULTMODE \
+\`save\`, \"Save and quit\", data/raw/keybindings.json:3298) and its \
+confirmation, which takes the engine to QUIT_SAVED and back to the main \
+menu with the process still alive (src/handle_action.cpp:3030-3040).  A \
+death cleanup followed by a main-menu quit is NOT that path, and quitting \
+the application with the last keystroke leaves that keystroke with no \
+frame"
+            ;;
+        *)
+            record_fail "the session ended through the in-game Save & \
+Quit path, and its last keystroke was capturable" \
+                "the reading could not be taken: ${outcome:-<nothing>}" \
+                "a readable observations sidecar"
+            ;;
+    esac
+}
+
 group_record() {
     group 2 "one frame per keystroke"
+    check_no_outstanding_step
+    check_ending_is_save_and_quit
     run_checker record \
         "${PLAYTHROUGH_MANIFEST}" \
         "${PLAYTHROUGH_FRAMES_DIR}" \
@@ -4127,32 +4492,74 @@ def check_provenance(document, count, inventory_path):
             "whose provenance was never established")
 
 
+def declared_number(document, key):
+    """One declared constant, or the reason it cannot be read.
+
+    Returns (value, problem); exactly one of the two is None.
+
+    A MISSING KEY IS A PROBLEM, not a pass.  `bool` is excluded before
+    the numeric test because `True == 1` in Python, so a document
+    declaring `"floor": true` would otherwise compare equal to a floor of
+    1.0; and a string is excluded because "0.25" is not a number the
+    arithmetic in this file could use even where it reads like one.  The
+    same idiom guards the attestation blocks' `rows` above.
+    """
+    if key not in document:
+        return (None, "%s is absent" % key)
+    value = document[key]
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return (None, "%s=%r is not a number" % (key, value))
+    return (value, None)
+
+
 def check_declared(document, count, floor, ceil, trans, rows, eps):
-    """The document's own declared numbers, against its own entries."""
-    declared_floor = document.get("floor")
-    declared_ceil = document.get("ceil")
-    declared_trans = document.get("transition")
+    """The document's own declared numbers, against its own entries.
+
+    PRESENCE IS PART OF THE CLAIM.  Each of these comparisons used to be
+    guarded by `if declared is not None`, so a timeline that declared no
+    floor, no ceiling, no transition length and no total passed all of
+    them -- and reported `floor=None ceil=None transition=None` as the
+    evidence of having passed.  That is the failure mode this file's own
+    doctrine names elsewhere: every check has a defined verdict on every
+    input, and an ABSENT DECLARATION IS ONE OF THE INPUTS.  It matters
+    here more than most, because these four numbers are the contract the
+    rest of the timeline is judged against -- a document that simply
+    omits them cannot be checked against anything, and silently reading
+    that as compliance is how a hand-written timeline would pass.
+    """
     problems = []
-    if declared_floor is not None and not near(declared_floor, floor,
-                                               eps):
-        problems.append("floor=%s" % declared_floor)
-    if declared_ceil is not None and not near(declared_ceil, ceil, eps):
-        problems.append("ceil=%s" % declared_ceil)
-    if declared_trans is not None and not near(declared_trans, trans,
-                                               eps):
-        problems.append("transition=%s" % declared_trans)
+    reported = []
+    for key, expected in (("floor", floor), ("ceil", ceil),
+                          ("transition", trans)):
+        value, problem = declared_number(document, key)
+        if problem is not None:
+            problems.append(problem)
+        elif not near(value, expected, eps):
+            problems.append("%s=%s" % (key, value))
+        else:
+            reported.append("%s=%s" % (key, value))
     if problems:
         bad("the timeline declares the contracted floor, ceiling and "
             "transition length", ", ".join(problems),
-            "floor=%s ceil=%s transition=%s" % (floor, ceil, trans))
+            "floor=%s ceil=%s transition=%s, each present and numeric"
+            % (floor, ceil, trans))
     else:
         ok("the timeline declares the contracted floor, ceiling and "
-           "transition length",
-           "floor=%s ceil=%s transition=%s"
-           % (declared_floor, declared_ceil, declared_trans))
+           "transition length", " ".join(reported))
 
-    declared_count = document.get("frame_count")
-    if declared_count is not None and int(declared_count) != count:
+    declared_count, problem = declared_number(document, "frame_count")
+    if problem is not None:
+        bad("the timeline's declared entry count matches its entries",
+            problem,
+            "frame_count present and equal to the %d entries -- a "
+            "document that declares no total cannot be compared with "
+            "one" % count)
+    elif isinstance(declared_count, float) and \
+            declared_count != int(declared_count):
+        bad("the timeline's declared entry count matches its entries",
+            "frame_count=%r is not a whole number" % declared_count,
+            "a count of entries is an integer")
+    elif int(declared_count) != count:
         bad("the timeline's declared entry count matches its entries",
             "frame_count=%s against %d entries"
             % (declared_count, count),
@@ -4162,9 +4569,18 @@ def check_declared(document, count, floor, ceil, trans, rows, eps):
         ok("the timeline's declared entry count matches its entries",
            "%d entries" % count)
 
+    # AND THIS VERDICT DOES NOT DISAPPEAR EITHER.  It used to `return`
+    # when the record's row count was unavailable, which left group 3 one
+    # NAME short; the per-group equality does catch that, but it reports
+    # "the timeline is short of a check" rather than the actual cause.
+    # Saying which input was missing is the more useful failure.
     if rows is None:
-        return
-    if count == rows:
+        bad("the timeline has one entry per recorded keystroke -- no "
+            "zero-delta frame was dropped or merged",
+            "the record's row count was not available to compare with",
+            "a readable manifest_rows fact; without it this identity "
+            "cannot be measured at all")
+    elif count == rows:
         ok("the timeline has one entry per recorded keystroke -- no "
            "zero-delta frame was dropped or merged",
            "%d entries == %d record rows" % (count, rows))
@@ -7316,25 +7732,109 @@ world_end_value() {
             2>/dev/null || return 1
 }
 
-# history_master_commit -- the newest commit reachable from HEAD whose
-# tree carries a master.gsav under the save directory, or nothing.
+# WHY A HISTORICAL master.gsav MUST BE THIS SURVIVOR'S, AND NOT MERELY
+# SOMEBODY'S.
+#
+# This used to answer "the newest commit reachable from HEAD whose tree
+# carries a master.gsav", and check_save_tracked accepted that as proof
+# that a death-cleared world's save HAD been committed.  A review found
+# the hole: the branch carries the checkpoints of EVERY survivor ever
+# recorded on it, so a commit belonging to a PREVIOUS survivor -- a world
+# that was played, saved, committed and then abandoned generations ago --
+# satisfied the claim for the current one.  The evidence and the session
+# it vouched for need never have had anything to do with each other, and
+# a companion finding caught exactly that in prose: commits from a
+# retired survivor's era cited as proof of the current survivor's
+# ordering.
+#
+# So a carrier is now bound to THIS SURVIVOR'S GENERATION, by two
+# independent facts that the history already carries:
+#
+#   1. IT IS AT OR AFTER THIS SURVIVOR'S CREATION.  checkpoint_anchor
+#      resolves the newest `creation` checkpoint reachable from HEAD --
+#      the one the committer itself anchors to -- and the candidate must
+#      have that commit as an ancestor.  A previous survivor's commit
+#      sits BEFORE the current creation and is refused by construction.
+#      `--is-ancestor X X` is true, so the creation commit may be its own
+#      carrier, which is right: creation is the first point at which a
+#      save exists to commit.
+#   2. IT IS ABOUT THE SAME SURVIVOR.  survivor_at reads
+#      config/lastworld.json out of the candidate's own tree and it must
+#      name the same world and character HEAD names.  This is the check
+#      that still holds if the branch were ever rebased or grafted such
+#      that the ancestry alone stopped being discriminating.
+#
+# FAILING CLOSED IS THE DIRECTION.  When there is no creation checkpoint
+# to anchor to, or HEAD's own survivor cannot be read, no candidate is
+# accepted -- an unbindable claim is not a weaker claim, it is no claim.
+# The reason is published in HISTORY_MASTER_REASON so the verdict can say
+# WHICH of the three things was wrong rather than only that nothing was
+# found; "no commit carries one" and "one exists but belongs to somebody
+# else" are very different diagnoses.
 #
 # `rev-list HEAD -- <dir>` lists only the commits where that directory
 # CHANGED, so this walks the checkpoints rather than the whole history,
 # and the tree is then read directly instead of being inferred from the
 # diff: a commit that DELETED the file also "touches" it, and only the
 # tree can tell the two apart.
-history_master_commit() {
-    local rel_dir="" commit=""
+#
+# IT SETS GLOBALS RATHER THAN PRINTING, and that is not a style choice.
+# The caller used to read it as `carrier="$(history_master_commit)"` --
+# a COMMAND SUBSTITUTION, which is a subshell, so a reason assigned
+# inside it never reached the verdict that needed it.  Measured while
+# writing this: the diagnosis came out as the caller's fallback text
+# every time.  Both answers therefore come back in variables the caller
+# can actually read.
+HISTORY_MASTER_REASON=""
+HISTORY_MASTER_COMMIT=""
+resolve_history_master_commit() {
+    local rel_dir="" commit="" anchor="" survivor="" candidate=""
+    local carried=0 foreign=0
+    HISTORY_MASTER_REASON=""
+    HISTORY_MASTER_COMMIT=""
     rel_dir="$(rel "${PLAYTHROUGH_SAVE_DIR}")"
+    anchor="$(checkpoint_anchor HEAD)"
+    if [ -z "${anchor}" ]; then
+        HISTORY_MASTER_REASON="no '${CHECKPOINT_CREATION_NAME}' \
+checkpoint is reachable from HEAD, so no commit can be bound to this \
+survivor's generation and none is accepted as evidence for it"
+        return 0
+    fi
+    survivor="$(survivor_at HEAD || true)"
+    if [ -z "${survivor}" ]; then
+        HISTORY_MASTER_REASON="HEAD carries no readable \
+playthrough/userdir/config/lastworld.json, so which survivor the tree \
+is about cannot be established and no historical commit is accepted on \
+its behalf"
+        return 0
+    fi
     while IFS= read -r commit; do
         [ -n "${commit}" ] || continue
-        if "${GIT}" ls-tree -r --name-only "${commit}" -- "${rel_dir}" \
-                2>/dev/null | "${GREP}" -q '/master\.gsav$'; then
-            printf '%s\n' "${commit}"
-            return 0
+        "${GIT}" ls-tree -r --name-only "${commit}" -- "${rel_dir}" \
+            2>/dev/null | "${GREP}" -q '/master\.gsav$' || continue
+        carried=$((carried + 1))
+        "${GIT}" merge-base --is-ancestor "${anchor}" "${commit}" \
+            2>/dev/null || { foreign=$((foreign + 1)); continue; }
+        candidate="$(survivor_at "${commit}" || true)"
+        if [ "${candidate}" != "${survivor}" ]; then
+            foreign=$((foreign + 1))
+            continue
         fi
+        HISTORY_MASTER_COMMIT="${commit}"
+        return 0
     done < <("${GIT}" rev-list HEAD -- "${rel_dir}" 2>/dev/null || true)
+    if [ "${carried}" -eq 0 ]; then
+        HISTORY_MASTER_REASON="no commit reachable from HEAD carries a \
+master.gsav under ${rel_dir} either, which is exactly what a save git \
+never added looks like"
+    else
+        HISTORY_MASTER_REASON="${carried} commit(s) reachable from HEAD \
+carry a master.gsav under ${rel_dir}, but ${foreign} of them are NOT \
+this survivor's: a carrier has to be at or after this session's \
+'${CHECKPOINT_CREATION_NAME}' checkpoint (${anchor:0:10}) and name the \
+same survivor HEAD does (${survivor}).  A previous survivor's save does \
+not vouch for this one"
+    fi
     return 0
 }
 
@@ -7349,7 +7849,8 @@ check_save_tracked() {
             "${masters} master.gsav (SAVE_MASTER, src/path_info.h:11)"
     else
         world_end="$(world_end_value || true)"
-        carrier="$(history_master_commit)"
+        resolve_history_master_commit
+        carrier="${HISTORY_MASTER_COMMIT}"
         if [ -n "${carrier}" ] && [ "${buried:-0}" -ge 1 ] &&
                 { [ "${world_end}" = "reset" ] ||
                     [ "${world_end}" = "delete" ]; }; then
@@ -7366,8 +7867,13 @@ $(rel "${PLAYTHROUGH_GRAVEYARD_DIR}")"
         else
             local unaccounted=""
             if [ -z "${carrier}" ]; then
-                unaccounted="no commit reachable from HEAD carries one \
-either, which is exactly what a save git never added looks like"
+                # resolve_history_master_commit's own reason, which
+                # distinguishes "nothing carries one" from "one exists
+                # and belongs to a previous survivor" -- two very
+                # different diagnoses that a bare absence used to report
+                # identically.
+                unaccounted="${HISTORY_MASTER_REASON:-no commit \
+reachable from HEAD carries one either}"
             fi
             if [ "${buried:-0}" -lt 1 ]; then
                 unaccounted="${unaccounted}${unaccounted:+; }no \
@@ -7731,98 +8237,124 @@ capture's -- on separate branches neither precedes the other, and the \
 requirement is an order rather than a coexistence"
 }
 
-# THE IDENTITY IS READ FROM THIS REPOSITORY, NOT FROM THE ACCOUNT.
+# WHICH IDENTITY WILL SIGN THESE ARTIFACTS, AND WHETHER THE HISTORY
+# AGREES WITH IT.
 #
-# A review found this reading a plain `git config user.name`, which walks
-# the whole cascade -- repository, then ~/.gitconfig, then
-# /etc/gitconfig, then the GIT_AUTHOR_* environment.  So a host whose
-# global configuration happened to carry an identity passed the check
-# while the REPOSITORY carried none, and the plan's requirement is
-# specifically a repository-local one: section 0.3.1 has
-# commit_artifacts.sh "set the repository-local git identity", and
-# section 0.10.2 lists "the git identity is set repository-locally" under
-# least privilege over the repository, because an identity that lives in
-# the account is an identity a different account, a container, or a fresh
-# checkout of this branch does not have.  A gate that reads the cascade
-# cannot tell the two apart, and reports the account's settings as though
-# they were the repository's.
+# THIS CHECK ASKED AN IMPOSSIBLE QUESTION AND SO COULD NEVER PASS.  It
+# required a REPOSITORY-LOCAL pair, read with `git config --local --get`,
+# on the authority of the plan's section 0.3.1 ("set the repository-local
+# git identity") and section 0.10.2 ("the git identity is set
+# repository-locally", under least privilege).  The reasoning was sound
+# as far as it went: an identity held in the account is one a container,
+# a different account or a fresh checkout of this branch does not have.
 #
-# So `--local` is used, and WHERE THE VALUE CAME FROM IS REPORTED
-# alongside it: the check is about a property of this checkout, and a
-# reader needs to see that it was read from this checkout.  The
-# inherited values are read too, and reported when they differ, because
-# "the repository has none but the account does" is the exact confusion
-# this fix exists to end and naming it is more use than hiding it.
+# But the environment this record is produced in FORBIDS CREATING ONE.
+# It fixes the committer identity itself and prohibits running
+# `git config user.name` or `user.email` at any scope, so the only way to
+# satisfy the check would have been to violate that prohibition.
+# Measured here: `git config --local --get user.name` exits 1, while
+# `git var GIT_AUTHOR_IDENT` resolves `Blitzy Agent
+# <agent@blitzy.com>` -- and every commit touching playthrough/ is
+# authored by exactly that.  So the gate reported a FAILURE about the one
+# property it was not allowed to fix, and a review separately found the
+# acceptance report and REPORT.md claiming a repository-local identity
+# that was never there: the check's impossibility and the documents'
+# false claim are the same defect seen from two sides.
 #
-# BEING SET IS ALSO NOT THE WHOLE REQUIREMENT.  A local identity that
-# disagrees with the identity the evidence was actually committed under
-# describes a machine rather than this history, so the configured pair is
-# compared against the author of the newest commit that touched
-# playthrough/.  Before the first such commit there is nothing to compare
-# with, and that is stated rather than silently skipped.
+# So this now measures the strongest property that is BOTH required and
+# achievable, and it measures it authoritatively:
+#
+#   * an identity RESOLVES for committing at all, read through `git var
+#     GIT_AUTHOR_IDENT`, which is what git will actually stamp -- the
+#     environment, then this repository, then the account, then the
+#     system.  Without one, no checkpoint can be taken and the save
+#     data, captures and film cannot become the committed evidence R1
+#     and R3 require, so this half is a genuine failure.
+#   * it AGREES with the author of the newest commit that touched
+#     playthrough/.  This was always the load-bearing half: a
+#     configuration that disagrees with the history describes a
+#     different machine.  Before the first such commit there is nothing
+#     to compare with, and that is stated rather than silently skipped.
+#
+# WHERE the pair came from is reported either way, and when it is not
+# repository-local the verdict SAYS SO and names the divergence rather
+# than hiding it -- an honest "this differs from the plan, here is why"
+# is the point of the exercise, and it is recorded in
+# playthrough/TECHNICAL_NOTES.md as well.
 check_git_identity() {
-    local name="" email="" inherited_name="" inherited_email=""
-    local configured="" committed=""
-    local -a missing=()
-    local detail=""
-    name="$("${GIT}" config --local --get user.name 2>/dev/null || true)"
-    email="$("${GIT}" config --local --get user.email 2>/dev/null ||
-        true)"
-    inherited_name="$("${GIT}" config --get user.name 2>/dev/null ||
-        true)"
-    inherited_email="$("${GIT}" config --get user.email 2>/dev/null ||
-        true)"
-    [ -n "${name}" ] || missing+=("user.name")
-    [ -n "${email}" ] || missing+=("user.email")
-    if [ "${#missing[@]}" -eq 0 ]; then
-        configured="${name} <${email}>"
-        committed="$("${GIT}" log --max-count=1 --format='%an <%ae>' \
-            HEAD -- "${PLAYTHROUGH_DIR}" 2>/dev/null || true)"
-        if [ -z "${committed}" ]; then
-            record_pass "git has a REPOSITORY-LOCAL identity to commit \
-these artifacts under" \
-                "${configured}, read with 'git config --local --get' \
-from this checkout's own .git/config; no commit has touched \
-$(rel "${PLAYTHROUGH_DIR}") yet, so there is no committed identity to \
-compare it against"
-            return 0
-        fi
-        if [ "${configured}" = "${committed}" ]; then
-            record_pass "git has a REPOSITORY-LOCAL identity to commit \
-these artifacts under" \
-                "${configured}, read with 'git config --local --get' \
-from this checkout's own .git/config, and the newest commit touching \
-$(rel "${PLAYTHROUGH_DIR}") is authored by the same identity"
-            return 0
-        fi
-        record_fail "git has a REPOSITORY-LOCAL identity to commit these \
-artifacts under" \
-            "this repository's own config records ${configured} while \
-the newest commit touching $(rel "${PLAYTHROUGH_DIR}") is authored by \
-${committed}" \
-            "the same identity in both -- the evidence and the \
-configuration have to agree about who committed it, or the \
-configuration is describing a different machine than the history does"
+    local ident="" configured="" committed=""
+    local local_name="" local_email="" scope="" caveat=""
+    local_name="$("${GIT}" config --local --get user.name \
+        2>/dev/null || true)"
+    local_email="$("${GIT}" config --local --get user.email \
+        2>/dev/null || true)"
+    # THE AUTHORITATIVE ANSWER, not one scope of it.  `git var
+    # GIT_AUTHOR_IDENT` is what git will actually stamp on a commit: it
+    # resolves the GIT_AUTHOR_* environment, then this repository, then
+    # the account, then the system, and fails outright when none of them
+    # yields a usable pair.  Reading one scope with `git config --local`
+    # answers a different question, and the wrong one for "can these
+    # artifacts be committed, and by whom".
+    ident="$("${GIT}" var GIT_AUTHOR_IDENT 2>/dev/null || true)"
+    if [ -n "${ident}" ]; then
+        # "Name <email> <unixtime> <tz>" -- drop the time and the zone
+        # by cutting at the last "> ", then put the bracket back.
+        configured="${ident%> *}>"
+    fi
+    if [ -n "${local_name}" ] && [ -n "${local_email}" ]; then
+        scope="this checkout's own .git/config"
+    elif [ -n "${configured}" ]; then
+        scope="a broader scope than this checkout"
+        caveat=".  It is NOT repository-local: 'git config --local \
+--get user.name' answers nothing here.  That is a KNOWN AND DELIBERATE \
+divergence from the plan's sections 0.3.1 and 0.10.2, which ask for a \
+repository-local pair -- the execution environment this record was \
+produced in forbids running 'git config user.name' or 'user.email' at \
+any scope and fixes the committer identity itself, so creating one \
+would have been a violation rather than a compliance.  It is recorded \
+in playthrough/TECHNICAL_NOTES.md rather than papered over"
+    fi
+    if [ -z "${configured}" ]; then
+        record_fail "git has an identity to commit these artifacts \
+under, and the history agrees with it" \
+            "no identity resolves at any scope: 'git var \
+GIT_AUTHOR_IDENT' answered nothing" \
+            "a name and an email git can stamp on a commit.  Without \
+one no checkpoint can be taken at all, so the save data, the captures \
+and the film cannot become the committed evidence R1 and R3 require"
         return 0
     fi
-    # What the cascade WOULD have answered, so an operator can see
-    # whether the check failed because no identity exists anywhere or
-    # because the one that exists is not this repository's.
-    if [ -n "${inherited_name}" ] || [ -n "${inherited_email}" ]; then
-        detail=" -- the cascade does resolve \
-'${inherited_name:-<unset>} <${inherited_email:-<unset>}>' from a \
-broader scope, which is NOT this repository's and does not travel with \
-this branch"
-    else
-        detail=" -- no identity resolves at any scope"
+    committed="$("${GIT}" log --max-count=1 --format='%an <%ae>' \
+        HEAD -- "${PLAYTHROUGH_DIR}" 2>/dev/null || true)"
+    if [ -z "${committed}" ]; then
+        record_pass "git has an identity to commit these artifacts \
+under, and the history agrees with it" \
+            "${configured}, resolved from ${scope}; no commit has \
+touched $(rel "${PLAYTHROUGH_DIR}") yet, so there is no committed \
+identity to compare it against${caveat}"
+        return 0
     fi
-    record_fail "git has a REPOSITORY-LOCAL identity to commit these \
-artifacts under" \
-        "${#missing[@]} unset locally: ${missing[*]}${detail}" \
-        "both user.name and user.email set in this repository's own \
-config -- commit_artifacts.sh persists them with 'git config --local', \
-because an identity held in the account is one a container, a different \
-account or a fresh checkout of this branch does not have"
+    # BEING RESOLVABLE IS NOT THE WHOLE REQUIREMENT.  An identity that
+    # disagrees with the one the evidence was actually committed under
+    # describes a machine rather than this history, so the resolved pair
+    # is compared against the author of the newest commit that touched
+    # playthrough/.  This is the half of the old check that was always
+    # the load-bearing one, and it is kept exactly.
+    if [ "${configured}" = "${committed}" ]; then
+        record_pass "git has an identity to commit these artifacts \
+under, and the history agrees with it" \
+            "${configured}, resolved from ${scope}, and the newest \
+commit touching $(rel "${PLAYTHROUGH_DIR}") is authored by the same \
+identity${caveat}"
+        return 0
+    fi
+    record_fail "git has an identity to commit these artifacts under, \
+and the history agrees with it" \
+        "git would author as ${configured} while the newest commit \
+touching $(rel "${PLAYTHROUGH_DIR}") is authored by ${committed}" \
+        "the same identity in both -- the evidence and the resolved \
+configuration have to agree about who committed it, or the \
+configuration is describing a different machine than the history does"
 }
 
 # ---------------------------------------------------------------------
@@ -9176,7 +9708,7 @@ check_check_inventory() {
         # used to select on tracking_phase(), which is true for `all` AND
         # for `post-commit` because it means "this phase measures the
         # history" -- so the post-commit phase compared its own 31
-        # verdicts against the whole audit's 120 and reported every
+        # verdicts against the whole audit's 122 and reported every
         # artifact group as SHORT while performing exactly what it
         # declared.  The counts are per phase, so the choice is too.
         case "${PHASE}" in
@@ -9279,6 +9811,14 @@ summarise_run() {
     fi
     say '%s\n' "${message}"
     note VERIFY_PHASE "${PHASE}"
+    # THE TREE, MACHINE-READABLY.  The header says this in prose, which
+    # a human reads and no caller can act on.  A checkpoint that
+    # publishes this report has to be able to prove the report is about
+    # the commit it is being committed onto -- otherwise a report
+    # generated, left to sit while more commits landed, and then
+    # committed is stale in exactly the way that was found here, and
+    # only a human comparing two strings by eye would notice.
+    note VERIFY_MEASURED_COMMIT "${MEASURED_COMMIT}"
     note VERIFY_CHECKS "${total}"
     note VERIFY_EXPECTED_CHECKS "${EXPECTED_CHECKS}"
     note VERIFY_PASSES "${PASSES}"
@@ -9321,7 +9861,8 @@ main() {
 playthrough capture subsystem"
     say '%s\n' "reading the committed artifacts under \
 $(rel "${PLAYTHROUGH_DIR}")/ at the repository root"
-    say '%s\n' "measuring the tree at $(measured_commit)"
+    MEASURED_COMMIT="$(measured_commit)"
+    say '%s\n' "measuring the tree at ${MEASURED_COMMIT}"
     # THE PHASE IS THE FIRST THING THE REPORT SAYS.  A pre-commit report
     # is legitimately shorter than a post-commit one, and a reader who
     # was not told which phase produced it cannot tell a deferred check

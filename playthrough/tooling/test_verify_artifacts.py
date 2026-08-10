@@ -228,6 +228,31 @@ def joined_source():
     return gate_source().replace("\\\n", "")
 
 
+def executable_source():
+    """The gate's text with its COMMENTS removed, continuations joined.
+
+    An assertion that a construct is ABSENT cannot be made against the
+    whole file, because this gate documents the defects it was repaired
+    for -- and it names them in their original spelling, deliberately, so
+    a reader learns what not to reintroduce.  A search for that spelling
+    then finds the warning against it and reports the defect as present.
+
+    Measured here: `resolve_history_master_commit` explains that its
+    caller used to read it as `carrier="$(history_master_commit)"`, and
+    the test asserting that command substitution is gone failed on the
+    sentence saying it had gone.  The same shape cost a finding against
+    supported_env.sh's retired EXIT trap.
+
+    So a comment line is not code: a line whose first non-blank
+    character is `#` is dropped before the continuations are joined.
+    That order matters -- joining first would splice a wrapped comment
+    onto whatever followed it.
+    """
+    kept = [line for line in gate_source().splitlines(True)
+            if not line.lstrip().startswith("#")]
+    return "".join(kept).replace("\\\n", "")
+
+
 def group_table(name):
     """One `readonly -a NAME=( ... )` row of integers, as a list.
 
@@ -258,6 +283,96 @@ def declared(name):
     return sum(group_table(tables[name]))
 
 
+def documented_table():
+    """The per-group table the gate WRITES DOWN, parsed.
+
+    `group_table` reads the executable declaration; this reads the
+    PROSE beside it, so the two can be compared and neither can drift.
+
+    That comparison guards the defect this gate was repaired for.  The
+    committed acceptance report cited a check total that was right when
+    it ran and wrong when it was read -- and the number was DERIVED, not
+    typed, so no amount of care in the emission path would have caught
+    it.  What goes stale is every SECOND copy of a number, and this gate
+    keeps four: the executable tables, this documented table, the
+    spelled-out count of what the pre-commit phase defers, and the
+    totals the README and run_pipeline.sh quote from here.  A copy
+    nobody compares is a copy that is already wrong.
+
+    Returned as (rows, totals), each row being
+    (group number, name, all, pre, post).  The `-` the table prints for
+    a group a phase skips entirely reads as zero, which is what the
+    executable table stores for it.
+    """
+    lines = gate_source().splitlines()
+    head = None
+    for index, line in enumerate(lines):
+        if re.match(r"^#\s+all\s+pre\s+post\s*$", line):
+            head = index
+            break
+    if head is None:
+        raise AssertionError(
+            "verify_artifacts.sh documents no per-group table")
+    rule = None
+    for index in range(head + 1, len(lines)):
+        if re.match(r"^#\s+-{4}\s+-{4}\s+-{4}\s*$", lines[index]):
+            rule = index
+            break
+    if rule is None:
+        raise AssertionError(
+            "the documented per-group table has no totals rule")
+    rows = []
+    for line in lines[head + 1:rule]:
+        match = re.match(
+            r"^#\s+(\d{1,2})\s+(.+?)\s+(\d+|-)\s+(\d+|-)\s+(\d+|-)\s*$",
+            line)
+        if match is None:
+            raise AssertionError(
+                "this row of the documented table does not parse: %r"
+                % line)
+        rows.append((
+            int(match.group(1)),
+            match.group(2),
+            0 if match.group(3) == "-" else int(match.group(3)),
+            0 if match.group(4) == "-" else int(match.group(4)),
+            0 if match.group(5) == "-" else int(match.group(5)),
+        ))
+    totals = re.match(r"^#\s+(\d+)\s+(\d+)\s+(\d+)\s*$",
+                      lines[rule + 1])
+    if totals is None:
+        raise AssertionError(
+            "the documented per-group table states no totals")
+    return rows, tuple(int(value) for value in totals.groups())
+
+
+def group_count():
+    """How many groups the gate declares it has.
+
+    Read separately from the tables because the gate sums its totals by
+    counting from 1 to this number: a table that grew without it would
+    have its last group silently left out of every total, which is the
+    one drift a comparison of the tables against each other could not
+    see.
+    """
+    match = re.search(r"^readonly GROUP_COUNT=(\d+)$", gate_source(),
+                      re.MULTILINE)
+    if match is None:
+        raise AssertionError(
+            "verify_artifacts.sh declares no GROUP_COUNT")
+    return int(match.group(1))
+
+
+def group_names():
+    """The declared group names, index 0 being the unused placeholder."""
+    match = re.search(
+        r"^readonly -a GROUP_NAMES=\(\n(.*?)^\)$", gate_source(),
+        re.MULTILINE | re.DOTALL)
+    if match is None:
+        raise AssertionError(
+            "verify_artifacts.sh declares no GROUP_NAMES table")
+    return re.findall(r'"([^"]*)"', match.group(1))
+
+
 def defines(name):
     """Whether the gate defines a shell function of that name.
 
@@ -280,24 +395,32 @@ class GateInvocation(unittest.TestCase):
     # artifacts is not run from here.
     TIMEOUT = 120
 
-    # THE GATE HAS ONE SIDE EFFECT ON THE REAL TREE, AND THIS SUITE RUNS
-    # THE REAL GATE.
+    # THE GATE NO LONGER HAS A SIDE EFFECT ON THE REAL TREE, AND THIS
+    # HARNESS NO LONGER PRETENDS TO PROTECT IT FROM ONE.
     #
-    # `publish_report` REMOVES a stale playthrough/acceptance-report.txt
-    # whenever a run fails, and it is right to: a passing report from an
-    # earlier tree must not stand as evidence for the artifacts as they
-    # are now.  But several tests here make the gate fail on purpose --
-    # an unresolvable linter, an untrusted override -- and they run it
-    # from the real repository root, so exercising a refusal DELETED a
-    # committed artifact.  Measured: `-k LintCheck` alone reported four
-    # tests OK and left `D playthrough/acceptance-report.txt` behind.
+    # It used to.  `publish_report` wrote playthrough/acceptance-report.txt
+    # on a passing run and REMOVED it on a failing one, and several tests
+    # here make the gate fail on purpose -- an unresolvable linter, an
+    # untrusted override -- from the real repository root.  Measured:
+    # `-k LintCheck` alone reported four tests OK and left
+    # `D playthrough/acceptance-report.txt` behind, so running the tests
+    # silently deleted a committed artifact.  The harness answered that
+    # by taking the file out of the way around every run and writing it
+    # back afterwards.
     #
-    # The file is therefore taken out of the way for the duration of
-    # every run and written back byte-for-byte afterwards.  Removing it
-    # first rather than restoring it later is deliberate: the gate then
-    # finds nothing to remove and nothing to overwrite, so there is no
-    # window in which a concurrent reader sees a half-written report, and
-    # no run from this suite can publish one either.
+    # That protection is now BOTH unnecessary AND worse than nothing.
+    # Unnecessary, because the gate writes only where a caller names with
+    # --report-to and refuses any destination inside the checkout, so no
+    # invocation from here can touch the tree.  Worse than nothing,
+    # because the protection ITSELF unlinked a tracked file and rewrote
+    # it -- a suite whose stated purpose is to disturb nothing had the
+    # only code path in it that did, and a killed interpreter would have
+    # left the artifact deleted for real.
+    #
+    # So the file is READ and never moved, and the assertion is made
+    # against the tree the gate actually left behind.  That is a stronger
+    # reading than the protection was: it measures the guarantee instead
+    # of substituting for it.
     REPORT = os.path.join(PLAYTHROUGH, "acceptance-report.txt")
 
     def report_bytes(self):
@@ -310,23 +433,22 @@ class GateInvocation(unittest.TestCase):
     def run_gate(self, *args, **environment):
         """Run verify_artifacts.sh from the repository root.
 
-        The real acceptance report is preserved across the call, so an
-        assertion made after it is made against an untouched tree.
+        Nothing is moved out of the way first: the gate is required to
+        leave the tree alone, and tests here assert that it did.
         """
-        preserved = self.report_bytes()
-        if preserved is not None:
-            os.unlink(self.REPORT)
-        try:
-            return self._run_gate(*args, **environment)
-        finally:
-            if preserved is not None:
-                with open(self.REPORT, "wb") as handle:
-                    handle.write(preserved)
+        return self._run_gate(*args, **environment)
 
     def _run_gate(self, *args, **environment):
-        """The invocation itself, with no tree protection of its own."""
+        """The invocation itself."""
         env = dict(os.environ)
         env["PYTHONDONTWRITEBYTECODE"] = "1"
+        # AN AMBIENT DESTINATION IS CLEARED.  --report-to defaults to
+        # $PLAYTHROUGH_VERIFY_REPORT_TO, so an operator who exported one
+        # would otherwise have every run in this suite write a report to
+        # it -- and a test that asserts what the gate wrote would be
+        # measuring their shell.  A test that wants a destination passes
+        # one explicitly, and `report_to=None` still removes it.
+        env.pop("PLAYTHROUGH_VERIFY_REPORT_TO", None)
         # The host this suite runs on may be past its release's support
         # date, which the gate reports as a warning rather than a
         # failure.  The waiver is set so the report is identical on a
@@ -401,6 +523,111 @@ class TestThePhaseSurfaceIsClosed(GateInvocation):
 
 class TestTheDeclaredCounts(unittest.TestCase):
     """The three totals, and the classification that separates them."""
+
+    def test_the_documented_table_matches_the_declared_tables(self):
+        """The prose table and the executable tables are one number.
+
+        These totals do not stay inside this file: the README and
+        run_pipeline.sh's help both quote them, and they quote the
+        documented table because that is the copy a human reads.  So the
+        documented copy is held to the executable one here, group by
+        group rather than only in total -- two groups that drift by the
+        same amount in opposite directions leave the total intact and
+        every per-group comparison in the gate wrong.
+        """
+        rows, totals = documented_table()
+        every = group_table("GROUP_CHECKS_ALL")
+        early = group_table("GROUP_CHECKS_PRE_COMMIT")
+        late = group_table("GROUP_CHECKS_POST_COMMIT")
+        groups = group_count()
+        tables = (("GROUP_CHECKS_ALL", every),
+                  ("GROUP_CHECKS_PRE_COMMIT", early),
+                  ("GROUP_CHECKS_POST_COMMIT", late))
+        for name, table in tables:
+            # Index 0 is a deliberate placeholder, so that an index into
+            # these tables IS the group number a reader sees in the
+            # report.  It has to stay zero or every total summed from the
+            # table gains a check belonging to no group at all.
+            self.assertEqual(
+                table[0], 0,
+                msg="%s[0] is not the unused placeholder" % name)
+            # And the table has to stop where the summing loop stops.  It
+            # counts 1..GROUP_COUNT, so an eleventh group appended here
+            # without GROUP_COUNT following it would be declared, would
+            # be compared group by group, and would be missing from all
+            # three totals.
+            self.assertEqual(
+                len(table), groups + 1,
+                msg=("%s holds %d groups and GROUP_COUNT says %d, so "
+                     "the totals do not sum the whole table"
+                     % (name, len(table) - 1, groups)))
+        self.assertEqual(
+            len(group_names()), groups + 1,
+            msg="GROUP_NAMES does not name every declared group")
+        self.assertEqual(
+            len(rows), groups,
+            msg=("the documented table has %d rows against %d declared "
+                 "groups" % (len(rows), groups)))
+        for offset, row in enumerate(rows):
+            number, name, whole, pre, post = row
+            self.assertEqual(
+                number, offset + 1,
+                msg=("the documented table skips or repeats a group "
+                     "number at %r" % name))
+            self.assertEqual(
+                (whole, pre, post),
+                (every[number], early[number], late[number]),
+                msg=("group %d (%s) is documented as %s and declared "
+                     "as %s" % (number, name, (whole, pre, post),
+                                (every[number], early[number],
+                                 late[number]))))
+            self.assertEqual(
+                name, group_names()[number],
+                msg=("group %d is documented as %r and named %r"
+                     % (number, name, group_names()[number])))
+        self.assertEqual(
+            totals, (sum(every), sum(early), sum(late)),
+            msg=("the documented totals are %s and the declared totals "
+                 "are %s" % (totals,
+                             (sum(every), sum(early), sum(late)))))
+
+    def test_the_spelled_out_deferral_count_matches_the_tables(self):
+        """The count the help SPEAKS is the count the tables imply.
+
+        `--phase pre-commit` tells an operator it defers "the fourteen"
+        commit-shaped properties, and the section documenting them
+        names the same figure.  A number spelled in English cannot be
+        summed from anything, so it is checked against the difference of
+        the two declared totals.
+
+        Only those two sites are read, and each by the fixed sentence
+        around it.  The gate spells several other quantities in words --
+        twelve transition images, twenty-three resolved commands,
+        fifteen frames in a chunk -- so a search for number words at
+        large would police the wrong sentences.
+        """
+        deferred = (declared("EXPECTED_CHECKS_ALL") -
+                    declared("EXPECTED_CHECKS_PRE_COMMIT"))
+        names = {12: "twelve", 13: "thirteen", 14: "fourteen",
+                 15: "fifteen", 16: "sixteen", 17: "seventeen",
+                 18: "eighteen", 19: "nineteen", 20: "twenty"}
+        self.assertIn(
+            deferred, names,
+            msg=("the pre-commit phase now defers %d checks, a figure "
+                 "this test cannot spell -- extend the map" % deferred))
+        for pattern in (r"deferring the (\w+) that are",
+                        r"The (\w+) the pre-commit phase defers"):
+            match = re.search(pattern, gate_source(), re.IGNORECASE)
+            self.assertIsNotNone(
+                match,
+                msg=("the gate no longer says %r, so the spelled "
+                     "deferral count cannot be checked against the "
+                     "declared tables" % pattern))
+            self.assertEqual(
+                match.group(1).lower(), names[deferred],
+                msg=("the gate spells the deferred count %r while the "
+                     "declared tables differ by %d (%s)"
+                     % (match.group(1), deferred, names[deferred])))
 
     def test_every_total_is_declared(self):
         self.assertGreater(declared("EXPECTED_CHECKS_ALL"), 0)
@@ -1174,32 +1401,153 @@ class TestTheCheckpointsMustBeThisSession(unittest.TestCase):
         self.assertIn("record_fail", body[marker:marker + 400])
 
 
-class TestTheGitIdentityIsTheRepositorysOwn(unittest.TestCase):
-    """M-04: the identity is read from this checkout, not the cascade."""
+class TestTheGitIdentityIsResolvableAndMatchesTheHistory(
+        unittest.TestCase):
+    """The check asked a question it was FORBIDDEN to make pass.
 
-    def test_the_local_scope_is_what_decides(self):
+    It required a REPOSITORY-LOCAL pair, on the authority of the plan's
+    sections 0.3.1 and 0.10.2, and the reasoning was good as far as it
+    went: an identity in the account is one a container or a fresh
+    checkout does not have.  But the environment this record is produced
+    in fixes the committer identity and forbids running
+    `git config user.name` or `user.email` at any scope, so the only way
+    to satisfy the check was to violate that prohibition -- and the gate
+    therefore reported a permanent FAILURE about the one property it was
+    not allowed to fix.  A companion finding caught the other side of the
+    same defect: the acceptance report and REPORT.md CLAIMING a
+    repository-local identity that was never there.
+
+    So it now measures the strongest property that is both required and
+    achievable: an identity resolves at all, and the history agrees with
+    it.  The second half was always the load-bearing one.
+    """
+
+    def body(self):
         source = gate_source()
         start = source.index("check_git_identity() {")
-        end = source.index("committed_file() {", start)
-        body = source[start:end]
+        return source[start:source.index("committed_file() {", start)]
+
+    def test_the_authoritative_resolution_is_what_decides(self):
+        """`git var GIT_AUTHOR_IDENT` is what git will actually stamp."""
+        body = self.body()
+        self.assertIn("var GIT_AUTHOR_IDENT", body)
+
+    def test_no_identity_at_all_is_the_failure(self):
+        body = self.body()
+        marker = body.index('if [ -z "${configured}" ]; then')
+        self.assertIn("record_fail", body[marker:marker + 600])
+
+    def test_it_is_compared_against_the_committed_author(self):
+        body = self.body()
+        self.assertIn("--format='%an <%ae>'", body)
+        # And a disagreement is a failure, not a note.
+        self.assertIn("describing a different machine", body)
+
+    def test_the_scope_is_reported_either_way(self):
+        """A reader must see WHERE the pair came from."""
+        body = self.body()
         self.assertIn("config --local --get user.name", body)
-        self.assertIn("config --local --get user.email", body)
+        self.assertIn("this checkout's own .git/config", body)
+        self.assertIn("a broader scope than this checkout", body)
 
-    def test_no_cascade_read_decides_the_verdict(self):
-        """The inherited values are reported, never used as the answer."""
-        source = gate_source()
-        start = source.index("check_git_identity() {")
-        end = source.index("committed_file() {", start)
-        body = source[start:end]
-        # The pass is reported from the local values alone.
-        pass_at = body.index("record_pass")
-        self.assertIn("--local --get", body[:pass_at])
-        # The cascade appears only in the failure's explanatory detail.
-        self.assertIn("inherited_name", body)
-        self.assertIn("is NOT this repository", body)
+    def test_the_divergence_from_the_plan_is_stated_not_hidden(self):
+        body = self.body()
+        self.assertIn("0.3.1", body)
+        self.assertIn("0.10.2", body)
+        self.assertIn("TECHNICAL_NOTES.md", body)
 
-    def test_the_check_name_says_which_scope_it_is_about(self):
-        self.assertIn("REPOSITORY-LOCAL identity", gate_source())
+    def test_the_check_name_no_longer_promises_a_local_scope(self):
+        """The name has to describe what is actually measured.
+
+        Read against the JOINED source: every long string in the gate is
+        wrapped at the column limit with a trailing backslash, so a
+        phrase assertion has to read the file the way the shell does.
+        Matching the raw text would fail on where a sentence happened to
+        wrap, which is a fact about the margin rather than about the
+        code.
+        """
+        source = joined_source()
+        self.assertIn(
+            "git has an identity to commit these artifacts under, and "
+            "the history agrees with it", source)
+        # The retired promise, absent from the CODE.  The doc comment
+        # above the check still says the word REPOSITORY-LOCAL, because
+        # explaining which requirement could not be met is the point of
+        # the divergence being recorded rather than hidden.
+        self.assertNotIn("REPOSITORY-LOCAL identity to commit",
+                         executable_source())
+
+
+class TestAHistoricalSaveMustBeThisSurvivors(unittest.TestCase):
+    """A previous survivor's save used to vouch for the current one.
+
+    check_save_tracked accepts a death-cleared world when a commit in
+    history carries the master.gsav the engine later removed.  That
+    resolver answered "the newest reachable commit carrying one", and the
+    branch carries the checkpoints of every survivor ever recorded on it
+    -- so a world played, saved and abandoned generations ago satisfied
+    the claim for today's session.  Measured on this repository: four
+    commits carry one, and the newest names a DIFFERENT WORLD from the
+    one HEAD's lastworld.json names.
+    """
+
+    def body(self):
+        # JOINED, because the diagnoses this resolver publishes are long
+        # sentences wrapped at the column limit; an assertion about a
+        # phrase has to read them as one line, the way the shell does.
+        source = joined_source()
+        start = source.index("resolve_history_master_commit() {")
+        return source[start:source.index("\n}\n", start)]
+
+    def test_the_carrier_must_descend_from_this_creation_checkpoint(self):
+        body = self.body()
+        self.assertIn("checkpoint_anchor HEAD", body)
+        self.assertIn("merge-base --is-ancestor", body)
+
+    def test_the_carrier_must_name_the_same_survivor(self):
+        """Ancestry alone is not enough, and that is measured.
+
+        The newest carrier on this branch IS at-or-after the creation
+        checkpoint and still belongs to another world, so the
+        survivor-identity comparison is the condition that catches it.
+        """
+        body = self.body()
+        self.assertIn("survivor_at HEAD", body)
+        self.assertIn('survivor_at "${commit}"', body)
+
+    def test_an_unbindable_claim_accepts_nothing(self):
+        """No creation checkpoint, or no lastworld.json: fail closed."""
+        body = self.body()
+        anchor_guard = body.index('if [ -z "${anchor}" ]; then')
+        self.assertIn("return 0", body[anchor_guard:anchor_guard + 400])
+        survivor_guard = body.index('if [ -z "${survivor}" ]; then')
+        self.assertIn("return 0",
+                      body[survivor_guard:survivor_guard + 400])
+
+    def test_the_reason_does_not_travel_through_a_subshell(self):
+        """`$( )` is a subshell, so a reason set inside it is lost.
+
+        Measured while writing this: the caller read the resolver with a
+        command substitution and the diagnosis came out as its own
+        fallback text every time.  Both answers come back in globals.
+
+        Read against the EXECUTABLE source, because the resolver's own
+        comment quotes the retired `"$(history_master_commit)"` spelling
+        to say what must not come back -- so searching the whole file for
+        it finds the warning and reports the defect as present.
+        """
+        source = executable_source()
+        self.assertNotIn('"$(history_master_commit)"', source)
+        self.assertNotIn('"$(resolve_history_master_commit)"', source)
+        self.assertIn("resolve_history_master_commit\n", source)
+        self.assertIn('carrier="${HISTORY_MASTER_COMMIT}"', source)
+
+    def test_the_two_absences_are_diagnosed_differently(self):
+        """"Nothing carries one" is not "one belongs to somebody else"."""
+        body = self.body()
+        self.assertIn("never added looks like", body)
+        self.assertIn("NOT this survivor's", body)
+        self.assertIn("does not vouch for this one", body)
 
 
 class TestTheDependencyClosureIsMeasured(unittest.TestCase):
@@ -1448,19 +1796,50 @@ class TestTheReportIsDurable(unittest.TestCase):
         body = source[start:source.index("publish_report()", start)]
         self.assertIn("REPORT_FILE=", body)
 
-    def test_only_a_passing_full_run_publishes(self):
-        source = gate_source()
-        start = source.index("report_publication_target() {")
-        body = source[start:source.index("# measured_commit", start)]
-        self.assertIn('[ "${FAILURES}" -ne 0 ]', body)
-        self.assertIn("tracking_phase", body)
+    def test_the_destination_is_the_callers_and_is_never_conditional(
+            self):
+        """A measurement does not decide where it may be read.
 
-    def test_a_failing_run_removes_a_stale_report(self):
-        source = gate_source()
+        This used to publish to playthrough/acceptance-report.txt on a
+        PASS and delete that file on a FAIL, and both were writes inside
+        the tree being measured -- taken after the very checks that
+        assert the tree is clean and fully committed.  A `--phase all`
+        run after the final checkpoint therefore left the tree dirty in
+        the file it had just certified as committed.
+
+        So the target is the caller's `--report-to` path and nothing
+        else, and it carries NO condition: not the failure count, and
+        not the phase.  A caller who asks for the report of a failing
+        pre-commit run is entitled to it -- the report states its own
+        verdict in its VERIFY line, and refusing to COMMIT a failing one
+        is the attestation checkpoint's job.
+        """
+        source = joined_source()
+        start = source.index("report_publication_target() {")
+        body = source[start:source.index("\n}\n", start)]
+        self.assertIn("REPORT_DESTINATION", body)
+        self.assertNotIn('[ "${FAILURES}" -ne 0 ]', body)
+        self.assertNotIn("tracking_phase", body)
+        self.assertNotIn("PLAYTHROUGH_DIR", body)
+
+    def test_nothing_is_ever_removed_from_the_tree(self):
+        """The stale-report removal is gone, not merely unused.
+
+        A failing run used to delete the previous report so that it could
+        not vouch for artifacts it never measured.  The reasoning was
+        sound and the mechanism was not: it made a gate that promises to
+        write nothing into the working tree delete a tracked file there,
+        and it made the file's mere EXISTENCE a verdict.  The report now
+        names its own outcome beside its path instead.
+        """
+        source = joined_source()
         start = source.index("publish_report() {")
-        end = source.index("report_publication_target()", start)
-        body = source[start:end].replace("\\\n", "")
-        self.assertIn("removed the stale acceptance report", body)
+        body = source[start:source.index("\n}\n", start)]
+        self.assertNotIn("removed the stale acceptance report", body)
+        self.assertNotIn("${RM}", body)
+        # It says which verdict it carries, on every run.
+        self.assertIn("VERIFY ", body)
+        self.assertIn("${PHASE}", body)
 
     def test_the_machine_block_names_the_published_report(self):
         self.assertIn("note VERIFY_REPORT", gate_source())
@@ -1480,16 +1859,75 @@ class TestTheReportIsDurable(unittest.TestCase):
         # unittest prints its own elapsed seconds; they are stripped.
         self.assertIn("s/ in [0-9]+\\.[0-9]+s$//", source)
 
+    def test_the_measured_tree_is_resolved_once(self):
+        """Prose and machine block read one variable, not one function.
+
+        Both state which tree was measured.  Calling the resolver twice
+        would let them disagree -- and a report whose sentence and whose
+        notes named different trees would be worse evidence than either
+        of them alone, because a reader could not tell which was stale.
+        """
+        source = executable_source()
+        self.assertEqual(
+            source.count('MEASURED_COMMIT="$(measured_commit)"'), 1,
+            msg="the measured tree must be resolved exactly once")
+        self.assertIn("measuring the tree at ${MEASURED_COMMIT}", source)
+        self.assertIn('note VERIFY_MEASURED_COMMIT "${MEASURED_COMMIT}"',
+                      source)
+
+    def test_the_measured_tree_is_published_machine_readably(self):
+        """A caller has to be able to act on it, not just read it.
+
+        The checkpoint that publishes this report has to prove the report
+        is about the commit it is being committed onto.  A report
+        generated, left while further commits landed, and only then
+        committed is stale in precisely the way that was found here --
+        and with the tree named in prose alone, nothing but a human
+        comparing two strings by eye would ever notice.
+        """
+        source = joined_source()
+        self.assertIn("note VERIFY_MEASURED_COMMIT", source)
+        # It is published in every phase, not only the passing ones: a
+        # failing report is the one whose provenance matters most.
+        start = source.index("note VERIFY_PHASE")
+        self.assertLess(
+            source.index("note VERIFY_MEASURED_COMMIT"),
+            source.index("if [ \"${FAILURES}\" -eq 0 ]", start),
+            msg="the measured tree must be noted unconditionally")
+
+    def test_the_divergence_probe_is_scoped_to_the_artifacts(self):
+        """And to the code reading them, which share one directory.
+
+        playthrough/ holds both, so one porcelain answers both
+        questions: are the artifacts the committed ones, and is the code
+        that measured them the committed code.  The scope matches
+        check_nothing_uncommitted deliberately -- two different answers
+        to "is this tree the commit" in one gate would be a third copy of
+        a truth that already has too many.
+        """
+        source = joined_source()
+        start = source.index("measured_commit() {")
+        body = source[start:source.index("\n}\n", start)]
+        self.assertIn("status --porcelain -uall", body)
+        self.assertIn('"${PLAYTHROUGH_DIR}"', body)
+        self.assertIn("uncommitted", body)
+
 
 class TestRunningThisSuiteDoesNotDisturbTheTree(GateInvocation):
-    """The gate's one side effect, kept off the real repository.
+    """The gate writes nothing into the tree it measures.
 
-    `publish_report` removes a stale acceptance report when a run fails.
-    That is correct for an operator and destructive for a test suite that
-    runs the real script from the real repository root: before this
-    guard, `-k LintCheck` reported four tests OK and left
-    `D playthrough/acceptance-report.txt` behind, so running the tests
-    silently deleted a committed artifact.
+    This class used to describe a HARNESS guard: `publish_report` removed
+    a stale acceptance report on any failing run, several tests here make
+    the gate fail on purpose from the real repository root, and running
+    them deleted a committed artifact -- so the harness moved the file
+    out of the way and put it back.
+
+    The guarantee is now the GATE'S, which is where it belonged: a
+    measurement that edits what it measures is not one.  The report goes
+    only where --report-to names, that path must lie outside the
+    checkout, and it is validated before a single check runs.  These
+    tests therefore measure the tree the gate left behind, with nothing
+    protecting it.
     """
 
     def test_a_failing_run_leaves_the_committed_report_intact(self):
@@ -1498,13 +1936,39 @@ class TestRunningThisSuiteDoesNotDisturbTheTree(GateInvocation):
             self.skipTest("no acceptance report has been published yet")
         status, _, _ = self.run_gate("--phase", "postcommit")
         self.assertNotEqual(status, 0, msg="that phase must be refused")
+        self.assertEqual(self.report_bytes(), before,
+                         msg="the gate altered a tracked artifact")
+
+    def test_an_in_tree_destination_is_refused_before_anything_runs(
+            self):
+        """The whole class of in-tree write, refused at the argument.
+
+        Named against the real artifact path, so a request to overwrite
+        the committed report is exactly what gets refused -- and it is
+        refused with a usage status rather than measured first and
+        written afterwards.
+        """
+        before = self.report_bytes()
+        status, _, err = self.run_gate("--report-to", self.REPORT)
+        self.assertEqual(status, 2, msg=err[-400:])
+        self.assertIn("INSIDE the working tree", err)
         self.assertEqual(self.report_bytes(), before)
 
-    def test_the_harness_names_the_file_it_protects(self):
-        """A rename of the artifact must not silently disable this."""
-        self.assertTrue(self.REPORT.endswith("acceptance-report.txt"))
-        source = gate_source()
-        self.assertIn('REPORT_BASENAME="acceptance-report.txt"', source)
+    def test_no_in_tree_publication_path_survives_in_the_gate(self):
+        """The artifact's name is not the measurement's to know.
+
+        `REPORT_BASENAME="acceptance-report.txt"` was a constant here and
+        the gate joined it to playthrough/ unconditionally.  Publishing
+        the report is now the attestation checkpoint's act, so the name
+        lives with the stage that PRODUCES the artifact rather than with
+        the stage that is judged by it.
+        """
+        source = executable_source()
+        self.assertNotIn("REPORT_BASENAME", source)
+        self.assertNotIn("acceptance-report.txt", source)
+        # The scratch copy every run keeps for itself is not in the tree.
+        self.assertIn('REPORT_FILE="${SCRATCH}/acceptance-report.md"',
+                      source)
 
 
 class TestTheReportCarriesNoTrailingWhitespace(unittest.TestCase):
@@ -1681,8 +2145,14 @@ class TestADeathEndingLeavesNoLiveWorld(unittest.TestCase):
     """
 
     def helpers(self):
+        # `resolve_history_master_commit` rather than the
+        # `history_master_commit` this once named: the resolver was
+        # renamed when it stopped PRINTING a commit and started setting
+        # both the commit and the reason as globals, because a reason
+        # assigned inside `$( )` never reaches its caller.  The name says
+        # it resolves rather than returns.
         return ("graveyard_save_paths", "graveyard_saves_on_disk",
-                "world_end_value", "history_master_commit")
+                "world_end_value", "resolve_history_master_commit")
 
     def body(self):
         source = joined_source()
@@ -1701,7 +2171,12 @@ class TestADeathEndingLeavesNoLiveWorld(unittest.TestCase):
         body = self.body()
         start = body.index('world_end="$(world_end_value')
         conjunction = body[start:body.index("record_pass", start)]
-        self.assertIn('carrier="$(history_master_commit)"', conjunction)
+        # The resolver is CALLED, not substituted -- it publishes the
+        # carrier and the reason as globals, and the caller reads the
+        # carrier out of one of them.
+        self.assertIn("\n        resolve_history_master_commit\n",
+                      conjunction)
+        self.assertIn('carrier="${HISTORY_MASTER_COMMIT}"', conjunction)
         self.assertIn('[ -n "${carrier}" ]', conjunction)
         self.assertIn('[ "${buried:-0}" -ge 1 ]', conjunction)
         self.assertIn('[ "${world_end}" = "reset" ]', conjunction)
@@ -1716,17 +2191,36 @@ class TestADeathEndingLeavesNoLiveWorld(unittest.TestCase):
         graveyard save is tracked, so `carrier` is empty, the death
         branch is unreachable, and the verdict is a failure that says
         so.
+
+        WHERE THE DIAGNOSIS LIVES MOVED, and this reads it where it is
+        now.  "What a save git never added looks like" used to be written
+        into check_save_tracked's own fallback text; it belongs to the
+        resolver, which is the only code that can tell "nothing carries
+        one" from "one exists and is somebody else's".  So the caller's
+        obligation is narrower and is what is asserted here: it must
+        SURFACE the resolver's reason rather than substitute a fallback
+        of its own that flattens the two cases back together.
         """
         body = self.body()
         self.assertIn("record_fail", body)
-        marker = body.index("no commit reachable from HEAD carries one")
-        self.assertIn("a save git never added looks like",
-                      body[marker:marker + 200])
+        start = body.index('if [ -z "${carrier}" ]; then')
+        branch = body[start:body.index("record_fail", start)]
+        self.assertIn("${HISTORY_MASTER_REASON", branch)
+        # And the resolver, which owns the wording, distinguishes them.
+        resolver = joined_source()
+        resolver = resolver[
+            resolver.index("resolve_history_master_commit() {"):]
+        resolver = resolver[:resolver.index("\n}\n")]
+        self.assertIn("a save git never added looks like", resolver)
 
     def test_history_reads_the_tree_and_not_the_diff(self):
         """A commit that DELETED the file also touches its path."""
         source = joined_source()
-        start = source.index("history_master_commit() {")
+        # The exact name.  `history_master_commit() {` is a SUBSTRING of
+        # `resolve_history_master_commit() {`, so the loose spelling
+        # found the right function by accident and would have gone on
+        # finding something after any future rename.
+        start = source.index("resolve_history_master_commit() {")
         end = source.index("check_save_tracked() {", start)
         body = source[start:end]
         self.assertIn("rev-list HEAD", body)
@@ -1902,6 +2396,144 @@ def load_checker(label):
     code = compile(source[start:end], "<%s checker>" % label, "exec")
     exec(code, module.__dict__)                       # noqa: S102
     return module
+
+
+def load_inline_python(function_name):
+    """The `python -B -c '...'` program a shell check runs, as source.
+
+    The companion to load_checker, for the checks whose decision logic
+    is an inline program rather than an emit_checker block.  It is
+    extractable for the same reason it is readable: those programs are
+    written WITHOUT a literal single quote -- `\\x27` and `\\x22` stand
+    in -- because the shell single-quoted string holding them would
+    otherwise terminate early.  So the first unescaped quote after
+    `-c '` is reliably the end of the program.
+
+    Testing the real source rather than a copy is the whole point.  A
+    test that restated this logic would agree with itself while the gate
+    was wrong, which is exactly the failure a canned stub produces.
+    """
+    source = gate_source()
+    start = source.index("%s() {" % function_name)
+    marker = '"${PYTHON}" -B -c \''
+    opened = source.index(marker, start) + len(marker)
+    return source[opened:source.index("'", opened)]
+
+
+class InlineProgramCase(unittest.TestCase):
+    """Run one inline shell-check program and read its one line."""
+
+    FUNCTION = ""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.program = load_inline_python(cls.FUNCTION)
+
+    def run_program(self, *arguments):
+        """Return the single PASS/FAIL line the program prints."""
+        result = subprocess.run(
+            [sys.executable, "-B", "-c", self.program] + list(arguments),
+            capture_output=True, timeout=120)
+        self.assertEqual(
+            result.returncode, 0,
+            msg=result.stderr.decode("utf-8", "replace"))
+        return result.stdout.decode("utf-8", "replace").strip()
+
+
+class TestTheEndingIsTheOneR11Names(InlineProgramCase):
+    """A death cleanup and a main-menu quit are not Save & Quit.
+
+    R11 is frozen and it names a PATH: the survivor "exits through the
+    in-game Save & Quit path -- immediately after waking if the ending
+    was sleep".  A review found that discharged by reinterpretation --
+    the survivor died, the engine's own cleanup ran, the operator quit
+    from the main menu, and the record called that sequence Save & Quit.
+
+    The engine's contract, which is what these assertions encode:
+    `data/raw/keybindings.json:3298` binds action `save` ("Save and
+    quit") to 'S' in DEFAULTMODE, and
+    `src/handle_action.cpp:3030-3040` takes it through
+    query_yn("Save and quit?") to QUIT_SAVED, which returns to the main
+    menu WITH THE PROCESS ALIVE -- so the confirming keystroke is
+    capturable, which is also the fix to the 306-keys-305-frames defect.
+    """
+
+    FUNCTION = "check_ending_is_save_and_quit"
+
+    def sidecar(self, *keys):
+        """An observations sidecar whose rows carry `keys` in order."""
+        import tempfile
+
+        handle = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".jsonl", delete=False, encoding="utf-8")
+        self.addCleanup(os.unlink, handle.name)
+        with handle:
+            for number, key in enumerate(keys, 1):
+                handle.write(json.dumps({
+                    "frame": number,
+                    "key": key,
+                    "action": "press %r" % key,
+                }) + "\n")
+        return handle.name
+
+    def verdict(self, *keys):
+        return self.run_program(self.sidecar(*keys))
+
+    def test_the_save_and_quit_pair_passes(self):
+        for save_key in ("S", "shift+s"):
+            with self.subTest(save_key=save_key):
+                line = self.verdict("Up", "Return", save_key, "Y")
+                self.assertTrue(line.startswith("PASS"), msg=line)
+                self.assertIn("ACTION_SAVE answered yes", line)
+
+    def test_a_lowercase_confirmation_is_accepted(self):
+        line = self.verdict("s", "S", "y")
+        self.assertTrue(line.startswith("PASS"), msg=line)
+
+    def test_the_superseded_ending_is_refused(self):
+        """Exactly the tail the retired recording actually had."""
+        line = self.verdict("N", "Escape", "N", "Escape", "Escape",
+                            "Escape")
+        self.assertTrue(line.startswith("FAIL"), msg=line)
+        self.assertIn("not the 'S' that opens Save & Quit", line)
+        # And it names what the record really ended with, so the
+        # diagnosis does not require reading the sidecar by hand.
+        self.assertIn("Escape", line)
+
+    def test_a_save_with_no_confirmation_is_refused(self):
+        line = self.verdict("Up", "S", "Escape")
+        self.assertTrue(line.startswith("FAIL"), msg=line)
+        self.assertIn("not the confirmation", line)
+
+    def test_a_confirmation_with_no_save_is_refused(self):
+        """'Y' alone answers some other prompt, not this one."""
+        line = self.verdict("Up", "Escape", "Y")
+        self.assertTrue(line.startswith("FAIL"), msg=line)
+        self.assertIn("not the 'S' that opens Save & Quit", line)
+
+    def test_the_pair_must_be_last(self):
+        """Saving and then playing on is not an ending."""
+        line = self.verdict("S", "Y", "Up", "Down")
+        self.assertTrue(line.startswith("FAIL"), msg=line)
+
+    def test_a_record_too_short_to_hold_an_ending_is_refused(self):
+        for keys in ((), ("Y",)):
+            with self.subTest(keys=keys):
+                line = self.verdict(*keys)
+                self.assertTrue(line.startswith("FAIL"), msg=line)
+                self.assertIn("an ending is two keystrokes", line)
+
+    def test_a_missing_key_field_is_refused_not_crashed(self):
+        import tempfile
+
+        handle = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".jsonl", delete=False, encoding="utf-8")
+        self.addCleanup(os.unlink, handle.name)
+        with handle:
+            handle.write('{"frame": 1}\n')
+            handle.write("this line is not json at all\n")
+        line = self.run_program(handle.name)
+        self.assertTrue(line.startswith("FAIL"), msg=line)
 
 
 class CheckerCase(unittest.TestCase):
@@ -2206,6 +2838,134 @@ class TestTheProvenanceBlocksAreAllRequired(CheckerCase):
             self.assertIn(name, observed)
 
 
+class TestTheDeclaredConstantsMustActuallyBeDeclared(CheckerCase):
+    """An absent declaration used to pass, and say `floor=None`.
+
+    Each of these comparisons was guarded by `if declared is not None`,
+    so a timeline.json that simply omitted `floor`, `ceil`, `transition`
+    and `frame_count` satisfied every one of them -- and the evidence it
+    printed for having passed was the word None four times over.  These
+    four numbers are the contract the rest of the timeline is judged
+    against, so a document that omits them cannot be checked against
+    anything at all; reading that as compliance is exactly how a
+    hand-written timeline would get through.
+    """
+
+    LABEL = "timeline"
+    CONSTANTS = ("the timeline declares the contracted floor, ceiling "
+                 "and transition length")
+    TOTAL = "the timeline's declared entry count matches its entries"
+    PAIRING = ("the timeline has one entry per recorded keystroke -- no "
+               "zero-delta frame was dropped or merged")
+    # The gate's own constants, so this test moves if they do.
+    FLOOR = 0.25
+    CEIL = 10.0
+    TRANS = 1.0
+    EPS = 0.0005
+    COUNT = 3
+
+    def complete(self, **overrides):
+        """A document that declares everything, correctly."""
+        document = {
+            "floor": self.FLOOR,
+            "ceil": self.CEIL,
+            "transition": self.TRANS,
+            "frame_count": self.COUNT,
+        }
+        for key, value in overrides.items():
+            if value is self.ABSENT:
+                document.pop(key, None)
+            else:
+                document[key] = value
+        return document
+
+    ABSENT = object()
+
+    def judge(self, document, name, rows=COUNT):
+        return self.only(
+            lambda: self.checker.check_declared(
+                document, self.COUNT, self.FLOOR, self.CEIL,
+                self.TRANS, rows, self.EPS),
+            name)
+
+    def test_a_complete_declaration_passes(self):
+        """The strictness must not have closed the ordinary path."""
+        for name in (self.CONSTANTS, self.TOTAL, self.PAIRING):
+            kind, _, observed = self.judge(self.complete(), name)
+            self.assertEqual(kind, "PASS", msg="%s: %s"
+                             % (name, observed))
+
+    def test_every_verdict_is_reported_on_every_input(self):
+        """The file's own doctrine: no verdict may disappear."""
+        printed = [name for _, name, _ in self.verdicts(
+            lambda: self.checker.check_declared(
+                {}, self.COUNT, self.FLOOR, self.CEIL, self.TRANS,
+                None, self.EPS))]
+        for name in (self.CONSTANTS, self.TOTAL, self.PAIRING):
+            self.assertIn(name, printed)
+
+    def test_an_absent_floor_ceiling_or_transition_is_refused(self):
+        for key in ("floor", "ceil", "transition"):
+            with self.subTest(key=key):
+                document = self.complete(**{key: self.ABSENT})
+                kind, _, observed = self.judge(document, self.CONSTANTS)
+                self.assertEqual(kind, "FAIL", msg=observed)
+                self.assertIn("%s is absent" % key, observed)
+
+    def test_a_declaration_that_is_not_a_number_is_refused(self):
+        """`true` compares equal to 1 in Python; "0.25" is not a float."""
+        for key, value in (("floor", True), ("floor", "0.25"),
+                           ("ceil", None), ("transition", [1.0]),
+                           ("ceil", "10.0")):
+            with self.subTest(key=key, value=value):
+                document = self.complete(**{key: value})
+                kind, _, observed = self.judge(document, self.CONSTANTS)
+                self.assertEqual(kind, "FAIL", msg=observed)
+                self.assertIn("is not a number", observed)
+
+    def test_a_wrong_constant_is_still_refused(self):
+        document = self.complete(floor=0.5)
+        kind, _, observed = self.judge(document, self.CONSTANTS)
+        self.assertEqual(kind, "FAIL")
+        self.assertIn("floor=0.5", observed)
+
+    def test_an_absent_frame_count_is_refused(self):
+        document = self.complete(frame_count=self.ABSENT)
+        kind, _, observed = self.judge(document, self.TOTAL)
+        self.assertEqual(kind, "FAIL", msg=observed)
+        self.assertIn("frame_count is absent", observed)
+
+    def test_a_frame_count_that_is_not_a_whole_number_is_refused(self):
+        for value in (True, "3", 3.5, None):
+            with self.subTest(value=value):
+                document = self.complete(frame_count=value)
+                kind, _, observed = self.judge(document, self.TOTAL)
+                self.assertEqual(kind, "FAIL", msg=observed)
+
+    def test_a_frame_count_that_disagrees_is_refused(self):
+        document = self.complete(frame_count=self.COUNT + 1)
+        kind, _, observed = self.judge(document, self.TOTAL)
+        self.assertEqual(kind, "FAIL")
+        self.assertIn("against %d entries" % self.COUNT, observed)
+
+    def test_an_integral_float_count_is_accepted(self):
+        """JSON has one number type; 3.0 is a legitimate 3."""
+        document = self.complete(frame_count=float(self.COUNT))
+        kind, _, observed = self.judge(document, self.TOTAL)
+        self.assertEqual(kind, "PASS", msg=observed)
+
+    def test_an_unavailable_row_count_is_reported_not_skipped(self):
+        """It used to `return`, leaving group 3 one NAME short.
+
+        The per-group equality does catch a missing name, but it reports
+        "the timeline is short of a check" rather than the cause.
+        """
+        kind, _, observed = self.judge(self.complete(), self.PAIRING,
+                                       rows=None)
+        self.assertEqual(kind, "FAIL", msg=observed)
+        self.assertIn("not available", observed)
+
+
 class TestAnEmptyTransitionManifestIsAReading(CheckerCase):
     """No frame over the ceiling is a valid session, not a fault."""
 
@@ -2346,27 +3106,30 @@ class TestTheIdentityIsTheRepositorysOwn(unittest.TestCase):
         end = source.index("\n}\n", start)
         return source[start:end]
 
-    def test_the_check_reads_the_local_scope(self):
+    def test_the_check_still_reads_and_reports_the_local_scope(self):
+        """It no longer DECIDES on it -- see the class above for why.
+
+        The local scope is still read, because WHERE the pair came from
+        is part of the verdict a reader needs; what changed is that its
+        absence is no longer a failure, since creating one is forbidden
+        in the environment this record is produced in.
+        """
         body = self.body("check_git_identity")
         for key in ("user.name", "user.email"):
             self.assertIn("config --local --get %s" % key, body)
 
-    def test_the_pass_path_requires_the_local_values(self):
-        """Neither value may be empty, and the report says which was.
+    def test_the_pass_path_requires_a_resolvable_identity(self):
+        """An identity that resolves nowhere is the real failure.
 
-        The guard is an array of the unset names rather than a bare
-        two-term test, so the failure can name user.name, user.email or
-        both -- and the pass path is reachable only when that array is
-        empty.
+        Without one no checkpoint can be taken at all, so the save data,
+        the captures and the film cannot become the committed evidence R1
+        and R3 require.  That is the property worth failing on.
         """
         body = self.body("check_git_identity")
-        self.assertIn('[ -n "${name}" ] || missing+=("user.name")', body)
-        self.assertIn('[ -n "${email}" ] || missing+=("user.email")',
-                      body)
-        self.assertIn('if [ "${#missing[@]}" -eq 0 ]; then', body)
-        # The failure path is the one reached when the array is not
-        # empty, and it reports rather than returning silently.
-        self.assertIn("record_fail", body.rsplit("record_pass", 1)[1])
+        self.assertIn('if [ -z "${configured}" ]; then', body)
+        self.assertIn("no identity resolves at any scope", body)
+        # The failure path is reported rather than returned from silently.
+        self.assertIn("record_fail", body)
 
     def test_it_is_compared_against_the_committed_author(self):
         body = self.body("check_git_identity")
@@ -3508,6 +4271,168 @@ class TestThePhaseDecidesWhatIsMeasured(SyntheticGateFixture):
             'check_nothing_uncommitted\n', phase=PHASE_POST)
         self.assertEqual(recorded.kind_of("nothing under"), "FAIL")
         self.assertEqual(recorded.failures, 1)
+
+
+class TestTheGitIdentityMustAgreeWithTheHistory(SyntheticGateFixture):
+    """The load-bearing half of the identity check, driven for real.
+
+    Its companion class above reads the source; this one runs the check
+    over two real histories, and that division was not free.  A mutation
+    which replaced the comparison with `if true` left every source
+    assertion in the companion passing -- the record_fail and its
+    wording were still THERE, merely unreachable.  A check whose failing
+    branch cannot be reached is a check that always passes, and only
+    driving it says so.
+    """
+
+    # `git var GIT_AUTHOR_IDENT` consults GIT_AUTHOR_* first, so the
+    # resolved identity is pinned here instead of being whatever the host
+    # running this suite happens to have configured.
+    IDENTITY = {"GIT_AUTHOR_NAME": "Blitzy Agent",
+                "GIT_AUTHOR_EMAIL": "agent@blitzy.com",
+                "GIT_COMMITTER_NAME": "Blitzy Agent",
+                "GIT_COMMITTER_EMAIL": "agent@blitzy.com"}
+
+    NAME = "git has an identity"
+
+    def history(self, author=None):
+        """One commit touching playthrough/, by `author` if given."""
+        self.git("init", "--quiet", "-b", "main", ".")
+        self.captures(2)
+        self.git("add", "-A", ".")
+        arguments = ["commit", "--quiet", "-m", "the captures"]
+        if author is not None:
+            arguments.append("--author=%s" % author)
+        self.git(*arguments)
+
+    def verdict(self):
+        return self.drive('GIT="$(command -v git)"\n'
+                          'check_git_identity\n', **self.IDENTITY)
+
+    def test_an_identity_that_matches_the_author_passes(self):
+        self.history()
+        recorded = self.verdict()
+        self.assertEqual(recorded.kind_of(self.NAME), "PASS")
+        self.assertEqual(recorded.failures, 0)
+        self.assertIn("authored by the same identity",
+                      recorded.detail(self.NAME))
+
+    def test_an_author_the_identity_disagrees_with_fails(self):
+        """The disagreement the whole check is named for."""
+        self.history(author="Someone Else <someone@example.invalid>")
+        recorded = self.verdict()
+        self.assertEqual(
+            recorded.kind_of(self.NAME), "FAIL",
+            msg=("a resolved identity that differs from the author of "
+                 "the newest commit touching playthrough/ has to fail: "
+                 "it describes a different machine than the history "
+                 "does"))
+        self.assertEqual(recorded.failures, 1)
+        detail = recorded.detail(self.NAME)
+        self.assertIn("Someone Else <someone@example.invalid>", detail)
+        self.assertIn("Blitzy Agent <agent@blitzy.com>", detail)
+
+    def test_a_history_that_has_not_reached_playthrough_yet_passes(self):
+        """Nothing to disagree with is not a disagreement.
+
+        The check is about whether the configuration and the evidence
+        tell the same story, so before any commit has touched the
+        artifacts there is no story to contradict -- and failing here
+        would make the very first checkpoint unreachable.
+        """
+        self.git("init", "--quiet", "-b", "main", ".")
+        self.write(os.path.join(self.checkout, "unrelated.txt"), "x\n")
+        # ONLY that file.  `git add -A` would sweep in the fixture's own
+        # playthrough/tooling copies and the history would then have
+        # touched playthrough/ after all, which is the opposite of the
+        # state under test.
+        self.git("add", "--", "unrelated.txt")
+        self.git("commit", "--quiet", "-m", "not the artifacts")
+        recorded = self.verdict()
+        self.assertEqual(recorded.kind_of(self.NAME), "PASS")
+        self.assertIn("no commit has touched",
+                      recorded.detail(self.NAME))
+
+
+class TestTheCitedTreeIsTheTreeMeasured(SyntheticGateFixture):
+    """The report names a tree, and it must be THAT tree.
+
+    The committed acceptance report cited a HEAD and a check total, and
+    by the time anyone read it both had moved on.  Neither number was
+    invented: both were derived from the running code, which is exactly
+    why deriving them was not enough.  A commit id describes a
+    measurement only for as long as the working tree still IS that
+    commit, so the gate now says when it is not.
+    """
+
+    def cited(self):
+        """Whatever the report claims to have measured."""
+        _, out, err = self.run_gate("--samples", "2")
+        match = re.search(r"^measuring the tree at (.+)$", out,
+                          re.MULTILINE)
+        self.assertIsNotNone(
+            match,
+            msg=("the report does not say which tree it measured; "
+                 "stderr tail: %s" % err[-400:]))
+        return match.group(1).strip()
+
+    def commit_everything(self):
+        """A sandbox whose tree really is its HEAD."""
+        self.git("init", "--quiet", "-b", "main", ".")
+        self.captures(2)
+        self.git("add", "-A", ".")
+        self.git("commit", "--quiet", "-m", "the artifacts")
+
+    def test_a_tree_with_no_commits_says_so(self):
+        self.captures(2)
+        self.assertEqual(self.cited(), "a tree with no commits yet")
+
+    def test_a_clean_tree_is_cited_as_a_bare_commit(self):
+        """Which is the state the closed lifecycle commits in.
+
+        The durable report must not churn between runs that measured the
+        same evidence, so a clean tree reads exactly as it always did: a
+        commit, and nothing else appended to it.
+        """
+        self.commit_everything()
+        self.assertRegex(self.cited(), r"^HEAD [0-9a-f]{10}$")
+
+    def test_a_modified_tree_is_never_cited_as_a_bare_commit(self):
+        """The false citation, made impossible to repeat."""
+        self.commit_everything()
+        self.write(os.path.join(self.checkout, "playthrough",
+                                "an-uncommitted-artifact.txt"),
+                   "written after the commit\n")
+        cited = self.cited()
+        self.assertNotRegex(cited, r"^HEAD [0-9a-f]{10}$")
+        self.assertIn("uncommitted", cited)
+        self.assertIn("1", cited)
+
+    def test_modified_tooling_counts_as_a_modified_tree(self):
+        """The gate's own source is evidence about the gate's numbers.
+
+        A check total is a property of the code that produced it, and
+        that code sits under playthrough/ beside the artifacts it reads.
+        Editing it and then citing a commit which does not contain the
+        edit is how a total goes stale while every number in the report
+        is still, individually, correctly derived.
+        """
+        self.commit_everything()
+        self.write(os.path.join(self.tooling, "a-new-stage.sh"),
+                   "#!/usr/bin/env bash\n")
+        self.assertIn("uncommitted", self.cited())
+
+    def test_the_prose_and_the_machine_block_name_one_tree(self):
+        self.commit_everything()
+        _, out, _ = self.run_gate("--samples", "2")
+        prose = re.search(r"^measuring the tree at (.+)$", out,
+                          re.MULTILINE)
+        machine = re.search(r"^VERIFY_MEASURED_COMMIT=(.*)$", out,
+                            re.MULTILINE)
+        self.assertIsNotNone(prose, msg="no prose citation")
+        self.assertIsNotNone(machine, msg="no machine citation")
+        self.assertEqual(machine.group(1).strip(),
+                         prose.group(1).strip())
 
 
 class TestAFailureIsNotAReasonToStopMeasuring(SyntheticGateFixture):

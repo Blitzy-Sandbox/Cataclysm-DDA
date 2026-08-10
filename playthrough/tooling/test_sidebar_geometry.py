@@ -1127,6 +1127,41 @@ class TestTheLiveCheckout(unittest.TestCase):
                  "not the 288 px custom_sidebar would imply"))
         self.assertTrue(os.path.isfile(path))
 
+    def test_every_shipped_layout_is_asked_the_clock_question(self):
+        """The crop is worthless if the layout draws no time.
+
+        Asked of the LIVE content tree, because that is what a session
+        records under, and the answer decides whether an alternate
+        persisted preset may be continued at all.  Every preset this
+        checkout ships reaches a widget rendering time_text or
+        sundial_time_text -- the default reaches it through a copy-from
+        chain, which is exactly the edge a walk over `widgets` alone
+        misses.
+        """
+        for identifier in ("legacy_labels_sidebar", "custom_sidebar",
+                           "legacy_classic_sidebar",
+                           "legacy_compact_sidebar",
+                           "legacy_labels_narrow_sidebar",
+                           "my_labels_sidebar",
+                           "my_labels_sidebar_cleaner",
+                           "sidebar-mobile"):
+            with self.subTest(layout=identifier):
+                self.assertTrue(
+                    geometry.layout_shows_the_clock(identifier),
+                    msg=("%s ships in data/json/ui and must be "
+                         "recordable" % identifier))
+
+    def test_a_layout_that_is_not_there_shows_no_clock(self):
+        """A name nothing defines is not a layout that draws a time."""
+        self.assertFalse(
+            geometry.layout_shows_the_clock("no_such_layout_at_all"))
+
+    def test_the_clock_variables_are_the_engine_s_two(self):
+        """Both are exact once the survivor carries a watch."""
+        self.assertEqual(
+            geometry.CLOCK_WIDGET_VARS,
+            ("time_text", "sundial_time_text"))
+
     def test_the_module_imports_nothing_from_requirements(self):
         for name in ("moviepy", "PIL", "pytesseract", "numpy",
                      "imageio", "imageio_ffmpeg"):

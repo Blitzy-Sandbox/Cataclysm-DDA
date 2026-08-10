@@ -227,6 +227,7 @@ class SeedFixture(unittest.TestCase):
             self.root, "playthrough", "userdir", "save")
         self.options_json = os.path.join(self.config, "options.json")
         self.gfx = os.path.join(self.root, "gfx")
+        self.write_sidebar_widgets()
         cleared = {name: None for name in ENVIRONMENT_KEYS}
         self.env = _environment(**cleared)
         self.env.__enter__()
@@ -306,6 +307,40 @@ class SeedFixture(unittest.TestCase):
             handle.write(seed_options.serialize_entries(entries,
                                                         pretty))
         return target
+
+    def write_sidebar_widgets(self, layout_id=None, clock=True,
+                              width=44):
+        """Write a minimal, resolvable widget tree for the crop check.
+
+        verify() no longer compares the active layout's NAME against one
+        id; it RESOLVES that layout to a crop and asks whether the layout
+        draws a clock.  Both need a widget tree, so the fixture ships the
+        smallest one the engine's own shape allows: a `style: sidebar`
+        layout of the given width, one row inside it, and -- unless a
+        test is deliberately building a clock-less preset -- a text
+        widget rendering `time_text`.
+        """
+        identifier = layout_id or sidebar_geometry.DEFAULT_LAYOUT_ID
+        widgets = [
+            {"type": "widget", "id": identifier, "style": "sidebar",
+             "width": width, "widgets": ["fixture_time_row"]},
+            {"type": "widget", "id": "fixture_time_row",
+             "style": "layout", "widgets": ["fixture_clock"]},
+        ]
+        if clock:
+            widgets.append(
+                {"type": "widget", "id": "fixture_clock",
+                 "style": "text", "var": "time_text", "label": "Time"})
+        else:
+            widgets.append(
+                {"type": "widget", "id": "fixture_clock",
+                 "style": "text", "var": "compass_text",
+                 "label": "Compass"})
+        path = os.path.join(self.root, "data", "json", "ui",
+                            "sidebar.json")
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(widgets, handle)
+        return path
 
     def write_raw(self, path, text):
         """Write literal text, for the cases that must be refused."""
@@ -1136,12 +1171,50 @@ class TestTheWorldOptions(SeedFixture):
         self.assertTrue(
             any("left untouched" in note for note in report.notes))
 
-    def test_a_world_without_point_buy_is_warned_about(self):
-        self.write_world("Grimly", "story_teller")
+    def test_an_empty_world_without_point_buy_is_patched(self):
+        """A world with nobody in it is where this survivor is created.
+
+        THE DEFECT THIS PINS.  `auto` used to leave such a world at
+        'story_teller' with a warning, on the reasoning that an existing
+        world is a save to resume.  A world holding NO character save is
+        not: this session creates its survivor inside it, and the world's
+        own worldoptions.json is what the creator obeys
+        [src/worldfactory.cpp:2021-2035] -- so the pool tab could be
+        read-only while the global option said otherwise and every check
+        passed.
+        """
+        world = self.write_world("Grimly", "story_teller")
         report = self.patch()
         self.assertTrue(
-            any("creator pool tab is read-only" in note
+            any("holds no character save" in note
                 for note in report.notes),
+            msg=repr(report.notes))
+        self.assertEqual(
+            seed_options.effective_point_pools(world), "any",
+            msg="the world the survivor will be created in is patched")
+
+    def test_a_world_with_a_survivor_in_it_is_left_alone(self):
+        """An existing survivor's rules are not rewritten behind them."""
+        world = self.write_world("Occupied", "story_teller")
+        with open(os.path.join(os.path.dirname(world), "#QQ==.sav"),
+                  "w", encoding="utf-8") as handle:
+            handle.write("{}")
+        report = self.patch()
+        self.assertTrue(
+            any("character save(s), so its rules" in note
+                for note in report.notes),
+            msg=repr(report.notes))
+        self.assertEqual(
+            seed_options.effective_point_pools(world), "story_teller",
+            msg="a resumed world is continued, never reshaped")
+
+    def test_a_resumed_run_does_not_patch_an_empty_world(self):
+        """`resume` means resume: nothing is rewritten under it."""
+        world = self.write_world("Emptied", "story_teller")
+        with _environment(PLAYTHROUGH_SESSION_MODE="resume"):
+            report = self.patch()
+        self.assertEqual(
+            seed_options.effective_point_pools(world), "story_teller",
             msg=repr(report.notes))
 
     def test_a_resumed_session_says_so_in_the_note(self):
@@ -1396,18 +1469,62 @@ class TestTheRenderGeometryOptions(SeedFixture):
         observed = self.verify()
         self.assertEqual(observed["SIDEBAR_POSITION"], "right")
 
-    def test_another_sidebar_layout_is_refused(self):
+    def test_another_resolvable_clock_bearing_layout_verifies(self):
+        """A persisted alternate preset is not a misconfiguration.
+
+        THE DEFECT THIS PINS.  verify() used to require the layout id to
+        be DEFAULT_LAYOUT_ID and refused every other persisted preset --
+        although sidebar_geometry resolves any of the shipped ones to its
+        own width and computes the crop from that.  An existing save that
+        had persisted one of them could not be continued at all.  What is
+        required is that the layout RESOLVE to a crop and DRAW THE CLOCK,
+        and this is the case that proves the first requirement no longer
+        rejects a name.
+        """
         values = dict(WANTED)
         values["TILES"] = MSX_IDENT
         self.write_options(values)
+        self.write_sidebar_widgets(layout_id="an_alternate_preset",
+                                   width=36)
         panels = os.path.join(self.config, "panel_options.json")
         with open(panels, "w", encoding="utf-8") as handle:
-            json.dump([{"current_layout_id": "labels_narrow",
+            json.dump([{"current_layout_id": "an_alternate_preset",
                         "layouts": []}], handle)
+        observed = self.verify()
+        self.assertEqual(observed["SIDEBAR_POSITION"], "right")
+
+    def test_a_layout_that_draws_no_clock_is_refused(self):
+        """A valid crop over a column with no time in it is useless.
+
+        The clock is the sole authority for every duration in the film,
+        so a layout that resolves perfectly and simply does not show the
+        time would send every duration to the 0.25 s floor and make the
+        pacing fiction.  That is what is checked, instead of a name.
+        """
+        values = dict(WANTED)
+        values["TILES"] = MSX_IDENT
+        self.write_options(values)
+        self.write_sidebar_widgets(clock=False)
         with self.assertRaises(seed_options.SeedError) as bad:
             self.verify()
-        self.assertIn("active sidebar layout", str(bad.exception))
-        self.assertIn("labels_narrow", str(bad.exception))
+        self.assertIn("draws no clock", str(bad.exception))
+        self.assertIn("time_text", str(bad.exception))
+
+    def test_a_layout_whose_crop_cannot_be_computed_is_refused(self):
+        """An unresolvable layout is refused by computation, not by id."""
+        values = dict(WANTED)
+        values["TILES"] = MSX_IDENT
+        self.write_options(values)
+        os.unlink(os.path.join(self.root, "data", "json", "ui",
+                               "sidebar.json"))
+        with self.assertRaises(seed_options.SeedError) as bad:
+            self.verify()
+        self.assertIn("does not resolve to a crop", str(bad.exception))
+
+    def test_the_clock_variables_agree_with_the_geometry_module(self):
+        """Two lists of the same two engine variables must not drift."""
+        self.assertEqual(tuple(seed_options.CLOCK_VARS),
+                         tuple(sidebar_geometry.CLOCK_WIDGET_VARS))
 
     def test_an_unreadable_layout_file_is_a_failure_not_a_default(self):
         values = dict(WANTED)

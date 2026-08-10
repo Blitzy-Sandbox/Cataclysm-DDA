@@ -430,6 +430,13 @@ ENV_TILESET_RESOLVED = "PLAYTHROUGH_TILESET_RESOLVED"
 # [playthrough/tooling/launch_game.sh, probe_save_resume].
 ENV_SESSION_MODE = "PLAYTHROUGH_SESSION_MODE"
 SESSION_MODE_RESUME = "resume"
+SESSION_MODE_CREATE = "create"
+
+# The two widget variables that carry a readable clock, restated here
+# only so that a verification message can name them; sidebar_geometry
+# owns the list and test_seed_options asserts the two agree
+# [src/widget.h:91-92].
+CLOCK_VARS = ("time_text", "sundial_time_text")
 
 # ---------------------------------------------------------------------
 # Paths.  Literal components only -- no value read from the
@@ -2625,23 +2632,62 @@ def _plan_worlds(
                 f"is what is reported below",
                 report.notes)
         if mode == WORLDS_AUTO:
-            detail = (
-                f"world '{world_name}' already exists with "
-                f"{OPT_POINT_POOLS}='{current}' and was left "
-                f"untouched: a run that finds a save resumes it")
-            if session_mode == SESSION_MODE_RESUME:
-                detail += (
-                    f" (${ENV_SESSION_MODE}="
-                    f"{SESSION_MODE_RESUME})")
-            if current not in POINT_POOLS_POINT_BUY:
+            survivors = character_saves_in(os.path.dirname(world_path))
+            # A WORLD WITH NO SURVIVOR IN IT IS NOT A SAVE TO RESUME,
+            # and `auto` used to treat it as one.  A review found the
+            # consequence: this run resolves to CREATE against an
+            # existing empty world -- an interrupted creation, or a
+            # world the engine reset after a death -- and the character
+            # is created INSIDE that world, so the world's own
+            # CHARACTER_POINT_POOLS is what the creator obeys
+            # [src/worldfactory.cpp:2021-2035].  Leaving it at
+            # 'story_teller' with only a note meant the pool tab could
+            # be read-only while the global option said otherwise and
+            # every check passed.  So `auto` now patches exactly that
+            # case, and refuses to leave it unusable:
+            #
+            #   * no character save AND the value is not point-buy
+            #     capable -> patch it, exactly as --worlds patch would,
+            #     and say so;
+            #   * a character save present -> never touched, whatever
+            #     the value.  An existing survivor's world is continued,
+            #     not reshaped: rewriting it would change the rules that
+            #     character was created under.
+            if (not survivors and
+                    current not in POINT_POOLS_POINT_BUY and
+                    session_mode != SESSION_MODE_RESUME):
                 _note(
-                    f"{detail}.  Its creator pool tab is read-only; "
-                    f"re-run with --worlds patch if that world still "
-                    f"needs point-buy",
+                    f"world '{world_name}' holds no character save and "
+                    f"carries {OPT_POINT_POOLS}='{current}', which "
+                    f"makes the creator's pool tab read-only "
+                    f"[src/newcharacter.cpp:462-467].  This session "
+                    f"CREATES a survivor in that world, so the world's "
+                    f"own value is the one the creator obeys "
+                    f"[src/worldfactory.cpp:2021-2035] and it is "
+                    f"patched to '{point_pools}'.  A world with a "
+                    f"character in it is never touched",
                     report.notes)
             else:
-                report.notes.append(detail)
-            continue
+                detail = (
+                    f"world '{world_name}' already exists with "
+                    f"{OPT_POINT_POOLS}='{current}' and was left "
+                    f"untouched: a run that finds a save resumes it")
+                if session_mode == SESSION_MODE_RESUME:
+                    detail += (
+                        f" (${ENV_SESSION_MODE}="
+                        f"{SESSION_MODE_RESUME})")
+                if current not in POINT_POOLS_POINT_BUY:
+                    _note(
+                        f"{detail}.  It holds "
+                        f"{len(survivors)} character save(s), so its "
+                        f"rules are the ones that survivor was created "
+                        f"under and this pipeline does not rewrite "
+                        f"them; the creator's pool tab is read-only "
+                        f"there",
+                        report.notes)
+                else:
+                    report.notes.append(detail)
+                continue
 
         _validated_choice(OPT_POINT_POOLS, point_pools, POINT_POOLS)
         world_target = _validated_target(world_path, root)
@@ -2726,6 +2772,62 @@ def read_values(
             # value is the last occurrence's.
             observed[name] = str(occurrences[-1]["value"])
     return observed
+
+
+def effective_point_pools(
+    world_path: str,
+) -> Optional[str]:
+    """Return the value a world's own options file gives the pool.
+
+    ``None`` when the file carries no such entry at all, which means the
+    world inherits the global world default and the global check is the
+    right one for it.  The LAST occurrence wins, exactly as the engine's
+    in-order deserialisation makes it win.
+    """
+    entries, _pretty = load_entries(world_path)
+    occurrences = _index_entries(entries).get(OPT_POINT_POOLS)
+    if not occurrences:
+        return None
+    return str(occurrences[-1]["value"])
+
+
+def _effective_pool_problems(
+    root: Optional[str], expected: str,
+) -> List[str]:
+    """Return a problem per world whose own pool value blocks point-buy.
+
+    Only worlds with NO character save are held to it: those are the
+    worlds a creating session will put its survivor in.  A world that
+    already holds a survivor is one this pipeline resumes rather than
+    creates in, and its rules are the ones that survivor was made
+    under.
+    """
+    problems: List[str] = []
+    for world_path in world_options_paths(root):
+        world_dir = os.path.dirname(world_path)
+        world_name = os.path.basename(world_dir)
+        if character_saves_in(world_dir):
+            continue
+        try:
+            current = effective_point_pools(world_path)
+        except SeedError as err:
+            problems.append(
+                f"world '{world_name}' has an options file that cannot "
+                f"be read ({err}), so the value the creator would obey "
+                f"there is unknown")
+            continue
+        if current is None or current in POINT_POOLS_POINT_BUY:
+            continue
+        problems.append(
+            f"world '{world_name}' holds no character save and its own "
+            f"{OPT_POINT_POOLS} is {current!r}, so a survivor created "
+            f"there meets a read-only pool tab "
+            f"[src/newcharacter.cpp:462-467] however the global option "
+            f"reads -- a world's own worldoptions.json is authoritative "
+            f"for it [src/worldfactory.cpp:2021-2035].  Expected one of "
+            f"{', '.join(POINT_POOLS_POINT_BUY)} (wanted "
+            f"{expected!r}); seed_options.py --worlds patch writes it")
+    return problems
 
 
 def verify(
@@ -2814,9 +2916,29 @@ def verify(
     # clock outside the cropped column while every option here still
     # read correctly.  The import is local so that verifying an options
     # file stays possible in a tree where the geometry module is absent.
+    # WHAT IS ACTUALLY REQUIRED OF THE LAYOUT, and it is not its NAME.
+    # This used to demand DEFAULT_LAYOUT_ID and reject every other
+    # persisted layout, which a review found wrong on its own terms:
+    # sidebar_geometry resolves any of the shipped presets to its width
+    # in cells and computes the crop from that, so a session running
+    # under legacy_classic_sidebar or the narrow labels preset is
+    # perfectly readable -- and an existing save that had persisted one
+    # of them could not be continued at all.  The two properties that
+    # DO matter are checked instead, and they are checked by
+    # COMPUTATION rather than by comparison against a name:
+    #
+    #   1. the active layout RESOLVES to a crop -- compute_sidebar_geometry
+    #      runs, the width in cells is believable, and the rectangle
+    #      falls inside the captured root;
+    #   2. the layout DRAWS THE CLOCK -- it reaches a widget rendering
+    #      time_text or sundial_time_text, both of which are exact once
+    #      the survivor carries a watch [src/widget.h:91-92].  A layout
+    #      that resolves to a perfectly valid crop over a column with no
+    #      clock in it would send every duration to the floor.
     try:
         from sidebar_geometry import (  # noqa: E402  (local by design)
-            DEFAULT_LAYOUT_ID, GeometryError, read_current_layout_id)
+            GeometryError, compute_sidebar_geometry,
+            layout_shows_the_clock, read_current_layout_id)
     except ImportError as err:                    # pragma: no cover
         problems.append(
             f"the sidebar layout could not be verified because "
@@ -2829,14 +2951,38 @@ def verify(
             problems.append(
                 f"the active sidebar layout could not be read: {err}")
         else:
-            if layout != DEFAULT_LAYOUT_ID:
+            try:
+                geometry = compute_sidebar_geometry(
+                    repo_root_dir=root, layout_id=layout)
+            except GeometryError as err:
                 problems.append(
-                    f"the active sidebar layout is {layout!r} (from "
-                    f"{source}), expected {DEFAULT_LAYOUT_ID!r} -- the "
-                    f"OCR crop is computed from that layout's width in "
-                    f"cells, so another layout puts the clock outside "
-                    f"the cropped column [src/panels.cpp:412-418, "
-                    f":484]")
+                    f"the active sidebar layout {layout!r} (from "
+                    f"{source}) does not resolve to a crop: {err}.  The "
+                    f"clock is read from that rectangle, so a layout "
+                    f"whose geometry cannot be computed cannot be "
+                    f"recorded under")
+            else:
+                LOG.debug("sidebar layout %r resolves to %s",
+                          layout, geometry.rect)
+                # THE ID THE CROP WAS ACTUALLY TAKEN FROM, which is not
+                # always the one on disk: an id that no longer names a
+                # widget falls through the engine's own two fallbacks
+                # [src/panels.cpp:426-431, :548-553], and the clock
+                # question has to be asked of the layout that will be
+                # DRAWN rather than of the name that was asked for.
+                drawn = geometry.sidebar_widget_id or layout
+                if not layout_shows_the_clock(drawn, root=root):
+                    problems.append(
+                        f"the active sidebar layout {layout!r} (from "
+                        f"{source}) resolves to {drawn!r}, which draws "
+                        f"no clock: nothing it contains renders "
+                        f"{' or '.join(CLOCK_VARS)} "
+                        f"[src/widget.h:91-92], so the crop "
+                        f"{geometry.rect} would be read for a time that "
+                        f"is not on the screen and every duration would "
+                        f"fall to the floor.  Choose a layout that "
+                        f"shows the time -- the engine's own default "
+                        f"does")
 
     # THE CHOICE-VALUED GEOMETRY KEYS, checked before the numeric ones
     # so that one call reports every wrong value rather than the first.
@@ -2891,6 +3037,19 @@ def verify(
             f"point-buy: the creator's pool tab is informational and "
             f"read-only [src/newcharacter.cpp:462-467].  Expected one "
             f"of {', '.join(POINT_POOLS_POINT_BUY)}")
+    # AND THE VALUE THE CREATOR WILL ACTUALLY OBEY, which is not the one
+    # above whenever a world already exists.  The global option is only
+    # a world DEFAULT: a world captures it at creation
+    # [src/worldfactory.cpp:2039] and its own worldoptions.json is
+    # authoritative for it afterwards [src/worldfactory.cpp:2021-2035].
+    # A review found this verification checking the global value alone,
+    # so a run could pass every check and still meet a read-only pool
+    # tab.  The EFFECTIVE value is therefore checked per world, and only
+    # for a world with no character save -- the world a CREATE session
+    # will put its survivor in.  A world that already holds a survivor
+    # is being resumed, not created in, so its value is reported rather
+    # than required.
+    problems.extend(_effective_pool_problems(root, expected_pools))
 
     stored_tiles = observed.get(OPT_TILES)
     if tileset is not None and stored_tiles != tileset:

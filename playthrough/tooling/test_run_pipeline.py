@@ -116,10 +116,15 @@ EX_BUSY = 3
 # rather than read from the script, so a reordering has to be made
 # deliberately in two places.
 STAGES = ("timeline", "transitions", "render", "srt", "captions",
-          "verify", "commit", "attest")
+          "verify", "commit", "attest", "publish")
 # The stage whose presence in a plan makes the sequencer take the
 # lifecycle preflight, named once rather than spelled at each use.
 COMMIT_STAGE = "commit"
+# The stage that copies the measured report into the tree and commits it.
+# It is the LAST stage, and it is the one stage whose omission from a run
+# is the safe outcome -- so tests that assert what a stopped run did not
+# reach name it from here rather than by position.
+PUBLISH_STAGE = "publish"
 
 # The line that runs the pipeline.  Removed from the copy these tests
 # source, and asserted to exist so a rename cannot leave the harness
@@ -170,8 +175,14 @@ EXPECTED_INVOCATIONS = {
     "srt": "make_srt.py",
     "captions": "embed_captions.sh",
     "verify": "verify_artifacts.sh --phase pre-commit",
-    "commit": "commit_artifacts.sh final",
-    "attest": "verify_artifacts.sh --phase post-commit",
+    "commit": "commit_artifacts.sh media",
+    # The measuring run names where its report goes, always outside the
+    # checkout: the gate writes nothing into the tree it measures.  The
+    # sandbox's runtime root is the scratch parent, so the expectation is
+    # built per test rather than written here -- see ExecutionFixture.
+    "attest": "verify_artifacts.sh --phase post-commit --report-to "
+              "<report>",
+    "publish": "commit_artifacts.sh attest",
 }
 
 # A fake stage records the invocation it was given and then exits with
@@ -622,13 +633,18 @@ class TestTheDefaultPlanReachesTheCheckpoint(PlanFixture):
         _, fields = self.drive()
         self.assertEqual(fields["CMD_verify"],
                          "verify_artifacts.sh --phase pre-commit")
-        self.assertEqual(fields["CMD_attest"],
-                         "verify_artifacts.sh --phase post-commit")
+        self.assertEqual(
+            fields["CMD_attest"],
+            "verify_artifacts.sh --phase post-commit --report-to %s"
+            % os.path.join(self.runtime, "acceptance-report.txt"),
+            msg=("the measuring run names where its report goes, and it "
+                 "has to be outside the checkout: the gate writes "
+                 "nothing into the tree it measures"))
 
     def test_the_commit_stage_names_the_final_checkpoint(self):
         _, fields = self.drive()
         self.assertEqual(fields["CMD_commit"],
-                         "commit_artifacts.sh final")
+                         "commit_artifacts.sh media")
 
     def test_the_two_gate_runs_are_the_same_script(self):
         """Not a second copy of the gate: one script, two phases."""
@@ -651,10 +667,25 @@ class TestItTakesOnlyThePostSessionCheckpoint(PlanFixture):
     and there is no flag that changes that.
     """
 
-    def test_the_commit_stage_takes_final_and_nothing_else(self):
+    def test_the_commit_stage_takes_media_and_nothing_else(self):
+        """It used to take `final`, and that was the defect.
+
+        `final` demanded playthrough/REPORT.md before it would run -- a
+        document whose subject is the film, the caption track and the
+        commits carrying them, so it had to cite commits that the very
+        checkpoint demanding it had not yet made.  The committer's
+        lifecycle is split now: this sequencer takes `media` for the
+        derived artifacts and `attest` for the two reports, and `final` is
+        taken by hand the moment the session closes.
+        """
         _, fields = self.drive()
         self.assertEqual(fields["CMD_commit"],
-                         "commit_artifacts.sh final")
+                         "commit_artifacts.sh media")
+
+    def test_the_publish_stage_takes_the_attestation_checkpoint(self):
+        _, fields = self.drive()
+        self.assertEqual(fields["CMD_publish"],
+                         "commit_artifacts.sh attest")
 
     def test_no_pre_session_milestone_is_ever_sequenced(self):
         source = sequencer_source()
@@ -666,12 +697,14 @@ class TestItTakesOnlyThePostSessionCheckpoint(PlanFixture):
                          "is about a moment before the session it has "
                          "just finished" % milestone))
 
-    def test_the_checkpoint_it_takes_is_named_once(self):
-        """One constant, so the name cannot drift between the plan and
-        the command."""
+    def test_each_checkpoint_it_takes_is_named_once(self):
+        """One constant each, so a name cannot drift between the plan
+        and the command."""
         source = sequencer_source()
         self.assertEqual(
             source.count('readonly PIPELINE_CHECKPOINT_NAME='), 1)
+        self.assertEqual(
+            source.count('readonly PIPELINE_ATTESTATION_NAME='), 1)
 
     def test_the_note_says_where_the_other_milestones_are_taken(self):
         """An operator who reads only this file still has to end up with
@@ -702,14 +735,38 @@ class TestThePlanRules(PlanFixture):
     def test_starting_at_the_attest_stage_is_refused(self):
         self.refused("--from", "attest")
 
-    def test_both_refusals_name_the_flag_that_works(self):
-        for arguments in (("--only", "commit"), ("--only", "attest")):
+    def test_the_publish_stage_alone_is_refused(self):
+        """THE RULE THAT CLOSES THE SEQUENCE.
+
+        The publication copies the report the attestation measured into
+        the tree and commits it.  Without the attestation in the same
+        invocation there is either nothing at that path or -- worse -- a
+        report an earlier run left there, which would put a measurement
+        of a different tree into the history under this one's name.
+        commit_artifacts.sh refuses that on its own account by comparing
+        the report's recorded commit against HEAD; refusing it here as
+        well tells the operator which STAGE is missing rather than which
+        comparison failed.
+        """
+        message = self.refused("--only", "publish")
+        self.assertIn("commits the report the attest stage measures",
+                      message)
+        self.assertIn("a different tree", message)
+
+    def test_starting_at_the_publish_stage_is_refused(self):
+        message = self.refused("--from", "publish")
+        self.assertIn("will not run without it in the same invocation",
+                      message)
+
+    def test_all_three_refusals_name_the_flag_that_works(self):
+        for arguments in (("--only", "commit"), ("--only", "attest"),
+                          ("--only", "publish")):
             with self.subTest(arguments=arguments):
                 self.assertIn("--from verify", self.refused(*arguments))
 
     def test_from_the_gate_is_the_plan_that_takes_the_checkpoint(self):
         self.assertEqual(self.plan("--from", "verify"),
-                         ["verify", "commit", "attest"])
+                         ["verify", "commit", "attest", "publish"])
 
     def test_from_and_only_together_are_refused(self):
         message = self.refused("--from", "verify", "--only", "render")
@@ -781,7 +838,7 @@ class TestTheDocumentedArgumentForms(PlanFixture):
 
     def test_the_equals_forms_work_and_are_documented(self):
         self.assertEqual(self.plan("--from=verify"),
-                         ["verify", "commit", "attest"])
+                         ["verify", "commit", "attest", "publish"])
         self.assertEqual(self.plan("--only=render"), ["render"])
         prose = self.usage_prose()
         self.assertIn("--from=NAME", prose)
@@ -809,17 +866,52 @@ class TestTheDocumentedArgumentForms(PlanFixture):
                 self.assertEqual(self.plan("--only", spelling),
                                  ["render"])
 
-    def test_the_attestation_is_named_only_by_its_short_name(self):
+    def test_the_second_runs_are_named_only_by_their_short_names(self):
         """One script cannot resolve to two stages.
 
-        verify_artifacts.sh already names the `verify` stage, so the
-        second run of it is reachable by `attest` alone -- and the help
-        says so rather than leaving an operator to discover it.
+        verify_artifacts.sh already names the `verify` stage and
+        commit_artifacts.sh the `commit` stage, so the second run of each
+        is reachable by its own short name alone -- and the help says so
+        rather than leaving an operator to discover it.
         """
         self.assertEqual(self.plan("--only", "verify_artifacts.sh"),
                          ["verify"])
-        self.assertIn("reachable by its short name only",
-                      self.usage_prose())
+        # commit_artifacts.sh resolves to `commit` -- and `commit` alone
+        # is then refused by the rule that the gate must run ahead of it,
+        # which is a different refusal from naming no stage.  Asserted
+        # through the diagnosis, because a resolution that ends in a
+        # dependency refusal is still a resolution.
+        _, fields = self.drive("--only", "commit_artifacts.sh")
+        self.assertNotIn("names no stage", fields["STDERR"])
+        self.assertIn("the commit stage will not run unless the verify",
+                      fields["STDERR"])
+        prose = self.usage_prose()
+        self.assertIn("reachable by their short names only", prose)
+        self.assertIn("`attest` and `publish` are the exceptions", prose)
+
+    def test_every_short_name_the_refusal_lists_actually_resolves(self):
+        """`publish` was listed as a stage and refused as unknown.
+
+        It was added to STAGE_ORDER, to every stage table and to the plan
+        rules, and left out of resolve_stage_name -- so `--only publish`
+        was answered by a message that named no stage of this pipeline
+        and then listed publish among the stages.  Measured on the real
+        file.  Every name the sequencer prints as valid must resolve, so
+        each one is asked for here.
+        """
+        for stage in STAGES:
+            with self.subTest(stage=stage):
+                status, fields = self.drive("--only", stage)
+                self.assertNotIn(
+                    "names no stage", fields["STDERR"],
+                    msg="the help lists %r but --only refuses it"
+                        % stage)
+                # Three of them are refused for a different and correct
+                # reason -- they depend on a stage this plan does not
+                # hold -- and that refusal names the missing stage.
+                if status != 0:
+                    self.assertIn("in the same invocation",
+                                  fields["STDERR"])
 
     def test_the_help_explains_why_the_gate_runs_twice(self):
         prose = self.usage_prose()
@@ -834,6 +926,248 @@ class TestTheDocumentedArgumentForms(PlanFixture):
         self.assertIn("THIS FILE'S OWN stdout lines are KEY=value only",
                       prose)
         self.assertIn("A stage's output is NOT captured", prose)
+
+
+def gate_group_total(table):
+    """Sum GROUP_CHECKS_<table> in verify_artifacts.sh, independently.
+
+    Read here in Python from the gate's own declaration, so the help's
+    numbers are compared against the source of the truth rather than
+    against a second copy of it in this file.  Index 0 of each array is a
+    deliberate placeholder that makes the array index equal the group
+    number, and it contributes nothing to a sum.
+    """
+    path = os.path.join(TOOLING, "verify_artifacts.sh")
+    with open(path, "r", encoding="utf-8") as handle:
+        source = handle.read()
+    opening = "readonly -a GROUP_CHECKS_%s=(" % table
+    body = source.split(opening, 1)[1].split(")", 1)[0]
+    return sum(int(word) for word in body.split())
+
+
+class TestTheHelpIsDerivedFromTheImplementation(PlanFixture):
+    """F13: the help published numbers and semantics that had moved on.
+
+    Every number in it used to be a literal -- "99 checks before the
+    commit and 24 after it, out of 111 in all" -- and by the time a review
+    read them the gate declared different numbers entirely.  Nothing was
+    wrong with them when they were typed; they were a SECOND copy of a
+    truth that lives in another file, and the first thing that happens to
+    a second copy is that somebody updates one of them.  So the totals are
+    read out of the gate at help time and the stage commands are printed
+    from the same constants the stage commands are built from.
+    """
+
+    def setUp(self):
+        """THE REAL GATE, in the sandbox, replacing the fake.
+
+        The numbers in this help are read out of verify_artifacts.sh at
+        help time, and the shared fixture puts a FAKE of that script in
+        the sandbox -- a fake declares no check table, so the sandbox's
+        help honestly answers `?` and every assertion below would pass
+        over a question that was never asked.  Measured: it did.
+
+        SCRIPT_DIR cannot be pointed elsewhere instead; it is readonly, so
+        that nothing can redirect a run at another checkout's stages.  The
+        real gate is therefore copied in.  Nothing in this class runs a
+        stage, so replacing that one fake costs nothing.
+        """
+        super(TestTheHelpIsDerivedFromTheImplementation, self).setUp()
+        self.gate = os.path.join(self.tooling, "verify_artifacts.sh")
+        shutil.copyfile(os.path.join(TOOLING, "verify_artifacts.sh"),
+                        self.gate)
+        os.chmod(self.gate, 0o755)
+
+    def usage_prose(self):
+        result = subprocess.run(
+            ["/bin/bash", "--noprofile", "--norc", self.sequencer,
+             "--help"],
+            cwd=self.checkout, capture_output=True, timeout=TIMEOUT,
+            env=self.environment())
+        self.assertEqual(result.returncode, EX_OK)
+        return " ".join(
+            result.stdout.decode("utf-8", "replace").split())
+
+    def test_the_three_totals_are_the_gates_own(self):
+        every = gate_group_total("ALL")
+        early = gate_group_total("PRE_COMMIT")
+        late = gate_group_total("POST_COMMIT")
+        prose = self.usage_prose()
+        self.assertIn(
+            "%d checks before the commit and %d after it, out of %d in "
+            "all" % (early, late, every), prose)
+        self.assertIn("%d are about the history" % (every - early),
+                      prose)
+        # And it says where they came from, so a reader knows not to
+        # treat the sentence as a maintained copy.
+        self.assertIn("READ OUT OF THE GATE at help time", prose)
+
+    def test_the_totals_are_asked_of_the_gate_rather_than_stored(self):
+        """Driven: the helper answers what the gate declares.
+
+        The prose assertion above would also pass over hard-coded numbers
+        that happened to be right today.  This one asks the helper.
+        """
+        status, out, err = self.shell(
+            'printf "ALL=%s\\n" "$(gate_check_total ALL)"\n'
+            'printf "PRE=%s\\n" "$(gate_check_total PRE_COMMIT)"\n'
+            'printf "POST=%s\\n" "$(gate_check_total POST_COMMIT)"\n')
+        self.assertEqual(status, 0, msg=err)
+        found = self.fields_of(out)
+        self.assertEqual(found["ALL"], str(gate_group_total("ALL")))
+        self.assertEqual(found["PRE"],
+                         str(gate_group_total("PRE_COMMIT")))
+        self.assertEqual(found["POST"],
+                         str(gate_group_total("POST_COMMIT")))
+
+    def test_an_unreadable_gate_admits_the_gap(self):
+        """A fabricated total would be worse than an admitted one.
+
+        The help describes a file it could not read, and `?` says so.
+        Both directions in one run: the gate beside it answers a number,
+        and the same question with the gate taken away answers `?` --
+        which is also what a partial checkout looks like.
+        """
+        status, out, err = self.shell(
+            'printf "REAL=%%s\\n" "$(gate_check_total ALL)"\n'
+            '%s -f -- %s\n'
+            'printf "GONE=%%s\\n" "$(gate_check_total ALL)"\n'
+            % (shutil.which("rm") or "/bin/rm", self.gate))
+        self.assertEqual(status, 0, msg=err)
+        found = self.fields_of(out)
+        self.assertEqual(found["REAL"], str(gate_group_total("ALL")))
+        self.assertEqual(found["GONE"], "?")
+
+    def test_an_unnamed_table_admits_the_gap_too(self):
+        """A table the gate does not declare is not summed to zero."""
+        status, out, err = self.shell(
+            'printf "NONE=%s\\n" "$(gate_check_total NO_SUCH_TABLE)"\n')
+        self.assertEqual(status, 0, msg=err)
+        self.assertEqual(self.fields_of(out)["NONE"], "?")
+
+    def test_the_help_follows_the_gate_when_the_gate_changes(self):
+        """DERIVATION, PROVED BY MOVING THE THING IT DERIVES FROM.
+
+        Every other assertion here compares the help against the gate's
+        current declaration -- and a help carrying today's numbers as
+        LITERALS satisfies all of them, which is exactly the state the
+        review found: the literals were right when typed.  Measured: with
+        the three reads replaced by `every="122"; early="108";
+        late="31"`, every one of those assertions still passed.
+
+        So the sandbox's gate is edited -- one group gains a check in each
+        of the three tables -- and the help must move with it.  A literal
+        cannot follow, and this is the only test here that a literal fails.
+        """
+        before = self.usage_prose()
+        every = gate_group_total("ALL")
+        early = gate_group_total("PRE_COMMIT")
+        late = gate_group_total("POST_COMMIT")
+        self.assertIn(
+            "%d checks before the commit and %d after it, out of %d in "
+            "all" % (early, late, every), before)
+
+        with open(self.gate, "r", encoding="utf-8") as handle:
+            source = handle.read()
+        for table, first in (("ALL", every), ("PRE_COMMIT", early),
+                             ("POST_COMMIT", late)):
+            opening = "readonly -a GROUP_CHECKS_%s=(" % table
+            head, _, rest = source.partition(opening)
+            body, _, tail = rest.partition(")")
+            numbers = body.split()
+            # The first entry is the placeholder that keeps the array
+            # index equal to the group number; the second is group one.
+            numbers[1] = str(int(numbers[1]) + 7)
+            source = "%s%s\n    %s\n%s" % (head, opening,
+                                           " ".join(numbers), tail)
+            self.assertEqual(first + 7,
+                             sum(int(word) for word in numbers))
+        with open(self.gate, "w", encoding="utf-8") as handle:
+            handle.write(source)
+
+        after = self.usage_prose()
+        self.assertIn(
+            "%d checks before the commit and %d after it, out of %d in "
+            "all" % (early + 7, late + 7, every + 7), after)
+        # The deferred count is arithmetic over two of them, so it moves
+        # only if both moved -- it is unchanged here by construction.
+        self.assertIn("%d are about the history" % (every - early), after)
+
+    def test_no_total_is_written_down_anywhere_it_is_read_as_current(
+            self):
+        """The literals a review found, gone from both readings.
+
+        TWO READINGS, because the same words mean different things in
+        different places.  In the PRINTED help every number is a claim
+        about the gate as it stands, so none of these may appear -- and
+        that includes the ones that are right today, since a correct
+        literal is a stale literal waiting to happen.  In the EXECUTABLE
+        source they would be a second copy the help could print.
+
+        The comments are deliberately NOT read: two of them quote the
+        retired literals as history -- "the help used to state these
+        totals as literals" -- and one records a measured failure of a
+        specific run as "9 of 108 checks FAILED".  A search that policed
+        those would be demanding the file forget why it was changed.
+        Named individually rather than by a pattern, because the help
+        legitimately contains numbers: exit codes and a default timeout.
+        """
+        printed = self.usage_prose()
+        executable = "\n".join(
+            line for line in sequencer_source().splitlines()
+            if not line.lstrip().startswith("#"))
+        for stale in ("111 in all", "117 in all", "120 in all",
+                      "122 in all", "99 checks", "106 checks",
+                      "108 checks", "24 after it", "31 after it",
+                      "14 are about", "12 by both"):
+            with self.subTest(stale=stale):
+                self.assertNotIn(stale, executable)
+        for stale in ("111 in all", "117 in all", "120 in all",
+                      "99 checks", "106 checks", "24 after it",
+                      "12 by both"):
+            with self.subTest(printed=stale):
+                self.assertNotIn(stale, printed)
+
+    def test_every_stage_is_documented_with_the_command_it_runs(self):
+        """The stage table an operator reads is the one that runs.
+
+        A help that named a stage's script or its arguments wrongly would
+        send somebody to the wrong file with the wrong flags, which is
+        what the review found: the documented plan semantics had moved on
+        from the implemented ones.
+        """
+        prose = self.usage_prose()
+        for stage in STAGES:
+            with self.subTest(stage=stage):
+                documented = EXPECTED_INVOCATIONS[stage].replace(
+                    "<report>", "<outside the checkout>")
+                self.assertIn("%s %s" % (stage, documented), prose)
+
+    def test_the_documented_lifecycle_is_the_implemented_one(self):
+        """It takes `media` and publishes with `attest`, and says so."""
+        prose = self.usage_prose()
+        self.assertIn("commit_artifacts.sh media", prose)
+        self.assertIn("commit_artifacts.sh attest", prose)
+        # And the older three-checkpoint description is gone: `final` is
+        # taken by hand when the session closes, and no longer names the
+        # checkpoint this file takes.
+        self.assertNotIn("commit_artifacts.sh final", prose)
+
+    def test_the_report_destination_is_documented_where_it_is_claimed(
+            self):
+        """"The gate writes nothing into the tree" needs the other half.
+
+        The claim was published while the gate still wrote its report
+        into the tree it had just certified as clean.  It is true now
+        BECAUSE the destination is named on the command line, so the help
+        states both together: an operator who reads only the claim cannot
+        tell whether it is a property or an aspiration.
+        """
+        prose = self.usage_prose()
+        self.assertIn("writes NOTHING into the tree it measures", prose)
+        self.assertIn("--report-to", prose)
+        self.assertIn("outside the checkout", prose)
+        self.assertIn("`publish` commits it", prose)
 
 
 class TestTheTrustGateCoversTheWholePlan(PlanFixture):
@@ -898,7 +1232,7 @@ class TestTheTrustGateCoversTheWholePlan(PlanFixture):
         # particular MUST stay ungated: env.sh's own contract says gating
         # it would leave a host under a waiver unable to commit the very
         # disclosure recording the residual.
-        for stage in ("verify", "commit", "attest"):
+        for stage in ("verify", "commit", "attest", "publish"):
             with self.subTest(stage=stage):
                 self.assertIn("[%s]=0" % stage, body)
 
@@ -1158,6 +1492,24 @@ class ExecutionFixture(SandboxFixture):
 
     # -- arranging a run ---------------------------------------------
 
+    def invocation_for(self, stage):
+        """EXPECTED_INVOCATIONS[stage] with the report path filled in.
+
+        The attestation is handed a destination outside the checkout, and
+        that destination is this sandbox's own runtime root -- so the
+        table holds a placeholder and every reader completes it HERE.  A
+        reader that completed it itself would be free to complete it
+        differently from the table a fake is keyed on, which is exactly
+        the defect this method removes: `fail_stage` wrote the
+        uncompleted form, no fake ever matched it, and the attestation
+        therefore could not be made to fail at all -- three tests
+        measured a passing run and one of them read a field a passing run
+        does not print.
+        """
+        return EXPECTED_INVOCATIONS[stage].replace(
+            "<report>",
+            os.path.join(self.runtime, "acceptance-report.txt"))
+
     def fail_stage(self, stage, status):
         """Make one stage exit with `status` when it is invoked.
 
@@ -1171,7 +1523,7 @@ class ExecutionFixture(SandboxFixture):
             with open(self.statuses, "r", encoding="utf-8") as handle:
                 existing = handle.read()
         self.write(self.statuses, existing + "%s|%d\n"
-                   % (EXPECTED_INVOCATIONS[stage], status))
+                   % (self.invocation_for(stage), status))
 
     # -- running it ---------------------------------------------------
 
@@ -1244,7 +1596,12 @@ class ExecutionFixture(SandboxFixture):
         """
         if probed is None:
             probed = COMMIT_STAGE in stages
-        planned = [EXPECTED_INVOCATIONS[stage] for stage in stages]
+        # The measuring run's report destination is this sandbox's own
+        # runtime root, so the expectation is completed by
+        # invocation_for rather than written into the table: a literal
+        # path would tie the table to one machine, and the point of the
+        # argument is that it lands OUTSIDE the checkout.
+        planned = [self.invocation_for(stage) for stage in stages]
         if probed:
             return [self.LIFECYCLE_PROBE] + planned
         return planned
@@ -1275,7 +1632,7 @@ class ExecutionFixture(SandboxFixture):
 class TestEveryStageOfThePlanIsActuallyRun(ExecutionFixture):
     """The default plan, executed rather than resolved."""
 
-    def test_all_eight_stages_run_in_the_planned_order(self):
+    def test_every_stage_runs_in_the_planned_order(self):
         self.succeeds()
         self.assertEqual(self.invocations(), self.expected(STAGES))
 
@@ -1291,14 +1648,14 @@ class TestEveryStageOfThePlanIsActuallyRun(ExecutionFixture):
         for stage, invocation in zip(STAGES, recorded):
             with self.subTest(stage=stage):
                 self.assertEqual(invocation,
-                                 EXPECTED_INVOCATIONS[stage])
+                                 self.invocation_for(stage))
 
     def test_the_gate_runs_twice_and_the_commit_sits_between_them(self):
         self.succeeds()
         recorded = self.invocations()
         gate = [index for index, invocation in enumerate(recorded)
                 if invocation.startswith("verify_artifacts.sh ")]
-        commit = recorded.index("commit_artifacts.sh final")
+        commit = recorded.index("commit_artifacts.sh media")
         self.assertEqual(len(gate), 2)
         self.assertLess(gate[0], commit)
         self.assertLess(commit, gate[1])
@@ -1314,7 +1671,7 @@ class TestEveryStageOfThePlanIsActuallyRun(ExecutionFixture):
         fields, _ = self.succeeds()
         self.assertEqual(fields["PIPELINE_PLAN"], " ".join(STAGES))
         self.assertEqual(fields["PIPELINE_SKIPPED"], "none")
-        self.assertEqual(fields["PIPELINE_CHECKPOINT"], "final")
+        self.assertEqual(fields["PIPELINE_CHECKPOINT"], "media")
         self.assertEqual(fields["PIPELINE_STATUS"], "0")
         self.assertEqual(fields["PIPELINE"], "pass")
         self.assertRegex(fields["PIPELINE_ELAPSED"], r"^\d+$")
@@ -1336,7 +1693,7 @@ class TestEveryStageOfThePlanIsActuallyRun(ExecutionFixture):
         self.succeeds()
         records = self.interpreters()
         self.assertEqual(len(records), 4,
-                         msg="four of the eight stages are Python")
+                         msg="four of the stages are Python")
         # A venv interpreter is reached through a chain of links, and
         # sys.executable reports the name it was STARTED as, so the two
         # spellings are compared as the same file rather than as the same
@@ -1374,7 +1731,7 @@ class TestAFailedStageStopsTheSequenceThere(ExecutionFixture):
     # code passed through from a stage.
     STATUSES = {"timeline": 9, "transitions": 10, "render": 11,
                 "srt": 12, "captions": 8, "verify": 13, "commit": 7,
-                "attest": 14}
+                "attest": 14, "publish": 6}
 
     def test_each_stage_in_turn_stops_everything_after_it(self):
         for position, stage in enumerate(STAGES):
@@ -1425,7 +1782,7 @@ class TestAFailedStageStopsTheSequenceThere(ExecutionFixture):
         self.fail_stage("verify", 1)
         status, fields, err = self.run_pipeline()
         self.assertEqual(status, 1)
-        self.assertNotIn("commit_artifacts.sh final",
+        self.assertNotIn("commit_artifacts.sh media",
                          self.invocations())
         self.assertEqual(fields["PIPELINE_FAILED_STAGE"], "verify")
         self.assertIn("no checkpoint was taken", err)
@@ -1433,7 +1790,11 @@ class TestAFailedStageStopsTheSequenceThere(ExecutionFixture):
     def test_a_failure_says_which_stage_and_what_it_left_behind(self):
         self.fail_stage("render", 11)
         _, _, err = self.run_pipeline()
-        self.assertIn("STAGE 3/8 render FAILED", err)
+        # The count is the PLAN's length, taken from the registry rather
+        # than written down: this sentence is how an operator locates the
+        # failure in a nine-stage run, and a stage added to the plan
+        # without this number moving would misdirect them.
+        self.assertIn("STAGE 3/%d render FAILED" % len(STAGES), err)
         self.assertIn("exit 11", err)
         self.assertIn("Nothing after it is run", err)
 
@@ -1460,7 +1821,16 @@ class TestAFailedStageStopsTheSequenceThere(ExecutionFixture):
         self.assertEqual(status, 14)
         self.assertEqual(fields["PIPELINE_STAGE_VERIFY"], "pass")
         self.assertEqual(fields["PIPELINE_STAGE_ATTEST"], "fail")
-        self.assertEqual(self.invocations(), self.expected(STAGES))
+        # Both halves of the one script ran, in their own places, and the
+        # publication that would have copied an unattested report into
+        # the tree did not: an attestation that cannot be trusted is
+        # precisely when nothing may be published.
+        self.assertEqual(
+            self.invocations(),
+            self.expected(STAGES[:STAGES.index(PUBLISH_STAGE)],
+                          probed=True))
+        self.assertNotIn(EXPECTED_INVOCATIONS[PUBLISH_STAGE],
+                         self.invocations())
 
 
 class TestTheSelectedPlansAreExecutedAsSelected(ExecutionFixture):
@@ -1473,12 +1843,14 @@ class TestTheSelectedPlansAreExecutedAsSelected(ExecutionFixture):
             self.expected(("timeline", "transitions", "render", "srt",
                            "captions", "verify")))
         self.assertEqual(fields["PIPELINE_CHECKPOINT"], "none")
-        self.assertEqual(fields["PIPELINE_SKIPPED"], "commit attest")
+        self.assertEqual(fields["PIPELINE_SKIPPED"],
+                         "commit attest publish")
 
     def test_from_the_gate_runs_exactly_the_three_closing_stages(self):
         self.succeeds("--from", "verify")
         self.assertEqual(self.invocations(),
-                         self.expected(("verify", "commit", "attest")))
+                         self.expected(("verify", "commit", "attest",
+                                        "publish")))
 
     def test_only_one_stage_runs_only_that_stage(self):
         self.succeeds("--only", "srt")
@@ -1852,6 +2224,54 @@ class TestTheLifecyclePreflight(PlanFixture):
             with self.subTest(borrowed=borrowed):
                 self.assertNotIn(borrowed, code)
 
+    def test_it_reads_the_keys_for_the_checkpoint_it_takes(self):
+        """THE PREFLIGHT MUST ASK ABOUT THE CHECKPOINT IT TAKES.
+
+        `status` reports one triple per checkpoint an automated caller
+        takes, because they assert different things: FINAL_* is whether
+        the session's save could be committed, MEDIA_* whether the render
+        could be -- and media additionally requires a `final` for this
+        survivor to be IN the history.  Reading FINAL_* while taking
+        media would answer 'eligible' for a session whose save has not
+        been committed, then spend the whole render to be refused at
+        stage 7 by the one assertion the preflight had not asked about --
+        exactly the failure this preflight exists to prevent.
+
+        So the key names are derived from the checkpoint name rather than
+        written down, and that is asserted from the values themselves.
+        """
+        status, out, err = self.shell(
+            'printf "ELIGIBLE=%s\\n" "${LIFECYCLE_KEY_ELIGIBLE}"\n'
+            'printf "REASON=%s\\n" "${LIFECYCLE_KEY_REASON}"\n'
+            'printf "ANCHOR=%s\\n" "${LIFECYCLE_KEY_ANCHOR}"\n'
+            'printf "CHECKPOINT=%s\\n" "${PIPELINE_CHECKPOINT_NAME}"\n')
+        self.assertEqual(status, 0, msg=err)
+        found = self.fields_of(out)
+        prefix = found["CHECKPOINT"].upper()
+        self.assertEqual(found["ELIGIBLE"], "%s_ELIGIBLE" % prefix)
+        self.assertEqual(found["REASON"], "%s_REASON" % prefix)
+        self.assertEqual(found["ANCHOR"], "%s_ANCHOR" % prefix)
+
+    def test_the_committer_answers_the_keys_this_file_reads(self):
+        """The two halves of one contract, measured against each other.
+
+        The names are derived here; that the committer EMITS them is a
+        fact about the other file, and a derivation that produced a key
+        nothing answers would leave every preflight reading an empty
+        value and reporting 'unread' forever.
+        """
+        status, out, err = self.shell(
+            'printf "ELIGIBLE=%s\\n" "${LIFECYCLE_KEY_ELIGIBLE}"\n'
+            'printf "REASON=%s\\n" "${LIFECYCLE_KEY_REASON}"\n'
+            'printf "ANCHOR=%s\\n" "${LIFECYCLE_KEY_ANCHOR}"\n')
+        self.assertEqual(status, 0, msg=err)
+        with open(os.path.join(TOOLING, "commit_artifacts.sh"),
+                  "r", encoding="utf-8") as handle:
+            committer = handle.read()
+        for key in self.fields_of(out).values():
+            with self.subTest(key=key):
+                self.assertIn('emit "%s"' % key, committer)
+
 
 class TestTheCapacityModel(PlanFixture):
     """Room is proved before the artifacts are written, not after.
@@ -2077,7 +2497,7 @@ class TestTheRunReceipt(PlanFixture):
     def test_the_three_history_stages_are_never_fresh(self):
         """Each asks about a moment rather than producing a thing."""
         status, out, _ = self.receipt(
-            'for stage in verify commit attest; do\n'
+            'for stage in verify commit attest publish; do\n'
             '  if stage_outputs "${stage}" >/dev/null; then\n'
             '    printf "OUTPUTS_%s=yes\\n" "${stage}"\n'
             '  else\n'
@@ -2091,7 +2511,7 @@ class TestTheRunReceipt(PlanFixture):
             'done\n')
         self.assertEqual(status, 0)
         found = self.fields_of(out)
-        for stage in ("verify", "commit", "attest"):
+        for stage in ("verify", "commit", "attest", "publish"):
             with self.subTest(stage=stage):
                 self.assertEqual(found["OUTPUTS_%s" % stage], "none")
                 self.assertEqual(found["FRESH_%s" % stage], "no")
@@ -2155,6 +2575,250 @@ class TestTheRunReceipt(PlanFixture):
         block = code.split("record_receipt() {")[1].split("\n}")[0]
         self.assertIn('${RECEIPT_FILE}.new', block)
         self.assertIn('"${MV}" -f --', block)
+
+
+class TestAPlanThatJumpsAProducerSkipsNothing(PlanFixture):
+    """The hole FRESH_PREFIX's reasoning had, and how it was closed.
+
+    Freshness is sound for a FULL plan because it collapses at the first
+    stage that does any work: a skipped encode therefore implies a
+    skipped timeline, which implies the timeline's bytes are the ones the
+    encode was built from.  `--from render` breaks every step of that.
+    The timeline stage is then neither run nor skipped but ABSENT, so
+    nothing collapses FRESH_PREFIX and nothing looks at its output -- and
+    the input fingerprint cannot notice, because it covers the pipeline's
+    INPUTS and timeline.json is an intermediate.  A timeline edited since
+    the receipt was written was invisible, render was declared fresh, and
+    the film that survived was one built from a timeline that no longer
+    existed.
+
+    The remedy is to stop SKIPPING, not to refuse: freshness is switched
+    off for the whole plan so every stage in it does its work.  Both
+    halves are asserted here, because an earlier draft refused instead
+    and that broke `--only srt` on any tree without a receipt.
+    """
+
+    def setUp(self):
+        super(TestAPlanThatJumpsAProducerSkipsNothing, self).setUp()
+        # A runtime root of this test's own, for the reason
+        # TestTheRunReceipt gives: a real run's receipt must not be
+        # writable from here, and env.sh refuses a runtime root that is
+        # not under the verified XDG directory.
+        self.runtime = _verified_runtime_root()
+        self.addCleanup(shutil.rmtree, self.runtime, True)
+        # The timeline stage's output, so that outputs_digest can measure
+        # it and the receipt can bind it.  Its content is immaterial;
+        # that it HAS content which can change is the subject.
+        self.timeline = self.write(
+            os.path.join(self.checkout, "playthrough", "timeline.json"),
+            '[{"frame": 1, "duration": 0.25}]\n')
+
+    def resolve(self, plan, snippet="", **environment):
+        """Run the resolver over `plan` and report FRESH_PREFIX.
+
+        Driven rather than read: the whole finding is about a variable
+        whose value decides whether a stage is skipped, and a test that
+        asserted the assignment appears in the source could not tell a
+        reachable assignment from an unreachable one.
+        """
+        environment.setdefault("PLAYTHROUGH_RUNTIME_DIR", self.runtime)
+        return self.shell(
+            'PLAN=(%s)\n'
+            'FRESH_PREFIX=1\n'
+            'RECEIPT_READY=0\n'
+            '%s'
+            'resolve_omitted_producer_freshness\n'
+            'printf "FRESH_PREFIX=%%s\\n" "${FRESH_PREFIX}"\n'
+            % (" ".join(plan), snippet),
+            **environment)
+
+    def test_a_full_plan_may_still_skip(self):
+        """The premise every assertion below depends on.
+
+        Nothing is jumped over, so the reasoning holds and the resolver
+        must leave freshness alone.  Without this, a resolver that
+        collapsed freshness unconditionally would satisfy every other
+        test in this class while quietly re-encoding the film on every
+        invocation.
+        """
+        status, out, err = self.resolve(STAGES)
+        self.assertEqual(status, 0, msg=err)
+        self.assertEqual(self.fields_of(out)["FRESH_PREFIX"], "1")
+        self.assertNotIn("this plan starts after", err)
+
+    def test_a_plan_that_starts_at_the_first_producer_may_still_skip(self):
+        """`--from timeline` jumps nothing: the first producer is in it."""
+        status, out, err = self.resolve(STAGES)
+        self.assertEqual(status, 0, msg=err)
+        self.assertEqual(self.fields_of(out)["FRESH_PREFIX"], "1")
+
+    def test_a_plan_that_jumps_a_producer_collapses_freshness(self):
+        """`--from render`: two producers absent, so nothing is skipped."""
+        status, out, err = self.resolve(
+            ("render", "srt", "captions", "verify"))
+        self.assertEqual(status, 0, msg=err)
+        self.assertEqual(self.fields_of(out)["FRESH_PREFIX"], "0")
+        self.assertIn("this plan starts after", err)
+        # And it names what it jumped, so the operator can see which
+        # intermediate the run is trusting without re-deriving.
+        self.assertIn("timeline", err)
+        self.assertIn("transitions", err)
+
+    def test_a_single_late_producer_collapses_freshness(self):
+        """`--only captions` is the same hazard with one stage in it."""
+        status, out, err = self.resolve(("captions",))
+        self.assertEqual(status, 0, msg=err)
+        self.assertEqual(self.fields_of(out)["FRESH_PREFIX"], "0")
+
+    def test_a_history_only_plan_is_left_alone(self):
+        """It derives nothing, so it has no producer to jump over.
+
+        `--only verify` and `--only attest` measure a tree and publish
+        what is in it; there is no intermediate for them to be
+        inconsistent with, and collapsing freshness for them would say
+        something untrue in the log.
+        """
+        status, out, err = self.resolve(("verify", "attest"))
+        self.assertEqual(status, 0, msg=err)
+        self.assertEqual(self.fields_of(out)["FRESH_PREFIX"], "1")
+        self.assertNotIn("this plan starts after", err)
+
+    def test_a_changed_intermediate_is_named_as_well(self):
+        """The warning that is the difference between two silences.
+
+        Freshness collapsing is enough for correctness: every stage in
+        the plan runs.  But an operator re-running one stage over an
+        intermediate that has MOVED since it was last produced is about
+        to be surprised, and this is the only place that can be said --
+        so the resolver measures the omitted producer's output against
+        the receipt and reports a mismatch.
+        """
+        status, out, err = self.resolve(
+            ("render", "srt", "captions"),
+            snippet=(
+                # Record what the timeline stage produced, then change
+                # it.  The fingerprint does not move: timeline.json is an
+                # intermediate and input_paths does not carry it, which
+                # is precisely why this had to be measured directly.
+                'PLAN=(timeline)\n'
+                'resolve_measurement_tools || true\n'
+                'open_receipt || true\n'
+                'record_receipt timeline\n'
+                'printf "[]\\n" >"${PLAYTHROUGH_TIMELINE}"\n'
+                'PLAN=(render srt captions)\n'))
+        self.assertEqual(status, 0, msg=err)
+        self.assertEqual(self.fields_of(out)["FRESH_PREFIX"], "0")
+        self.assertIn("no longer matches what the receipt recorded", err)
+        self.assertIn("timeline", err)
+        # The gate is what refuses to publish an inconsistent set; this
+        # file sequences.  The warning says so rather than implying that
+        # the run has been made safe.
+        self.assertIn("acceptance gate", err)
+
+    def test_an_unchanged_intermediate_is_not_complained_about(self):
+        """A receipt that still matches is not news."""
+        status, out, err = self.resolve(
+            ("render", "srt", "captions"),
+            snippet=('PLAN=(timeline)\n'
+                     'resolve_measurement_tools || true\n'
+                     'open_receipt || true\n'
+                     'record_receipt timeline\n'
+                     'PLAN=(render srt captions)\n'))
+        self.assertEqual(status, 0, msg=err)
+        self.assertEqual(self.fields_of(out)["FRESH_PREFIX"], "0")
+        self.assertNotIn("no longer matches", err)
+
+    def test_neither_only_nor_from_is_refused_for_want_of_a_receipt(self):
+        """THE COURSE CORRECTION, pinned so it cannot be undone.
+
+        The first draft of this resolver REFUSED a plan that jumped a
+        producer.  That was wrong: `--only srt` and `--from render` exist
+        so a late stage can be re-run, and on any tree without a receipt
+        -- a fresh clone, a first run -- there is nothing to vouch for
+        the earlier stages with, so every such invocation would have been
+        refused.  Measured: `--only srt` exited 4 on an ordinary sandbox.
+        The hazard was never that the stage RUNS.
+        """
+        self.assertEqual(self.plan("--only", "srt"), ["srt"])
+        self.assertEqual(
+            self.plan("--from", "render"),
+            ["render", "srt", "captions", "verify", "commit", "attest",
+             "publish"])
+        self.assertEqual(self.plan("--only", "captions"), ["captions"])
+
+
+class TestFreshnessEndToEnd(ExecutionFixture):
+    """The receipt as a run sees it: skipping, and not skipping.
+
+    Every other freshness test drives one function.  This one runs the
+    real sequencer twice over a tree that HAS the outputs, because the
+    finding is about what a second invocation does -- and a resolver that
+    got the reasoning right while the loop ignored it would pass every
+    unit test here.
+    """
+
+    # Each producing stage's outputs, relative to the checkout, so a
+    # sandbox can be given the tree a second run measures.  A directory
+    # entry is spelled with its trailing member: outputs_digest hashes a
+    # directory by walking it, so an empty one would hash to nothing.
+    OUTPUTS = ("playthrough/timeline.json",
+               "playthrough/build/transitions/trans_00001_00.png",
+               "playthrough/cata-play.mp4",
+               "playthrough/build/concat.txt",
+               "playthrough/transcript.srt",
+               "playthrough/transcript.md",
+               "playthrough/cata-play-cc.mp4")
+
+    def setUp(self):
+        super(TestFreshnessEndToEnd, self).setUp()
+        for relative in self.OUTPUTS:
+            self.write(os.path.join(self.checkout, *relative.split("/")),
+                       "%s\n" % relative)
+
+    def test_a_repeated_full_plan_skips_what_it_already_did(self):
+        """The premise: this fixture's runs DO record and DO skip.
+
+        Asserted first and separately, because the finding's own test
+        below asserts an ABSENCE of skipping -- and an absence measured
+        in a fixture that never skips anything measures the fixture.
+        """
+        first, _ = self.succeeds()
+        self.assertEqual(first["PIPELINE_FRESH"], "none")
+        second, _ = self.succeeds()
+        self.assertEqual(second["PIPELINE_FRESH"],
+                         "timeline transitions render srt captions")
+        for stage in ("TIMELINE", "TRANSITIONS", "RENDER", "SRT",
+                      "CAPTIONS"):
+            with self.subTest(stage=stage):
+                self.assertEqual(second["PIPELINE_STAGE_%s" % stage],
+                                 "fresh")
+
+    def test_a_plan_that_starts_past_a_producer_skips_nothing(self):
+        """F11 itself: the run that used to keep a stale film.
+
+        The first invocation records every producing stage.  The second
+        starts at `render`, so the timeline and transition stages are
+        absent rather than skipped -- and before the fix, render, srt and
+        captions were all found fresh and skipped, leaving whatever film
+        was already on disk however the timeline had changed underneath
+        it.  Now every stage in the plan does its work.
+        """
+        self.succeeds()
+        # The invocation log is append-only across runs, so the first
+        # run's stages are cleared before the second: what is asserted
+        # below is what THIS plan started, not what the tree has ever
+        # been through.
+        self.write(self.log, "")
+        fields, _ = self.succeeds("--from", "render")
+        self.assertEqual(fields["PIPELINE_FRESH"], "none")
+        for stage in ("RENDER", "SRT", "CAPTIONS"):
+            with self.subTest(stage=stage):
+                self.assertEqual(fields["PIPELINE_STAGE_%s" % stage],
+                                 "pass")
+        self.assertEqual(
+            self.invocations(),
+            self.expected(("render", "srt", "captions", "verify",
+                           "commit", "attest", "publish")))
 
 
 class TestThisSuiteLeavesNothingBehind(PlanFixture):

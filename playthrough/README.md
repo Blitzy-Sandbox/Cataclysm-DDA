@@ -576,6 +576,86 @@ $ playthrough/tooling/supported_env.sh run playthrough/tooling/run_pipeline.sh -
 $ playthrough/tooling/supported_env.sh shell        # a shell inside it
 ```
 
+#### Recording a session inside it — the hosted-session lifecycle
+
+`run` starts a container, runs one command and takes it away again, which is
+right for a render and useless for a **recording**: the X server, the window
+manager and the engine all live inside the container, and a session is some
+hundreds of keystrokes each delivered by its own command. Every one of them has
+to reach the **same** container, so recording uses `up`, a series of `exec`s, and
+`down`.
+
+```console
+$ playthrough/tooling/supported_env.sh up                     # start the session
+$ playthrough/tooling/supported_env.sh exec playthrough/tooling/launch_game.sh headless
+$ playthrough/tooling/supported_env.sh exec playthrough/tooling/launch_game.sh launch
+$ playthrough/tooling/supported_env.sh exec "$PLAYTHROUGH_PYTHON" -B \
+      playthrough/tooling/seed_options.py apply
+$ playthrough/tooling/supported_env.sh exec playthrough/tooling/launch_game.sh stop
+$ playthrough/tooling/supported_env.sh exec playthrough/tooling/launch_game.sh launch
+$ playthrough/tooling/supported_env.sh exec "$PLAYTHROUGH_PYTHON" -B \
+      playthrough/tooling/session.py step --key Return --action 'open the menu' \
+      --commentary 'why the survivor did it' --observed 'what the last frame showed'
+  # ... one exec per keystroke, then the in-game Save & Quit ...
+$ playthrough/tooling/supported_env.sh exec playthrough/tooling/commit_artifacts.sh final
+$ playthrough/tooling/supported_env.sh down                   # end the session
+```
+
+**In order, and why each step is where it is:**
+
+1. **`up`** starts the container detached with this checkout mounted, and prints
+   `SESSION_CONTAINER` and `SESSION_NAME`. Nothing is running inside it yet.
+2. **`exec launch_game.sh headless`** brings up Xvfb at 1920×1080×24 and openbox
+   *inside* the container and verifies the display. They outlive the `exec`, which
+   is the whole reason `up` exists.
+3. **`exec launch_game.sh launch`** starts the engine for **calibration**: a
+   fresh userdir opens on a language prompt rather than the main menu, and the
+   window is created at the compiled-in 640×384 until the game has written
+   screen-derived values into `options.json`. Nothing captured here is evidence.
+4. **`exec seed_options.py apply`** patches that generated `options.json` in
+   place — 24-hour clock, sound off, the required tileset, the terminal geometry —
+   and the world's `CHARACTER_POINT_POOLS` when a character is about to be
+   created, so the creator opens on a points pool.
+5. **`exec launch_game.sh stop`, then `launch` again**, so the seeded values take
+   effect. `stop` terminates a **calibration** instance and saves nothing — and it
+   refuses outright once a recorded session is in progress, which is exactly the
+   guard that keeps it from being used to kill a session that has captures. From
+   this second launch onward the frames are evidence.
+6. **One `exec session.py step` per keystroke.** The loop is observe → decide in
+   character → act → capture → log, and the tool enforces it: each step carries
+   `--observed` (your reading of the previous capture), an `--expect`, and the
+   action and commentary that become the transcript. A step whose observed effect
+   contradicts what was declared halts the session rather than pressing on.
+7. **The ending happens inside the game** — sleep, wake, then `S` and `Y` at
+   *Save and quit?* — so the last delivered key lands on a capturable main menu.
+8. **`exec commit_artifacts.sh …`** takes the checkpoints from inside the
+   container, where the identity is forwarded in from the host.
+9. **`down`** stops and removes the container, and **refuses** while the engine is
+   still running: taking it down mid-session would end a recorded session outside
+   the game's own ending. `down --abandon 'why'` is the explicit way to end one
+   anyway, and the reason is required rather than optional.
+
+**`session`** reports the state at any point, and reads nothing but labels:
+
+```console
+$ playthrough/tooling/supported_env.sh session
+SESSION_NAME=playthrough-session-<checkout digest>-<clone>
+SESSION_CHECKOUT=<checkout digest>
+SESSION_CLONE=0
+SESSION_CONTAINER=<id, empty when none>
+SESSION_UP=yes|no
+SESSION_DISPLAY=serving|down
+SESSION_ENGINE=none|<pid>
+```
+
+**A session is identified by labels, never by name.** The container carries the
+checkout's path digest and `CLONE_INDEX` (validated as an integer 0–99) as Docker
+labels, the match is selected by exact label rather than by a name pattern, and
+the match is then *inspected* for its image, its bind mount and its user before it
+is used. More than one match, or a foreign one, is refused rather than adopted —
+which matters concretely on a host running several clones: a sibling's container
+must never be exec'd into, and a stale one must never be mistaken for this one's.
+
 It exists because a session must not be **recorded** on an end-of-life
 release: ImageMagick, ffmpeg and the Xorg stack all parse untrusted-shaped
 input, and an out-of-support archive publishes no fixes for them. `env.sh`
@@ -616,68 +696,94 @@ doing the reading rather than about the session that was recorded".
 `gfx/` is git-ignored [.gitignore:52], so the MSXotto+ pack the film is rendered
 in is the single input that neither the repository nor the image carries.
 `tooling/tileset_provenance.json` is the tracked statement of exactly which
-bytes it must be — 22 files, `tree_sha256=3d6c2ef4871654fd…`, upstream
-`I-am-Erk/CDDA-Tilesets` at `6e864adbd2c5` — and `launch_game.sh` verifies the
-installed tree against it on **every** launch, with no bypass for the required
-tileset. A pack that does not match cannot be recorded under; that refusal is
-the design and not a bug.
+bytes it must be — **22 files, 5 260 542 bytes,
+`tree_sha256=7d853c21de2e9281…`**, composed from upstream
+`I-am-Erk/CDDA-Tilesets` at **`6e864adbd2c5d0e68f8517b34e3c7d58eb22747d`** — and
+`launch_game.sh` verifies the installed tree against it on **every** launch,
+with no bypass for the required tileset. A pack that does not match cannot be
+recorded under; that refusal is the design and not a bug.
 
-**Provisioning it, exactly, and what that currently produces.** Run from the
-repository root, with network access:
+**Provisioning it, exactly.** Seven steps, run from the repository root with
+network access. Every one of them is required, and the three that are easy to
+skip are called out underneath.
 
 ```console
-$ git clone --depth 1 --filter=blob:none --sparse \
+$ git clone --filter=blob:none --sparse --no-checkout \
       https://github.com/I-am-Erk/CDDA-Tilesets.git /tmp/cdda-tilesets
 $ git -C /tmp/cdda-tilesets sparse-checkout set gfx/MShockXotto+
-$ git -C /tmp/cdda-tilesets rev-parse HEAD    # must be 6e864adbd2c5…
+$ git -C /tmp/cdda-tilesets fetch --depth 1 origin \
+      6e864adbd2c5d0e68f8517b34e3c7d58eb22747d
+$ git -C /tmp/cdda-tilesets checkout \
+      6e864adbd2c5d0e68f8517b34e3c7d58eb22747d
+$ git -C /tmp/cdda-tilesets rev-parse HEAD    # 6e864adbd2c5d0e68f…
 $ make SDL3=0 RELEASE=1 TILES=1 SOUND=1 ASTYLE=0 LINTJSON=0 \
       COMPILER=g++-14 tools/format/json_formatter.cgi
-$ python3 tools/gfx_tools/compose.py --feedback CONCISE --format-json \
-      --loglevel INFO /tmp/cdda-tilesets/gfx/MShockXotto+ gfx/MShockXotto+
+$ /opt/gfxtools-venv/bin/python tools/gfx_tools/compose.py \
+      --feedback CONCISE --format-json --loglevel INFO \
+      /tmp/cdda-tilesets/gfx/MShockXotto+ gfx/MShockXotto+
+$ for f in fallback.png layering.json tileset.txt; do \
+      cp -- "/tmp/cdda-tilesets/gfx/MShockXotto+/$f" "gfx/MShockXotto+/$f"; \
+  done
 $ ( cd gfx/MShockXotto+ && find . -type f \! -name SHA256SUMS \
-      -exec sha256sum {} + > SHA256SUMS )
+      -exec sha256sum {} + | LC_ALL=C sort -k2 > SHA256SUMS )
+$ playthrough/tooling/tileset_provenance.py verify \
+      --directory gfx/MShockXotto+
 ```
 
-`compose.py` needs `pyvips`, which is **not** in `requirements.lock` and not in
-the image — it is a repository tool with its own dependency, so composing
-happens outside the pinned closure. The `json_formatter.cgi` build matters:
-without it `compose.py` falls back to Python's formatter and writes a
-`tile_config.json` of 1 036 187 bytes instead of 625 336.
+**The commit is FETCHED AND CHECKED OUT, not merely asserted.** An earlier
+version of this recipe cloned `--depth 1` and then printed `rev-parse HEAD` with
+a comment saying which commit it "must be" — which pins nothing: a shallow clone
+takes the branch tip, so the same commands run a week later compose a different
+pack and the launch gate refuses with no hint as to why. `--no-checkout` plus a
+`fetch --depth 1 origin <sha>` and a `checkout <sha>` lands exactly on the
+pinned tree.
 
-**Measured on 2026-08-10, that procedure does not reproduce the anchor.** Twenty
-of the twenty-two files come out byte-identical, and they are all of the
-artwork. The two that differ are the generated index and the in-pack manifest
-that lists it: `tile_config.json` at 625 336 B / `064f4708e596…` against the
-anchor's 774 731 B / `9725384838a5…`, and `SHA256SUMS` differing in exactly one
-line — the one naming `tile_config.json`. Substituting the anchor's expected
-digest into that line reproduces the anchor's own `SHA256SUMS` digest
-`ac372c1947e7…` exactly, which is the proof that the index is the only real
-divergence. No file of 774 731 bytes exists anywhere on this host, so the pack
-the film was rendered against is not present here and not derivable from the
-inputs recorded above.
+**`compose.py` does not emit three of the files, and they are copied
+verbatim.** `fallback.png` (316 141 B), `layering.json` (8 126 B) and
+`tileset.txt` (961 B) come straight from the upstream directory; the composer
+writes the seventeen sprite atlases and `tile_config.json`, which is eighteen,
+and the in-pack `SHA256SUMS` is generated over the resulting twenty-one. Omit
+the copy and the tree is three files short of the anchor. Measured against the
+pinned upstream checkout: all three match the anchor's digests byte for byte
+(`e82e2e775517…`, `b7c9bbe894aa…`, `e57dad8057a7…`).
 
-**What that means for anyone re-recording, stated rather than left to be
-discovered at the launch gate.** A render or a re-render is unaffected. A new
-*recording* needs one of two things, and only a human can choose:
+**`json_formatter.cgi` must be built first.** With it, `tile_config.json` is
+**625 336 bytes** — the anchor's own figure. Without it `compose.py` logs
+`Python built-in formatter was used` and leaves the `json.dump(indent=2)` output
+in place, which is **1 036 187 bytes** for the same data: re-serialising the
+composed index that way on this host produces exactly that size, so the
+difference is the formatter and nothing else.
 
-1. **The original pack, restored from wherever it came from.** It matched the
-   anchor when the session was recorded — `launch_game.sh` would not have
-   started otherwise, and the engine's own log in the committed userdir records
-   `Loaded tileset: MshockXottoplus`. Preserving it out of band is the only way
-   to keep the film's declared pixels reproducible.
-2. **A deliberate re-anchor.** `tileset_provenance.py generate` rewrites
-   `tileset_provenance.json` over a freshly composed pack. That is a legitimate
-   act when the artwork legitimately changed, and a destructive one otherwise:
-   it replaces the tracked statement of what the shipped film's pixels are with
-   a statement about a different pack. It must be a recorded decision, taken in
-   its own commit, and it is not something to do to turn a check green.
+**`compose.py` needs `pyvips`, which is deliberately outside the pinned
+closure.** It is not in `requirements.lock` and not in the image, because it is
+a repository tool with its own dependency rather than part of this pipeline's
+runtime; `/opt/gfxtools-venv` carries it (pyvips 3.1.1, libvips 8.16.1) and the
+recipe above calls that interpreter explicitly.
 
-The divergence is reported everywhere it is relevant rather than smoothed over:
-the acceptance gate prints it as a **WARN** naming both digests (it is host
-state, not committed evidence), `tileset_provenance.py verify` exits 1 on it,
-and `test_tileset_provenance` refuses rather than passing. See *The provenance
-anchor is refusing a re-composition, not the film's artwork* in
-`TECHNICAL_NOTES.md` for the full account.
+**Measured on this host: the procedure reproduces the anchor exactly.**
+
+```console
+$ playthrough/tooling/tileset_provenance.py verify --directory gfx/MShockXotto+
+  TILESET_PROVENANCE=verified
+  TILESET_PROVENANCE_TREE_SHA256=7d853c21de2e9281258d144409f104f58b14e8ece5dfdf…
+  TILESET_PROVENANCE_FILES=22
+  TILESET_PROVENANCE_UPSTREAM_COMMIT=6e864adbd2c5d0e68f8517b34e3c7d58eb22747d
+```
+
+All 22 installed files are byte-identical to the anchor, and so are all 22 of
+the freshly composed pack cached at `/opt/cdda-gfx-cache/MShockXotto+` — nothing
+differs, in either direction. So a re-recording needs no preserved copy of the
+artwork and no re-anchor: the pack is derivable from the inputs recorded above,
+which is the property that makes the film's declared pixels reproducible.
+
+**`tileset_provenance.py generate` exists and is not part of this recipe.** It
+rewrites `tileset_provenance.json` over whatever pack is on disk. That is a
+legitimate act when the artwork legitimately changed, and a destructive one
+otherwise: it replaces the tracked statement of what the shipped film's pixels
+are with a statement about a different pack. It must be a recorded decision
+taken in its own commit, and it is never the way to turn a failing launch gate
+green — the point of the anchor is that a pack which does not match the film
+cannot be recorded under.
 
 ---
 
@@ -869,24 +975,25 @@ an operator reading a refusal should already know why:
   so a later release cannot quietly change the rendered film while every other
   gate still passes, which an unmeasured closure would allow.
 * **The trust state has to be `trusted` for any plan that WRITES.** Five of the
-  eight stages derive a delivered artifact; a plan containing any of them is
+  nine stages derive a delivered artifact; a plan containing any of them is
   refused outright while a trust bypass or the platform waiver is in force,
   because the earlier stages would otherwise rewrite the timeline, the
   transition frames and both transcripts before the render's own refusal
-  arrived. A plan that only reads and publishes — `--only verify`,
-  `--only commit`, `--only attest` — is always permitted, and that exemption is
+  arrived. A plan that only reads and publishes is always permitted — the
+  measuring, committing, attesting and publishing stages derive nothing, so
+  `--only verify` and `--from verify` are both exempt — and that exemption is
   the important half: measuring a tree and publishing what is already in it are
   what you need most when the host is imperfect.
 
 **And a full run cannot reach its checkpoint on this checkout today**, which is
-a fact about the record rather than about the tooling. `commit` takes the
-`final` checkpoint, and `final` has to be anchored on the `creation` checkpoint
-for the same survivor and world that `HEAD` carries; the newest pair here names
-a *superseded* survivor, so the gate correctly refuses and the sequencer stops
-at stage 6 with the checkpoint unattempted. Until the session is re-recorded to
-a genuine ending, `--no-commit` is the invocation that completes — it runs every
-stage up to and including the pre-commit gate — and the lifecycle below is what
-has to be repaired first.
+a fact about the record rather than about the tooling. `commit` takes the `media`
+checkpoint, and `media` is about a session whose save has already been published:
+it needs a `final` checkpoint for the survivor this userdir has loaded, reached
+from that survivor's own `creation`. The newest creation here names a *superseded*
+survivor, so the preflight refuses before stage 1 and no stage runs. Until the
+session is re-recorded to a genuine ending, `--no-commit` is the invocation that
+completes — it runs every stage up to and including the pre-commit gate — and the
+lifecycle below is what has to be repaired first.
 
 | # | Stage | Runs | Produces |
 | --- | --- | --- | --- |
@@ -896,31 +1003,45 @@ has to be repaired first.
 | 4 | `srt` | `make_srt.py` | `transcript.srt` + `transcript.md` |
 | 5 | `captions` | `embed_captions.sh` | `cata-play-cc.mp4` |
 | 6 | `verify` | `verify_artifacts.sh --phase pre-commit` | a verdict |
-| 7 | `commit` | `commit_artifacts.sh final` | a checkpoint |
-| 8 | `attest` | `verify_artifacts.sh --phase post-commit` | a verdict |
+| 7 | `commit` | `commit_artifacts.sh media` | a checkpoint |
+| 8 | `attest` | `verify_artifacts.sh --phase post-commit --report-to <outside the checkout>` | a report |
+| 9 | `publish` | `commit_artifacts.sh attest` | a checkpoint |
 
 **The gate runs twice, and that is deliberate.** Most of its checks are
 properties of the *artifacts* and can be answered the moment a render finishes.
-Fourteen are properties of the *history* — is the save tracked, is every
+A minority are properties of the *history* — is the save tracked, is every
 artifact class committed, is the tree clean, does **this** recording have a
-checkpoint pair of its own — and a commit is what makes those true. So
-the functional half guards the commit and the history half reports what the
-commit published. `--no-commit` drops the checkpoint **and** the attestation,
-since with nothing committed the second has nothing to read.
+checkpoint pair of its own — and a commit is what makes those true. So the
+functional half guards the commit and the history half reports what the commit
+published. `--no-commit` drops the checkpoint, the attestation **and** the
+publication, since with nothing committed the second has nothing to read and the
+third nothing to publish.
 
-**The second run is the short one.** The gate declares 120 checks altogether, 106
-before the commit and 31 after it — so 89 are asked only before, 14 only after,
-and 17 by both. The seventeen asked twice are the cheap ones it would be wrong
-to answer once: the measuring environment, and the version-control facts that
-have to hold at both moments. No artifact is re-measured after a commit that did
-not touch it, and the attestation on this record takes seconds where a
-`post-commit` that ran the whole audit took about ninety.
+**The second run is the short one, and the totals are read from the gate rather
+than repeated here.** `run_pipeline.sh --help` prints how many checks the gate
+declares for each phase and how many are deferred to the history, taken from the
+gate's own per-group table at the moment it prints. This page used to write those
+numbers down and they went stale; ask the tool:
 
-Two orderings are non-negotiable, and the sequencer checks them against the
+```console
+$ playthrough/tooling/run_pipeline.sh --help | grep -E 'checks before|history:'
+```
+
+The checks asked at both moments are the cheap ones it would be wrong to answer
+once — the measuring environment, and the version-control facts that have to hold
+before and after. No artifact is re-measured after a commit that did not touch
+it, and the attestation on a published record takes seconds where a `post-commit`
+that ran the whole audit took about ninety.
+
+Three orderings are non-negotiable, and the sequencer checks them against the
 plan it resolved rather than against the flags you typed: **`commit` requires
-`verify` earlier in the same invocation**, and **`attest` requires `commit`**.
-Ask for either on its own and it refuses, naming the invocation that would have
-worked.
+`verify` earlier in the same invocation**, **`attest` requires `commit`**, and
+**`publish` requires `attest`**. Ask for any of them on its own and it refuses,
+naming the invocation that would have worked. The last one is what closes the
+sequence: the publication commits the report the attestation measured, so without
+the attestation in the same invocation it would either find nothing to publish or
+commit a report an earlier run left behind — a measurement of a different tree
+under this one's name.
 
 #### Three things are settled before stage 1 runs
 
@@ -928,24 +1049,33 @@ Every stage above is expensive and an hour of encoding cannot be given back, so
 three questions whose answers already exist are asked first. Each of them used
 to be discovered after the expensive work.
 
-**Would the checkpoint be taken at all?** `final` anchors to the `creation`
-checkpoint *of the survivor this session is about* and needs the record to have
-grown since it — both facts about the history before anything is rendered. When
-either fails, the checkpoint refuses at stage 7, with the timeline, the
-transitions, the encode, the transcripts, the caption mux and the whole
-functional gate already spent. The sequencer now asks `commit_artifacts.sh
-status`, which answers read-only with `FINAL_ELIGIBLE`, `FINAL_ANCHOR` and
-`FINAL_REASON`, and refuses with **exit 4** before stage 1, naming
-`--no-commit` as the way to run the render half deliberately:
+**Would the checkpoint be taken at all?** The checkpoint this sequencer takes is
+`media`, which commits a render — and a render is about a session whose save has
+already been published, so it needs a `final` checkpoint for the survivor this
+userdir has loaded, reached from that survivor's own `creation`. That is a fact
+about the history before anything is rendered. When it fails, the checkpoint
+refuses at stage 7, with the timeline, the transitions, the encode, the
+transcripts, the caption mux and the whole functional gate already spent. The
+sequencer asks `commit_artifacts.sh status`, which answers read-only with one
+triple per checkpoint an automated caller takes — `FINAL_*` for the session's
+save, `MEDIA_*` for the render — and refuses with **exit 4** before stage 1,
+naming `--no-commit` as the way to run the render half deliberately:
 
 ```console
-$ playthrough/tooling/run_pipeline.sh
+$ playthrough/tooling/run_pipeline.sh --from verify
 PIPELINE_LIFECYCLE=no-creation-for-this-survivor
-playthrough: FATAL: the 'final' checkpoint CANNOT be taken over this tree
+playthrough: FATAL: the 'media' checkpoint CANNOT be taken over this tree
 (no-creation-for-this-survivor), and its reason is above.  [...] no stage is run
 $ echo $?
 4
 ```
+
+**It reads the triple for the checkpoint it takes, and the key names are derived
+from that checkpoint rather than written down.** Reading `FINAL_*` while taking
+`media` would answer "eligible" for a session whose save had not been committed
+yet, and then spend the whole render to be refused at stage 7 by the one
+assertion the preflight had not asked about — which is the exact failure a
+preflight exists to prevent.
 
 The lifecycle rule itself stays in `commit_artifacts.sh`; the sequencer reads
 three KEY=value lines and keeps no copy of it. An answer it cannot read is
@@ -1062,27 +1192,33 @@ Three things replace it:
 ### The gate on its own
 
 ```console
-$ playthrough/tooling/verify_artifacts.sh                       # all 120 checks
-$ playthrough/tooling/verify_artifacts.sh --phase pre-commit     # the 106 before a commit
-$ playthrough/tooling/verify_artifacts.sh --phase post-commit    # the 31 about the history
+$ playthrough/tooling/verify_artifacts.sh                        # every check
+$ playthrough/tooling/verify_artifacts.sh --phase pre-commit     # before a commit
+$ playthrough/tooling/verify_artifacts.sh --phase post-commit    # about the history
 $ playthrough/tooling/verify_artifacts.sh --samples all          # every capture's pixels
+$ playthrough/tooling/verify_artifacts.sh --report-to /tmp/report.txt
 ```
 
-It writes nothing, and every verdict prints what it **observed** beside what it
-expected, so a passing report reads as evidence rather than as a tally. All
-three counts are declared in the script and asserted against the verdicts
-actually emitted, so no phase can return a short report unnoticed:
-`EXPECTED_CHECKS_ALL=120`, `EXPECTED_CHECKS_PRE_COMMIT=106`,
-`EXPECTED_CHECKS_POST_COMMIT=31` — each summed from its own per-group table
+**It writes nothing into the tree it measures**, and that is a property rather
+than a habit: with no `--report-to` it reports to stdout and stderr and nowhere
+else, and a destination *inside* the working tree is refused by name. Every
+verdict prints what it **observed** beside what it expected, so a passing report
+reads as evidence rather than as a tally.
+
+All three counts are declared in the script and asserted against the verdicts
+actually emitted, so no phase can return a short report unnoticed — each is
+summed from its own per-group table
 [playthrough/tooling/verify_artifacts.sh:777-832], with the group-by-group
-derivation of all three columns in the comment immediately above them.
+derivation in the comment immediately above them. The numbers themselves are not
+repeated on this page; `run_pipeline.sh --help` reads them out of that table at
+the moment it prints.
 
 `post-commit` is the **history** phase, not a second full audit: it asks the
-fourteen questions only a commit can make true, plus the environment it measures
-them with and the version-control facts that have to hold at both moments. The
-artifact groups are absent because the commit did not touch the artifacts —
-`--phase all` is how they are re-measured deliberately. On this record the three
-phases take about **36 s**, **22 s** and **7 s**.
+questions only a commit can make true, plus the environment it measures them with
+and the version-control facts that have to hold at both moments. The artifact
+groups are absent because the commit did not touch the artifacts — `--phase all`
+is how they are re-measured deliberately. On this record the three phases take
+about **36 s**, **22 s** and **7 s**.
 
 `--samples N` chooses how many captures have their **current** pixels decoded
 for the luminance gate; the default is a bounded spread of 64 that always
@@ -1097,7 +1233,7 @@ and whose digest both already say it is not blank.
 
 ### The commit lifecycle
 
-Four ordered checkpoints, each refusing to run out of turn:
+Six ordered checkpoints, each refusing to run out of turn:
 
 ```console
 $ playthrough/tooling/commit_artifacts.sh integration # the rules, before any artifact
@@ -1105,8 +1241,22 @@ $ playthrough/tooling/commit_artifacts.sh dossier     # before the first frame
 $ playthrough/tooling/commit_artifacts.sh creation    # after character creation
   # ... play the session ...
 $ playthrough/tooling/commit_artifacts.sh final       # after the session ends
+$ playthrough/tooling/commit_artifacts.sh media       # the film, transcripts, timeline
+$ playthrough/tooling/commit_artifacts.sh attest      # the acceptance report + REPORT.md
 $ playthrough/tooling/commit_artifacts.sh status      # read-only, takes no lock
 ```
+
+**Why the last three are three and not one.** A single closing checkpoint used
+to carry the record, the film and the reports, and it demanded
+`playthrough/REPORT.md` before it would run — an unsatisfiable ordering, because
+that report cites the commits carrying the film and the acceptance evidence, so
+the document had to name commits that did not exist yet. Split, each commit is
+about one thing and cites only what already precedes it: `final` closes the
+session and needs no report at all; `media` commits what a render produced and
+requires `final` to be in the history for this survivor; `attest` publishes the
+acceptance report the gate wrote outside the tree, and is the only checkpoint
+that requires `REPORT.md`. `run_pipeline.sh` takes `media` as its `commit` stage
+and `attest` as its `publish` stage; the first four are taken by hand.
 
 `integration` goes first because it commits the two rules everything after it
 depends on — the terminal negation in `.gitignore` and the six attribute rows —
@@ -1129,12 +1279,35 @@ dossier-precedes-captures ordering is read from the commit that introduced the
 bytes **now at HEAD**, not from the oldest commit that ever touched those
 paths, so a retired generation's history cannot satisfy it for a later one.
 
-Each artifact checkpoint stages `playthrough/` by artifact class in bounded
-batches — never a blanket `add`, never `-A`, never `-f`, never a shell glob —
-and every checkpoint reads its own staged set back and refuses on anything
-outside its declared scope, comparing NUL-delimited pathnames end to end so
-that a pathname containing a newline cannot slip through the refusal. All carry
-a `Playthrough-Checkpoint: <name>` trailer, which is the lifecycle's entire
+**Staging is an allowlist, and that inversion is load-bearing.** Every path
+under `playthrough/` is enumerated and classified before anything is staged, and
+a path that belongs to no class is a **refusal** rather than an admission:
+authored tooling by exact filename, the engine's own userdir by POSITION in its
+tree (so a new file shape a future engine writes is still recorded, while a
+stray one beside them is not), and every generated artifact against its declared
+schema — `frames/frame_NNNNN.png`, `build/transitions/trans_NNNNN_NN.png`, the
+named build intermediates, the film, the transcripts, the record.
+
+Three of the classes used to be whole directories: `git add --
+playthrough/tooling`, `-- playthrough/userdir` and `-- playthrough/build` staged
+whatever those trees happened to contain, and the only thing between an accident
+and a commit was a **denylist** of the shapes somebody had already been bitten
+by — bytecode, an ad-hoc test file, a quarantined film, the X authority cookie, a
+pid. A denylist answers "is this one of the bad things I know about"; a
+checkpoint has to answer "is this evidence". The terminal `!/playthrough/**`
+negation makes that worse rather than better, because "it would have been
+ignored" is not a fallback that exists inside this tree.
+
+A path git **ignores** is refused too, and for a reason that only appears once
+paths are named explicitly: a directory pathspec skips an ignored file in
+silence, while an explicit one is a hard error — so the ignore sweep runs ahead
+of any `git add`, and the operator gets the precise diagnosis rather than git's.
+
+Beyond that: never a blanket `add`, never `-A`, never `-f`, never a shell glob;
+every checkpoint reads its own staged set back and refuses on anything outside
+its declared scope, comparing NUL-delimited pathnames end to end so that a
+pathname containing a newline cannot slip through the refusal. All carry a
+`Playthrough-Checkpoint: <name>` trailer, which is the lifecycle's entire
 persistent state. There is no side file to fall out of step with the history.
 
 `.gitignore` and `.gitattributes` are **checked** at every checkpoint and
@@ -1142,19 +1315,26 @@ persistent state. There is no side file to fall out of step with the history.
 working tree and as HEAD carries it, because a negation that was never committed
 loses the save data on the next clone.
 
-`status` also answers, read-only and without taking the lock, whether `final`
-*would* be taken — `FINAL_ELIGIBLE` (`yes`/`no`), `FINAL_ANCHOR` (the creation
-checkpoint it would anchor to, which may be an older commit than the newest
-one) and `FINAL_REASON` (one stable token: `no-survivor-loaded`, `no-record`,
-`no-creation-checkpoint`, `no-creation-for-this-survivor`,
-`anchor-carries-no-record`, `record-has-not-grown`). It is computed with the
-same two predicates the refusal enforces, so the report cannot drift from what
-it predicts. This is what `run_pipeline.sh` reads before its first stage.
+`status` also answers, read-only and without taking the lock, whether the two
+checkpoints an automated caller takes *would* be taken. There is one triple per
+checkpoint, because they assert different things and a caller must read the one
+for the checkpoint it takes:
 
-Each checkpoint stages `playthrough/` **by artifact class** — never a blanket
-`add`, never `-A`, never `-f`, never a shell glob — and carries a
-`Playthrough-Checkpoint: <name>` trailer, which is the lifecycle's entire
-persistent state. There is no side file to fall out of step with the history.
+* **`FINAL_ELIGIBLE` / `FINAL_ANCHOR` / `FINAL_REASON`** — whether the session's
+  save could be committed. The anchor is the `creation` checkpoint `final` would
+  anchor to, which may be an older commit than the newest one; the reason is one
+  stable token (`no-survivor-loaded`, `no-record`, `no-creation-checkpoint`,
+  `no-creation-for-this-survivor`, `anchor-carries-no-record`,
+  `record-has-not-grown`).
+* **`MEDIA_ELIGIBLE` / `MEDIA_ANCHOR` / `MEDIA_REASON`** — whether the render
+  could be committed, which additionally requires a `final` for **this** survivor
+  to be in the history. The anchor is that `final` commit; the reason is
+  `no-final-published`, or whichever `FINAL_REASON` token explains why no anchor
+  could be resolved at all.
+
+Both are computed with the same predicates the refusals enforce, so the report
+cannot drift from what it predicts. `run_pipeline.sh` reads the `MEDIA_*` triple
+before its first stage, because `media` is the checkpoint it takes.
 
 How the staging scales matters on a long session, because the captures are the
 one class whose size is the session's length:
@@ -1187,31 +1367,38 @@ the terminal negation is verified both in the working tree and as HEAD carries
 it, because a negation that was never committed loses the save data on the next
 clone.
 
-The committer records the identity git already resolves in **this repository's**
-configuration (`git config --local`, never `--global`, never `--system`). A
-repository-local pair that already **equals** that identity is left untouched;
-one that **disagrees** is replaced — both values together — with the identity
-the commit will actually carry, and the log line names both, because a local
-identity that contradicts the committer is a repository configured to attribute
-the next commit to somebody else. That is least privilege rather than tidiness:
-the container mounts the checkout, sets its own `HOME`
-and forwards no `GIT_*`, so an identity living only in a home directory does
-not exist in there. It never invents one — a missing identity is a refusal —
-and it never rewrites history and never pushes.
+**The committer reports the identity and never writes it.** It resolves the
+identity git will actually use — `git var GIT_AUTHOR_IDENT`, the value a commit
+would carry — and says which scope it came from. A repository-local pair that
+**equals** that identity is confirmed and left untouched; one that **disagrees**
+is a **refusal**, because a local pair contradicting the committer is a
+repository configured to attribute the next commit to somebody else, and the
+tool's job is to say so rather than to overwrite it. It writes no git
+configuration in any scope, invents no identity — a missing one is a refusal —
+never rewrites history and never pushes.
 
-**What this branch actually carries is not that, and saying so is the point.**
-The paragraph above describes the tool. The commits in this branch were taken
-with plain `git commit` rather than through it, so there is no local pair here
-to read — `git config --local user.email` exits non-zero — and the identity
-resolves from the host's global configuration instead, which is why every commit
-is authored and committed as `Blitzy Agent <agent@blitzy.com>`
-(`git log -1 --format='%an <%ae> %cn <%ce>'`). The execution environment for
-this work also forbids running `git config user.name` or `git config user.email`
-at all, so the repository-local pair R1 asks for is not written by these passes.
-The requirement's substance — commits that carry a real, attributable identity —
-holds; its mechanism does not. The divergence is set out in
-`TECHNICAL_NOTES.md` under *R1's repository-local identity: what this branch
-carries*.
+It used to persist the identity with `git config --local` before every
+checkpoint. That was removed: the value it wrote was whatever the **host** had
+already resolved, so it bought persistence rather than correctness, and the
+acceptance gate then read it back and reported it as a property of the
+repository. Where a container needs the host's identity — it mounts the checkout,
+sets its own `HOME` and forwards no `GIT_*` — `supported_env.sh` forwards
+`GIT_AUTHOR_*` and `GIT_COMMITTER_*` into the environment instead, and forwards
+nothing when git cannot answer.
+
+**What this branch carries, and the divergence from R1's wording.** There is no
+repository-local pair here — `git config --local user.email` exits non-zero — and
+the identity resolves from the host's configuration, which is why every commit is
+authored and committed as `Blitzy Agent <agent@blitzy.com>`
+(`git log -1 --format='%an <%ae> %cn <%ce>'`). The execution environment forbids
+running `git config user.name` or `git config user.email` at all, so the
+repository-local pair the AAP describes (§0.3.1, §0.10.2) cannot be written by
+these passes. The gate therefore asserts the property that is both checkable and
+load-bearing: an identity RESOLVES, and it AGREES with the newest commit touching
+`playthrough/`. The requirement's substance — commits that carry a real,
+attributable identity — holds; its mechanism does not. The divergence is set out
+in `TECHNICAL_NOTES.md` under *Closed: the identity is asserted to RESOLVE and to
+match the history*.
 
 ### The knobs, and what each one is for
 
@@ -1428,7 +1615,7 @@ $ git diff --name-status f38c2fbae3..HEAD -- . ':(exclude)playthrough'
 M       .gitattributes
 M       .gitignore
 $ git diff --shortstat f38c2fbae3..HEAD -- .gitignore .gitattributes
- 2 files changed, 26 insertions(+)
+ 2 files changed, 44 insertions(+)
 ```
 
 Two files, both additive appends, 26 inserted lines, zero deletions.
@@ -1490,16 +1677,17 @@ negation, and the one hygiene risk it leaves* in `TECHNICAL_NOTES.md`; the
 three things standing between that and a committed build product are listed
 there, and none of them is an ignore rule.
 
-### `.gitattributes` — six entries
+### `.gitattributes` — six type rows and one waiver
 
 ```console
-$ git diff f38c2fbae3..HEAD -- .gitattributes | grep '^+[^+]'
+$ git diff f38c2fbae3..HEAD -- .gitattributes | grep '^+[^+#]'
 +*.jsonl   text
 +*.srt     text
 +*.gsav    binary
 +*.mp4     binary
 +*.sav     binary
 +*.zzip    binary
++playthrough/userdir/** -whitespace
 ```
 
 `*.jsonl` and `*.srt` join the text block [.gitattributes:7-19]; `*.gsav`,
@@ -1509,6 +1697,24 @@ $ git diff f38c2fbae3..HEAD -- .gitattributes | grep '^+[^+]'
 The file's own stated rationale is to normalise explicitly rather than rely on
 detection [.gitattributes:5-6], so extending it for new artifact types is the
 treatment it prescribes for itself.
+
+**The seventh row is a whitespace waiver, and it is deliberately narrow.**
+Everything under `playthrough/userdir/` is written by the **engine** and is
+committed byte for byte because it is what the session produced. Two of those
+files end with a blank line — the debug log, and the survivor's memorial diary —
+so `git diff --check` reports `new blank line at EOF` against them. The bytes are
+evidence: a memorial rewritten to please a whitespace linter is no longer the
+memorial the game wrote. `-whitespace` suppresses the report while changing
+nothing, and it leaves the `text`/eol handling above in force.
+
+Its scope is the engine's tree **alone** — every authored file here, the tooling,
+the transcripts and the reports, is still checked — and because git applies the
+**last** matching pattern, a directory-scoped row placed after the suffix rows is
+exactly the shape that could silently override them. So the committer asks git
+rather than reading the file: it holds one witness path per row through
+`git check-attr`, including one on each side of this waiver's boundary, and it
+asks the same of HEAD's own copy of the rules. `git diff --check` over
+`playthrough/` is clean, with no engine byte edited.
 
 ### What does not change
 
@@ -1797,41 +2003,51 @@ passes ends like this — the shape, not a transcript of the current tree:
 ```console
 $ playthrough/tooling/verify_artifacts.sh
 [...]
-SUMMARY  120 of 120 checks passed (120 of 120 declared for the 'all'
-phase), N informational note(s); the committed artifacts are what they claim
-to be.
+SUMMARY  <declared> of <declared> checks passed (<declared> declared for the
+'all' phase), N informational note(s); the committed artifacts are what they
+claim to be.
 VERIFY_CAPTURES=<captures>
 VERIFY_ROWS=<the same number>
 VERIFY_TIMELINE_TOTAL=<seconds>
 VERIFY_TRANSITIONS=<transition groups>
-VERIFY_REPORT=playthrough/acceptance-report.txt
+VERIFY_MEASURED_COMMIT=HEAD <short hash>
 VERIFY=pass
 ```
 
-**The block above is the shape of a passing run, not a transcript of one.** The
-receipt of the run that did pass over these artifacts is committed at
-`playthrough/acceptance-report.txt`; it records `117 of 117` because that was
-the inventory the gate declared when the record was published, and the gate now
-declares 120 — the single "every row records what was pressed and why" verdict
-became a two-part rationale contract, and two properties were added: that the
-readable record's sentences are the caption track's, and that the recording in
-the tree has a checkpoint pair of its own.
+**The totals are the gate's own declaration and are not written down here.**
+It declares a per-group table and sums it, and `run_pipeline.sh --help` READS
+that table at the moment it prints. This page used to quote the numbers instead
+— they said `117` while the gate declared `120` — so the one place to ask is the
+gate:
 
-**One condition is open on a checkout like this one, and it is a fact about the
-checkout rather than a defect in the gate:** `git config --local user.name` and
-`user.email` may be unset, because an identity that resolves from a broader
-scope is not this repository's and does not travel with the branch. That check
-then FAILS by design; `tooling/commit_artifacts.sh` persists a local identity
-with `git config --local` wherever that is permitted. While a session's output
-is still being worked on, the "nothing under `playthrough/` is left
-uncommitted" property fails too, for the ordinary reason.
+```console
+$ playthrough/tooling/run_pipeline.sh --help | grep -E 'checks before|history:'
+```
 
-A failing run publishes no report **and removes any stale one**, so a report in
-the tree means the last full run over it passed — which is the property that
-makes its presence mean something. It also means that running the gate over a
-checkout with an open condition deletes the committed receipt: put it back with
-`git checkout -- playthrough/acceptance-report.txt`, which is exactly what the
-test suite does around every gate run of its own.
+**The gate writes nothing into the tree it measures.** By default it reports to
+stdout and stderr and no further; `--report-to PATH` names a destination, and a
+path inside the working tree is **refused**, in its own words: a report written
+there would dirty a file the run had just certified as committed. It used to
+publish `playthrough/acceptance-report.txt` itself on a passing run and delete
+it on a failing one — so a full-phase run taken after the final commit left the
+tree dirty in the one file it had just certified, and a run over a
+work-in-progress checkout removed the committed receipt. Publication now belongs
+to the `attest` checkpoint, which reads the report at the scratch path and
+refuses one that failed, one produced by a phase that measured no history, or one
+naming a commit other than `HEAD`.
+
+**`VERIFY_MEASURED_COMMIT` is what makes the report about a tree.** It reads
+`HEAD <short hash>` over a clean tree and `HEAD <short hash> plus N uncommitted
+path(s) under playthrough` otherwise, so a measurement taken mid-edit says so and
+the publication step refuses it automatically.
+
+**Two conditions fail by design on a checkout whose session is still being
+worked on**, and both are facts about the checkout rather than defects in the
+gate: "nothing under `playthrough/` is left uncommitted", for the ordinary
+reason, and the ending and history checks, until a recording has been committed.
+The identity check is not one of them any more — it asks whether an identity
+RESOLVES and whether it AGREES with the newest commit touching `playthrough/`,
+both of which hold here.
 
 What it asserts, by section: the `frames == manifest rows` identity and
 contiguous indices from `00001`; the clamp bounds on every timeline entry, the

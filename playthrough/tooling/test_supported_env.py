@@ -129,11 +129,132 @@ case "$1" in
         if [ -f "${STUB_DIR}/run-status" ]; then
             exit "$(cat "${STUB_DIR}/run-status")"
         fi
+        if [ -f "${STUB_DIR}/container-id" ]; then
+            cat "${STUB_DIR}/container-id"
+        fi
+        exit 0
+        ;;
+    ps)
+        # Whatever the test decided is running.  One id per line, which
+        # is what `docker ps --quiet` produces.
+        if [ -f "${STUB_DIR}/ps-out" ]; then
+            cat "${STUB_DIR}/ps-out"
+        fi
+        exit 0
+        ;;
+    inspect)
+        # Answered PER TEMPLATE, because the driver asks three separate
+        # questions of one container and a single canned answer could
+        # not tell them apart.
+        format=""
+        want=0
+        for one in "$@"; do
+            if [ "${want}" = "1" ]; then format="${one}"; want=0; fi
+            if [ "${one}" = "--format" ]; then want=1; fi
+        done
+        # A TEMPLATE CARRYING A BACKSLASH IS REJECTED, exactly as docker
+        # rejects it, because a canned answer here hid a real defect: the
+        # driver's mount template was wrapped across two lines inside
+        # SINGLE quotes, where backslash-newline is literal rather than a
+        # continuation.  Real docker exited 64 with `template parsing
+        # error: template: :1: unexpected "\\" in operand`; this stub
+        # returned the answer anyway, so the tests passed while a hosted
+        # session was unreachable.  Stricter than Go on purpose: no
+        # template this driver sends needs a backslash, so refusing all
+        # of them cannot produce a false failure and does catch the
+        # quoting mistake that produced one.
+        case "${format}" in
+            *'\'*)
+                printf '%s\n' 'template parsing error: template: :1: \
+unexpected "\\" in operand' >&2
+                exit 64
+                ;;
+        esac
+        case "${format}" in
+            *Config.Image*) file=inspect-image ;;
+            *Mounts*) file=inspect-mount ;;
+            *Config.User*) file=inspect-user ;;
+            *) file=inspect-other ;;
+        esac
+        if [ -f "${STUB_DIR}/${file}" ]; then
+            cat "${STUB_DIR}/${file}"
+        fi
+        exit 0
+        ;;
+    exec)
+        # The driver asks two questions through exec: whether the engine
+        # is alive, and whether Xvfb is serving.
+        #
+        # THE ENGINE QUESTION IS ANSWERED BY RUNNING THE DRIVER'S OWN
+        # PROBE, not by a canned reply, and that distinction is the whole
+        # reason this branch is shaped the way it is.  A canned
+        # alive/gone stub is what this file used to have, and it passed
+        # while the real probe was broken in two ways at once -- it
+        # matched its own `sh -c` wrapper through `pgrep -f`, and it
+        # counted a `<defunct>` engine as a running one.  Both were found
+        # by hand against a real container, which is exactly the work a
+        # test is supposed to save.  So the script the driver passes is
+        # EXECUTED here, against a synthetic process table supplied
+        # through a fake `ps` earlier on PATH: the awk that decides the
+        # answer is the awk that ships.
+        text=""
+        for one in "$@"; do text="${text} ${one}"; done
+        script=""
+        for one in "$@"; do script="${one}"; done
+        case "${text}" in
+            *Xvfb*) printf serving ;;
+            *comm*)
+                if [ -f "${STUB_DIR}/exec-fails" ]; then exit 1; fi
+                PATH="${STUB_DIR}/fakebin:${PATH}"
+                export PATH
+                sh -c "${script}"
+                ;;
+            *) : ;;
+        esac
+        exit 0
+        ;;
+    stop)
+        if [ -f "${STUB_DIR}/stop-status" ]; then
+            exit "$(cat "${STUB_DIR}/stop-status")"
+        fi
+        # A stopped container is gone, unless a test is proving that the
+        # driver notices when it is not.
+        if [ ! -f "${STUB_DIR}/stop-leaks" ]; then
+            : >"${STUB_DIR}/ps-out"
+        fi
         exit 0
         ;;
 esac
 exit 0
 """
+
+# The process table the engine probe reads, standing in for the one
+# inside a session container.  It ignores its arguments on purpose: the
+# driver asks for `-eo stat=,comm=` and the table is written in exactly
+# that shape, so honouring the format would only be a second place for
+# the two to disagree.
+FAKE_PS = r"""#!/bin/sh
+if [ -f "${STUB_DIR}/ps-table" ]; then
+    cat "${STUB_DIR}/ps-table"
+fi
+exit 0
+"""
+
+# The two process-table rows that matter, named for the condition each
+# one IS rather than for the answer it should produce.
+#
+# ZOMBIE_ENGINE is not a hypothetical.  PID 1 in a session container is
+# `sleep infinity`, which never calls wait(), so every engine that exits
+# leaves this row behind permanently -- measured in a real container as
+# `1855 Zs cataclysm-tiles [cataclysm-tiles] <defunct>`, still listed
+# long after the process was killed.  It is therefore the NORMAL state
+# of a container whose session has ended properly, and a probe that read
+# it as a running game would refuse to take any finished session down.
+LIVE_ENGINE = "Ss cataclysm-tiles"
+ZOMBIE_ENGINE = "Zs cataclysm-tiles"
+# A process whose name merely CONTAINS the engine's, which must not be
+# mistaken for it.
+OTHER_PROCESS = "Ss sleep"
 
 
 class SupportedEnvFixture(unittest.TestCase):
@@ -166,6 +287,17 @@ class SupportedEnvFixture(unittest.TestCase):
         with open(docker, "w", encoding="utf-8") as handle:
             handle.write(DOCKER_STUB)
         os.chmod(docker, 0o755)
+        # The fake `ps` the engine probe reads its process table from.
+        # It lives in its own directory because it is prepended to PATH
+        # only for the probe, inside the stub -- putting it beside the
+        # docker stub would hand a fake `ps` to every other command the
+        # driver runs.
+        fakebin = os.path.join(self.stub_dir, "fakebin")
+        os.makedirs(fakebin)
+        fake_ps = os.path.join(fakebin, "ps")
+        with open(fake_ps, "w", encoding="utf-8") as handle:
+            handle.write(FAKE_PS)
+        os.chmod(fake_ps, 0o755)
 
     # -- the harness -------------------------------------------------
 
@@ -191,6 +323,32 @@ class SupportedEnvFixture(unittest.TestCase):
         with open(os.path.join(self.stub_dir, name), "w",
                   encoding="utf-8") as handle:
             handle.write(contents)
+
+    def executable_body(self):
+        """The script with whole-line comments removed.
+
+        Several properties below are about what the script DOES, and this
+        script documents the defects it used to carry by quoting them
+        verbatim -- both `trap "rm -rf ...` and
+        `pgrep -f "cataclysm-tiles ...` appear in comments explaining why
+        they are gone.  A test that searched the raw text would forbid
+        keeping that record, so it reads the executable lines instead.
+        test_it_does_not_source_env_sh reasons the same way.
+        """
+        with io.open(self.script, encoding="utf-8") as handle:
+            return "".join(line for line in handle
+                           if not line.strip().startswith("#"))
+
+    def process_table(self, *rows):
+        """Set what the fake `ps -eo stat=,comm=` inside will report.
+
+        Each row is a "STATE NAME" pair exactly as `ps` prints it, so a
+        test can state the condition it means rather than the answer it
+        expects: LIVE_ENGINE is a running game, ZOMBIE_ENGINE is the
+        `<defunct>` entry every finished session leaves behind.
+        """
+        self.control("ps-table",
+                     "".join("%s\n" % row for row in rows))
 
     def invocations(self):
         """Every recorded docker argv, as a list of lists."""
@@ -574,11 +732,443 @@ class TestTheHostedSession(SupportedEnvFixture):
         self.assertEqual(result.returncode, 0)
         self.assertIn(b"nothing to take down", result.stderr)
 
-    def test_down_warns_that_it_takes_the_engine_with_it(self):
+    def test_down_says_the_session_ends_inside_the_game(self):
         """A session is closed through Save & Quit, not through this."""
         text = io.open(self.script, encoding="utf-8").read()
         self.assertIn("Save &", text)
-        self.assertIn("everything inside it goes with it", text)
+        self.assertIn("REFUSING to take the session", text)
+
+
+class TestSessionIdentity(SupportedEnvFixture):
+    """Which container a command acts on, and why not by name.
+
+    Every test here pins a property a security review found missing.  The
+    driver used to select with `docker ps --filter "name=^<name>$"`,
+    where the name carried $CLONE_INDEX verbatim -- and docker's name
+    filter is a REGULAR EXPRESSION, so an unvalidated index was
+    unvalidated regex.  A sibling clone's session container was up on the
+    host this was found on.
+    """
+
+    def session(self, identifier="c0ffee1234", alive=False,
+                image=None, mount=None, user=None):
+        """Make the stub answer as one plausible session container.
+
+        `mount` is the SOURCE/DESTINATION listing docker prints for
+        `{{range .Mounts}}{{println .Source .Destination}}{{end}}`, not a
+        yes/no verdict, so the driver's own matching runs.  This used to
+        be a canned "yes" and that hid a real defect: the driver's mount
+        template was wrapped across two lines inside single quotes, where
+        a backslash-newline is literal rather than a continuation, so
+        docker rejected the template outright and the driver refused
+        every container -- while these tests passed.
+        """
+        self.control("ps-out", identifier + "\n")
+        self.control("inspect-image",
+                     image if image is not None
+                     else "playthrough-capture:26.04")
+        self.control("inspect-mount",
+                     mount if mount is not None
+                     else "%s %s\n" % (self.root, self.root))
+        self.control("inspect-user",
+                     user if user is not None
+                     else "%d:%d" % (os.getuid(), os.getgid()))
+        self.process_table(
+            *([LIVE_ENGINE] if alive else [ZOMBIE_ENGINE]))
+        return identifier
+
+    def filters_of(self, verb="ps"):
+        """The --filter arguments of the recorded call for `verb`."""
+        calls = [call for call in self.invocations()
+                 if call and call[0] == verb]
+        self.assertTrue(calls, msg=self.invocations())
+        argv = calls[0]
+        return [argv[index + 1] for index, item in enumerate(argv)
+                if item == "--filter"]
+
+    def test_selection_is_by_label_and_never_by_name(self):
+        """A name is not an identity, and a name filter is a regex."""
+        self.session()
+        result = self.run_script("session")
+        self.assertEqual(result.returncode, 0,
+                         msg=result.stderr.decode("utf-8", "replace"))
+        filters = self.filters_of("ps")
+        self.assertTrue(filters, msg=self.invocations())
+        for one in filters:
+            with self.subTest(filter=one):
+                self.assertTrue(
+                    one.startswith("label="),
+                    msg="only exact label equality identifies a session")
+        joined = " ".join(filters)
+        self.assertIn("playthrough.role=capture-session", joined)
+        self.assertIn("playthrough.checkout=", joined)
+        self.assertIn("playthrough.clone=0", joined)
+
+    def test_up_labels_the_container_it_starts(self):
+        """Selection by label needs the labels to have been written."""
+        self.run_script("up")
+        argv = [call for call in self.invocations()
+                if call and call[0] == "run"][0]
+        labels = [argv[index + 1] for index, item in enumerate(argv)
+                  if item == "--label"]
+        joined = " ".join(labels)
+        self.assertIn("playthrough.role=capture-session", joined)
+        self.assertIn("playthrough.checkout=", joined)
+        self.assertIn("playthrough.clone=0", joined)
+
+    def test_a_clone_index_that_is_not_a_number_is_refused(self):
+        """`CLONE_INDEX='.*'` used to compose a regex that matched all."""
+        for value in (".*", "1;2", "0 1", "-1", "a"):
+            with self.subTest(value=value):
+                result = self.run_script(
+                    "session", preset={"CLONE_INDEX": value})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(
+                    b"is not a number",
+                    result.stderr.replace(b"\n", b" "))
+
+    def test_a_clone_index_above_the_range_is_refused(self):
+        result = self.run_script("session", preset={"CLONE_INDEX": "100"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b"above 99", result.stderr.replace(b"\n", b" "))
+
+    def test_a_padded_clone_index_names_one_session(self):
+        """`07` and `7` must not be two different sessions."""
+        first = self.run_script("session", preset={"CLONE_INDEX": "07"})
+        padded = [one for one in self.filters_of("ps")
+                  if one.startswith("label=playthrough.clone=")]
+        self.assertEqual(first.returncode, 0)
+        os.unlink(self.stub_log)
+        self.run_script("session", preset={"CLONE_INDEX": "7"})
+        plain = [one for one in self.filters_of("ps")
+                 if one.startswith("label=playthrough.clone=")]
+        self.assertEqual(padded, plain)
+        self.assertEqual(plain, ["label=playthrough.clone=7"])
+
+    def test_two_matching_containers_are_refused_not_chosen(self):
+        """`head -n 1` made an ambiguity into a silent choice."""
+        self.control("ps-out", "aaaaaaaaaaaa\nbbbbbbbbbbbb\n")
+        result = self.run_script("exec", "true")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b"will not", result.stderr.replace(b"\n", b" "))
+        self.assertEqual(
+            [call for call in self.invocations() if call[0] == "exec"],
+            [], msg="nothing may be exec'd into while it is ambiguous")
+
+    def test_a_container_running_another_image_is_refused(self):
+        self.session(image="some/other:image")
+        result = self.run_script("exec", "true")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b"some/other:image",
+                      result.stderr.replace(b"\n", b" "))
+
+    def test_a_container_without_this_checkout_mounted_is_refused(self):
+        """The frames would be written into somebody else's tree."""
+        self.session(mount="")
+        result = self.run_script("exec", "true")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b"no bind mount", result.stderr.replace(b"\n", b" "))
+
+    def test_a_container_running_as_another_user_is_refused(self):
+        self.session(user="4242:4242")
+        result = self.run_script("exec", "true")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b"4242:4242", result.stderr.replace(b"\n", b" "))
+
+    def test_the_mount_is_inspected_with_a_template_docker_accepts(self):
+        """The inspection must not refuse the container `up` just made.
+
+        Found live, not here: the mount template was wrapped across two
+        lines inside single quotes, so it reached docker carrying a
+        literal backslash and newline.  docker exited 64 with a parse
+        error, inspect_field swallowed it, and the driver refused a
+        container it had created and labelled itself -- `session`
+        reported "no bind mount of <this checkout>" about a container
+        that had exactly that mount.  Fail-closed, and completely
+        unusable.
+        """
+        self.session()
+        result = self.run_script("exec", "true")
+        self.assertEqual(
+            result.returncode, 0,
+            msg="the driver refused its own session container:\n%s"
+                % result.stderr.decode("utf-8", "replace"))
+        formats = [
+            call[call.index("--format") + 1]
+            for call in self.invocations()
+            if call and call[0] == "inspect" and "--format" in call]
+        self.assertTrue(formats, msg=self.invocations())
+        for one in formats:
+            self.assertNotIn(
+                "\\", one,
+                msg="docker's template parser rejects a backslash in "
+                    "operand position; this one reached it: %r" % one)
+            self.assertNotIn("\n", one, msg=repr(one))
+
+    def test_a_mount_of_another_tree_is_refused(self):
+        """A real listing, of the wrong tree, must still be refused."""
+        self.session(mount="/somewhere/else /somewhere/else\n")
+        result = self.run_script("exec", "true")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b"no bind mount", result.stderr.replace(b"\n", b" "))
+
+    def test_a_source_only_match_is_not_enough(self):
+        """Source and destination must BOTH be this checkout."""
+        self.session(mount="%s /elsewhere\n" % self.root)
+        result = self.run_script("exec", "true")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b"no bind mount", result.stderr.replace(b"\n", b" "))
+
+    def test_an_inspected_container_is_exec_ed_into(self):
+        """The refusals must not have closed the ordinary path."""
+        self.session()
+        result = self.run_script("exec", "true")
+        self.assertEqual(result.returncode, 0,
+                         msg=result.stderr.decode("utf-8", "replace"))
+        self.assertTrue(
+            [call for call in self.invocations() if call[0] == "exec"])
+
+
+class TestTakingASessionDown(SupportedEnvFixture):
+    """`down` must not end a recorded session outside the game.
+
+    A recorded session ends INSIDE the game -- realistic sleep or death,
+    then the in-game Save & Quit -- because that is the only exit that
+    writes the character file the acceptance gate requires.  The previous
+    version of this subcommand warned in prose, ran
+    `docker stop ... || true`, and printed "session container removed"
+    whether or not anything had been removed.
+    """
+
+    def session(self, identifier="c0ffee1234", alive=False):
+        self.control("ps-out", identifier + "\n")
+        self.control("inspect-image", "playthrough-capture:26.04")
+        # The real mount listing, so the driver's own matching runs --
+        # see TestSessionIdentity.session for why a canned verdict here
+        # was worth removing.
+        self.control("inspect-mount", "%s %s\n" % (self.root, self.root))
+        self.control("inspect-user",
+                     "%d:%d" % (os.getuid(), os.getgid()))
+        # `alive=False` deliberately leaves the ZOMBIE row rather than an
+        # empty table, because that is what a container whose session
+        # ended properly actually looks like.  Every teardown test below
+        # therefore also asserts that a `<defunct>` engine does not read
+        # as a running one.
+        self.process_table(
+            *([LIVE_ENGINE, ZOMBIE_ENGINE] if alive else [ZOMBIE_ENGINE]))
+        return identifier
+
+    def test_a_live_engine_refuses_the_teardown(self):
+        self.session(alive=True)
+        result = self.run_script("down")
+        self.assertEqual(result.returncode, 3,
+                         msg=result.stderr.decode("utf-8", "replace"))
+        self.assertIn(b"REFUSING", result.stderr.replace(b"\n", b" "))
+        self.assertEqual(
+            [call for call in self.invocations() if call[0] == "stop"],
+            [], msg="nothing may be stopped by a refused teardown")
+
+    def test_an_abandonment_needs_a_reason(self):
+        self.session(alive=True)
+        result = self.run_script("down", "--abandon")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b"needs a reason", result.stderr.replace(b"\n", b" "))
+        self.assertEqual(
+            [call for call in self.invocations() if call[0] == "stop"], [])
+
+    def test_an_explicit_abandonment_stops_it_and_says_why(self):
+        self.session(alive=True)
+        result = self.run_script(
+            "down", "--abandon", "the instance is wedged on a modal")
+        self.assertEqual(result.returncode, 0,
+                         msg=result.stderr.decode("utf-8", "replace"))
+        self.assertIn(b"ABANDONING", result.stderr.replace(b"\n", b" "))
+        self.assertIn(b"wedged on a modal",
+                      result.stderr.replace(b"\n", b" "))
+        self.assertTrue(
+            [call for call in self.invocations() if call[0] == "stop"])
+
+    def test_a_dead_engine_needs_no_abandonment(self):
+        self.session(alive=False)
+        result = self.run_script("down")
+        self.assertEqual(result.returncode, 0,
+                         msg=result.stderr.decode("utf-8", "replace"))
+        self.assertTrue(
+            [call for call in self.invocations() if call[0] == "stop"])
+        self.assertIn(b"stopped and removed",
+                      result.stderr.replace(b"\n", b" "))
+
+    def test_an_unanswerable_probe_is_treated_as_a_live_session(self):
+        """Fail closed: "cannot tell" must not read as "nothing there"."""
+        self.session(alive=False)
+        self.control("exec-fails")
+        result = self.run_script("down")
+        self.assertEqual(result.returncode, 3)
+        self.assertIn(b"treating", result.stderr.replace(b"\n", b" "))
+
+    def test_a_stop_that_fails_is_reported_not_swallowed(self):
+        self.session(alive=False)
+        self.control("stop-status", "1")
+        result = self.run_script("down")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b"STILL", result.stderr.replace(b"\n", b" "))
+        self.assertNotIn(b"stopped and removed",
+                         result.stderr.replace(b"\n", b" "))
+
+    def test_a_container_that_survives_the_stop_is_reported(self):
+        """"docker said yes" is not the same as "the container is gone"."""
+        self.session(alive=False)
+        self.control("stop-leaks")
+        result = self.run_script("down")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b"still running", result.stderr.replace(b"\n", b" "))
+
+    def test_no_session_at_all_is_not_an_error(self):
+        result = self.run_script("down")
+        self.assertEqual(result.returncode, 0)
+        self.assertIn(b"nothing to take down",
+                      result.stderr.replace(b"\n", b" "))
+
+    def test_an_unknown_argument_is_refused(self):
+        result = self.run_script("down", "--force")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b"unknown argument", result.stderr.replace(b"\n", b" "))
+
+    # -- the probe itself, which was wrong twice ---------------------
+    #
+    # Both defects below were found by running the probe against a real
+    # container, AFTER a canned-answer stub had reported these same tests
+    # passing.  Each made the probe answer "alive" unconditionally, and an
+    # unconditional refusal is not a safe default: it teaches whoever runs
+    # `down` to reach for --abandon every time, which is precisely the
+    # protection the guard exists to provide.
+
+    def test_a_defunct_engine_does_not_read_as_a_running_one(self):
+        """The normal state of a container that finished a session.
+
+        PID 1 is `sleep infinity` and never calls wait(), so an exited
+        engine stays in the table as `<defunct>` for the life of the
+        container.  Measured: `1855 Zs cataclysm-tiles` was still listed
+        long after the process was killed.  Reading that as a session in
+        progress would make every finished session impossible to close.
+        """
+        self.session()
+        self.process_table(ZOMBIE_ENGINE)
+        result = self.run_script("down")
+        self.assertEqual(
+            result.returncode, 0,
+            msg=result.stderr.decode("utf-8", "replace"))
+        self.assertIn(b"no engine is running",
+                      result.stderr.replace(b"\n", b" "))
+
+    def test_a_live_engine_beside_a_zombie_is_still_found(self):
+        """Excluding zombies must not blind the probe to a live game."""
+        self.session()
+        self.process_table(ZOMBIE_ENGINE, LIVE_ENGINE)
+        result = self.run_script("down")
+        self.assertEqual(result.returncode, 3)
+        self.assertIn(b"STILL RUNNING", result.stderr.replace(b"\n", b" "))
+
+    def test_an_empty_process_table_is_not_a_session(self):
+        self.session()
+        self.process_table()
+        result = self.run_script("down")
+        self.assertEqual(
+            result.returncode, 0,
+            msg=result.stderr.decode("utf-8", "replace"))
+
+    def test_the_probe_does_not_match_its_own_command_line(self):
+        """CWE-free but just as broken: `pgrep -f` matched the wrapper.
+
+        The probe used to be
+        `pgrep -f "cataclysm-tiles --userdir"`, and the `sh -c` carrying
+        that pattern has the pattern in its own command line.  Measured
+        in a container with no engine at all, the probe printed `alive`
+        and `pgrep -af` named only the shell.  Matching on `comm` -- the
+        process NAME, which for the probe's own processes is ps, awk or
+        sh -- is what makes the question answerable at all.
+        """
+        body = self.executable_body()
+        self.assertNotIn(
+            'pgrep -f "cataclysm-tiles', body,
+            msg="a full-command-line match finds this probe's own "
+                "wrapper and therefore always answers 'alive'")
+        self.assertIn("comm=", body)
+        # And the end-to-end proof that a name-shaped collision does not
+        # fool it: a live process whose name merely contains the engine's
+        # is not the engine.
+        self.session()
+        self.process_table(OTHER_PROCESS, ZOMBIE_ENGINE)
+        result = self.run_script("down")
+        self.assertEqual(
+            result.returncode, 0,
+            msg=result.stderr.decode("utf-8", "replace"))
+
+
+class TestTheBuildContextCleanup(SupportedEnvFixture):
+    """The EXIT trap is a function name, not composed shell text.
+
+    CWE-78, found by a security review: the trap used to be
+    `trap "rm -rf -- '${context}'" EXIT`, which interpolates a
+    $TMPDIR-derived path into a string bash later EXECUTES.  A probe with
+    a quote and a command substitution in $TMPDIR executed an injected
+    marker -- with `rm -rf` holding it.
+    """
+
+    def test_no_path_is_interpolated_into_an_executable_trap(self):
+        """Every `trap` handler is a bare function name.
+
+        The assertion deliberately reads EXECUTABLE lines only, in the
+        same way test_it_does_not_source_env_sh does.  The retired form
+        is quoted verbatim in a comment above the fix -- that is the
+        record of what the defect was, and a test that forbade the
+        string outright would forbid documenting it.  What must not
+        exist is a trap whose handler is composed text: a quoted
+        argument, or one carrying an expansion.
+        """
+        with io.open(self.script, encoding="utf-8") as handle:
+            lines = handle.readlines()
+        handlers = []
+        for number, line in enumerate(lines, 1):
+            stripped = line.strip()
+            if stripped.startswith("#") or "trap " not in stripped:
+                continue
+            argument = stripped.split("trap ", 1)[1]
+            handlers.append(argument)
+            self.assertFalse(
+                argument.startswith('"') or argument.startswith("'"),
+                msg="line %d installs a QUOTED trap handler (%s); bash "
+                    "executes that string, so any path inside it is "
+                    "shell -- CWE-78.  Name a function instead."
+                    % (number, stripped))
+            self.assertNotIn(
+                "$", argument,
+                msg="line %d expands something into a trap handler "
+                    "(%s); the handler must read the value when it "
+                    "fires, not carry it as text." % (number, stripped))
+        self.assertEqual(
+            handlers, ["cleanup_build_context EXIT"],
+            msg="the build context's cleanup is the only trap this "
+                "driver installs; a new one needs the same review")
+
+    def test_a_hostile_tmpdir_cannot_execute_anything(self):
+        """The one that actually proves it: run with such a $TMPDIR."""
+        marker = os.path.join(self.base, "injected")
+        hostile = os.path.join(
+            self.base, "tmp'$(touch %s)'dir" % marker)
+        os.makedirs(hostile)
+        result = self.run_script(
+            "build", preset={"TMPDIR": hostile})
+        self.assertEqual(result.returncode, 0,
+                         msg=result.stderr.decode("utf-8", "replace"))
+        self.assertFalse(
+            os.path.exists(marker),
+            msg="a path from the environment was executed as shell")
+        # And the context really was removed, so the fix did not simply
+        # stop cleaning up.
+        self.assertEqual(
+            [name for name in os.listdir(hostile)
+             if name.startswith("playthrough-ctx-")], [])
 
 
 class TestTheScriptItself(unittest.TestCase):

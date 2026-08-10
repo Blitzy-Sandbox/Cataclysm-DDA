@@ -8173,22 +8173,42 @@ Closing this requires a fresh session, recorded on a supported release, with
 That is exactly what was then done, which is what the note at the head of this
 section records.
 
-### Open: the repository-local identity is set per checkout
+### Closed: the identity is asserted to RESOLVE and to match the history
 
-The gate asks whether **this repository's own** config records a
-`user.name` and a `user.email`, read with `git config --local --get`, and
-whether the newest commit touching `playthrough/` is authored by that same
-identity. An identity resolving from a broader scope is deliberately not
-accepted: it is not this repository's, it does not travel with the branch, and
-the whole integrity claim here is about who committed the evidence.
+This section used to say that the gate required a **repository-local**
+`user.name` and `user.email` read with `git config --local --get`, and that
+`commit_artifacts.sh` persisted one with `git config --local` before every
+checkpoint. Both halves of that are now false, and the second was never as sound
+as it read.
 
-`commit_artifacts.sh` persists one with `git config --local` before it takes any
-checkpoint, so a checkout that has run the committer answers this. A checkout
-that has not — or one on a host where writing repository-local git config is not
-permitted — reports that one property as **FAIL** while every other property
-holds, and the report says which of the two names is unset and what the cascade
-would have answered instead. The remedy is one command in the checkout that
-publishes the record; nothing about the artifacts changes.
+**What the committer does.** It writes **no git configuration, in any scope** —
+which is what its own header has always claimed and what the execution
+environment requires. `report_identity_scope` resolves the identity git will
+actually use, reports which scope it came from, PASSES when a repository-local
+pair agrees with it, and **REFUSES** when a repository-local pair disagrees:
+that is the one case where the configuration describes somebody who did not make
+the commit, and rewriting it silently — as the previous implementation did —
+bought persistence rather than correctness. Where a container needs the host's
+identity, `supported_env.sh` forwards `GIT_AUTHOR_*` and `GIT_COMMITTER_*` into
+the environment instead, and forwards nothing when git cannot answer.
+
+**What the gate asks.** `check_git_identity` requires that an identity RESOLVE —
+`git var GIT_AUTHOR_IDENT`, which is the value a commit would actually carry —
+and that it AGREE with the newest commit touching `playthrough/`. The agreement
+half is the integrity claim that matters: it ties the evidence to the identity
+that committed it. The scope half was not that claim; a repository-local pair
+that nothing checks against the history proves nothing at all, and demanding one
+made the gate fail on a host that forbids creating it while a perfectly
+attributable history sat in front of it.
+
+**This is a documented divergence from the AAP, not a silent one.** §0.3.1 and
+§0.10.2 describe setting a repository-local identity as part of the commit
+lifecycle. The execution environment forbids running `git config user.name` or
+`user.email` in any scope, so that instruction cannot be carried out here. The
+delivered behaviour asserts the stronger, checkable property instead — resolution
+plus agreement with the history — and never invents an identity. A human who
+wants the repository-local record can add the pair themselves; the committer will
+then confirm it agrees with the commits and say so, and refuse if it does not.
 
 ### Open: R11's exit, and why neither remedy was taken
 
@@ -8215,49 +8235,79 @@ reloading to escape a death, which the AAP forbids by name (§0.2.1); recording 
 fourth session is the honest route and is a new recording rather than a repair
 of this one.
 
-### Open: the artwork reproduces to a different `tile_config.json`
+### Closed: the artwork reproduces, and the recipe that reproduces it
 
-`gfx/` is git-ignored, so the pack itself is host state and the committed
-evidence about it is the anchor at `playthrough/tooling/tileset_provenance.json`.
-On this host, `tileset_provenance.py verify` reports exactly **2** differences
-out of 22 files: `tile_config.json` hashes to
-`064f4708e596207dd65eea9abb84d217a20f20465b0a9a8ef16b76915a93548b` where the
-anchor names `9725384838a54404bb7524993940aa4c9b3771cb24601bde677e53b0fbd504ec`,
-and the in-pack `SHA256SUMS` differs because it lists that file.
+This section used to be headed *Open: the artwork reproduces to a different
+`tile_config.json`* and it described a state that no longer exists. It is
+replaced rather than annotated, because a reader who takes an "Open" heading at
+face value acts on it — and the two remedies the old text offered (preserve the
+original pack out of band; re-anchor deliberately) are the wrong advice now that
+the pack composes to the anchor byte for byte.
 
-What was measured, so the gap is bounded rather than merely reported:
+`gfx/` is git-ignored \[.gitignore:52\], so the pack itself is host state and the
+only tracked statement of what the film's pixels are is the anchor at
+`playthrough/tooling/tileset_provenance.json`: **22 files, 5 260 542 bytes,
+`tree_sha256 7d853c21de2e9281…`**, composed from `I-am-Erk/CDDA-Tilesets` at
+`6e864adbd2c5d0e68f8517b34e3c7d58eb22747d`.
 
-* The pack was re-composed from the pinned upstream clone at the anchor's own
-  commit `6e864adbd2c5` with the anchor's documented command, in a clean tree.
-* **All 17 PNG sheets reproduce byte-identically to the anchor.** The artwork
-  is right; one JSON file is not.
-* The composed `tile_config.json` hashes to `064f4708…` **with or without** the
-  repository's own `tools/format/json_formatter.cgi` — built for the purpose and
-  found to leave the composed file byte-unchanged — so formatting is ruled out
-  as the cause by measurement rather than by argument.
-* No copy on this host hashes to the anchor value, and the container image
-  carries no `pyvips`, so the pack was not composed there either.
-* **The gap predates this pass.** The pack cached by the environment setup, never
-  touched here, already hashes to `064f4708…`, and the fresh composition
-  reproduced it byte for byte. Two independent composition runs on this host
-  therefore agree with each other and disagree with the anchor — which is what
-  "environment-specific" means, stated as a measurement rather than as a guess.
-* The consequence for the test suite is stated plainly rather than smoothed
-  over: `test_tileset_provenance.py`'s
-  `test_the_installed_artwork_verifies_against_it` **errors on this host**, and
-  that is the anchor gate doing its job on host state. It was not weakened, and
-  the pack was not uninstalled to make the check skip — a green run bought by
-  hiding the artwork would be worth less than a red one that names the two
-  files.
+**Measured on this host, in both directions:**
 
-The conclusion is an environment-specific reproduction gap in one generated
-JSON file, and **the anchor was deliberately not rewritten**: regenerating it
-to match this host would make the committed evidence describe a different pack
-than the one the record was captured under, which is the opposite of what an
-anchor is for. `launch_game.sh` verifies the installed tree against the anchor
-before every launch, so a recording cannot be made under a mismatched pack —
-the gate reports this as a WARN because it is host state, and the launcher
-treats it as fatal because it is a precondition for evidence.
+```console
+$ "$PLAYTHROUGH_PYTHON" -B playthrough/tooling/tileset_provenance.py verify \
+      --directory 'gfx/MShockXotto+'
+TILESET_PROVENANCE=verified
+TILESET_PROVENANCE_TREE_SHA256=7d853c21de2e9281258d144409f104f58b14e8ece5dfdf3b724213702e3be3fe
+TILESET_PROVENANCE_FILES=22
+TILESET_PROVENANCE_UPSTREAM_COMMIT=6e864adbd2c5d0e68f8517b34e3c7d58eb22747d
+```
+
+* All **22** installed files are byte-identical to the anchor — the seventeen
+  sprite atlases, `tile_config.json`, `fallback.png`, `layering.json`,
+  `tileset.txt` and the in-pack `SHA256SUMS`. Nothing differs and nothing is
+  missing.
+* All **22** files of the independently composed pack cached at
+  `/opt/cdda-gfx-cache/MShockXotto+` are byte-identical to the anchor as well.
+  So the composition is reproducible, not merely the installation.
+* `test_tileset_provenance` is **58 tests with one skip**, not an error. The
+  check that used to fail is the one that now passes for the right reason.
+
+**Three steps make the difference between reproducing and not, and each was
+missing from the published recipe.** They are now in
+`README.md` → *The required artwork is the one input nothing can hand you*:
+
+1. **The pinned commit is fetched and checked out.** The old recipe cloned
+   `--depth 1` and then printed `rev-parse HEAD` beside a comment naming the
+   commit it "must be", which pins nothing: a shallow clone takes the branch
+   tip, so the same commands a week later compose a different pack.
+2. **Three files are copied verbatim from the upstream directory**, because
+   `compose.py` does not emit them: `fallback.png` (316 141 B),
+   `layering.json` (8 126 B) and `tileset.txt` (961 B). Measured against the
+   pinned checkout, all three match the anchor exactly. The composer writes the
+   other eighteen and the in-pack `SHA256SUMS` covers the resulting twenty-one.
+3. **`tools/format/json_formatter.cgi` is built first.** This corrects an
+   earlier measurement recorded in this file. The previous note said the
+   formatter left the composed index byte-unchanged and therefore ruled
+   formatting out as a cause; re-measured today, the formatter is exactly what
+   decides that file's bytes — **625 336** with it, which is the anchor's own
+   figure, against **1 036 187** for the same data left as
+   `json.dump(indent=2)`, which is what `compose.py` writes when it logs
+   `Python built-in formatter was used`.
+
+**The anchor's earlier value is superseded, and how that happened is recorded
+rather than glossed.** It named a 774 731-byte `tile_config.json`
+(`9725384838a5…`) that no composition on this host produces and no copy on this
+host holds. It was re-derived over the pack composed from the pinned upstream
+commit — the act described in *The provenance anchor is refusing a
+re-composition, not the film's artwork*, which is the account of the decision
+and is left in place. That is the one legitimate use of
+`tileset_provenance.py generate`: taken deliberately, in its own commit, when the
+artwork legitimately changed. It is never the way to turn a failing launch gate
+green, and the README now says so where the command is named.
+
+`launch_game.sh` verifies the installed tree against the anchor before every
+launch, with no bypass for the required tileset, so a recording still cannot be
+made under a mismatched pack. What has changed is that a matching pack is now
+obtainable by following a documented procedure instead of by having kept a copy.
 
 ### What else changed, in one place
 

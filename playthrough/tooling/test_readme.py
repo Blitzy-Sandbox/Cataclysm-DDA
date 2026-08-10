@@ -72,6 +72,7 @@ import ast
 import collections
 import fnmatch
 import glob
+import json
 import os
 import re
 import shlex
@@ -113,6 +114,24 @@ LEAST_PATHS = 20
 #                                   repository rather than a file in it
 BUILD_PRODUCTS = ("cataclysm-tiles", "gfx/MShockXotto+",
                   "tools/format/json_formatter.cgi")
+
+
+def is_build_product(path):
+    """True for a build product, and for anything INSIDE one.
+
+    Exact membership was not enough once the provisioning recipe gained
+    the steps it had been missing: it names `gfx/MShockXotto+/` with a
+    trailing slash and the files it copies into that directory, and every
+    one of those is exactly as untracked as the directory itself.  A
+    tracking assertion over them would demand that a git-ignored tree be
+    committed, which is the opposite of what [.gitignore:52] says.
+    """
+    wanted = path.rstrip("/")
+    for product in BUILD_PRODUCTS:
+        if wanted == product or wanted.startswith(product + "/"):
+            return True
+    return False
+
 
 # Documented examples this suite must never execute.  Each mutates the
 # repository, needs the game or a display, needs docker, takes minutes,
@@ -483,7 +502,7 @@ class TestEveryPathThePageNamesResolves(unittest.TestCase):
 
     def test_every_path_a_command_names_exists_on_disk(self):
         for path, examples in sorted(documented_paths().items()):
-            if path in BUILD_PRODUCTS:
+            if is_build_product(path):
                 continue
             with self.subTest(path=path,
                               line=examples[0].line):
@@ -498,7 +517,7 @@ class TestEveryPathThePageNamesResolves(unittest.TestCase):
 
     def test_every_path_a_command_names_is_tracked_by_git(self):
         for path, examples in sorted(documented_paths().items()):
-            if path in BUILD_PRODUCTS:
+            if is_build_product(path):
                 continue
             with self.subTest(path=path, line=examples[0].line):
                 self.assertTrue(
@@ -716,7 +735,19 @@ class TestThePageAndTheScriptsAgree(ExampleFixture):
         return text
 
     def test_the_sequencer_documents_every_option_the_page_uses(self):
-        example = self.documented("run_pipeline.sh --help")
+        # THE BARE INVOCATION, of however many the page shows.  The
+        # acceptance-gate section quotes a second one piped into grep,
+        # because the check totals live in that help rather than on this
+        # page -- and running a pipeline of it would hold the help to the
+        # grep's output instead of to its own.
+        candidates = [example
+                      for example in self.all_documented(
+                          "run_pipeline.sh --help")
+                      if "|" not in example.command]
+        self.assertEqual(len(candidates), 1,
+                         "expected one unpiped --help invocation, found "
+                         "%d" % len(candidates))
+        example = candidates[0]
         options = self.names_on_page(r"run_pipeline\.sh (--[a-z-]+)")
         stages = self.names_on_page(r"run_pipeline\.sh --(?:from|only)"
                                     r" ([a-z]+)")
@@ -754,6 +785,257 @@ class TestThePageAndTheScriptsAgree(ExampleFixture):
                         % shlex.quote(sys.executable),
                         self.names_on_page(
                             r"session\.py ([a-z][a-z-]*)"))
+
+
+class TestTheWhitespaceWaiverIsNarrow(unittest.TestCase):
+    """F22: the engine's own bytes, and nothing else, are exempt.
+
+    `git diff --check` reported `new blank line at EOF` against two files
+    the ENGINE wrote — its debug log and the survivor's memorial diary —
+    which are committed verbatim because they are what the session
+    produced. Editing them to please a whitespace linter would mean the
+    committed memorial was no longer the one the game wrote, so the rule
+    is waived for that subtree instead.
+
+    Driven against the real rule file with `git check-attr`, on BOTH sides
+    of the boundary. A waiver widened to `playthrough/**` would silence
+    the check over the transcripts, the reports and the tooling too, and
+    would pass every assertion phrased only as "the engine's files are
+    exempt" — measured: it did.
+    """
+
+    def whitespace(self, path):
+        proc = git("check-attr", "whitespace", "--", path)
+        self.assertEqual(proc.returncode, 0, msg=proc.stderr)
+        return proc.stdout.rsplit(": ", 1)[-1].strip()
+
+    def test_the_engine_tree_is_exempt(self):
+        for path in ("playthrough/userdir/config/debug.log",
+                     "playthrough/userdir/save/World/master.gsav"):
+            with self.subTest(path=path):
+                self.assertEqual(self.whitespace(path), "unset")
+
+    def test_nothing_authored_here_is_exempt(self):
+        for path in ("playthrough/transcript.md",
+                     "playthrough/transcript.srt",
+                     "playthrough/README.md",
+                     "playthrough/manifest.jsonl",
+                     "playthrough/tooling/session.py",
+                     "playthrough/tooling/env.sh"):
+            with self.subTest(path=path):
+                self.assertEqual(self.whitespace(path), "unspecified",
+                                 "the waiver reaches an authored file, "
+                                 "so whitespace defects in it would stop "
+                                 "being reported")
+
+    def test_the_check_is_clean_over_the_committed_tree(self):
+        """The property the waiver exists to produce, end to end."""
+        empty = git("hash-object", "-t", "tree", "/dev/null")
+        self.assertEqual(empty.returncode, 0, msg=empty.stderr)
+        proc = git("diff", "--check", empty.stdout.strip(), "HEAD",
+                   "--", "playthrough")
+        self.assertEqual(
+            proc.stdout.strip(), "",
+            "git reports a whitespace defect in the committed tree")
+
+    def test_the_page_documents_the_waiver_and_its_scope(self):
+        text = page()
+        self.assertIn("playthrough/userdir/** -whitespace", text)
+        self.assertIn("whitespace waiver", text)
+        self.assertIn("engine's tree **alone**", text)
+
+
+class TestTheHostedSessionWalkthroughIsDocumented(ExampleFixture):
+    """The workflow a recording actually requires, on the page at last.
+
+    `run` starts a container, runs one command and removes it, which is
+    right for a render and useless for a recording: the X server, the
+    window manager and the engine live inside the container and a session
+    is hundreds of keystrokes, each its own command, every one of which
+    has to reach the SAME container.  The page documented only the
+    single-shot subcommands, so the one workflow that can produce a
+    recording appeared nowhere -- and `supported_env.sh`'s own usage text
+    ends by pointing here for the walk-through.
+    """
+
+    def section(self):
+        text = page()
+        start = text.index("#### Recording a session inside it")
+        return text[start:text.index("\n### ", start)]
+
+    def test_the_page_carries_the_walkthrough_the_script_points_at(self):
+        driver = os.path.join(TOOLING, "supported_env.sh")
+        with open(driver, encoding="utf-8") as handle:
+            source = collapse(handle.read())
+        # Collapsed: the pointer lives in a hard-wrapped printf, so the
+        # sentence straddles a line and a backslash in the file.
+        self.assertIn("playthrough/README.md \\ carries the full",
+                      source,
+                      "the driver no longer points at this page")
+        self.assertTrue(self.section().strip())
+
+    def test_every_lifecycle_subcommand_is_shown_in_use(self):
+        commands = " ; ".join(
+            example.command for example in console_examples())
+        for subcommand in ("up", "exec", "down", "session"):
+            with self.subTest(subcommand=subcommand):
+                self.assertIn("supported_env.sh %s" % subcommand,
+                              commands,
+                              "the page names no invocation of it, so a "
+                              "reader has nothing to copy")
+
+    def test_the_steps_are_documented_in_the_order_they_are_taken(self):
+        """An out-of-order walk-through is worse than none.
+
+        Seeding before the calibration launch has no file to patch, and
+        keying before the seeded relaunch records frames the options did
+        not apply to.
+        """
+        section = self.section()
+        order = ("supported_env.sh up",
+                 "launch_game.sh headless",
+                 "launch_game.sh launch",
+                 "seed_options.py apply",
+                 "launch_game.sh stop",
+                 "session.py step",
+                 "commit_artifacts.sh final",
+                 "supported_env.sh down")
+        at = -1
+        for step in order:
+            with self.subTest(step=step):
+                found = section.find(step, at + 1)
+                self.assertNotEqual(found, -1,
+                                    "the walk-through omits it")
+                at = found
+
+    def test_the_teardown_guard_is_documented_with_its_escape(self):
+        section = collapse(self.section())
+        self.assertIn("refuses", section)
+        self.assertIn("--abandon", section)
+        self.assertIn("engine is still running", section)
+
+    @unittest.skipUnless(shutil.which("docker"),
+                         "docker is not installed on this host")
+    def test_the_session_keys_it_quotes_are_the_ones_reported(self):
+        """Driven against the driver, because a key list drifts.
+
+        `session` is read-only and takes no lock, so it is safe to ask;
+        the VALUES depend on whether a container happens to be up, so
+        only the key set is held.
+        """
+        example = self.documented_exactly(
+            "playthrough/tooling/supported_env.sh session")
+        quoted = [line.split("=", 1)[0] for line in example.output
+                  if "=" in line]
+        self.assertTrue(quoted, "the block quotes no KEY=value lines")
+        proc = self.shell(example.command)
+        reported = [line.split("=", 1)[0]
+                    for line in proc.stdout.splitlines() if "=" in line]
+        # THIS DIRECTION, and not the other.  The driver reports
+        # SESSION_DISPLAY only while a container is up, so a quoted key
+        # may legitimately be absent from one run; a REPORTED key that
+        # the page does not carry is page drift.
+        for key in reported:
+            with self.subTest(key=key):
+                self.assertIn(key, quoted,
+                              "the driver reports a key the page does "
+                              "not quote")
+        # And every key it quotes is one the driver can emit at all.
+        with open(os.path.join(TOOLING, "supported_env.sh"),
+                  encoding="utf-8") as handle:
+            source = handle.read()
+        for key in quoted:
+            with self.subTest(quoted=key):
+                self.assertIn("%s=" % key, source)
+
+    def test_it_says_a_session_is_matched_by_label_and_inspected(self):
+        section = self.section()
+        for claim in ("labels", "CLONE_INDEX", "0\u201399", "inspected",
+                      "refused rather than adopted"):
+            with self.subTest(claim=claim):
+                self.assertIn(claim, section)
+
+
+class TestTheDocumentedLifecycleMatchesTheTools(ExampleFixture):
+    """F13: the page's account of the plan and the checkpoints.
+
+    It published a stage table naming `commit_artifacts.sh final`, an
+    eight-stage plan, two ordering rules and three hard-coded check
+    totals -- by which time the sequencer took `media`, ran nine stages
+    under three rules, and the gate declared different numbers.  Each of
+    those is now read from the tool it describes.
+    """
+
+    def test_the_stage_table_names_the_commands_the_sequencer_builds(
+            self):
+        """Compared against the sequencer's own help, table to table."""
+        proc = self.shell("playthrough/tooling/run_pipeline.sh --help")
+        help_text = collapse(proc.stdout)
+        for stage, command in (
+                ("timeline", "timeline.py"),
+                ("transitions", "make_transitions.py"),
+                ("render", "render_movie.py"),
+                ("srt", "make_srt.py"),
+                ("captions", "embed_captions.sh"),
+                ("verify", "verify_artifacts.sh --phase pre-commit"),
+                ("commit", "commit_artifacts.sh media"),
+                ("attest", "verify_artifacts.sh --phase post-commit"),
+                ("publish", "commit_artifacts.sh attest")):
+            with self.subTest(stage=stage):
+                self.assertIn("%s %s" % (stage, command), help_text,
+                              "the sequencer's help does not pair them, "
+                              "so this test is holding the page to a "
+                              "table that has moved")
+                # The row's command cell may carry MORE than the
+                # sequencer's own summary -- the attestation's cell also
+                # names where its report goes -- so the cell is matched
+                # from its start rather than end to end.  No closing
+                # backtick, and no leading pipe: the table has a number
+                # column of its own.
+                row = "`%s` | `%s" % (stage, command)
+                self.assertIn(row, page(),
+                              "the page's stage table does not carry "
+                              "%r" % row)
+
+    def test_the_page_quotes_no_check_total_of_its_own(self):
+        """The numbers live in the gate; the page points at the help.
+
+        Every one of these was on the page as a literal and every one of
+        them went stale.  Including the totals that are CORRECT today,
+        because a correct literal is a stale literal waiting to happen.
+        """
+        text = page()
+        for stale in ("120 checks", "117 of 117", "106 before",
+                      "31 after it", "all 120", "the 106", "the 31",
+                      "Fourteen are properties", "122 checks",
+                      "108 before"):
+            with self.subTest(stale=stale):
+                self.assertNotIn(stale, text)
+        self.assertIn("run_pipeline.sh --help | grep -E 'checks before",
+                      text)
+
+    def test_it_documents_the_publication_step_and_its_rule(self):
+        text = page()
+        self.assertIn("`publish` requires `attest`", text)
+        self.assertIn("--report-to", text)
+        self.assertIn("writes nothing into the tree it measures", text)
+
+    def test_it_documents_every_checkpoint_the_committer_offers(self):
+        """Six now, and the page's own count sentence with them."""
+        proc = self.shell(
+            "playthrough/tooling/commit_artifacts.sh --help")
+        offered = [name for name in
+                   ("integration", "dossier", "creation", "final",
+                    "media", "attest")
+                   if name in proc.stdout]
+        self.assertEqual(len(offered), 6,
+                         "the committer no longer offers all six, so "
+                         "this test is out of date rather than the page")
+        text = page()
+        self.assertIn("Six ordered checkpoints", text)
+        for name in offered:
+            with self.subTest(checkpoint=name):
+                self.assertIn("commit_artifacts.sh %s" % name, text)
 
 
 class TestTheQuotedOutputIsStillTrue(ExampleFixture):
@@ -871,7 +1153,11 @@ class TestTheQuotedOutputIsStillTrue(ExampleFixture):
                          collapse(example.output[0]))
 
     def test_the_attribute_rows_added_are_what_it_quotes(self):
-        example, proc = self.run_documented("grep '^+[^+]'")
+        # The RULES, which is why the documented filter excludes comment
+        # lines as well as diff context: the waiver row carries a
+        # paragraph of explanation above it in the file, and quoting that
+        # paragraph in the page would be a second copy of it.
+        example, proc = self.run_documented("grep '^+[^+#]'")
         self.assertEqual([collapse(line) for line
                           in proc.stdout.splitlines()],
                          [collapse(line) for line in example.output])
@@ -1046,6 +1332,166 @@ class TestTheReadOnlyToolExamplesRun(ExampleFixture):
                       collapse(proc.stdout))
 
 
+class TestTheArtworkRecipeIsTheOneThatReproduces(ExampleFixture):
+    """The provisioning recipe, held to the anchor and to the tool.
+
+    A review found this section publishing a `tree_sha256` and a
+    `tile_config.json` size that no longer existed, a "clone --depth 1
+    and check the hash afterwards" step that pins nothing, and no mention
+    of the three files the composer does not emit -- so anybody following
+    it produced a pack the launch gate then refused, with the page itself
+    as the reason they could not tell why.
+
+    Every number here is therefore read from the anchor rather than from
+    the page's memory of it, and the omitted steps are asserted to be
+    present by name.
+    """
+
+    def anchor(self):
+        with open(os.path.join(TOOLING, "tileset_provenance.json"),
+                  encoding="utf-8") as handle:
+            return json.load(handle)
+
+    def raw_section(self):
+        """The provisioning section as written, lines intact."""
+        text = page()
+        start = text.index("### The required artwork is the one input")
+        return text[start:text.index("\n## ", start)]
+
+    def section(self):
+        """The provisioning section, whitespace collapsed."""
+        return collapse(self.raw_section())
+
+    def prose_only(self):
+        """The section with its fenced blocks removed.
+
+        A claim made in PROSE has to stand on its own: the pinned commit
+        appears in the commands as well, so a search over the whole
+        section is satisfied by the command block and would pass over a
+        sentence that had been abbreviated to twelve characters.  Measured
+        -- that mutation went unnoticed until this reading was separated
+        out.
+
+        IT READS THE RAW SECTION, and that is the whole trick.  The first
+        version of this method walked the COLLAPSED text, which has no
+        newlines at all -- so `splitlines()` yielded one line, no line
+        began with a fence, nothing was removed, and this returned the
+        commands along with the prose.  It was a prose-only reading in
+        name only, and the mutation it was written for stayed unnoticed.
+        """
+        kept = []
+        inside = False
+        for line in self.raw_section().splitlines():
+            if line.startswith("```"):
+                inside = not inside
+                continue
+            if not inside:
+                kept.append(line)
+        return collapse("\n".join(kept))
+
+    def test_the_numbers_it_publishes_are_the_anchors_own(self):
+        anchor = self.anchor()
+        prose = self.section()
+        # The full forty characters, in the prose and not only in the
+        # command: an abbreviated hash in a sentence is an ambiguous pin.
+        self.assertIn(anchor["upstream"]["commit"], self.prose_only())
+        self.assertIn(anchor["upstream"]["commit"], prose)
+        self.assertIn(anchor["tree_sha256"][:16], prose)
+        self.assertIn("%d files" % anchor["file_count"], prose)
+        # Written with thin spaces for readability, so the comparison is
+        # made over digits with the separators removed.
+        digits = prose.replace("\u202f", "").replace(" ", "")
+        self.assertIn(str(anchor["byte_count"]), digits)
+        index = [row for row in anchor["files"]
+                 if row["path"] == "tile_config.json"][0]
+        self.assertIn(str(index["bytes"]), digits)
+
+    @staticmethod
+    def joined(command):
+        """One command as the shell would see it, on a single line.
+
+        These commands are hard-wrapped with backslash continuations, so
+        an argument and the flag it belongs to are routinely on different
+        lines: collapsing whitespace alone leaves the backslash sitting
+        between them as a word of its own, which is what made the first
+        version of these assertions fail against a perfectly correct page.
+        """
+        return collapse(command).replace(" \\ ", " ")
+
+    def commands(self):
+        """Every documented command, each joined onto one line."""
+        return " ; ".join(self.joined(example.command)
+                          for example in console_examples())
+
+    def test_it_pins_the_commit_by_fetching_and_checking_it_out(self):
+        """A hash printed for comparison is not a pin."""
+        commit = self.anchor()["upstream"]["commit"]
+        commands = self.commands()
+        self.assertIn("fetch --depth 1 origin", commands)
+        self.assertIn("checkout %s" % commit, commands)
+        self.assertNotIn("clone --depth 1", commands)
+
+    def test_it_copies_the_three_files_the_composer_does_not_emit(self):
+        """Named from the anchor's own account of how it was composed."""
+        anchor = self.anchor()
+        recipe = anchor["composed_with"]
+        prose = self.section()
+        commands = self.commands()
+        for name in ("fallback.png", "layering.json", "tileset.txt"):
+            with self.subTest(name=name):
+                self.assertIn(name, recipe,
+                              "the anchor no longer names this file as "
+                              "one the composer does not emit")
+                self.assertIn(name, prose)
+                self.assertIn(name, commands,
+                              "the recipe does not copy it, so a tree "
+                              "built from this page is short a file")
+
+    def test_it_verifies_the_result_with_the_tool_that_gates_launch(self):
+        # Shown twice -- as the recipe's last step and again with its
+        # quoted output -- and the two have to be the same invocation, or
+        # one of them is stale.
+        examples = self.all_documented("tileset_provenance.py verify")
+        self.assertEqual(len(examples), 2,
+                         "the page shows this at README lines %s"
+                         % [example.line for example in examples])
+        spellings = {self.joined(example.command)
+                     for example in examples}
+        self.assertEqual(len(spellings), 1,
+                         "the page writes this two ways: %s"
+                         % sorted(spellings))
+        proc = self.shell(examples[0].command)
+        reported = dict(
+            line.split("=", 1) for line in proc.stdout.splitlines()
+            if "=" in line)
+        anchor = self.anchor()
+        self.assertEqual(reported["TILESET_PROVENANCE"], "verified")
+        self.assertEqual(reported["TILESET_PROVENANCE_TREE_SHA256"],
+                         anchor["tree_sha256"])
+        self.assertEqual(reported["TILESET_PROVENANCE_FILES"],
+                         str(anchor["file_count"]))
+        self.assertEqual(
+            reported["TILESET_PROVENANCE_UPSTREAM_COMMIT"],
+            anchor["upstream"]["commit"])
+
+    def test_the_retired_divergence_narrative_is_gone(self):
+        """The page said the recipe could not reproduce the anchor.
+
+        It can, and the installed pack verifies -- so the two remedies it
+        offered for a divergence that no longer exists (restore the
+        original pack, or re-anchor) must not still read as instructions.
+        Re-anchoring is documented, deliberately, as the thing NOT to do.
+        """
+        prose = self.section()
+        for retired in ("does not reproduce the anchor",
+                        "774 731", "9725384838a5", "3d6c2ef4871654fd",
+                        "not derivable from the inputs"):
+            with self.subTest(retired=retired):
+                self.assertNotIn(retired, prose)
+        self.assertIn("reproduces the anchor exactly", prose)
+        self.assertIn("is not part of this recipe", prose)
+
+
 class TestTheLintClaimsHold(ExampleFixture):
     """The page's own account of how the lint gate must be measured."""
 
@@ -1114,21 +1560,54 @@ class TestThisSuiteTouchesNothing(unittest.TestCase):
                 self.assertNotIn(name, calls)
 
     def test_this_module_runs_no_git_command_that_writes(self):
-        # The verbs are written in SINGLE quotes so that the token this
-        # test searches for -- the verb in DOUBLE quotes, as a git
-        # argument would be written here -- does not appear in this
-        # file merely because this test names it.  `assertTrue` rather
-        # than `assertNotIn` keeps the whole module out of the failure
-        # message.
-        source = self.source()
-        for verb in ('add', 'commit', 'checkout', 'reset', 'clean',
-                     'push', 'config'):
-            token = '"%s"' % verb
-            with self.subTest(verb=verb):
-                self.assertTrue(token not in source,
-                                "this module names the writing git "
-                                "argument %s; it must only read"
-                                % token)
+        """Read from the CALLS, not from the text of the module.
+
+        This was a search for each writing verb in double quotes anywhere
+        in the file, and that heuristic measured the wrong thing twice
+        over.  It cannot see `git(*["commit"])`, and it fails on any
+        string that merely happens to be one of those words -- which is
+        what happened: the artwork recipe's assertions read
+        `anchor["upstream"]["commit"]`, a key of the provenance anchor,
+        and the guard reported the page's own upstream commit hash as a
+        git command that writes.
+
+        So every call to the `git` helper is found in the syntax tree and
+        its arguments are checked.  A verb this module never passes cannot
+        be run, and a JSON key that shares a name with one is not a call.
+        """
+        writing = ('add', 'commit', 'checkout', 'reset', 'clean',
+                   'push', 'config', 'stash', 'rm', 'mv')
+        calls = 0
+        for node in ast.walk(ast.parse(self.source())):
+            if not isinstance(node, ast.Call):
+                continue
+            if ast.unparse(node.func) != "git":
+                continue
+            calls += 1
+            passed = [argument.value for argument in node.args
+                      if isinstance(argument, ast.Constant) and
+                      isinstance(argument.value, str)]
+            spelled = ast.unparse(node)
+            for verb in writing:
+                with self.subTest(call=spelled[:60], verb=verb):
+                    self.assertNotIn(
+                        verb, passed,
+                        "this call passes the writing git argument "
+                        "%r; this module must only read" % verb)
+            # AND THE VERB ITSELF IS A LITERAL.  Later arguments are
+            # paths and may be computed -- one call asks about a name
+            # from a table -- but a subcommand behind a variable would
+            # put the only thing this test cares about out of its reach.
+            with self.subTest(call=spelled[:60]):
+                self.assertTrue(node.args, "a git call with no verb")
+                self.assertIsInstance(
+                    node.args[0], ast.Constant,
+                    "the git subcommand is not a literal, so this guard "
+                    "cannot see which one it is; spell it out")
+        self.assertGreaterEqual(
+            calls, 2,
+            "no git calls were found, so this guard is measuring "
+            "nothing -- the helper was probably renamed")
 
     def test_no_bytecode_sits_beside_these_modules(self):
         self.assertFalse(
