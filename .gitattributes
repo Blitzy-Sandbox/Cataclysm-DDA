@@ -43,3 +43,21 @@
 *.sav     binary
 *.zzip    binary
 
+# The game's own userdir, committed verbatim as evidence.
+#
+# Everything under playthrough/userdir/ is written by the ENGINE, not by
+# anyone here, and it is committed byte for byte because it is what the
+# session actually produced.  Two of those files end with a blank line --
+# the debug log and the survivor's memorial diary -- so `git diff --check`
+# reports "new blank line at EOF" against them.  The bytes are correct and
+# must not be edited: a memorial rewritten to please a whitespace linter
+# is no longer the memorial the game wrote.
+#
+# So whitespace checking is switched off for that subtree and nothing
+# else. `-whitespace` suppresses the report without changing a byte, and
+# it leaves the text/eol handling above in force, so line endings are
+# still normalized exactly as they were.  The scope is deliberately the
+# engine's tree alone: every authored file in this feature -- the tooling,
+# the transcripts, the reports -- is still checked.
+playthrough/userdir/** -whitespace
+
