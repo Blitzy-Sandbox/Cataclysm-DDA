@@ -1938,9 +1938,16 @@ class TheRouteIsGuardedByThePhotograph(SessionFixture):
         manifest row whose `ingame_clock` is a real reading is, by
         definition, a frame with the survivor's sidebar on it.
         """
-        rows = manifest.read_rows(
-            os.path.join(os.path.dirname(self.RECORD_FRAMES),
-                         "manifest.jsonl"))
+        record = os.path.join(os.path.dirname(self.RECORD_FRAMES),
+                              "manifest.jsonl")
+        # Skipped rather than raised, which is what every sibling
+        # selector here does: a checkout between a retirement and its
+        # re-record carries no manifest at all, and a fixture that
+        # demanded one would report the absence of evidence as a defect
+        # in the code under test.
+        if not os.path.isfile(record):
+            self.skipTest("this checkout has no committed manifest")
+        rows = manifest.read_rows(record)
         for row in rows:
             if (row.get("ingame_clock") or "").strip():
                 return int(row["frame"])

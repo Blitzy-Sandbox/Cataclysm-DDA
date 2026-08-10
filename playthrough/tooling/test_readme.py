@@ -133,6 +133,71 @@ def is_build_product(path):
     return False
 
 
+# The paths under playthrough/ that the PIPELINE produces rather than an
+# author writing them: the captures, the engine's own userdir, the
+# intermediates, the two films, the transcripts, the timeline, and the
+# two reports.  Everything else the page names -- the tooling, the
+# dossier, this readme, the technical notes, the two rule files, the
+# engine binary and the tileset -- is authored or provisioned and is
+# expected to be here always.
+PRODUCED_ROOTS = ("playthrough/frames", "playthrough/build",
+                  "playthrough/userdir", "playthrough/manifest.jsonl",
+                  "playthrough/amendments.jsonl",
+                  "playthrough/timeline.json",
+                  "playthrough/transcript.md",
+                  "playthrough/transcript.srt",
+                  "playthrough/cata-play.mp4",
+                  "playthrough/cata-play-cc.mp4",
+                  "playthrough/acceptance-report.txt",
+                  "playthrough/REPORT.md")
+
+# The last artifact the pipeline produces.  Its presence is what makes a
+# checkout a FINISHED one: the captioned film is muxed from the film and
+# the cue file, which are in turn rendered from the timeline, which is
+# computed from the manifest -- so nothing downstream of a capture can
+# exist without it.
+COMPLETED_MARK = "playthrough/cata-play-cc.mp4"
+
+
+def is_produced_artifact(path):
+    """True for a path the pipeline produces, or anything inside one."""
+    wanted = path.rstrip("/")
+    for root in PRODUCED_ROOTS:
+        if wanted == root or wanted.startswith(root + "/"):
+            return True
+    return False
+
+
+def env_contract():
+    """env.sh's source with its line continuations joined.
+
+    A declaration wrapped to stay inside the column limit is one
+    declaration, and a search over the raw bytes would not find it.
+    """
+    with open(os.path.join(TOOLING, "env.sh"), encoding="utf-8") as handle:
+        return handle.read().replace("\\\n", "")
+
+
+def record_is_complete():
+    """Whether this checkout carries a finished recording.
+
+    A checkout between a retirement and the re-record that replaces it
+    carries NONE of the produced artifacts -- the evidence of the retired
+    session is deleted in its own commit precisely so that the record of
+    a session is never edited in place, and the new one is written a
+    frame at a time by the capture driver and only finished by the render
+    pipeline.  In that window the page's produced-artifact paths are
+    absent BY DESIGN, and demanding them would be demanding that the
+    retirement not have happened.
+
+    So the existence and tracking assertions below hold produced paths to
+    the page only when the recording is finished, which is the state
+    every delivered checkout is in.  The authored paths are held to it
+    unconditionally, in every state.
+    """
+    return os.path.exists(os.path.join(ROOT, COMPLETED_MARK))
+
+
 # Documented examples this suite must never execute.  Each mutates the
 # repository, needs the game or a display, needs docker, takes minutes,
 # or measures the host rather than the record.  Enforced at run time in
@@ -500,9 +565,19 @@ class TestEveryPathThePageNamesResolves(unittest.TestCase):
                 return True
         return False
 
+    def skip_reason(self, path):
+        """Why a documented path is not held to existence, or None."""
+        if is_build_product(path):
+            return "a build product this page says is untracked"
+        if is_produced_artifact(path) and not record_is_complete():
+            return "an artifact the pipeline produces, and %s is not " \
+                   "here, so this checkout is mid-recording" % (
+                       COMPLETED_MARK,)
+        return None
+
     def test_every_path_a_command_names_exists_on_disk(self):
         for path, examples in sorted(documented_paths().items()):
-            if is_build_product(path):
+            if self.skip_reason(path):
                 continue
             with self.subTest(path=path,
                               line=examples[0].line):
@@ -517,7 +592,7 @@ class TestEveryPathThePageNamesResolves(unittest.TestCase):
 
     def test_every_path_a_command_names_is_tracked_by_git(self):
         for path, examples in sorted(documented_paths().items()):
-            if is_build_product(path):
+            if self.skip_reason(path):
                 continue
             with self.subTest(path=path, line=examples[0].line):
                 self.assertTrue(
@@ -566,6 +641,109 @@ class TestEveryPathThePageNamesResolves(unittest.TestCase):
                                  "the page counts %s suites; %d are "
                                  "here: %s" % (claim, len(suites),
                                                suites))
+
+
+class TestTheProducedArtifactCarveOutIsNarrow(unittest.TestCase):
+    """The carve-out above is a state, not a permanent exemption.
+
+    A skip that nobody measures is an exemption that grows: the two
+    assertions it guards are the only thing standing between this page
+    and instructions that name paths a fresh clone would not have.  So
+    the carve-out is held to four properties -- it names only paths the
+    tooling itself writes, it never reaches an authored path, it goes
+    INERT the moment the recording is finished, and it is doing exactly
+    one of those two things in this checkout right now.
+    """
+
+    def test_it_names_only_paths_the_tooling_itself_writes(self):
+        # Bound to env.sh rather than to a list somebody agreed with:
+        # every produced root is a path the environment contract
+        # declares, so a root invented here fails.  Read with the line
+        # continuations JOINED, because two of those declarations are
+        # wrapped to stay inside the column limit and a raw search would
+        # miss exactly those two.
+        contract = env_contract()
+        for root in PRODUCED_ROOTS:
+            with self.subTest(root=root):
+                self.assertTrue(root.startswith("playthrough/"),
+                                "the carve-out reaches outside the "
+                                "feature's own tree")
+                tail_name = root[len("playthrough/"):]
+                self.assertIn("/%s\"" % tail_name, contract,
+                              "env.sh declares no path ending in %r, "
+                              "so this root is not something the "
+                              "pipeline writes" % tail_name)
+
+    def test_the_completed_mark_is_the_last_thing_produced(self):
+        # The captioned film is muxed from the film and the cue file,
+        # which are rendered from the timeline, which is computed from
+        # the manifest.  If the marker drifted to something earlier, a
+        # half-finished checkout would be read as a finished one.
+        self.assertIn(COMPLETED_MARK, PRODUCED_ROOTS)
+        contract = env_contract()
+        self.assertIn(
+            "PLAYTHROUGH_MOVIE_CC=\"${PLAYTHROUGH_DIR}/%s\"" % (
+                COMPLETED_MARK[len("playthrough/"):],), contract,
+            "the marker is no longer the captioned film env.sh names")
+
+    def test_it_never_reaches_an_authored_path(self):
+        authored = ("playthrough/dossier.md", "playthrough/README.md",
+                    "playthrough/TECHNICAL_NOTES.md",
+                    "playthrough/tooling/session.py",
+                    "playthrough/tooling/requirements.txt",
+                    ".gitignore", ".gitattributes", "Makefile",
+                    "data/json/ui/sidebar.json", "src/display.cpp")
+        for path in authored:
+            with self.subTest(path=path):
+                self.assertFalse(is_produced_artifact(path),
+                                 "an authored path would stop being "
+                                 "checked")
+
+    def test_a_finished_checkout_carves_nothing_out(self):
+        # Driven both ways rather than asserted from the source: the
+        # completed-mark reader is replaced so the inert branch is
+        # actually taken, which is the branch a delivered checkout runs.
+        case = TestEveryPathThePageNamesResolves("test_the_build_"
+                                                 "products_it_calls_"
+                                                 "untracked_are_"
+                                                 "untracked")
+        produced = [path for path in documented_paths()
+                    if is_produced_artifact(path)]
+        self.assertTrue(produced, "the page names no produced artifact, "
+                                  "so this carve-out guards nothing")
+        module = sys.modules[__name__]
+        original = module.record_is_complete
+        try:
+            module.record_is_complete = lambda: True
+            for path in produced:
+                with self.subTest(path=path):
+                    self.assertIsNone(case.skip_reason(path))
+            module.record_is_complete = lambda: False
+            skipped = [path for path in produced
+                       if case.skip_reason(path)]
+            self.assertEqual(sorted(skipped), sorted(produced),
+                             "a mid-recording checkout would still be "
+                             "held to some produced paths")
+        finally:
+            module.record_is_complete = original
+
+    def test_this_checkout_is_in_one_state_or_the_other(self):
+        # Not a tautology: it fails on a checkout that carries the
+        # captioned film while the record behind it is gone, and on one
+        # that carries no film but has kept a stale timeline.
+        complete = record_is_complete()
+        timeline = os.path.exists(
+            os.path.join(PLAYTHROUGH, "timeline.json"))
+        manifest = os.path.exists(
+            os.path.join(PLAYTHROUGH, "manifest.jsonl"))
+        if complete:
+            self.assertTrue(manifest and timeline,
+                            "the captioned film is here but the record "
+                            "it was made from is not")
+        else:
+            self.assertFalse(
+                timeline and not manifest,
+                "a timeline is here with no manifest behind it")
 
 
 class TestEveryDocumentedCommandIsValidShell(unittest.TestCase):
@@ -1265,9 +1443,21 @@ class TestTheReadOnlyToolExamplesRun(ExampleFixture):
             if "=" in line)
         captures = len(glob.glob(os.path.join(
             PLAYTHROUGH, "frames", "frame_*.png")))
-        with open(os.path.join(PLAYTHROUGH, "manifest.jsonl"),
-                  encoding="utf-8") as handle:
-            rows = sum(1 for line in handle if line.strip())
+        # Held in BOTH states rather than skipped in one.  On a checkout
+        # between a retirement and its re-record there is no manifest at
+        # all, and the agreement that matters there is that the counter
+        # reports the empty record as empty -- a counter that answered
+        # anything else would be reading something the tree does not
+        # have.
+        manifest = os.path.join(PLAYTHROUGH, "manifest.jsonl")
+        if os.path.exists(manifest):
+            with open(manifest, encoding="utf-8") as handle:
+                rows = sum(1 for line in handle if line.strip())
+        else:
+            rows = 0
+            self.assertEqual(captures, 0,
+                             "captures are here with no manifest "
+                             "behind them")
         self.assertEqual(int(reported["FRAME_LAST"]), captures)
         self.assertEqual(captures, rows)
 

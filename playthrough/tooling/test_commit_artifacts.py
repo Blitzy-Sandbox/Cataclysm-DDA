@@ -3873,6 +3873,25 @@ class TestTheStatusReport(CheckpointFixture):
         self.assertEqual(fields["WORLD"], "")
         self.assertEqual(fields["FRAMES"], str(self.CREATION_ROWS))
 
+    def test_an_empty_record_is_counted_as_zero_and_not_as_nothing(self):
+        """The two counters agree about an absent record.
+
+        ROWS was left EMPTY when no manifest existed while FRAMES beside
+        it reported 0, so the two fields disagreed about the same empty
+        record and a reader comparing them -- which is exactly what the
+        readme documents doing -- had to know that one absence is spelled
+        `0` and the other is spelled nothing.  This is the state a
+        checkout is in between a retirement and the re-record that
+        replaces it, so it is a state the tool supports rather than an
+        edge case.
+        """
+        status, out, _ = self.run_script(("status",))
+        self.assertEqual(status, EX_OK)
+        fields = self.payload(out)
+        self.assertEqual(fields["ROWS"], "0")
+        self.assertEqual(fields["FRAMES"], "0")
+        self.assertEqual(fields["FRAMES"], fields["ROWS"])
+
     def test_status_lists_what_a_checkpoint_would_stage(self):
         self.write_save()
         self.write_evidence(self.CREATION_ROWS)

@@ -1491,12 +1491,33 @@ class TestTheSuiteTouchesNothing(unittest.TestCase):
         self.assertEqual(changed, [])
 
     def test_the_fingerprint_covers_the_artifacts(self):
+        # COVERAGE, not presence.  _fingerprint() records a key for
+        # every path it watches and stores None for one that is not
+        # there, so the property worth asserting is that these paths are
+        # WATCHED -- which is true of a checkout between a retirement and
+        # the re-record that replaces it, where the record is absent by
+        # design.  A path missing from the mapping altogether would be a
+        # path this suite could rewrite unnoticed, and that is what fails
+        # here.
         for path in (MANIFEST, TIMELINE, TRANSCRIPT_SRT,
                      TRANSCRIPT_MD):
             with self.subTest(path=path):
-                self.assertIsNotNone(BASELINE.get(path))
+                self.assertIn(path, BASELINE)
+                if os.path.exists(path):
+                    self.assertIsNotNone(BASELINE.get(path))
+                else:
+                    self.assertIsNone(BASELINE.get(path))
 
     def test_the_fingerprint_covers_every_frame(self):
+        if not os.path.isdir(FRAMES_DIR):
+            # No captures here at all.  Asserted rather than skipped:
+            # the fingerprint must not be carrying frame entries from a
+            # tree that has none, because that would mean it was built
+            # from something other than this checkout.
+            self.assertEqual(
+                [path for path in BASELINE
+                 if path.startswith(FRAMES_DIR + os.sep)], [])
+            return
         for name in os.listdir(FRAMES_DIR):
             with self.subTest(name=name):
                 self.assertIsNotNone(

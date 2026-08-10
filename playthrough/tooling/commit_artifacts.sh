@@ -4716,7 +4716,14 @@ do_status() {
     fi
     # The evidence gates report here instead of dying, because `status`
     # exists to be run when something is wrong.
-    local world="" character="" rows="" frames=""
+    # ROWS IS A COUNT IN EVERY STATE, INCLUDING NONE.  It used to be
+    # left EMPTY when there was no manifest, while FRAMES beside it
+    # reported 0 -- so on a tree between a retirement and its re-record
+    # the two fields disagreed about the same empty record, and a reader
+    # comparing them (this page documents exactly that comparison) had to
+    # know that one absence is spelled `0` and the other is spelled
+    # nothing.  An empty record has zero rows.
+    local world="" character="" rows="0" frames=""
     if [ -f "${PLAYTHROUGH_MANIFEST}" ]; then
         rows="$("${WC}" -l <"${PLAYTHROUGH_MANIFEST}" |
             "${TR}" -d ' ')"

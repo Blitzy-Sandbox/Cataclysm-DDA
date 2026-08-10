@@ -1318,25 +1318,37 @@ contract"
             control - broken, set(),
             msg="a broken linter must not silence any other verdict")
         fields = self.machine_block(out)
+        reference = self.machine_block(control_out)
         # THE ASSERTION IS ABOUT COMPLETENESS, NOT ABOUT THE FAILURE
         # COUNT.  A count would make this test a statement about how
-        # well the host happens to be provisioned -- an unset
-        # repository-local git identity or an uninstalled tileset are
-        # real failures of the TREE that have nothing to do with the
-        # linter -- and it would go red for reasons this test is not
-        # about.  What must hold is that the run kept going and measured
-        # every declared check, and that the lint verdict is among the
-        # failures.
+        # well the host happens to be provisioned -- an unset git
+        # identity, an uninstalled tileset, or a tree between a
+        # retirement and its re-record, which carries no captures at all
+        # and so lets whole groups report a missing prerequisite rather
+        # than their members -- and it would go red for reasons this test
+        # is not about.  So completeness is measured AGAINST THE CONTROL
+        # RUN: whatever this tree lets the gate reach, a broken linter
+        # must let it reach exactly the same amount of it.
         self.assertIn("FAIL  the new Python satisfies the repository's "
                       "own", out)
         self.assertEqual(
-            fields.get("VERIFY_CHECKS"),
+            fields.get("VERIFY_CHECKS"), reference.get("VERIFY_CHECKS"),
+            msg="a broken linter truncated the run")
+        self.assertEqual(
             fields.get("VERIFY_EXPECTED_CHECKS"),
-            msg="the full declared inventory should still be performed")
-        self.assertIn("PASS  this report contains every check this "
-                      "gate declares", out)
-        self.assertGreater(int(fields.get("VERIFY_PASSES", "0")), 50,
-                           msg="the other properties are still measured")
+            reference.get("VERIFY_EXPECTED_CHECKS"),
+            msg="a broken linter changed what the gate declares")
+        if (reference.get("VERIFY_CHECKS") ==
+                reference.get("VERIFY_EXPECTED_CHECKS")):
+            # This tree lets every declared check run, so the stronger
+            # statement is available and is made.
+            self.assertIn("PASS  this report contains every check this "
+                          "gate declares", out)
+        self.assertEqual(
+            int(fields.get("VERIFY_PASSES", "0")),
+            int(reference.get("VERIFY_PASSES", "0")) - 1,
+            msg="a broken linter cost more than its own one passing "
+                "verdict, so something else stopped being measured")
 
 
 class TestTheCheckpointsMustBeThisSession(unittest.TestCase):
