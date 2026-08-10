@@ -67,6 +67,7 @@ written.
 import hashlib
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -139,6 +140,10 @@ REAL_TOOLS = (
     # cue file.  All coreutils or util-linux, and listed here because
     # this PATH is exhaustive.
     "stat", "id", "realpath", "flock", "cut", "sleep", "mktemp",
+    # df answers the capacity reserve the mux checks before it writes:
+    # ffmpeg does not fail cleanly when a filesystem fills, it leaves a
+    # truncated container, so the room is established first.
+    "df",
     # sha256sum is what the provenance gate compares a manifest's declared
     # digest against, and what the single post-rename check uses to prove
     # the published bytes are the bytes that were verified.  It is the
@@ -449,7 +454,19 @@ exit 0
 # The timeout stub.  It records and then execs, which is what makes
 # "every external call is bounded" measurable: the recorded count of
 # timeout invocations must equal the count of ffmpeg and ffprobe ones.
+#
+# It skips the OPTIONS as well as the ceiling, because the subject invokes
+# `timeout --kill-after=<grace> --signal=TERM <ceiling> <command>`: one
+# TERM that the child may ignore is not a bound, so the escalation flags
+# are part of every call and a stub that shifted only once would exec
+# `--signal=TERM` and fail.
 TIMEOUT_STUB = r"""
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -*) shift ;;
+        *) break ;;
+    esac
+done
 shift
 exec "$@"
 """
@@ -1449,18 +1466,169 @@ class TestTheBoundedCalls(MuxFixture):
                  "ffprobe invocation must go through the runner"
                  % (media, bounded)))
 
-    def test_the_ceiling_is_the_configured_one(self):
-        self.mux(PLAYTHROUGH_CAPTION_TIMEOUT="77")
+    #: The ceiling out of one recorded `timeout` argv: the first bare
+    #: numeric token, which is the argument after the escalation options.
+    CEILING = re.compile(r"^(?:-\S+\s+)*(\d+)\s")
+
+    def ceilings(self):
+        """Every ceiling this run bounded a call with."""
+        found = []
         for argv in self.stub_calls("timeout"):
-            self.assertTrue(
-                argv.startswith("77 "),
-                msg="a call was bounded by something else: %s" % argv)
+            match = self.CEILING.match(argv)
+            self.assertIsNotNone(
+                match, msg="this call carries no ceiling: %s" % argv)
+            found.append(int(match.group(1)))
+        return found
+
+    def test_the_ceiling_is_the_configured_one(self):
+        """An operator's number is used exactly, never derived over."""
+        self.mux(PLAYTHROUGH_CAPTION_TIMEOUT="77")
+        ceilings = self.ceilings()
+        self.assertGreater(len(ceilings), 10)
+        self.assertEqual(set(ceilings), {77})
+
+    def test_every_call_escalates_from_term_to_kill(self):
+        """One TERM a child may ignore is not a bound.
+
+        `timeout N` reports an expiry whether or not the child acted on
+        the signal, so a tool wedged inside its own signal handling kept
+        running while this stage said it had been stopped.
+        """
+        self.mux()
+        for argv in self.stub_calls("timeout"):
+            self.assertIn("--kill-after=", argv,
+                          msg="this call cannot escalate: %s" % argv)
+            self.assertIn("--signal=TERM", argv,
+                          msg="this call asks for something else: %s"
+                              % argv)
+
+    def test_the_whole_stream_calls_get_a_derived_ceiling(self):
+        """Fixed for the header reads, derived for the film.
+
+        A stream copy and its faststart relocation are both O(bytes) and
+        the session length is unbounded, so one number cannot serve both:
+        it is either too small for a long film -- killing a healthy mux --
+        or no bound at all.  With no override, the ceiling changes once
+        the film's own size is known, and the report says so.
+        """
+        # The fixture names a short ceiling so a wedged test fails fast;
+        # it is dropped here, because an override is honoured exactly and
+        # the derivation is what this test is about.
+        _, err = self.mux(PLAYTHROUGH_CAPTION_TIMEOUT=None)
+        self.assertIn("the ceiling for every whole-stream call below is",
+                      err)
+        self.assertIn("derived from", err)
+        ceilings = set(self.ceilings())
+        self.assertGreater(
+            len(ceilings), 1,
+            msg="every call used the same ceiling, so nothing was "
+                "derived:\n%s" % err)
 
     def test_a_nonsense_ceiling_is_refused(self):
         status, _, err = self.run_mux(
             PLAYTHROUGH_CAPTION_TIMEOUT="not-a-number")
         self.assertEqual(status, EX_USAGE)
         self.assertIn("PLAYTHROUGH_CAPTION_TIMEOUT", err)
+
+
+class TestTheCapacityReserve(MuxFixture):
+    """Room to write the container, established before anything is.
+
+    ffmpeg does not fail cleanly when a filesystem fills: it writes until
+    the write fails and leaves a truncated container.  The verification
+    below the mux would reject that, correctly, having spent the whole
+    cost of the mux to find out -- and the arithmetic was available
+    beforehand.
+    """
+
+    #: A `df -Pk` answer with one 1024-byte block free.  The shape is what
+    #: matters: a header line, then the data line whose fourth field is
+    #: the available space and whose last field may contain spaces.
+    DF_FULL = """
+printf '%s\\n' 'Filesystem 1024-blocks Used Available Capacity Mounted on'
+printf '%s\\n' '/dev/sandbox 1000000 999999 1 100% /mnt/a full disk'
+exit 0
+"""
+
+    #: A df that cannot answer at all.
+    DF_BROKEN = """
+printf 'df: cannot read\\n' >&2
+exit 1
+"""
+
+    def test_a_filesystem_without_room_refuses_before_the_mux(self):
+        self.stub("df", self.DF_FULL)
+        message = self.refuse(EX_MUX)
+        self.assertIn("not enough room to mux", message)
+        # The figures, so an operator knows what to free.
+        self.assertIn("byte(s) free and this run needs", message)
+        self.assertIn("for the staging container", message)
+        self.assertIn("of margin", message)
+        # BEFORE the mux: no ffmpeg ran at all.
+        self.assertEqual(
+            [], self.stub_calls("ffmpeg"),
+            msg="the mux ran anyway, so the reserve is not a preflight")
+
+    def test_an_unreadable_free_space_reading_warns_and_proceeds(self):
+        """A check that cannot run is reported, not turned into a refusal.
+
+        Refusing here would leave a host whose `df` output this cannot
+        parse unable to caption at all, and the truncated-container case
+        is still caught by the verification below the mux.
+        """
+        self.stub("df", self.DF_BROKEN)
+        _, err = self.mux()
+        self.assertIn("could not be read", err)
+        self.assertIn("was not checked", err)
+
+    def test_the_reserve_is_reported_when_it_is_satisfied(self):
+        _, err = self.mux()
+        self.assertRegex(
+            err, r"room to work: \d+ byte\(s\) free against a \d+-byte "
+                 r"reserve \(\d+ staging \+ \d+ retained \+ \d+ margin\)")
+
+
+class TestTheStallWatchdog(MuxFixture):
+    """A wedged mux is caught by going quiet, not by outliving a number.
+
+    The derived ceiling scales with the film, which on a long session is
+    hours -- and waiting hours to discover that ffmpeg wedged in its first
+    second is not a diagnosis.
+    """
+
+    #: An ffmpeg that neither writes nor returns.
+    FFMPEG_WEDGED = """
+sleep 45
+exit 0
+"""
+
+    def test_the_progress_signature_is_size_and_modification_time(self):
+        """Size alone would read a faststart relocation as a stall.
+
+        `+faststart` rewrites the container IN PLACE to move the moov
+        atom to the front: the size does not change while the largest
+        single piece of work in the stage is happening.  The modification
+        time does.
+        """
+        with open(os.path.join(TOOLING, "embed_captions.sh"),
+                  encoding="utf-8") as handle:
+            source = handle.read()
+        self.assertIn("progress_signature()", source)
+        self.assertIn("'%s %Y'", source)
+        self.assertIn('run_watched "the caption mux"', source)
+
+    def test_a_mux_that_goes_quiet_is_stopped_and_says_so(self):
+        """Stopped early, with nothing published and nothing left."""
+        self.stub("ffmpeg", self.FFMPEG_WEDGED)
+        message = self.refuse(EX_MUX, PLAYTHROUGH_CAPTION_STALL="1")
+        self.assertIn("has not written to", message)
+        self.assertIn("stalled", message)
+        self.assertIn("Nothing was published", message)
+
+    def test_a_nonsense_stall_window_is_refused(self):
+        status, _, err = self.run_mux(PLAYTHROUGH_CAPTION_STALL="soon")
+        self.assertEqual(status, EX_USAGE)
+        self.assertIn("PLAYTHROUGH_CAPTION_STALL", err)
 
 
 class TestThePictureIsProvenCopied(MuxFixture):

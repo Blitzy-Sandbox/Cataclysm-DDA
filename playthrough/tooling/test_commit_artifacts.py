@@ -176,6 +176,52 @@ REQUIRED_ATTRIBUTE_ROWS = (
     "*.jsonl text",
 )
 
+# What git must APPLY, per representative artifact, which is a different
+# question from which rows are written down: `binary` is a macro for
+# `-text -diff -merge`, so a binary artifact is one whose `text`
+# attribute is unset and a text artifact is one whose `text` is set.  The
+# paths are the real spellings this feature commits.
+ATTRIBUTE_WITNESSES = (
+    ("playthrough/cata-play.mp4", "text", "unset"),
+    ("playthrough/userdir/save/World/maps.zzip", "text", "unset"),
+    ("playthrough/userdir/save/World/#character.sav", "text", "unset"),
+    ("playthrough/userdir/save/World/master.gsav", "text", "unset"),
+    ("playthrough/transcript.srt", "text", "set"),
+    ("playthrough/manifest.jsonl", "text", "set"),
+)
+
+# The final report's three sections, in the order the requirement fixes
+# them.  Spelled out here rather than imported from the subject, so a
+# test that passed would not be passing against a rewritten contract.
+REPORT_SECTIONS = (
+    "## A) Screen Recording and Animation",
+    "## B) Character Creation",
+    "## C) Playing the Game",
+)
+
+
+def report_text(sections=REPORT_SECTIONS):
+    """A final report carrying `sections`, with prose under each.
+
+    Level-three subsections are included on purpose: the real report has
+    many, and a gate that counted those would refuse it.
+    """
+    body = ["# %s: the recording, the survivor, the session" % CHARACTER,
+            "",
+            "What follows is what was recorded and what it shows.",
+            ""]
+    for section in sections:
+        body.extend([
+            section,
+            "",
+            "### What this section covers",
+            "",
+            "One paragraph, so the section is not merely a heading.",
+            "",
+        ])
+    return "\n".join(body)
+
+
 REAL_TOOLS = (
     "bash", "git", "awk", "grep", "mkdir", "mv", "rm", "wc", "tail",
     "head", "dirname", "basename", "cat", "env", "chmod", "cp", "ls",
@@ -323,6 +369,12 @@ class CheckpointFixture(unittest.TestCase):
                    SANDBOX_GITATTRIBUTES)
         self.write(os.path.join(self.dir, "dossier.md"),
                    "# %s\n\nWritten before play.\n" % CHARACTER)
+        # The final report, written the way a finished recording is
+        # delivered.  Seeded in the fixture for the same reason the
+        # dossier is: `final` REQUIRES it, so a test about the lifecycle
+        # would otherwise be a test about its absence.
+        self.report = os.path.join(self.dir, "REPORT.md")
+        self.write(self.report, report_text())
         self.world_dir = os.path.join(self.dir, "userdir", "save", WORLD)
         self.config_dir = os.path.join(self.dir, "userdir", "config")
         self.save_file = os.path.join(self.world_dir, SAVE_BASENAME)
@@ -708,6 +760,29 @@ class CheckpointFixture(unittest.TestCase):
                      check=False).strip()
             for key in ("user.name", "user.email"))
 
+    def script_source(self):
+        """The real commit_artifacts.sh text, for contract assertions.
+
+        Used where a control's ORDER or SHAPE is the thing under test and
+        a behavioural test could not reach it -- see
+        test_an_in_repository_runtime_root_is_refused, whose control sits
+        behind env.sh's own earlier refusal.
+        """
+        with open(os.path.join(TOOLING, SCRIPT_NAME),
+                  encoding="utf-8") as handle:
+            return handle.read()
+
+    def hygiene_names(self):
+        """The HYGIENE_NAMES array, parsed out of the script."""
+        source = self.script_source()
+        start = source.index("readonly -a HYGIENE_NAMES=(")
+        body = source[start:source.index(")", start)]
+        return [
+            line.strip().strip('"')
+            for line in body.splitlines()[1:]
+            if line.strip() and not line.strip().startswith("#")
+        ]
+
     # -- the whole lifecycle, for tests that need it in place --------
 
     def take_dossier(self, **environment):
@@ -806,7 +881,14 @@ class TestItRecordsTheIdentityInThisRepositoryOnly(CheckpointFixture):
       * the scope is `--local` and nothing else: never --global, never
         --system, never --worktree;
       * an identity this repository already records is left exactly as
-        found, so a re-run cannot overwrite a deliberate local setting;
+        found WHEN IT IS THE SAME PAIR, so a re-run rewrites nothing;
+      * an identity that DISAGREES with the one the commit will carry is
+        replaced, both values together.  The two are one fact written in
+        two places, and the acceptance gate reads the configuration: a
+        local pair naming somebody who did not make the commit is a
+        repository that misattributes its own evidence, so "leave it as
+        found" is the wrong deference.  Neither --global nor --system is
+        touched either way;
       * a MISSING identity is still a refusal.  The script persists one;
         it does not invent one.
     """
@@ -885,13 +967,58 @@ class TestItRecordsTheIdentityInThisRepositoryOnly(CheckpointFixture):
                         GIT_COMMITTER_EMAIL=mail)
         self.assertEqual(self.local_identity(), (name, mail))
 
-    def test_it_leaves_an_identity_this_repository_already_records(self):
+    def test_it_leaves_the_same_identity_exactly_as_found(self):
+        """A re-run over a correct pair rewrites nothing."""
+        self.git("config", "--local", "user.name", AUTHOR_NAME)
+        self.git("config", "--local", "user.email", AUTHOR_EMAIL)
+        _, err = self.take_creation()
+        self.assertIn("leaving it exactly as found", err)
+        self.assertEqual(self.local_identity(), (AUTHOR_NAME,
+                                                 AUTHOR_EMAIL))
+
+    def test_an_identity_that_disagrees_is_replaced(self):
+        """The configuration cannot be left naming somebody who did not
+        make the commit.
+
+        The gate reads `git config --local` and compares it with the
+        author of the newest commit under playthrough/.  Deferring to a
+        stale local pair here would make the committer produce a history
+        its own acceptance gate then refuses -- and, worse, would leave a
+        checkout that quietly attributes the next checkpoint to whoever
+        that pair names.
+        """
         self.git("config", "--local", "user.name", "Somebody Else")
         self.git("config", "--local", "user.email", "else@example.org")
         _, err = self.take_creation()
-        self.assertIn("already records its own", err)
-        self.assertEqual(self.local_identity(),
-                         ("Somebody Else", "else@example.org"))
+        self.assertIn("replacing BOTH local values", err)
+        self.assertIn("Somebody Else", err)
+        self.assertIn(AUTHOR, err)
+        self.assertEqual(self.local_identity(), (AUTHOR_NAME,
+                                                 AUTHOR_EMAIL))
+
+    def test_a_half_written_identity_is_completed_not_mixed(self):
+        """One value present and wrong is the case a "both present"
+        test cannot reach, and the one that would leave a mixed pair.
+        """
+        self.git("config", "--local", "user.name", "Somebody Else")
+        self.take_creation()
+        self.assertEqual(self.local_identity(), (AUTHOR_NAME,
+                                                 AUTHOR_EMAIL))
+
+    def test_the_written_pair_is_read_back_before_it_is_believed(self):
+        """"The write returned zero" is not "the configuration now says
+        this", so the source asserts the second.
+        """
+        with open(os.path.join(TOOLING, SCRIPT_NAME),
+                  encoding="utf-8") as handle:
+            source = handle.read()
+        self.assertTrue(
+            "READ BACK, because" in source,
+            msg="the persisted identity is never read back")
+        self.assertTrue(
+            "would not be the identity the commit carries" in source,
+            msg="a configuration that disagrees after the write is not "
+                "reported as fatal")
 
     def test_a_missing_identity_is_still_a_refusal(self):
         """It persists an identity; it does not invent one.
@@ -1069,13 +1196,15 @@ class TestTheScopeGate(CheckpointFixture):
         self.assertIn("publishes the whole index", message)
 
     def test_staged_version_control_configuration_is_refused(self):
-        """The two root files are out of scope, staged or not.
+        """The two root files are out of scope of a SESSION checkpoint,
+        staged or not.
 
         The terminal negation and the binary attributes are
-        repository-wide configuration this tree depends on.  This script
-        CHECKS them and never commits them, so finding one in the index
-        is a refusal that says where it belongs instead of quietly
-        publishing it inside a checkpoint about a survivor's save.
+        repository-wide configuration this tree depends on.  A session
+        checkpoint CHECKS them and never commits them -- they have a
+        milestone of their own -- so finding one in the index here is a
+        refusal that says where it belongs instead of quietly publishing
+        it inside a checkpoint about a survivor's save.
         """
         self.write(self.gitignore, SANDBOX_GITIGNORE + "# an edit\n")
         self.git("add", "--", ".gitignore")
@@ -1139,6 +1268,49 @@ class TestTheScopeGate(CheckpointFixture):
                     path.startswith("playthrough/"),
                     msg="%r is outside the artifact tree" % path)
 
+    def test_a_pathname_that_is_only_a_newline_cannot_escape(self):
+        """THE ONE PATHNAME THAT USED TO WALK STRAIGHT THROUGH.
+
+        git speaks NUL for exactly this reason, and the refusal used to
+        take that NUL-delimited stream and re-emit it one path per LINE
+        before counting it.  A file whose name is a single newline
+        character therefore arrived as two empty records, both of which
+        the reader skipped as blank -- so the count came out zero, the
+        gate said the index was clean, and the commit published a path
+        from outside the feature.  A refusal that can be switched off by
+        naming a file oddly is not a boundary, so the NUL now runs end to
+        end and nothing is skipped.
+        """
+        hostile = os.path.join(self.checkout, "\n")
+        with open(hostile, "w", encoding="utf-8") as handle:
+            handle.write("outside the feature entirely\n")
+        self.addCleanup(os.unlink, hostile)
+        self.git("add", "--", "\n")
+        self.write_save()
+        self.write_evidence(self.CREATION_ROWS)
+        message = self.refuse(EX_SCOPE, ("creation",))
+        self.assertIn("1 change(s) outside playthrough", message)
+        self.assertIn("publishes the whole index", message)
+
+    def test_a_hostile_pathname_is_rendered_as_itself(self):
+        """Counting it is half the job; naming it is the other half.
+
+        A path printed raw into the message would break the line it was
+        on and leave the operator guessing which file to unstage, so each
+        one is rendered with bash's own %q quoting.
+        """
+        directory = os.path.join(self.checkout, "src")
+        hostile = os.path.join(directory, "we\nird.cpp")
+        with open(hostile, "w", encoding="utf-8") as handle:
+            handle.write("// still not ours\n")
+        self.addCleanup(os.unlink, hostile)
+        self.git("add", "--", "src/we\nird.cpp")
+        self.write_save()
+        self.write_evidence(self.CREATION_ROWS)
+        message = self.refuse(EX_SCOPE, ("creation",))
+        self.assertIn("1 change(s) outside playthrough", message)
+        self.assertIn("$'src/we\\nird.cpp'", message)
+
 
 class TestTheHygieneGate(CheckpointFixture):
     """What the terminal negation re-includes, and must not archive.
@@ -1196,6 +1368,82 @@ class TestTheHygieneGate(CheckpointFixture):
         self.assertEqual(
             [], [path for path in self.tracked("playthrough")
                  if "__pycache__" in path or path.endswith(".pyc")])
+
+    # -- M-21: runtime and auth state, which is worse than derived ----
+
+    def test_a_planted_x_cookie_is_refused(self):
+        """The credential case, and the reason this list grew.
+
+        Everything above is merely not evidence.  An Xauthority cookie is
+        a credential: whoever holds it can read the screen being captured
+        and inject keystrokes into the session.  A commit cannot be
+        un-published, so this one has to be caught before staging.
+        """
+        message = self.refuse_over("Xauthority")
+        self.assertIn("Xauthority", message)
+
+    def test_a_planted_pid_file_is_refused(self):
+        message = self.refuse_over(os.path.join("run", "xvfb.pid"))
+        self.assertIn("xvfb.pid", message)
+
+    def test_a_planted_ownership_record_is_refused(self):
+        message = self.refuse_over("x-ownership99")
+        self.assertIn("x-ownership99", message)
+
+    def test_a_planted_stage_error_capture_is_refused(self):
+        message = self.refuse_over("capture-stage-1234.err")
+        self.assertIn("capture-stage-1234.err", message)
+
+    def test_the_requirements_lock_is_not_mistaken_for_a_runtime_lock(
+            self):
+        """THE FALSE POSITIVE THAT WOULD HAVE BROKEN EVERY CHECKPOINT.
+
+        `*.lock` is the obvious pattern for the runtime locks and it is
+        deliberately absent, because playthrough/tooling/requirements.lock
+        is a REQUIRED tracked artifact -- the hash-pinned install contract
+        for the six declared libraries.  Adding the pattern would refuse
+        every checkpoint the pipeline can take.  Caught by running the
+        candidate patterns over the real tree before shipping them; this
+        test is what keeps it caught.
+        """
+        self.assertNotIn("*.lock", self.hygiene_names())
+        # And a checkpoint over a tree containing it still succeeds.
+        self.write(os.path.join(self.dir, "tooling",
+                                "requirements.lock"),
+                   "moviepy==2.2.1\n")
+        self.take_creation()
+
+    def test_the_engine_character_log_is_not_mistaken_for_a_log(self):
+        """`*.log` is absent for the same reason, in the other direction.
+
+        The engine's `#<name>.log` character log and config/debug.log are
+        EVIDENCE and are committed on purpose -- the debug log is what
+        makes the no-cheating claim auditable rather than asserted.
+        """
+        self.assertNotIn("*.log", self.hygiene_names())
+
+    def test_an_in_repository_runtime_root_is_refused(self):
+        """M-21: the root cause, refused at the irreversible act.
+
+        env.sh refuses a nominated runtime root inside the checkout at
+        source time, and this is the same rule applied where breaking it
+        does permanent damage.  Asserted on the script's own text because
+        env.sh's refusal fires first in a real run -- which is the
+        correct order and also means the second control would otherwise
+        never be exercised.
+        """
+        source = self.script_source()
+        start = source.index("assert_runtime_root_is_outside() {")
+        end = source.index("assert_no_machine_files() {", start)
+        body = source[start:end]
+        self.assertIn("playthrough_path_within", body)
+        # Both directions: inside the repository, and containing it.
+        self.assertEqual(body.count("playthrough_path_within"), 2)
+        self.assertIn("EX_SCOPE", body)
+        # And it is called before anything is staged.
+        staging = source.index("assert_no_machine_files() {")
+        self.assertIn("assert_runtime_root_is_outside",
+                      source[staging:staging + 200])
 
 
 class TestStagingIsExplicitBatchedAndComplete(CheckpointFixture):
@@ -1270,6 +1518,126 @@ class TestStagingIsExplicitBatchedAndComplete(CheckpointFixture):
         self.assertEqual(len(self.tracked("playthrough/frames")), count)
         self.assertIn("%d tracked by git, %d on disk" % (count, count),
                       err)
+
+    def test_the_capture_population_is_never_a_shell_array(self):
+        """One capture per keystroke, and no list of them anywhere.
+
+        The argv handed to git was already bounded; what was not was the
+        two arrays built before it -- the find output read into one, then
+        copied into a second inside the batcher.  A session length is
+        deliberately unbounded, so the population is streamed instead:
+        read, judged and written out one path at a time.
+        """
+        with open(os.path.join(TOOLING, SCRIPT_NAME),
+                  encoding="utf-8") as handle:
+            source = handle.read()
+        self.assertNotIn("captures+=(", source,
+                         msg="the captures are accumulated again")
+        self.assertNotIn("present+=(", source,
+                         msg="the staging list is accumulated again")
+        self.assertIn("stage_stream()", source)
+        self.assertIn("capture_pathspecs()", source)
+
+    def test_the_captures_reach_git_as_one_pathspec_file(self):
+        """One `git add`, so one index read and one index write.
+
+        The index is the size of the repository rather than of the batch,
+        so a call per 256 frames rewrote it once per 256 frames.  Given a
+        NUL-delimited pathspec file, git takes the whole class at once.
+        """
+        with open(os.path.join(TOOLING, SCRIPT_NAME),
+                  encoding="utf-8") as handle:
+            source = handle.read()
+        self.assertIn("--pathspec-from-file=", source)
+        self.assertIn("--pathspec-file-nul", source)
+        count = 12
+        self.write_save()
+        self.write_evidence(count)
+        _, err = self.checkpoint("creation")
+        self.assertIn("staged the captured frames: %d path(s)" % count,
+                      err)
+        self.assertEqual(len(self.tracked("playthrough/frames")), count)
+
+    def test_a_git_without_pathspec_files_stages_every_capture(self):
+        """The fallback, exercised by a git that refuses the option.
+
+        The option pair arrived in git 2.25, so the streamed file is
+        replayed in bounded chunks on anything older.  A wrapper that
+        refuses it -- exactly as such a git does, with "unknown option"
+        and a non-zero status -- proves the fallback stages the same
+        population rather than merely existing in the source.
+        """
+        real = shutil.which("git")
+        self.assertIsNotNone(real, msg="a real git is needed")
+        marker = os.path.join(self.root, "pathspec-file-refused")
+        self.write(
+            os.path.join(self.bin, "git"),
+            "#!/bin/sh\n"
+            "for arg in \"$@\"; do\n"
+            "    case \"${arg}\" in\n"
+            "        --pathspec-from-file*)\n"
+            "            printf 'refused\\n' >>%s\n"
+            "            printf 'error: unknown option\\n' >&2\n"
+            "            exit 129\n"
+            "            ;;\n"
+            "    esac\n"
+            "done\n"
+            "exec %s \"$@\"\n" % (marker, real),
+            mode=0o755)
+        with open(os.path.join(TOOLING, SCRIPT_NAME),
+                  encoding="utf-8") as handle:
+            bound = int(re.search(r"STAGE_BATCH_SIZE=(\d+)",
+                                  handle.read()).group(1))
+        count = bound + 3
+        self.write_save()
+        self.write_evidence(count)
+        fields, err = self.checkpoint("creation")
+        self.assertTrue(os.path.exists(marker),
+                        msg="the capability was never probed, so the "
+                            "fallback was not the path under test")
+        self.assertEqual(fields["FRAMES"], str(count))
+        self.assertIn("staged the captured frames: %d path(s)" % count,
+                      err)
+        self.assertEqual(len(self.tracked("playthrough/frames")), count)
+
+    def test_frame_one_is_named_rather_than_searched_for(self):
+        """The ignore probe needs one capture, so it names one.
+
+        It used to `find` the whole directory and pipe it through `sort`,
+        which cannot emit a line until it has read every one of them.
+        """
+        with open(os.path.join(TOOLING, SCRIPT_NAME),
+                  encoding="utf-8") as handle:
+            source = handle.read()
+        body = re.search(r"^first_capture\(\) \{\n(.*?)^\}", source,
+                         re.MULTILINE | re.DOTALL)
+        self.assertIsNotNone(body)
+        self.assertIn("FIRST_CAPTURE_BASENAME", body.group(1))
+        self.assertNotIn('"${SORT}"', body.group(1))
+        # And the name comes from env.sh's own capture format.
+        self.assertIn('printf -v FIRST_CAPTURE_BASENAME -- '
+                      '"${PLAYTHROUGH_FRAME_FORMAT}" 1', source)
+
+    def test_the_emptiness_check_is_gits_own_boolean(self):
+        """`diff --cached --quiet`, not a captured list of paths.
+
+        Asking "is anything staged" by materialising one line per staged
+        path is one line per capture to answer yes or no.
+        """
+        with open(os.path.join(TOOLING, SCRIPT_NAME),
+                  encoding="utf-8") as handle:
+            source = handle.read()
+        self.assertIn("diff --cached --quiet HEAD", source)
+        self.assertIn("anything_staged()", source)
+        # The code, named exactly: the comment above the replacement
+        # QUOTES the idiom it replaced, and a loose match would find the
+        # explanation rather than a call.
+        self.assertNotIn('if [ -z "$(staged_paths)" ]', source)
+        self.assertNotIn('if [ -n "$(staged_paths_preview)" ]', source)
+        # Every surviving reader of either one streams it.
+        self.assertEqual(source.count("done < <(staged_paths)"), 1)
+        self.assertEqual(
+            source.count("done < <(staged_paths_preview)"), 2)
 
     def test_a_class_nobody_enumerated_is_refused_not_skipped(self):
         """Explicit staging's own failure mode, closed.
@@ -1936,6 +2304,330 @@ class TestTheDossierCheckpoint(CheckpointFixture):
         self.assertIn("already", err)
 
 
+class TestTheDossierRefusesOnceTheSessionHasBegun(CheckpointFixture):
+    """"Before the first gameplay frame" is about events, not commits.
+
+    THE COUNT USED TO BE OF TRACKED CAPTURES ONLY, which asks whether the
+    frames were COMMITTED rather than whether they EXIST.  On the ordinary
+    post-session tree -- every frame written, the record appended, nothing
+    committed yet -- that count is zero, so the refusal never fired and a
+    dossier commit taken there claimed to precede a session that had
+    already been played and whose frames were sitting on the disk beside
+    it.  The ordering would then read correctly out of git while being
+    false about the world, which is the worst kind of passing evidence.
+
+    So the question is now whether the session left ANY trace, wherever
+    that trace is: a capture on disk, a capture in the index, a manifest
+    row, a sidecar observation, or a capture attestation.  Each of these
+    tests supplies exactly ONE of them, because a gate that only fires
+    when several are present is a gate with a gap in it.
+    """
+
+    def refuse_dossier(self):
+        message = self.refuse(EX_LIFECYCLE, ("dossier",))
+        self.assertIn("the session has already left evidence", message)
+        return message
+
+    def test_an_uncommitted_capture_on_disk_is_enough(self):
+        """The case that used to walk straight through."""
+        self.write(
+            os.path.join(self.frames_dir, "frame_00001.png"),
+            "a frame that was captured but never committed\n")
+        self.assertFalse(
+            self.is_tracked("playthrough/frames/frame_00001.png"),
+            msg="the fixture was supposed to leave it untracked")
+        message = self.refuse_dossier()
+        self.assertIn("1 capture(s) on disk", message)
+
+    def test_a_manifest_row_is_enough(self):
+        with open(self.manifest, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(self.row(1)) + "\n")
+        message = self.refuse_dossier()
+        self.assertIn("row(s) in playthrough/manifest.jsonl", message)
+
+    def test_a_sidecar_observation_is_enough(self):
+        """The capture stage appends one of these per frame, so it is a
+        trace of play even where the frame itself was cleaned up."""
+        with open(self.observations, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(self.observation(1)) + "\n")
+        message = self.refuse_dossier()
+        self.assertIn("observations.jsonl", message)
+
+    def test_a_capture_attestation_is_enough(self):
+        with open(self.digests, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps({
+                "frame": 1,
+                "file": "playthrough/frames/frame_00001.png",
+                "sha256": "0" * 64,
+                "bytes": 1,
+                "attested": "capture",
+                "attested_ts": "2026-08-04T06:53:01.429Z",
+                "git_blob": None,
+                "git_commit": None,
+            }) + "\n")
+        message = self.refuse_dossier()
+        self.assertIn("frame_digests.jsonl", message)
+
+    def test_the_refusal_says_the_ordering_cannot_be_backdated(self):
+        """The operator needs to know that there is no way to fix this
+        by committing harder."""
+        self.write(os.path.join(self.frames_dir, "frame_00001.png"),
+                   "a frame\n")
+        message = self.refuse_dossier()
+        self.assertIn("cannot be established after the fact", message)
+        self.assertIn("re-recorded", message)
+
+    def test_a_tree_where_play_has_not_begun_is_still_allowed(self):
+        """The positive control: the gate must not be unconditional."""
+        self.forget_dossier()
+        fields, _ = self.checkpoint("dossier")
+        self.assertEqual(fields["COMMITTED"], "yes")
+        self.assertEqual(self.touched_by(), ["playthrough/dossier.md"])
+
+
+class TestTheOrderingIsAboutThisGeneration(CheckpointFixture):
+    """WHICH commits are compared, and why the oldest ones are the wrong
+    answer.
+
+    The reading used to be "the oldest commit that ever touched this
+    path", which is a fact about the PATH rather than about the recording
+    now in the tree.  These paths are reused by every generation:
+    `playthrough/dossier.md` and `playthrough/frames/frame_00001.png` are
+    the same two names for every survivor who is ever recorded here.  So
+    a retired session that happened to be committed in the right order
+    left an ordering behind that a later, wholly differently ordered
+    recording then inherited -- and the requirement being asserted is
+    about the survivor whose words and whose first frame are in the tree
+    NOW.
+
+    The reading is therefore the NEWEST commit that changed each path,
+    which is by definition the commit that produced the content HEAD
+    carries.
+    """
+
+    def run_final(self):
+        """Take `final` and return (status, message) without asserting.
+
+        The ordering is verified from the history the commit MADE, so a
+        violation is reported after that commit exists -- deliberately,
+        because the final commit itself can be the thing that rewrites
+        the dossier, and a check that ran earlier would not see it.  That
+        is why this cannot use `refuse`, which asserts HEAD did not move.
+        """
+        status, out, err = self.run_script(("final",))
+        return status, err + out
+
+    def test_a_correctly_ordered_generation_passes(self):
+        """The control, and the message names both commits it compared."""
+        self.forget_dossier()
+        dossier, _ = self.take_dossier()
+        self.take_creation()
+        self.play_session()
+        _, err = self.checkpoint("final")
+        self.assertIn("strict ancestor", err)
+        self.assertIn(dossier["COMMIT"][:10], err)
+
+    def test_a_dossier_rewritten_after_the_session_is_refused(self):
+        """The regression this reading exists for.
+
+        Under the old measurement this history PASSED: the dossier's
+        oldest commit was the dossier checkpoint, taken before any frame,
+        so the ancestry held -- while the words actually in the tree were
+        written after the session was over and were published by the
+        final commit itself.
+        """
+        self.forget_dossier()
+        self.take_dossier()
+        self.take_creation()
+        self.play_session()
+        self.write(os.path.join(self.dir, "dossier.md"),
+                   "# %s\n\nRewritten with hindsight.\n" % CHARACTER)
+        status, message = self.run_final()
+        self.assertEqual(
+            status, EX_COMMIT,
+            msg="a dossier rewritten after the session was accepted:\n%s"
+                % message)
+        self.assertIn("not an ancestor", message)
+        self.assertIn("REWRITTEN after the session was captured",
+                      message)
+
+    def test_a_bundled_generation_cannot_inherit_an_ordering(self):
+        """One commit carrying both cannot precede itself, even where an
+        earlier generation of these paths was ordered correctly.
+        """
+        self.forget_dossier()
+        self.take_dossier()
+        self.take_creation()
+        self.play_session()
+        self.checkpoint("final")
+        # A second generation, published the way the real history was:
+        # the survivor's words and the first frame in ONE commit.  The
+        # first generation's ordering is still in this history, and is
+        # still no help to this one.
+        self.write(os.path.join(self.dir, "dossier.md"),
+                   "# %s\n\nA second survivor entirely.\n" % CHARACTER)
+        self.write(os.path.join(self.frames_dir, "frame_00001.png"),
+                   "a capture from the second recording\n")
+        self.git("add", "--", "playthrough/dossier.md",
+                 "playthrough/frames/frame_00001.png")
+        self.git("commit", "--quiet", "-m",
+                 "Publish a second recording in one bundle")
+        self.write_digests(self.CREATION_ROWS + self.SESSION_ROWS)
+        self.write_save(revision="a second closing save")
+        status, message = self.run_final()
+        self.assertEqual(
+            status, EX_COMMIT,
+            msg="a bundled generation inherited an ordering:\n%s"
+                % message)
+        self.assertIn("put BOTH the current", message)
+        self.assertIn("cannot precede itself", message)
+
+    def test_the_reading_is_the_newest_commit_not_the_oldest(self):
+        """Read off the source, because the whole finding was that these
+        two questions look alike and are not."""
+        with open(os.path.join(TOOLING, SCRIPT_NAME),
+                  encoding="utf-8") as handle:
+            source = handle.read()
+        self.assertTrue(
+            "generation_commit() answers the question that matters"
+            in source,
+            msg="the generation reading is gone")
+        self.assertTrue(
+            "log --max-count=1 --format=%H HEAD --" in source,
+            msg="the ordering is no longer read from the newest commit "
+                "that changed the path")
+
+
+class TestTheIntegrationMilestone(CheckpointFixture):
+    """The one milestone that commits something outside playthrough/.
+
+    THE TWO RULE FILES HAD NO COMMITTER AT ALL.  Every checkpoint checked
+    them -- the terminal negation in `.gitignore` and the six rows in
+    `.gitattributes` -- and every checkpoint refused to stage them, on
+    the reasoning that repository-wide configuration does not belong in a
+    commit about a survivor.  That reasoning is right and the conclusion
+    was incomplete: the plan requires both files to be MODIFIED and
+    COMMITTED, and a negation that was never committed loses the save
+    data on the next fresh clone while every working-tree check still
+    passes.  So the two files get a milestone of their own, scoped to
+    exactly them.
+    """
+
+    def edited_ignore(self):
+        """A .gitignore that differs from HEAD and is still correct.
+
+        The comment goes ABOVE the negation, because the negation has to
+        remain the last effective rule -- which is the property the
+        milestone refuses to publish without.
+        """
+        return SANDBOX_GITIGNORE.replace(
+            NEGATION_LINE, "# an operator's note\n" + NEGATION_LINE)
+
+    def edit_both_rule_files(self):
+        self.write(self.gitignore, self.edited_ignore())
+        self.write(os.path.join(self.checkout, ".gitattributes"),
+                   SANDBOX_GITATTRIBUTES + "*.ogg binary\n")
+
+    def test_it_commits_exactly_the_two_rule_files(self):
+        self.edit_both_rule_files()
+        fields, _ = self.checkpoint("integration")
+        self.assertEqual(fields["COMMITTED"], "yes")
+        self.assertEqual(self.touched_by(),
+                         [".gitattributes", ".gitignore"])
+
+    def test_it_leaves_the_artifact_tree_alone(self):
+        """Scoped BOTH ways: this milestone is not a shortcut for the
+        session checkpoints either."""
+        self.write(self.gitignore, self.edited_ignore())
+        self.write_save()
+        self.write_evidence(self.CREATION_ROWS)
+        self.checkpoint("integration")
+        self.assertEqual(self.touched_by(), [".gitignore"])
+        self.assertFalse(
+            self.is_tracked("playthrough/frames/frame_00001.png"),
+            msg="the integration milestone published a capture")
+
+    def test_its_message_names_the_files_and_nothing_it_did_not_do(self):
+        self.edit_both_rule_files()
+        self.checkpoint("integration")
+        message = self.message()
+        self.assertIn("- .gitignore", message)
+        self.assertIn("- .gitattributes", message)
+        self.assertIn("Playthrough-Checkpoint: integration", message)
+        self.assertNotIn(CHARACTER, message)
+        self.assertNotIn("keystroke(s) captured", message)
+
+    def test_a_re_run_manufactures_no_empty_commit(self):
+        """HEAD already carrying them is the ordinary state, not a
+        failure, and it must not produce a commit that records nothing.
+        """
+        self.edit_both_rule_files()
+        self.checkpoint("integration")
+        before = self.head()
+        fields, err = self.checkpoint("integration")
+        self.assertEqual(fields["COMMITTED"], "no")
+        self.assertEqual(before, self.head())
+        self.assertIn("No empty commit was manufactured", err)
+
+    def test_it_needs_no_evidence_and_no_save(self):
+        """It runs FIRST, before a survivor exists at all, so it cannot
+        be gated on any artifact."""
+        self.edit_both_rule_files()
+        self.assertFalse(os.path.exists(self.manifest))
+        self.assertFalse(os.path.exists(self.master))
+        fields, _ = self.checkpoint("integration")
+        self.assertEqual(fields["COMMITTED"], "yes")
+
+    def test_staged_artifact_work_is_refused(self):
+        self.write_save()
+        self.write_evidence(self.CREATION_ROWS)
+        self.git("add", "--", "playthrough/manifest.jsonl")
+        self.write(self.gitignore, self.edited_ignore())
+        message = self.refuse(EX_SCOPE, ("integration",))
+        self.assertIn("neither .gitignore nor .gitattributes", message)
+        self.assertIn("playthrough/manifest.jsonl", message)
+        self.assertIn("publishes the whole index", message)
+
+    def test_a_working_tree_negation_that_is_not_last_is_refused(self):
+        """It publishes these rules, so it will not publish them broken.
+
+        A rule after the negation re-excludes what the negation rescued,
+        and committing that is precisely the silent failure the whole
+        block exists to prevent.
+        """
+        self.write(self.gitignore,
+                   SANDBOX_GITIGNORE + "playthrough/frames\n")
+        message = self.refuse(EX_PREREQ, ("integration",))
+        self.assertIn("not '%s'" % NEGATION_LINE, message)
+        self.assertIn("Nothing was committed", message)
+
+    def test_a_working_tree_missing_an_attribute_row_is_refused(self):
+        for row in REQUIRED_ATTRIBUTE_ROWS:
+            with self.subTest(row=row):
+                self.write(
+                    os.path.join(self.checkout, ".gitattributes"),
+                    SANDBOX_GITATTRIBUTES.replace(row + "\n", ""))
+                message = self.refuse(EX_PREREQ, ("integration",))
+                self.assertIn("carries no '%s' row" % row, message)
+
+    def test_the_published_rules_are_asserted_from_the_history(self):
+        """The point of the commit, read back out of the commit."""
+        self.edit_both_rule_files()
+        _, err = self.checkpoint("integration")
+        self.assertIn("HEAD's own .gitignore", err)
+        self.assertIn(NEGATION_LINE, err)
+
+    def test_it_is_the_only_milestone_that_reaches_outside(self):
+        """Read off the source: one declared list, two names in it."""
+        with open(os.path.join(TOOLING, SCRIPT_NAME),
+                  encoding="utf-8") as handle:
+            source = handle.read()
+        self.assertTrue(
+            'INTEGRATION_PATHS=(".gitignore" ".gitattributes")'
+            in source,
+            msg="the milestone's scope is no longer two declared names")
+
+
 class TestCreationRequiresATrackedDossier(CheckpointFixture):
     """The refusal that keeps the two out of one commit.
 
@@ -2053,6 +2745,151 @@ class TestTheLifecycleIsAnchoredOnTheSurvivor(CheckpointFixture):
         self.assertIn("WARNING", err)
 
 
+class TestTheEligibilityAnswer(CheckpointFixture):
+    """Would `final` be taken?  Asked without taking it.
+
+    Every expensive stage of the post-session pipeline runs BEFORE the
+    checkpoint, so a checkpoint that is going to refuse should say so
+    first: the sequencer reads this answer ahead of its first stage and
+    stops there instead of spending the timeline, the transitions, the
+    encode, the transcripts, the caption mux and the whole functional
+    gate to be refused at the end.
+
+    The answer is computed with the same two predicates the refusal
+    enforces -- the survivor-specific anchor and the row growth since it
+    -- so it cannot drift from what it predicts.  That mattered
+    immediately: `status` used to compare against the NEWEST creation
+    checkpoint, which is not the one `final` anchors to, and therefore
+    reported a refusal for a session whose own anchor was simply an
+    older commit.
+    """
+
+    OTHER_WORLD = "Apshawa"
+    OTHER_CHARACTER = "Ambrose Halloran"
+    OTHER_SAVE = "#QW1icm9zZSBIYWxsb3Jhbg==.sav"
+
+    def become_the_other_survivor(self):
+        """The save of a different survivor, as a re-record leaves it."""
+        shutil.rmtree(self.world_dir)
+        other_dir = os.path.join(self.dir, "userdir", "save",
+                                 self.OTHER_WORLD)
+        self.write(os.path.join(other_dir, "master.gsav"),
+                   "master state (a different survivor)\n")
+        self.write(os.path.join(other_dir, self.OTHER_SAVE),
+                   "character state (a different survivor)\n")
+        self.write(self.lastworld,
+                   json.dumps({"world_name": self.OTHER_WORLD,
+                               "character_name": self.OTHER_CHARACTER},
+                              indent=2) + "\n")
+
+    def become_the_original_survivor(self):
+        """Back to the first survivor, whose creation is now OLDER."""
+        shutil.rmtree(os.path.join(self.dir, "userdir", "save",
+                                   self.OTHER_WORLD))
+        self.write_save(revision="resumed")
+
+    def answer(self):
+        """The three eligibility keys `status` reports."""
+        status, out, err = self.run_script(("status",))
+        self.assertEqual(status, EX_OK, msg=err)
+        fields = self.payload(out)
+        for key in ("FINAL_ELIGIBLE", "FINAL_ANCHOR", "FINAL_REASON"):
+            self.assertIn(key, fields)
+        return fields
+
+    def test_a_session_ready_for_its_checkpoint_answers_yes(self):
+        creation, _ = self.take_creation()
+        self.play_session()
+        fields = self.answer()
+        self.assertEqual(fields["FINAL_ELIGIBLE"], "yes")
+        self.assertEqual(fields["FINAL_ANCHOR"], creation["COMMIT"])
+        self.assertEqual(fields["FINAL_REASON"], "")
+
+    def test_the_answer_predicts_what_the_checkpoint_then_does(self):
+        """The two must agree, which is the whole point of one rule."""
+        self.take_creation()
+        self.play_session()
+        self.assertEqual(self.answer()["FINAL_ELIGIBLE"], "yes")
+        fields, _ = self.checkpoint("final")
+        self.assertEqual(fields["COMMITTED"], "yes")
+
+    def test_no_creation_at_all_is_named_as_such(self):
+        self.write_save()
+        self.write_evidence(self.CREATION_ROWS)
+        fields = self.answer()
+        self.assertEqual(fields["FINAL_ELIGIBLE"], "no")
+        self.assertEqual(fields["FINAL_REASON"], "no-creation-checkpoint")
+        self.assertEqual(fields["FINAL_ANCHOR"], "")
+
+    def test_a_creation_for_somebody_else_is_named_as_such(self):
+        self.take_creation()
+        self.become_the_other_survivor()
+        self.write_evidence(self.CREATION_ROWS + self.SESSION_ROWS)
+        fields = self.answer()
+        self.assertEqual(fields["FINAL_ELIGIBLE"], "no")
+        self.assertEqual(fields["FINAL_REASON"],
+                         "no-creation-for-this-survivor")
+
+    def test_a_record_that_has_not_grown_is_named_as_such(self):
+        self.take_creation()
+        self.write_save(revision="reopened but unplayed")
+        fields = self.answer()
+        self.assertEqual(fields["FINAL_ELIGIBLE"], "no")
+        self.assertEqual(fields["FINAL_REASON"], "record-has-not-grown")
+
+    def test_a_session_with_no_survivor_loaded_is_named_as_such(self):
+        self.write_evidence(self.CREATION_ROWS)
+        fields = self.answer()
+        self.assertEqual(fields["FINAL_ELIGIBLE"], "no")
+        self.assertEqual(fields["FINAL_REASON"], "no-survivor-loaded")
+
+    def test_an_older_anchor_is_found_rather_than_reported_missing(self):
+        """THE IMPRECISION THIS FIXES, driven end to end.
+
+        Two creation checkpoints exist and the newest is somebody else's,
+        but this session's own anchor is the OLDER one -- so `final` will
+        anchor to it and succeed.  Comparing against the newest, as
+        `status` used to, answers "would REFUSE" for a run that is
+        perfectly eligible, which is exactly the false alarm a preflight
+        must not raise.
+        """
+        first, _ = self.take_creation()
+        self.become_the_other_survivor()
+        self.write_evidence(self.CREATION_ROWS + 1)
+        second, _ = self.checkpoint("creation")
+        self.assertEqual(second["COMMITTED"], "yes")
+        self.become_the_original_survivor()
+        self.write_evidence(self.CREATION_ROWS + self.SESSION_ROWS)
+        fields = self.answer()
+        self.assertEqual(fields["CREATION"], second["COMMIT"])
+        self.assertEqual(fields["FINAL_ANCHOR"], first["COMMIT"])
+        self.assertEqual(fields["FINAL_ELIGIBLE"], "yes")
+        # And the prediction holds when the checkpoint is really taken.
+        taken, _ = self.checkpoint("final")
+        self.assertEqual(taken["COMMITTED"], "yes")
+        self.assertEqual(taken["CREATION"], first["COMMIT"])
+
+    def test_the_report_says_which_answer_it_gave(self):
+        self.take_creation()
+        self.play_session()
+        _, _, err = self.run_script(("status",))
+        self.assertIn("is eligible", err)
+        self.write_evidence(self.CREATION_ROWS)
+        _, _, err = self.run_script(("status",))
+        self.assertIn("would REFUSE", err)
+
+    def test_the_answer_changes_nothing(self):
+        """A preflight that committed would be worse than none."""
+        self.take_creation()
+        self.play_session()
+        before = self.head()
+        self.answer()
+        self.assertEqual(before, self.head())
+        self.assertEqual(
+            "", self.git("diff", "--cached", "--name-only",
+                         identity=False).strip())
+
+
 class TestTheFinalCheckpointMustRecordTheSave(CheckpointFixture):
     """The committer may not certify what the gate rejects.
 
@@ -2102,6 +2939,126 @@ class TestTheFinalCheckpointMustRecordTheSave(CheckpointFixture):
         self.play_session()
         _, err = self.checkpoint("final")
         self.assertIn("strict ancestor", err)
+
+
+class TestALaterFinalMayCarryOnlyTheRender(CheckpointFixture):
+    """The film cannot exist until the session is over.
+
+    The save assertion reads the requirement as "a commit after character
+    creation AND a commit after the session closed", and refuses a
+    `final` carrying no save because such a commit is the second of those
+    two in name only.  True of the checkpoint that IS the second one --
+    and false of a LATER one.
+
+    The film, the captioned film, the transcripts and the timeline are
+    all computed from the finished record, so an operator who closes the
+    session, checkpoints the save the engine has just rewritten, and only
+    then renders is left holding artifacts the requirement separately
+    asks to be committed, with no userdir change to accompany them.
+    Refusing that commit made the film uncommittable by the one tool that
+    exists to commit it.
+
+    What must NOT become possible is a FIRST `final` that carries no
+    save, which is what a session nobody closed looks like -- including
+    the version of it where a previous, retired recording's own `final`
+    is still sitting in the history.
+    """
+
+    OTHER_WORLD = "Apshawa"
+    OTHER_CHARACTER = "Ambrose Halloran"
+    # base64 of the name above, which is how the engine spells the file.
+    OTHER_SAVE = "#QW1icm9zZSBIYWxsb3Jhbg==.sav"
+
+    def render(self):
+        """What a post-session render writes, and nothing else.
+
+        No path under the userdir is touched, because the engine has
+        already been quit -- which is the whole point of the case.
+        """
+        self.write(os.path.join(self.dir, "cata-play.mp4"),
+                   "the assembled film\n")
+        self.write(os.path.join(self.dir, "cata-play-cc.mp4"),
+                   "the captioned film\n")
+        self.write(os.path.join(self.dir, "timeline.json"), "[]\n")
+
+    def become_the_other_survivor(self):
+        """Replace the save with a different survivor's, as retiring a
+        superseded recording does: the previous world's files are gone,
+        while its commits stay in the history."""
+        shutil.rmtree(self.world_dir)
+        other_dir = os.path.join(self.dir, "userdir", "save",
+                                 self.OTHER_WORLD)
+        self.write(os.path.join(other_dir, "master.gsav"),
+                   "master state (a different survivor)\n")
+        self.write(os.path.join(other_dir, self.OTHER_SAVE),
+                   "character state (a different survivor)\n")
+        self.write(self.lastworld,
+                   json.dumps({"world_name": self.OTHER_WORLD,
+                               "character_name": self.OTHER_CHARACTER},
+                              indent=2) + "\n")
+
+    def test_the_render_is_committable_once_the_save_is_published(self):
+        self.take_creation()
+        self.play_session()
+        first, _ = self.checkpoint("final")
+        self.render()
+        second, err = self.checkpoint("final")
+        self.assertNotEqual(first["COMMIT"], second["COMMIT"])
+        self.assertIn("already published this session's save", err)
+        touched = self.touched_by()
+        self.assertIn("playthrough/cata-play.mp4", touched)
+        self.assertEqual(
+            [path for path in touched
+             if path.startswith("playthrough/userdir")], [],
+            msg="the render commit touched the userdir after all")
+
+    def test_a_first_final_with_only_the_render_is_still_refused(self):
+        """The session nobody closed, which is the case to keep."""
+        self.take_creation()
+        self.write_evidence(self.CREATION_ROWS + self.SESSION_ROWS)
+        self.render()
+        message = self.refuse(EX_LIFECYCLE, ("final",))
+        self.assertIn("and none has", message)
+        self.assertIn("NOTHING WAS COMMITTED", message)
+
+    def test_a_retired_recordings_final_does_not_pay_for_this_one(self):
+        """Retiring a recording deletes files; it keeps the history.
+
+        So a carve-out phrased as "some reachable final carried a save"
+        would be satisfied by somebody else's session.  The retired one
+        is not a DESCENDANT of this survivor's creation anchor, and this
+        is the case that discriminates.
+        """
+        self.take_creation()
+        self.play_session()
+        self.checkpoint("final")
+        # The superseded survivor's files go; her checkpoints remain.
+        self.become_the_other_survivor()
+        self.checkpoint("creation")
+        # The new session's record grows -- and the engine is never quit,
+        # so nothing under the userdir changes.
+        self.write_evidence(
+            self.CREATION_ROWS + 2 * self.SESSION_ROWS)
+        self.render()
+        message = self.refuse(EX_LIFECYCLE, ("final",))
+        self.assertIn("and none has", message)
+        self.assertIn("NOTHING WAS COMMITTED", message)
+
+    def test_the_carve_out_is_decided_by_strict_ancestry(self):
+        source = self.script_source()
+        start = source.index("published_final_for_this_session() {")
+        end = source.index("render_completion_note()", start)
+        body = source[start:end]
+        self.assertIn("merge-base --is-ancestor", body)
+        self.assertIn('[ "${commit}" != "${CREATION_COMMIT}" ]', body)
+        self.assertIn("commit_touched", body)
+        self.assertIn("final_commits", body)
+
+    def test_both_assertions_share_one_explanation(self):
+        """Two copies of an explanation drift; one cannot."""
+        source = self.script_source()
+        self.assertEqual(source.count("render_completion_note() {"), 1)
+        self.assertEqual(source.count('render_completion_note "'), 2)
 
 
 class TestTheCommittedVcsRulesGate(CheckpointFixture):
@@ -2448,6 +3405,35 @@ class TestTheStatusReport(CheckpointFixture):
         self.assertIn("would stage", err)
         self.assertIn("playthrough/manifest.jsonl", err)
 
+    def test_the_preview_is_bounded_and_states_the_exact_total(self):
+        """A report an operator can read at any session length.
+
+        `status` used to capture the whole `git add --dry-run` output and
+        print all of it, which on a played session is one line per
+        capture -- in memory and on the terminal.  The total is exact and
+        the sample is bounded, so the answer stays an answer.
+        """
+        with open(os.path.join(TOOLING, SCRIPT_NAME),
+                  encoding="utf-8") as handle:
+            limit = int(re.search(r"PREVIEW_LIMIT=(\d+)",
+                                  handle.read()).group(1))
+        count = limit + 25
+        self.write_save()
+        self.write_evidence(count)
+        status, _, err = self.run_script(("status",))
+        self.assertEqual(status, EX_OK)
+        match = re.search(r"would stage (\d+) path\(s\); the first "
+                          r"(\d+) are:", err)
+        self.assertIsNotNone(
+            match, msg="the preview does not state its bound:\n%s" % err)
+        total, shown = int(match.group(1)), int(match.group(2))
+        self.assertGreater(total, count)
+        self.assertEqual(shown, limit)
+        self.assertEqual(
+            len([line for line in err.splitlines()
+                 if line.startswith("add '")]), limit,
+            msg="the preview printed more than its bound:\n%s" % err)
+
 
 class TestTheDossierGate(CheckpointFixture):
     """Written before play, and in the history before the first frame.
@@ -2530,6 +3516,247 @@ class TestTheDossierGate(CheckpointFixture):
         return result.returncode
 
 
+class TestTheFinalReportGate(CheckpointFixture):
+    """The deliverable's own document, and why its absence was silent.
+
+    playthrough/REPORT.md is named in env.sh and STAGED with the
+    narrative class -- and staging a path that is not there is
+    deliberately not fatal, because several narrative artifacts are
+    genuinely optional.  So a `final` checkpoint could be taken, and pass
+    every other gate in this file, with no report in the tree at all: the
+    omission was one line in a log, and the published history carried a
+    film with nothing explaining it.
+
+    The requirement fixes the report's shape -- exactly three sections,
+    A) Screen Recording and Animation, B) Character Creation, C) Playing
+    the Game, in that order -- so each way of getting it wrong is its own
+    refusal.  What is NOT checked is the prose: whether a section says
+    enough is a reader's judgement and cannot be a shell script's.
+    """
+
+    def reach_final(self):
+        """Get the fixture to the point where `final` is legitimate."""
+        self.take_creation()
+        self.play_session()
+
+    def test_a_final_checkpoint_with_no_report_is_refused(self):
+        self.reach_final()
+        os.unlink(self.report)
+        message = self.refuse(EX_EVIDENCE, ("final",))
+        self.assertIn("playthrough/REPORT.md", message)
+        self.assertIn("Screen Recording and Animation", message)
+        self.assertIn("Nothing was committed", message)
+
+    def test_an_empty_report_is_refused(self):
+        """A placeholder is the same absence with a file in the way."""
+        self.reach_final()
+        self.write(self.report, "")
+        message = self.refuse(EX_EVIDENCE, ("final",))
+        self.assertIn("is empty", message)
+
+    def test_a_report_missing_a_section_is_refused(self):
+        for dropped in REPORT_SECTIONS:
+            with self.subTest(section=dropped):
+                self.setUp()
+                self.reach_final()
+                self.write(self.report, report_text(
+                    tuple(section for section in REPORT_SECTIONS
+                          if section != dropped)))
+                message = self.refuse(EX_EVIDENCE, ("final",))
+                self.assertIn("2 top-level section(s)", message)
+                self.assertIn(dropped, message)
+
+    def test_a_renamed_section_is_refused_and_both_names_are_named(self):
+        self.reach_final()
+        self.write(self.report, report_text(
+            ("## A) Screen Recording and Animation",
+             "## B) The Survivor",
+             "## C) Playing the Game")))
+        message = self.refuse(EX_EVIDENCE, ("final",))
+        self.assertIn("## B) The Survivor", message)
+        self.assertIn("## B) Character Creation", message)
+
+    def test_a_fourth_section_is_refused(self):
+        """A report that grew a section is not the document asked for."""
+        self.reach_final()
+        self.write(self.report, report_text(
+            REPORT_SECTIONS + ("## D) Further Thoughts",)))
+        message = self.refuse(EX_EVIDENCE, ("final",))
+        self.assertIn("4 top-level section(s)", message)
+        self.assertIn("## D) Further Thoughts", message)
+
+    def test_sections_in_the_wrong_order_are_refused(self):
+        self.reach_final()
+        self.write(self.report, report_text(
+            ("## B) Character Creation",
+             "## A) Screen Recording and Animation",
+             "## C) Playing the Game")))
+        message = self.refuse(EX_EVIDENCE, ("final",))
+        self.assertIn("where section 1 must be", message)
+
+    def test_subsections_are_not_counted_as_sections(self):
+        """The real report has many; a gate that counted them would
+        refuse every correct report."""
+        self.reach_final()
+        with open(self.report, encoding="utf-8") as handle:
+            self.assertIn("### ", handle.read())
+        fields, err = self.checkpoint("final")
+        self.assertEqual(fields["COMMITTED"], "yes")
+        self.assertIn("all 3 of its sections, in order", err)
+
+    def test_the_final_checkpoint_publishes_the_report(self):
+        """Staged by the checkpoint, and tracked at HEAD afterwards."""
+        self.reach_final()
+        self.write(self.report, report_text() + "\nOne more line.\n")
+        self.checkpoint("final")
+        self.assertIn("playthrough/REPORT.md", self.touched_by())
+        self.assertTrue(self.is_tracked("playthrough/REPORT.md"))
+
+    def test_the_earlier_checkpoints_do_not_require_it(self):
+        """They run before the recording exists, so it cannot yet.
+
+        `integration` and `dossier` precede the session and `creation`
+        precedes the first rendered frame -- a report about a finished
+        recording written at any of them would be a report about nothing.
+        """
+        os.unlink(self.report)
+        # `integration` needs something to commit, and the negation has
+        # to stay the last effective rule, so the note goes above it.
+        self.write(self.gitignore, SANDBOX_GITIGNORE.replace(
+            NEGATION_LINE, "# an operator's note\n" + NEGATION_LINE))
+        self.checkpoint("integration")
+        self.forget_dossier()
+        self.take_dossier()
+        fields, _ = self.take_creation()
+        self.assertEqual(fields["COMMITTED"], "yes")
+
+    def test_the_status_subcommand_does_not_require_it_either(self):
+        """It is read-only; refusing there would help nobody."""
+        os.unlink(self.report)
+        status, _, err = self.run_script(("status",))
+        self.assertEqual(status, EX_OK, msg=err)
+
+
+class TestTheAttributesGitWouldActuallyApply(CheckpointFixture):
+    """The rows are present -- would git apply them?
+
+    git takes the LAST matching pattern, in .gitattributes exactly as in
+    .gitignore.  A rule added after this feature's rows silently replaces
+    them while the row-by-row check still passes, and the consequence is
+    not cosmetic: with the film left to `text`, `git add` runs
+    end-of-line normalisation over an h264 stream and commits a container
+    nothing can play, and every count in this script still tallies.
+
+    So these tests ask git itself, with `git check-attr`, about one
+    representative path per row -- which is also the only form of the
+    question that survives a rule written as a directory pattern or a
+    literal filename rather than as a suffix.
+    """
+
+    def effective(self, path, attribute, source=None):
+        """What git would apply to `path`, per `git check-attr`."""
+        arguments = ["check-attr"]
+        if source:
+            arguments.append("--source=%s" % source)
+        arguments.extend([attribute, "--", path])
+        line = self.git(*arguments, identity=False).strip()
+        self.assertTrue(line, msg="git said nothing about %s" % path)
+        return line.rsplit(": ", 1)[1]
+
+    def test_the_committed_rows_produce_the_intended_attributes(self):
+        """The positive control, on the working tree and on HEAD.
+
+        Asserted as effective ATTRIBUTES rather than as rows, because a
+        row is only evidence that somebody wrote one down.
+        """
+        for path, attribute, wanted in ATTRIBUTE_WITNESSES:
+            with self.subTest(path=path):
+                self.assertEqual(self.effective(path, attribute), wanted)
+                self.assertEqual(
+                    self.effective(path, attribute, source="HEAD"),
+                    wanted)
+
+    def test_binary_artifacts_get_the_whole_binary_macro(self):
+        """`binary` is -text -diff -merge, and the diff half matters too:
+        a textual diff of a three-megabyte film is unreadable noise."""
+        for path in ("playthrough/cata-play.mp4",
+                     "playthrough/userdir/save/World/maps.zzip"):
+            with self.subTest(path=path):
+                self.assertEqual(self.effective(path, "diff"), "unset")
+
+    def test_a_later_override_changes_what_git_applies(self):
+        """The premise, measured before anything is asserted about the
+        subject: this is a real override, not a hypothetical one."""
+        self.write(os.path.join(self.checkout, ".gitattributes"),
+                   SANDBOX_GITATTRIBUTES + "*.mp4 text\n")
+        self.assertEqual(
+            self.effective("playthrough/cata-play.mp4", "text"), "set")
+
+    def test_a_later_override_in_the_working_tree_is_refused(self):
+        """The ruleset THIS run's `git add` would apply."""
+        self.take_creation()
+        self.play_session()
+        self.write(os.path.join(self.checkout, ".gitattributes"),
+                   SANDBOX_GITATTRIBUTES + "*.mp4 text\n")
+        message = self.refuse(EX_PREREQ, ("final",))
+        self.assertIn("playthrough/cata-play.mp4", message)
+        self.assertIn("LAST matching pattern", message)
+        self.assertIn("Nothing was committed", message)
+
+    def test_a_later_override_in_the_history_is_refused(self):
+        """The ruleset a fresh clone would get.
+
+        Committed, with the working tree left carrying the same file, so
+        what is refused is HEAD's own answer.
+        """
+        if not self.check_attr_reads_a_tree():
+            self.skipTest("this git cannot be asked about a tree-ish "
+                          "('git check-attr --source' arrived in 2.40)")
+        self.commit_worktree_file(
+            ".gitattributes", SANDBOX_GITATTRIBUTES + "*.srt -text\n")
+        message = self.refuse(EX_PREREQ, ("creation",))
+        self.assertIn("playthrough/transcript.srt", message)
+        self.assertIn("text: unset", message)
+
+    def test_an_override_by_directory_pattern_is_caught_too(self):
+        """A row need not name a suffix to override one.
+
+        This is what a row-by-row check cannot see at all: every declared
+        row is still present and spelled exactly right.
+        """
+        self.take_creation()
+        self.play_session()
+        self.write(os.path.join(self.checkout, ".gitattributes"),
+                   SANDBOX_GITATTRIBUTES + "playthrough/** text\n")
+        message = self.refuse(EX_PREREQ, ("final",))
+        for row in REQUIRED_ATTRIBUTE_ROWS:
+            self.assertNotIn("carries no '%s' row" % row, message)
+        self.assertIn("git would apply", message)
+
+    def test_the_integration_milestone_will_not_publish_an_override(self):
+        """It commits these two files, so it checks them hardest."""
+        self.write(os.path.join(self.checkout, ".gitattributes"),
+                   SANDBOX_GITATTRIBUTES + "*.gsav text\n")
+        message = self.refuse(EX_PREREQ, ("integration",))
+        self.assertIn("master.gsav", message)
+
+    def test_a_clean_ruleset_is_reported_as_applying(self):
+        _, err = self.take_creation()
+        self.assertIn("git applies this feature's attributes", err)
+
+    def check_attr_reads_a_tree(self):
+        """Whether this git supports --source, asked of this git."""
+        result = subprocess.run(
+            [os.path.join(self.bin, "git"), "check-attr",
+             "--source=HEAD", "text", "--", ".gitattributes"],
+            cwd=self.checkout, capture_output=True,
+            env={"PATH": self.bin,
+                 "GIT_CONFIG_GLOBAL": self.global_config,
+                 "GIT_CONFIG_NOSYSTEM": "1"},
+            timeout=60)
+        return result.returncode == 0
+
+
 class TestTheScriptItself(unittest.TestCase):
     """Properties of the file, not of a run.
 
@@ -2590,7 +3817,8 @@ class TestTheUsage(CheckpointFixture):
         status, out, _ = self.run_script(("help",))
         self.assertEqual(status, EX_OK)
         self.assertIn("usage:", out)
-        for name in ("dossier", "creation", "final", "status", "help"):
+        for name in ("integration", "dossier", "creation", "final",
+                     "status", "help"):
             with self.subTest(subcommand=name):
                 self.assertIn(name, out)
         self.assertIn("stdout carries KEY=value lines only", out)
@@ -2608,13 +3836,23 @@ class TestTheUsage(CheckpointFixture):
         return " ".join(out.lower().split())
 
     def test_the_help_states_the_ordering_the_lifecycle_enforces(self):
-        """Three steps that refuse out of turn are only usable if the
+        """Four steps that refuse out of turn are only usable if the
         order is written down where somebody looks for it."""
         prose = self.help_prose()
-        self.assertIn("dossier -> creation -> play the session -> final",
-                      prose)
+        self.assertIn("integration -> dossier -> creation -> play the "
+                      "session -> final", prose)
         self.assertIn("checked as ancestry between two commits", prose)
         self.assertIn("one commit cannot precede itself", prose)
+
+    def test_the_help_says_which_step_commits_the_rule_files(self):
+        """An operator who never reads the source still has to end up
+        with the negation committed, or the save data is absent from the
+        next clone while every check in the working tree passes."""
+        prose = self.help_prose()
+        self.assertIn("commit .gitignore and .gitattributes, and "
+                      "nothing else", prose)
+        self.assertIn("!/playthrough/**", prose)
+        self.assertIn("it is idempotent", prose)
 
     def test_the_help_states_the_scope_of_the_identity_write(self):
         """The one configuration it writes, and the fence around it.
@@ -2631,6 +3869,10 @@ class TestTheUsage(CheckpointFixture):
         self.assertIn("git config --local, never --global and never "
                       "--system", prose)
         self.assertIn("never invents an identity", prose)
+        # And what it does when the repository already records a pair,
+        # which is the half a reader would otherwise have to guess at.
+        self.assertIn("already matches is left as found", prose)
+        self.assertIn("disagrees", prose)
 
     def test_the_help_flags_are_the_same_thing(self):
         for flag in ("-h", "--help"):

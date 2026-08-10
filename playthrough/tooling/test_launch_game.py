@@ -148,6 +148,8 @@ EX_DISPLAY = 5
 EX_TILESET = 6
 EX_WINDOW = 7
 EX_PREREQ = 8
+EX_RECORDED = 9
+EX_NOT_RESUMABLE = 10
 
 # The one sanctioned build command, argument by argument.
 REQUIRED_MAKE_ARGS = (
@@ -169,6 +171,12 @@ READ_GAME_PID_CALL = 3
 # check compares a candidate process's DISPLAY against it, so the
 # fixture has to spawn its impostors onto the same one.
 DISPLAY = ":99"
+
+# The XDG runtime root env.sh derives with no CLONE_INDEX set, and the
+# only place a nominated PLAYTHROUGH_RUNTIME_DIR may now live.  Created
+# at 0700 here so that the first source of env.sh in a run finds it
+# already private rather than having to tighten it.
+XDG_RUNTIME_ROOT = "/tmp/xdg"
 
 MSX_ID = "MshockXottoplus"
 MSX_VIEW = "MSXotto+"
@@ -325,8 +333,20 @@ class LaunchFixture(unittest.TestCase):
         # tileset gate delegates the whole comparison to it, and a
         # sandbox without it would exercise the missing-checker refusal
         # instead of the subject.
+        # session.py travels with it for the same reason: the RESUME
+        # decision now delegates the "has this survivor already died"
+        # half of the judgment to session.py, which owns the only
+        # implementation of it, and a sandbox without it would exercise
+        # the missing-prober refusal instead of the subject.  Its flat
+        # sibling imports come along too -- session.py imports manifest,
+        # ocr_clock, seed_options and sidebar_geometry at module scope,
+        # and each one guards its own third-party imports, so the
+        # suite's host interpreter can load the module even where the
+        # pinned wheels are not installed.
         for name in ("env.sh", "launch_game.sh",
-                     "tileset_provenance.py"):
+                     "tileset_provenance.py", "session.py",
+                     "manifest.py", "ocr_clock.py", "seed_options.py",
+                     "sidebar_geometry.py"):
             shutil.copyfile(os.path.join(TOOLING, name),
                             os.path.join(self.tooling, name))
         os.chmod(os.path.join(self.tooling, "launch_game.sh"), 0o755)
@@ -356,7 +376,22 @@ class LaunchFixture(unittest.TestCase):
         self.game_pidfile = os.path.join(self.root, "fake_game.pid")
         # Where env.sh is told to keep this run's scratch state.  Every
         # log and pid file lands inside it, verified mode 0700.
-        self.scratch = os.path.join(self.root, "runtime")
+        #
+        # IT LIVES UNDER THE XDG RUNTIME ROOT env.sh WILL DERIVE, and it
+        # has to: a nominated PLAYTHROUGH_RUNTIME_DIR is now refused
+        # unless it lies beneath that verified root, because the X
+        # cookie, the pid files and the locks under it must inherit an
+        # ancestor this pipeline has proved is private -- and refused
+        # outright when it is inside a checkout, where the terminal
+        # `!/playthrough/**` negation would make a credential
+        # committable.  The sandbox CHECKOUT stays under the private
+        # base (see _sandbox_base) because the stubs and the fake engine
+        # are executables and DO get an ancestor walk; the runtime tree
+        # does not, and env.sh verifies it at its own inode.  A unique
+        # leaf name per test keeps two runs from sharing state.
+        self.scratch = os.path.join(
+            XDG_RUNTIME_ROOT, "test-%s" % os.path.basename(self.root))
+        self.addCleanup(shutil.rmtree, self.scratch, True)
         self.link_real_tools()
         self.write_stubs()
         # PLAYTHROUGH_GAME_LOG is host-global and env.sh exports it
@@ -365,6 +400,12 @@ class LaunchFixture(unittest.TestCase):
         self.host_log = "/tmp/cata-play.log"
         self.host_log_existed = os.path.exists(self.host_log)
         self.addCleanup(self.forget_host_log)
+        # THE DISPLAY THIS SANDBOX IS ABOUT TO USE IS ITS OWN.  See
+        # own_the_display: a display with no ownership record is refused
+        # for a capture launch, so every fixture that reaches the launch
+        # decision needs one, and the tests that assert the refusal
+        # remove it deliberately.
+        self.own_the_display()
 
     def forget_host_log(self):
         """Delete the host-global game log only if we created it."""
@@ -442,6 +483,32 @@ class LaunchFixture(unittest.TestCase):
             "fi\n"
             'exit "${STUB_MAKE_RC:-0}"\n'))
         self.stub("ccache", "exit 0\n")
+        # THE BUILD CAPABILITY PROBE, stubbed as a satisfied host.
+        #
+        # The launcher now proves the development LIBRARIES are present
+        # before it starts a build, not merely that make and a compiler
+        # are: an executable inventory passes happily on a host with no
+        # SDL2 headers, and the build then fails hundreds of objects in
+        # with a missing-header error instead of a package name.  A
+        # `--exists` for anything outside the seven modules it asks
+        # about is refused, so a test that widens the probe without
+        # widening this stub fails loudly rather than silently passing.
+        self.stub("pkg-config", (
+            'module="${2-}"\n'
+            'case "${1-}" in\n'
+            "    --exists|--modversion) ;;\n"
+            "    *) exit 1 ;;\n"
+            "esac\n"
+            'case "${module}" in\n'
+            "    sdl2|SDL2_ttf|SDL2_image|SDL2_mixer|freetype2|zlib|"
+            "ncursesw) ;;\n"
+            "    *) exit 1 ;;\n"
+            "esac\n"
+            'if [ "${1-}" = "--modversion" ]; then\n'
+            '    printf "%s\\n" "${STUB_PKG_CONFIG_VERSION:-2.32.4}"\n'
+            "fi\n"
+            'exit "${STUB_PKG_CONFIG_RC:-0}"\n'))
+        self.stub("msgfmt", "exit 0\n")
         self.stub("g++-14", (
             'case "$*" in\n'
             "    *-dumpversion*)\n"
@@ -504,6 +571,33 @@ class LaunchFixture(unittest.TestCase):
             '        printf "%s\\n" ${STUB_WINDOW_IDS}\n'
             "        ;;\n"
             "    getwindowgeometry)\n"
+            # A SEQUENCE, when one is given: each call consumes the
+            # next entry and the last repeats for ever.  A constant
+            # geometry cannot exercise settle_window_geometry, and
+            # the window genuinely does change size AND id under
+            # SDL's fullscreen_desktop transition, which is the
+            # thing being tested.
+            '        if [ -n "${STUB_GEOMETRY_SEQUENCE-}" ]; then\n'
+            '            _n="$(cat "${STUB_GEOMETRY_COUNTER}"'
+            ' 2>/dev/null || printf 0)"\n'
+            "            _n=$(( _n + 1 ))\n"
+            '            printf "%s" "${_n}"'
+            ' >"${STUB_GEOMETRY_COUNTER}"\n'
+            "            _i=0\n"
+            '            for _g in ${STUB_GEOMETRY_SEQUENCE}; do\n'
+            "                _i=$(( _i + 1 ))\n"
+            '                _pick="${_g}"\n'
+            '                if [ "${_i}" -ge "${_n}" ]; then\n'
+            "                    break\n"
+            "                fi\n"
+            "            done\n"
+            '            _wh="${_pick%%+*}"\n'
+            '            _xy="${_pick#*+}"\n'
+            '            printf "WINDOW=%s\\nX=%s\\nY=%s\\n'
+            'WIDTH=%s\\nHEIGHT=%s\\n" "$3" "${_xy%%+*}"'
+            ' "${_xy#*+}" "${_wh%%x*}" "${_wh#*x}"\n'
+            "            exit 0\n"
+            "        fi\n"
             '        printf "WINDOW=%s\\nX=0\\nY=4\\nWIDTH=%s\\n'
             'HEIGHT=%s\\n" "$3" "${STUB_WINDOW_WIDTH:-1920}"'
             ' "${STUB_WINDOW_HEIGHT:-1072}"\n'
@@ -605,6 +699,60 @@ class LaunchFixture(unittest.TestCase):
             "fi\n"
             "exit 0\n",
             mode=0o755)
+
+    def own_the_display(self):
+        """Make the stubbed display one THIS sandbox owns.
+
+        WHY A FIXTURE HAS TO DO THIS AT ALL.  env.sh now distinguishes
+        "a server is answering" from "this checkout started it": it
+        records the display, the checkout, the kind of owner and the
+        server's pid when it brings the surface up, and a display with no
+        such record is classified `foreign`, registered as a security
+        check that could not be performed, and therefore refused for a
+        capture launch.  The suite's xdpyinfo stub answers on :99 without
+        any server having been started, so without this the whole
+        live-instance path would only ever exercise the refusal.
+
+        The record is made the way the real one is, and the pid in it is
+        a REAL process whose comm is genuinely `Xvfb` -- the `sleep`
+        binary copied under that name -- because the check reads
+        /proc/<pid>/comm rather than taking the number on trust.  A
+        fixture that wrote a made-up pid would pass a check that a real
+        run would fail.
+        """
+        sleeper = shutil.which("sleep")
+        if sleeper is None:                       # pragma: no cover
+            self.skipTest("coreutils sleep is required to stand in for "
+                          "an Xvfb process")
+        impostor = os.path.join(self.bin, "Xvfb")
+        shutil.copyfile(sleeper, impostor)
+        os.chmod(impostor, 0o755)
+        process = subprocess.Popen(
+            [impostor, "600"], stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL)
+        self.addCleanup(self.stop_display_owner, process)
+        run_dir = os.path.join(self.scratch, "run")
+        os.makedirs(run_dir, mode=0o700, exist_ok=True)
+        record = os.path.join(run_dir, "x-ownership99")
+        self.write(
+            record,
+            "display=%s\nkind=pipeline\npid=%d\nrepo=%s\n"
+            "screen=1920x1080x24\nauthority=pipeline\n"
+            "recorded=1970-01-01T00:00:00Z\n"
+            % (DISPLAY, process.pid, self.checkout),
+            mode=0o600)
+        return record
+
+    def stop_display_owner(self, process):
+        """End the stand-in Xvfb, by pid, and wait for it."""
+        if process.poll() is not None:
+            return
+        process.terminate()
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:         # pragma: no cover
+            process.kill()
+            process.wait(timeout=10)
 
     def install_live_game(self):
         """Put the compiled fake engine at the checkout root."""
@@ -741,11 +889,30 @@ class LaunchFixture(unittest.TestCase):
         if not os.path.isfile(seeder):
             shutil.copyfile(
                 os.path.join(TOOLING, "seed_options.py"), seeder)
+        # AND THE GEOMETRY MODULE BESIDE IT, because the option contract
+        # now includes the ACTIVE SIDEBAR LAYOUT: that is not an option
+        # at all -- the engine keeps it in config/panel_options.json
+        # [src/panels.cpp:492-503] -- and sidebar_geometry.py is what
+        # reads it.  A sandbox without it would make the verification
+        # report an unverifiable layout, which is the honest answer and
+        # not the one these tests are about.
+        geometry = os.path.join(self.tooling, "sidebar_geometry.py")
+        if not os.path.isfile(geometry):
+            shutil.copyfile(
+                os.path.join(TOOLING, "sidebar_geometry.py"), geometry)
         # seed_options.py proves it is inside a checkout before it reads
         # anything, and data/json/ui is half of that proof (the other
-        # half, src/path_info.cpp, setUp already writes).
-        os.makedirs(os.path.join(self.checkout, "data", "json", "ui"),
-                    exist_ok=True)
+        # half, src/path_info.cpp, setUp already writes).  The widget
+        # tree is also where sidebar_geometry.py resolves the layout's
+        # width, so the default sidebar file is staged with it.
+        ui_dir = os.path.join(self.checkout, "data", "json", "ui")
+        os.makedirs(ui_dir, exist_ok=True)
+        sidebar_json = os.path.join(ui_dir, "sidebar.json")
+        if not os.path.isfile(sidebar_json):
+            shutil.copyfile(
+                os.path.join(REPO_ROOT, "data", "json", "ui",
+                             "sidebar.json"),
+                sidebar_json)
         return seeder
 
     def seed_config(self, **overrides):
@@ -753,8 +920,17 @@ class LaunchFixture(unittest.TestCase):
 
         A sandbox whose options file merely EXISTS is no longer enough,
         which is the whole point of the launcher's verification: these
-        are the eight values it checks, and an override makes exactly one
-        of them wrong.
+        are the fourteen values it checks, and an override makes exactly
+        one of them wrong.
+
+        THE LIST GREW FROM EIGHT TO FOURTEEN because the grid is not the
+        window: TERMINAL_X and TERMINAL_Y are multiplied by the FONT_*
+        cell size [src/sdltiles.cpp:595-596], the result is placed
+        according to FULLSCREEN [src/options.cpp:2715-2724] and scaled by
+        the SCALING pair [src/options.cpp:2806-2825], and the clock is
+        read on the side SIDEBAR_POSITION chooses
+        [src/options.cpp:2132-2136] -- so all six of those decide the
+        rectangle every duration in the film comes out of.
         """
         self.install_seeder()
         values = {
@@ -769,6 +945,9 @@ class LaunchFixture(unittest.TestCase):
             "FONT_WIDTH": "8",
             "FONT_HEIGHT": "16",
             "SIDEBAR_POSITION": "right",
+            "FULLSCREEN": "windowedbl",
+            "SCALING_MODE": "none",
+            "SCALING_FACTOR": "1",
         }
         values.update(overrides)
         entries = [{"info": "what %s does" % name, "default": value,
@@ -868,7 +1047,9 @@ class LaunchFixture(unittest.TestCase):
         # whole directory is the sanctioned way to relocate it, and the
         # nominated one is verified exactly as the default is.
         scratch = self.scratch
-        os.makedirs(scratch, exist_ok=True)
+        os.makedirs(XDG_RUNTIME_ROOT, mode=0o700, exist_ok=True)
+        os.chmod(XDG_RUNTIME_ROOT, 0o700)
+        os.makedirs(scratch, mode=0o700, exist_ok=True)
         os.chmod(scratch, 0o700)
         env = {
             "PATH": self.bin,
@@ -920,6 +1101,8 @@ class LaunchFixture(unittest.TestCase):
             "PLAYTHROUGH_GAME_PIDFILE": os.path.join(scratch,
                                                      "game.pid"),
             "FAKE_GAME_PIDFILE": self.game_pidfile,
+            "STUB_GEOMETRY_COUNTER": os.path.join(
+                self.root, "getwindowgeometry.count"),
             "STUB_WINDOW_PID_COUNTER": os.path.join(
                 self.root, "getwindowpid.count"),
             "STUB_SEARCH_COUNTER": os.path.join(
@@ -1199,6 +1382,54 @@ class TestTheBuildCommand(LaunchFixture):
             "build", STUB_MAKE_RC="2", STUB_MAKE_BUILDS="0")
         self.assertEqual(status, EX_BUILD)
         self.assertEqual(len(self.calls("make")), 1)
+
+    def test_the_development_libraries_are_probed_not_assumed(self):
+        # AN EXECUTABLE INVENTORY IS HALF A PREFLIGHT.  make, the
+        # compiler, pkg-config and ccache are all present on a host with
+        # no SDL2 headers, and the build then fails hundreds of objects
+        # in with a missing-header error instead of a package name.
+        status, _, err = self.run_launch("build", STUB_PKG_CONFIG_RC="1")
+        self.assertEqual(status, EX_PREREQ)
+        self.assertIn("development libraries", err)
+        self.assertEqual(
+            self.calls("make"), [],
+            msg="the refusal comes before the build, not during it")
+
+    def test_each_missing_library_names_its_package(self):
+        status, _, err = self.run_launch("build", STUB_PKG_CONFIG_RC="1")
+        for module, package in (
+            ("sdl2", "libsdl2-dev"),
+            ("SDL2_ttf", "libsdl2-ttf-dev"),
+            ("SDL2_image", "libsdl2-image-dev"),
+            ("SDL2_mixer", "libsdl2-mixer-dev"),
+            ("freetype2", "libfreetype-dev"),
+            ("zlib", "zlib1g-dev"),
+            ("ncursesw", "libncurses-dev"),
+        ):
+            with self.subTest(module=module):
+                self.assertIn("%s (apt: %s)" % (module, package), err)
+
+    def test_a_missing_pkg_config_is_refused_by_name(self):
+        os.unlink(os.path.join(self.bin, "pkg-config"))
+        status, _, err = self.run_launch("build")
+        self.assertEqual(status, EX_PREREQ)
+        self.assertIn("pkg-config", err)
+        self.assertEqual(self.calls("make"), [])
+
+    def test_a_missing_message_compiler_is_refused(self):
+        # LOCALIZE builds the .mo catalogues, so msgfmt is as much a
+        # build dependency as the compiler.
+        os.unlink(os.path.join(self.bin, "msgfmt"))
+        status, _, err = self.run_launch("build")
+        self.assertEqual(status, EX_PREREQ)
+        self.assertIn("msgfmt (apt: gettext)", err)
+        self.assertEqual(self.calls("make"), [])
+
+    def test_a_satisfied_host_reports_what_it_found(self):
+        status, _, err = self.run_launch("build")
+        self.assertEqual(status, EX_OK)
+        self.assertIn("build capabilities present", err)
+        self.assertIn("2.32.4", err)
 
     def test_an_existing_binary_is_reused_rather_than_rebuilt(self):
         self.install_game()
@@ -1534,6 +1765,254 @@ class TestTheWindowLookup(LaunchFixture):
                  "not a silent success"))
 
 
+class TestTheGeometrySettle(LaunchFixture):
+    """The window is measured after it stops moving, not before.
+
+    FULLSCREEN=windowedbl does not create a borderless window.  It
+    creates an ordinary decorated, resizable one at the grid size and
+    then applies SDL's fullscreen_desktop AFTER creation
+    [src/sdltiles.cpp:612-616], which SDL implements by DESTROYING the
+    window and creating a replacement -- so a launch briefly has two
+    window ids and two geometries.  Measured on the real surface, in
+    order: 1920x1072+1+22 on the decorated original (openbox's 1px
+    border and 22px titlebar), then 1920x1080+0+0 on the replacement.
+
+    The launcher read the geometry once, as soon as a window appeared,
+    and never again, so a perfectly good capture launch refused itself
+    for a geometry the engine had already left.
+    """
+
+    def settle(self, sequence, **overrides):
+        """Run settle_window_geometry over a geometry sequence.
+
+        find_game_window is replaced by a no-op here to isolate the
+        stabilisation: re-resolving the id is covered by the launch
+        tests, which drive the real search.
+        """
+        program = (
+            # read_window_geometry measures WINDOW_ID, so the no-op
+            # stand-in has to leave one set -- the real one assigns it.
+            "find_game_window() { WINDOW_ID=4194313; return 0; }\n"
+            "settle_window_geometry\n"
+            'printf \'SETTLED=%s\\n\' "${WINDOW_GEOMETRY}"\n'
+            'printf \'READS=%s\\n\' '
+            '"$(cat "${STUB_GEOMETRY_COUNTER}" 2>/dev/null || echo 0)"\n')
+        return self.run_sourced(
+            program, STUB_GEOMETRY_SEQUENCE=sequence,
+            STUB_WINDOW_IDS="4194313", **overrides)
+
+    def parsed(self, out):
+        return dict(
+            line.split("=", 1) for line in out.splitlines() if "=" in line)
+
+    def test_it_waits_out_the_fullscreen_desktop_transition(self):
+        """The real sequence, in the order it was measured."""
+        status, out, err = self.settle(
+            "1920x1072+1+22 1920x1080+0+0 1920x1080+0+0")
+        self.assertEqual(status, 0, msg=err)
+        keys = self.parsed(out)
+        self.assertEqual(keys["SETTLED"], "1920x1080+0+0")
+        self.assertGreaterEqual(int(keys["READS"]), 3)
+
+    def test_an_already_stable_window_is_not_waited_on_twice(self):
+        """A settled window costs two reads, not twenty."""
+        status, out, err = self.settle("1920x1080+0+0")
+        self.assertEqual(status, 0, msg=err)
+        keys = self.parsed(out)
+        self.assertEqual(keys["SETTLED"], "1920x1080+0+0")
+        self.assertLessEqual(int(keys["READS"]), 3)
+
+    def test_a_never_settling_window_warns_and_keeps_the_last_read(self):
+        """An unsettled geometry is reported, not silently accepted.
+
+        The reading is left exactly as the last read found it so the
+        assertion that follows judges what was observed rather than
+        nothing at all.
+        """
+        status, out, err = self.settle(
+            "1920x1000+0+0 1920x1001+0+0 1920x1002+0+0 1920x1003+0+0 "
+            "1920x1004+0+0 1920x1005+0+0 1920x1006+0+0 1920x1007+0+0 "
+            "1920x1008+0+0 1920x1009+0+0 1920x1010+0+0 1920x1011+0+0 "
+            "1920x1012+0+0 1920x1013+0+0 1920x1014+0+0 1920x1015+0+0 "
+            "1920x1016+0+0 1920x1017+0+0 1920x1018+0+0 1920x1019+0+0 "
+            "1920x1020+0+0")
+        self.assertEqual(status, 0, msg=err)
+        self.assertIn("still changing after", err)
+        keys = self.parsed(out)
+        self.assertTrue(keys["SETTLED"].startswith("1920x10"),
+                        msg=keys["SETTLED"])
+
+
+class TestTheRecordVetoesAResume(LaunchFixture):
+    """A save whose survivor is dead in the RECORD is not resumable.
+
+    THE DEFECT THIS PINS.  Resumability looks like a property of the
+    save tree, and this script used to decide it from the save tree
+    alone -- a world holding a character file was resumable.  CDDA
+    writes the character file throughout play and only MOVES it to the
+    graveyard in cleanup_at_end(), which runs after the death screen, so
+    a session signalled inside that screen leaves a fully live-shaped
+    save for a survivor who is dead in the record.  Measured on the real
+    tree: session.py refused it while this script told the operator the
+    save "MUST be continued" and named the world to load.  Two
+    implementations of one judgment is how that happened, so the launcher
+    now consults the single authority and adopts its answer.
+    """
+
+    def probe(self, **overrides):
+        """Run the probe subcommand and return its emitted keys."""
+        status, out, err = self.run_launch("probe", **overrides)
+        return status, self.emitted(out), err
+
+    def record_a_death(self, cleanup=False):
+        """A manifest showing last words, with or without cleanup."""
+        rows = [
+            {"frame": 1,
+             "file": "playthrough/frames/frame_00001.png",
+             "real_ts": "2026-01-01T00:00:00.000Z",
+             "ingame_clock": "08:00:00",
+             "action": "press 'l' -- look around",
+             "commentary": "Checking the street before I move."},
+            {"frame": 2,
+             "file": "playthrough/frames/frame_00002.png",
+             "real_ts": "2026-01-01T00:00:01.000Z",
+             "ingame_clock": "08:00:02",
+             "action": "press 'Enter' -- confirm the last words prompt",
+             "commentary": "So this is how it ends."},
+        ]
+        self.write(
+            os.path.join(self.checkout, "playthrough", "manifest.jsonl"),
+            "".join(json.dumps(row) + "\n" for row in rows))
+        userdir = os.path.dirname(self.saves)
+        # AND THE ENGINE'S OWN ATTRIBUTION.  A last-words row says
+        # somebody died; it does not say WHICH world they died in, and
+        # session.py refuses to spread one death across every world in
+        # the tree.  main_menu::load_game() writes the answer to
+        # <userdir>/config/lastworld.json, so the fixture writes it too
+        # -- without it the probe reports the death unattributed and
+        # decides on the save files alone, which is a different
+        # behaviour from the one these tests are about.
+        self.write(
+            os.path.join(userdir, "config", "lastworld.json"),
+            json.dumps({"world_name": "Apshawa",
+                        "character_name": "Survivor"}) + "\n")
+        for name in ("graveyard", "memorial"):
+            holder = os.path.join(userdir, name)
+            if cleanup:
+                os.makedirs(holder, exist_ok=True)
+            elif os.path.isdir(holder):
+                os.rmdir(holder)
+
+    def test_a_recorded_death_without_cleanup_refuses_the_resume(self):
+        self.install_world("Apshawa", ("#c3Vydml2b3I=.sav",))
+        self.record_a_death(cleanup=False)
+        status, _, err = self.probe()
+        self.assertEqual(
+            status, EX_NOT_RESUMABLE,
+            msg=("a live-shaped save for a survivor who is dead in the "
+                 "record must be refused, not offered: %s" % err))
+        self.assertIn("MUST NOT be continued", err)
+
+    def test_it_never_tells_the_operator_to_continue_that_save(self):
+        """The wrong INSTRUCTION is the harm, so it is asserted away."""
+        self.install_world("Apshawa", ("#c3Vydml2b3I=.sav",))
+        self.record_a_death(cleanup=False)
+        _, emitted, err = self.probe()
+        self.assertNotIn("MUST be continued", err)
+        self.assertNotEqual(emitted.get("PLAYTHROUGH_SESSION_MODE"),
+                            "resume")
+
+    def test_the_refusal_forwards_the_ways_forward_verbatim(self):
+        """Choosing among them is the operator's call, not this one."""
+        self.install_world("Apshawa", ("#c3Vydml2b3I=.sav",))
+        self.record_a_death(cleanup=False)
+        _, _, err = self.probe()
+        self.assertIn("session.py reports:", err)
+        self.assertIn("retire this userdir", err)
+        self.assertIn("PLAYTHROUGH_RESUME_WORLD", err)
+
+    def test_a_death_whose_cleanup_ran_is_refused_as_inconsistent(self):
+        """Completed cleanup does not make a live save resumable.
+
+        WRITTEN THE OTHER WAY ROUND FIRST, and the code was right.  The
+        assumption was that a completed cleanup clears the veto; it does
+        the opposite.  cleanup_at_end() MOVES the character file to the
+        graveyard, so a live-shaped save still sitting in the world
+        alongside a completed cleanup is not a resumable tree -- it is
+        an inconsistent one, and it is refused with that as the stated
+        reason rather than the never-ran one.
+        """
+        self.install_world("Apshawa", ("#c3Vydml2b3I=.sav",))
+        self.record_a_death(cleanup=True)
+        status, emitted, err = self.probe()
+        self.assertEqual(status, EX_NOT_RESUMABLE, msg=err)
+        self.assertIn("cleanup did run", err)
+        self.assertNotEqual(emitted.get("PLAYTHROUGH_SESSION_MODE"),
+                            "resume")
+
+    def test_the_refusal_does_not_assert_which_fault_it_was(self):
+        """The launcher names only what it established itself.
+
+        There is more than one inconsistency a recorded death can leave,
+        and this script establishes neither of them -- session.py does.
+        So its own line states the general fact and defers the specific
+        one, rather than hardcoding "cleanup never ran" onto a tree
+        where cleanup demonstrably did.
+        """
+        self.install_world("Apshawa", ("#c3Vydml2b3I=.sav",))
+        self.record_a_death(cleanup=True)
+        _, _, err = self.probe()
+        tail = err[err.rindex("playthrough: FATAL:"):]
+        self.assertIn("inconsistent with that ending", tail)
+        self.assertNotIn("cleanup never ran", tail)
+
+    def test_no_recorded_death_is_resumable_as_before(self):
+        """The common case is untouched: no record, no veto."""
+        self.install_world("Apshawa", ("#c3Vydml2b3I=.sav",))
+        status, emitted, err = self.probe()
+        self.assertEqual(status, EX_OK, msg=err)
+        self.assertEqual(emitted["PLAYTHROUGH_SESSION_MODE"], "resume")
+
+    def test_an_unavailable_authority_refuses_rather_than_assumes(self):
+        """A missing prober is a broken checkout, not a green light."""
+        self.install_world("Apshawa", ("#c3Vydml2b3I=.sav",))
+        os.remove(os.path.join(self.tooling, "session.py"))
+        status, emitted, err = self.probe()
+        self.assertEqual(status, EX_PREREQ, msg=err)
+        self.assertNotEqual(emitted.get("PLAYTHROUGH_SESSION_MODE"),
+                            "resume")
+        self.assertIn("cannot be established", err)
+
+    def test_the_two_probes_agree_on_the_same_tree(self):
+        """The invariant, asserted directly against both of them.
+
+        Divergence is the defect, so this runs each probe over one tree
+        and requires the same verdict from both.
+        """
+        self.install_world("Apshawa", ("#c3Vydml2b3I=.sav",))
+        self.record_a_death(cleanup=False)
+        launcher, _, _ = self.probe()
+        delegate = subprocess.run(
+            [shutil.which("python3") or sys.executable, "-B",
+             os.path.join(self.tooling, "session.py"), "probe",
+             "--save-dir", self.saves],
+            cwd=self.checkout, capture_output=True, timeout=300,
+            # WITHOUT THE CALLER'S PLAYTHROUGH_* NAMES.  session.py
+            # derives its layout from its own location and takes the save
+            # directory as an argument, but the documented way to run
+            # anything in this pipeline -- including this suite -- is to
+            # source env.sh first, and an inherited PLAYTHROUGH_CONFIG_DIR
+            # then points the delegate at the real checkout, which it
+            # refuses as outside the approved tree.  Every other
+            # invocation in this fixture is already hermetic; this one
+            # was the exception.
+            env={name: value for name, value in os.environ.items()
+                 if not name.startswith("PLAYTHROUGH_")})
+        self.assertNotEqual(launcher, EX_OK)
+        self.assertNotEqual(delegate.returncode, 0)
+        self.assertIn(b"NOT resumable", delegate.stderr)
+
+
 class TestTheResumeUiState(LaunchFixture):
     """A resumed session must START from a menu, provably.
 
@@ -1743,33 +2222,103 @@ class TestTheResumeUiState(LaunchFixture):
 class TestTheCaptureGeometryGate(LaunchFixture):
     """A window smaller than the grid must not be captured."""
 
-    def geometry(self, mode, width, height, grid=""):
-        """Call check_capture_geometry with a chosen window size.
+    def geometry(self, mode, width, height, grid="", x=0, y=4):
+        """Call check_capture_geometry with a chosen window rectangle.
 
         `die` exits the shell, so a refusal is visible as the exit
         status of the sourced program and STATUS= never prints.
+
+        ALL FOUR NUMBERS ARE SUPPLIED, because the strict contract is
+        all four: the offsets default to the contracted +0+4 so that a
+        test which is about the SIZE says nothing accidental about the
+        position.
         """
         after = (
             "%s"
             'WINDOW_ID=4194305\n'
             'WINDOW_WIDTH="%s"\nWINDOW_HEIGHT="%s"\n'
-            'WINDOW_GEOMETRY="%sx%s+0+4"\n'
+            'WINDOW_X="%s"\nWINDOW_Y="%s"\n'
+            'WINDOW_GEOMETRY="%sx%s+%s+%s"\n'
             "check_capture_geometry %s\n"
             "printf 'STATUS=%%s\\n' \"$?\"\n"
-            % (grid, width, height, width or 0, height or 0, mode))
+            % (grid, width, height, x, y,
+               width or 0, height or 0, x, y, mode))
         return self.run_sourced(after)
 
     def test_the_contracted_window_matches_the_grid_exactly(self):
         status, out, err = self.geometry("strict", 1920, 1072)
         self.assertEqual(status, 0)
         self.assertIn("STATUS=0", out)
-        self.assertIn("matches the 240x67 grid exactly", err)
+        self.assertIn("matches the capture contract exactly", err)
 
-    def test_a_larger_window_covers_the_grid(self):
-        status, out, err = self.geometry("strict", 1920, 1080)
+    def test_a_root_sized_window_is_accepted_for_a_capture(self):
+        """Borderless-given-the-whole-root is the REAL surface.
+
+        WRITTEN THE OTHER WAY ROUND FIRST, AND IT WAS WRONG.  This test
+        used to require a root-sized window to be REFUSED, on the
+        reasoning that it "paints the grid at a different offset from
+        the one the sidebar crop was computed for".  The engine blits
+        the grid at the WINDOW'S top-left in either case, so the crop's
+        y is the window's y and there is no such offset.  Measured over
+        all 395 captures of the committed record: 387 carry ink in y0-3
+        and NOT ONE carries ink in y1072-1079, so the grid sat at +0+0
+        with the eight leftover pixels in one band at the bottom --
+        openbox had given the borderless window the whole root.  The
+        old contract therefore refused every legitimate capture launch
+        on the very surface that produced the record, measured as
+        `window is 1920x1080+0+0, and a capture launch requires exactly
+        1920x1072+0+4`.
+        """
+        status, out, err = self.geometry("strict", 1920, 1080, x=0, y=0)
+        self.assertEqual(status, 0)
+        self.assertIn("STATUS=0", out)
+        self.assertIn("matches the capture contract exactly", err)
+        self.assertIn("borderless, given the whole root", err)
+        self.assertIn("crop's y is 0", err)
+
+    def test_the_centred_grid_window_is_accepted_too(self):
+        """Both cases are accepted, and each is named as itself."""
+        status, out, err = self.geometry("strict", 1920, 1072, x=0, y=4)
+        self.assertEqual(status, 0)
+        self.assertIn("centred by the window manager", err)
+        self.assertIn("crop's y is 4", err)
+
+    def test_a_half_root_window_is_still_refused(self):
+        """Accepting two exact cases is not accepting a range.
+
+        A height between the grid and the root matches neither case, so
+        it is refused -- which is what stops this from decaying back
+        into the ">= the grid" lower bound the contract replaced.
+        """
+        status, out, err = self.geometry("strict", 1920, 1076, x=0, y=2)
+        self.assertEqual(status, EX_WINDOW)
+        self.assertNotIn("STATUS=", out)
+        self.assertIn("height 1076 (want 1072 for A or 1080 for B)",
+                      err)
+        self.assertIn("y offset 2 (want 4 for A or 0 for B)", err)
+
+    def test_a_mismatched_window_is_only_a_warning_in_warn_mode(self):
+        status, out, err = self.geometry("warn", 1920, 1076, x=0, y=2)
         self.assertEqual(status, 0)
         self.assertIn("STATUS=0", out)
         self.assertIn("covers the 1920x1072 grid", err)
+        self.assertIn("a capture launch would refuse it", err)
+
+    def test_a_shifted_window_is_refused_on_its_x_offset(self):
+        status, out, err = self.geometry("strict", 1920, 1072, x=8, y=4)
+        self.assertEqual(status, EX_WINDOW)
+        # x is pinned to 0 in BOTH accepted cases, so the refusal says
+        # so rather than naming one of them.
+        self.assertIn("x offset 8 (want 0 in either case)", err)
+
+    def test_the_letterbox_offset_is_derived_from_the_root(self):
+        # +0+4 is not a constant: it is (1080 - 1072) / 2, so a
+        # different root height moves it and the message follows.
+        grid = "PLAYTHROUGH_SCREEN_HEIGHT=1092\n"
+        status, out, err = self.geometry("strict", 1920, 1072, grid=grid,
+                                         x=0, y=4)
+        self.assertEqual(status, EX_WINDOW)
+        self.assertIn("requires exactly 1920x1072+0+10", err)
 
     def test_the_first_launch_window_is_refused_in_strict_mode(self):
         status, out, err = self.geometry("strict", 640, 384)
@@ -1826,14 +2375,15 @@ class TestTheCaptureGeometryGate(LaunchFixture):
         grid = ("PLAYTHROUGH_TERMINAL_X=160\n"
                 "PLAYTHROUGH_TERMINAL_Y=50\n")
         status, out, err = self.geometry("strict", 1280, 800,
-                                         grid=grid)
+                                         grid=grid, x=0, y=140)
         self.assertEqual(status, 0)
-        self.assertIn("matches the 160x50 grid exactly", err)
+        self.assertIn("matches the capture contract exactly", err)
 
     def test_a_narrower_grid_admits_a_smaller_window(self):
         grid = ("PLAYTHROUGH_TERMINAL_X=80\n"
                 "PLAYTHROUGH_TERMINAL_Y=24\n")
-        status, out, err = self.geometry("strict", 640, 384, grid=grid)
+        status, out, err = self.geometry("strict", 640, 384, grid=grid,
+                                         x=0, y=348)
         self.assertEqual(
             status, 0,
             msg=("640x384 is refused because the grid says 240x67, "
@@ -2707,6 +3257,57 @@ class TestTheTrustState(LaunchFixture):
         self.assertIn("CALIBRATION LAUNCH", err)
         self.assertNotIn("trust state", err)
 
+    def test_a_display_this_checkout_did_not_start_refuses_a_capture(self):
+        """Ownership is a check, and an unanswerable one is diagnostic.
+
+        "A server is answering on :99" and "this checkout started it"
+        are different facts.  A display somebody else provisioned may be
+        shared, may be restarted under the session and may already have
+        clients on it, none of which this pipeline can see -- so without
+        an ownership record the state is diagnostic and the capture
+        launch refuses, exactly as it does for a declared bypass.
+        """
+        self.seeded()
+        os.unlink(os.path.join(self.scratch, "run", "x-ownership99"))
+        status, _, err = self.run_launch(
+            "launch", STUB_WINDOW_IDS="",
+            PLAYTHROUGH_WINDOW_TIMEOUT="1")
+        self.assertEqual(status, EX_USAGE)
+        self.assertIn("not started by this checkout", err)
+        self.assertIn("trust state", err)
+        self.assertNotIn("CAPTURE LAUNCH", err)
+
+    def test_a_recorded_owner_that_is_gone_is_not_ownership(self):
+        self.seeded()
+        record = os.path.join(self.scratch, "run", "x-ownership99")
+        with open(record, encoding="utf-8") as handle:
+            text = handle.read()
+        lines = [line for line in text.splitlines()
+                 if not line.startswith("pid=")]
+        lines.append("pid=999999999")
+        self.write(record, "\n".join(lines) + "\n", mode=0o600)
+        status, _, err = self.run_launch(
+            "launch", STUB_WINDOW_IDS="",
+            PLAYTHROUGH_WINDOW_TIMEOUT="1")
+        self.assertEqual(status, EX_USAGE)
+        self.assertIn("no longer running", err)
+
+    def test_another_checkout_s_record_is_not_this_checkout_s(self):
+        self.seeded()
+        record = os.path.join(self.scratch, "run", "x-ownership99")
+        with open(record, encoding="utf-8") as handle:
+            text = handle.read()
+        self.write(
+            record,
+            text.replace("repo=%s" % self.checkout,
+                         "repo=/somewhere/else"),
+            mode=0o600)
+        status, _, err = self.run_launch(
+            "launch", STUB_WINDOW_IDS="",
+            PLAYTHROUGH_WINDOW_TIMEOUT="1")
+        self.assertEqual(status, EX_USAGE)
+        self.assertIn("not started by this checkout", err)
+
     def test_the_subcommands_that_capture_nothing_are_unaffected(self):
         self.install_game()
         self.install_tileset("MShockXotto+", MSX_ID, MSX_VIEW)
@@ -3003,7 +3604,7 @@ class TestALiveInstance(LaunchFixture):
         status, out, err = self.run_launch(
             "launch", STUB_WINDOW_IDS="4194305")
         self.assertEqual(status, EX_OK)
-        self.assertIn("matches the 240x67 grid exactly", err)
+        self.assertIn("matches the capture contract exactly", err)
         self.assertEqual(
             self.emitted(out)["PLAYTHROUGH_WINDOW_GEOMETRY"],
             "1920x1072+0+4")

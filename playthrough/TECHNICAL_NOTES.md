@@ -7,55 +7,75 @@ observation about how the pipeline behaves belongs here — and nowhere else.
 > ## READ THIS FIRST: the session in this tree is no longer the one most of
 > ## this page describes
 >
-> **The record was re-recorded from the first keystroke.** The artifacts in
-> this tree are a **326-frame** session played by **Ambrose Halloran**. The
-> **419-frame** session played by **Delphine Ouellette**, which the great
-> majority of this page measures in detail, **no longer exists in the tree**:
-> its frames, manifest, telemetry, digest ledger, date audit, timeline,
-> transcripts, films, amendment ledger, dossier and userdir were all replaced.
+> **The record was re-recorded from the first keystroke, and this is the second
+> time that has happened.** The artifacts in this tree are a **305-frame**
+> session played by **Odette Vachon** in a world named **Barrows**. Two earlier
+> sessions are gone from the tree: the **326-frame** session played by **Ambrose
+> Halloran**, and before it the **419-frame** session played by **Delphine
+> Ouellette**, which the great majority of this page still measures in detail.
+> Their frames, manifests, telemetry, digest ledgers, date audits, timelines,
+> transcripts, films, amendment ledgers, dossiers and userdirs were all
+> replaced.
 >
-> It was not replaced for tidiness. A code review established that the
-> shipped session **could not satisfy R11**: Delphine died, and after death
-> the engine makes `ACTION_SAVE` unreachable, so the in-game Save & Quit that
-> R11 requires had never happened — while five appended frames of post-death
-> menu navigation and the surrounding prose implied that it had. That is not
-> repairable by editing a record (and editing a captured record is forbidden
-> here for its own reasons). It is only repairable by playing again.
+> It was not replaced for tidiness. A code review established that the Ambrose
+> record **could not satisfy R11**: his session was stopped by signal inside
+> `death_screen()`, so the engine's own ending path never finished — no
+> `graveyard/`, no `memorial/`, and a live-shaped save left behind for a dead
+> man. A record cannot be repaired into having completed a path it never
+> entered, and editing a captured record is forbidden here for its own reasons.
+> It was only repairable by playing again.
 >
 > **The new session's outcome, stated plainly at the top so nothing downstream
-> has to carry it:** Ambrose Halloran was created through the custom
-> point-buy creator on the *Missed* scenario, woke in a garage at 08:00:00 on
-> Thursday, May 20, and **died at 08:02:40** — cornered in a bathroom by a
-> tough zombie that opened the door he had shut behind him. R11 admits two
-> endings, "realistic sleep **or** death", and the plan states that "death by
-> legitimate play is an acceptable, honest ending"; this is that ending. The
-> **sleep-and-wake-and-Save-&-Quit branch the review asked for was attempted
-> and was not reached**, and the in-game Save & Quit remains unreachable for
-> the same engine reason as before. Nothing in the record, the transcripts or
-> the films claims otherwise, and no post-death menu navigation was appended
-> this time. The full account is in **"The re-recorded session: Ambrose
-> Halloran"** below.
+> has to carry it:** Odette Vachon was created through the custom point-buy
+> creator on the *Missed* scenario, woke in a candy shop at **08:00:00** on
+> Thursday, May 20, and **died at 17:02:55** — killed in a subway station in
+> central Smithfield, with one zombie dog to her name, having typed her last
+> words one keystroke at a time. R11 admits two endings, "realistic sleep **or**
+> death", and the plan states that "death by legitimate play is an acceptable,
+> honest ending"; this is that ending.
 >
-> Everything on this page that measures 419 frames, 233.000 s, Delphine
-> Ouellette, the golf course, the restaurant spawn or the 27-entry amendment
-> ledger is therefore **historical**. It was true of the artifacts it was
-> written about; those artifacts are gone. It is kept rather than deleted
-> because the reasoning in it — the timeline algorithm, the trust gates, the
-> capture invariants, the CI contract, the environment — is what produced the
-> new session too, and because a page that quietly erased its own history
-> would be the wrong kind of document.
+> **What is different from the retired record is that the engine's own ending
+> path ran to completion this time, and every screen of it was captured.**
+> `cleanup_at_end()` finished: `move_save_to_graveyard()` relocated her save
+> into `graveyard/2026-08-10T04-04-38/`, the memorial pair was written, and the
+> world was cleared — she was its only character and `WORLD_END` is at the
+> engine default `reset`. She then left through the main menu's own quit. The
+> in-game `ACTION_SAVE` remains unreachable after a death; that is an engine
+> fact rather than a choice, so this is the exit R11 asks for in the only form
+> the engine offers for this ending. The full account is in **"The shipped
+> session: Odette Vachon"** below.
+>
+> Everything on this page that measures 419 or 326 frames, 233.000 s, Delphine
+> Ouellette, Ambrose Halloran, Fern Creek, Apshawa, the golf course, or the
+> restaurant or garage spawn, or a 14- or 27-entry amendment ledger, is
+> therefore **historical**. It was true of the artifacts it was written about;
+> those artifacts are gone. It is kept rather than deleted because the
+> reasoning in it — the timeline algorithm, the trust gates, the capture
+> invariants, the CI contract, the environment — is what produced this session
+> too, and because a page that quietly erased its own history would be the
+> wrong kind of document.
 
-`playthrough/dossier.md` is the survivor's own account of himself, written
-before the first keystroke, and it is his entirely: no point accounting, no
+`playthrough/dossier.md` is the survivor's own account of herself, written
+before the first keystroke, and it is hers entirely: no point accounting, no
 option values, no source citations, no notes about how any of it was
-arranged. He would not write a page like that and does not think about
-himself in those terms. Keeping the two apart is what makes the in-character
+arranged. She would not write a page like that and does not think about
+herself in those terms. Keeping the two apart is what makes the in-character
 record worth reading as a record rather than as a commentary, so the
 mechanical half of the character lives on this page instead.
 
 Every value below was read out of this checkout at the stated location. Where
 a number is quoted, it is the shipped value in this tree and not a value
 remembered from another version.
+
+`playthrough/REPORT.md` is the **deliverable** report, and it is a third kind
+of document again: exactly three top-level sections, *A) Screen Recording and
+Animation*, *B) Character Creation* and *C) Playing the Game*, each claim
+measured, and every requirement this record does not fully meet named in the
+section it belongs to. It is the ONLY document of that kind in this tree, which
+is deliberate -- a second copy of the mandated account under another name is a
+second place for its figures to go stale. Where it and this page state the same
+number they were measured in the same pass; where a reader wants the working
+rather than the answer, it is here.
 
 `playthrough/README.md` **is** the user-facing counterpart to this page —
 artifact inventory, how to re-run the pipeline, the environment contract and
@@ -82,56 +102,59 @@ is the right order for a log and the wrong one for looking something up, so:
 
 ## Read this before any count on this page
 
-**Three sessions were recorded. Only the third shipped, and most of this page
-was written about the first two.** A reader who starts at the top meets the
-retired numbers first and the disclaimers last, so the map belongs here.
+**Five capture sets appear on this page. Only the fifth shipped, and almost all
+of this page was written about the earlier four.** A reader who starts at the
+top meets the retired numbers first and the disclaimers last, so the map belongs
+here.
 
-`playthrough/frames/` holds **419 frames** — one per keystroke of the session
-that shipped — with 419 manifest rows and 419 telemetry rows. **Any count on
-this page that is not 419 is describing a retired set.**
+`playthrough/frames/` holds **305 frames** — one per keystroke of the session
+that shipped — with 305 manifest rows, 305 telemetry rows and 305 caption cues.
+**Any count on this page that is not 305 is describing a retired set.**
+
+Three survivors, five sets: Delphine Ouellette was recorded three times (560,
+395 and 419 frames), Ambrose Halloran once (326), and Odette Vachon once (305).
+Only Odette's artifacts exist in the tree.
 
 | Block | Describes | Status |
 | --- | --- | --- |
-| *The pre-play character build* | the survivor herself | current — she is the same person in all three |
-| *Session log — engineering observations…* and *Post-capture verification of `playthrough/frames/`* | the **first, 560-frame session** | **RETIRED.** Rejected at code review. Every "560" belongs here, as does the frame-by-frame narrative of the abandoned first creation run at *The interrupted capture at frame 177*, whose `real_ts` and luminance figures do not match the frame 177 in the tree today |
-| *The session was re-recorded…* | the **second, 395-frame session** | **RETIRED.** Its own heading says it "supersedes every count above", which was true when written — but it was itself superseded by the 419-frame record. Every "out of 395" in it belongs to that dead set |
-| *The commit identity…*, *The three checkpoints…* | requirements and design, set-independent | current — both were rewritten in the runtime QA remediation pass; each states what it previously claimed and why that changed |
-| *Frame 397 correction after the death ending*, *AAP R11: the ending is legitimate…*, *Runtime QA remediation of the 419-frame record* | the **shipped 419-frame record** | **CURRENT** |
-| *Runtime QA remediation of the earlier 395-frame capture set* | the second, 395-frame session again | **RETIRED**, kept because the engine behaviours it pins down and the tooling it produced are still in force |
+| **[The shipped session: Odette Vachon](#the-shipped-session-odette-vachon)** | the **305-frame** set now in the tree | **CURRENT — start here** |
+| *The re-recorded session: Ambrose Halloran* and *Runtime QA remediation of the 326-frame record* | the **326-frame** set | **RETIRED.** Rejected at code review: the session was stopped by signal inside `death_screen()`, so the engine's ending path never finished. Every "326" and every mention of Apshawa or the garage spawn belongs here |
+| *The pre-play character build* | **Delphine Ouellette** | **RETIRED.** It is a build sheet for a survivor who is not in this tree. Odette's mechanical half is in the shipped-session block above |
+| *Session log — engineering observations…* and *Post-capture verification of `playthrough/frames/`* | the **first, 560-frame** set | **RETIRED.** Every "560" belongs here, as does the frame-by-frame narrative of the abandoned first creation run at *The interrupted capture at frame 177*, whose `real_ts` and luminance figures match no frame in the tree today |
+| *The session was re-recorded…* | the **second, 395-frame** set | **RETIRED.** Its own heading says it "supersedes every count above", which was true when written — and it was itself superseded twice over |
+| *Frame 397 correction after the death ending*, *AAP R11: the ending is legitimate…*, *Runtime QA remediation of the 419-frame record* | the **third, 419-frame** set | **RETIRED** |
+| *Runtime QA remediation of the earlier 395-frame capture set* | the second set again | **RETIRED**, kept because the engine behaviours it pins down and the tooling it produced are still in force |
+| *The commit identity…*, *The three checkpoints…* | requirements and design, set-independent | current — each states what it previously claimed and why that changed |
 | *The pipeline as built* and everything after it | the pipeline, the host and the engine | current except where it names a retired count |
 
-**One difference between the sets matters more than any count, because an
-earlier version of this map obscured it.** The first two sessions ended in
-**sleep, waking and an in-game Save & Quit**; the shipped third session ended in
-**legitimate death**, which the engine makes incompatible with Save & Quit. Both
-retired blocks describe a Save & Quit that is *not* part of the shipped record —
-the 560-frame block at "the in-game Save & Quit at frames 558-560" and the
-395-frame block's artifact table at "written by the in-game Save & Quit path".
-Neither is a statement about what shipped. The shipped ending, and the R11
-element it leaves unmet, are in *AAP R11: the ending is legitimate, and the Save
-& Quit element is UNMET*.
+**One difference between the sets matters more than any count, because two
+earlier versions of this map got it wrong in opposite directions.** The first
+three sets ended in **sleep, waking and an in-game Save & Quit**. The fourth
+ended in a death whose **ending path was deliberately cut short by a signal**,
+which is what the code review rejected. The shipped fifth set ends in
+**legitimate death with the engine's own ending path run to completion** —
+graveyard, memorial, world reset, and an exit through the main menu's own quit.
+Every "Save & Quit" on this page outside the shipped-session block is a
+statement about a set that no longer exists, and every "UNMET" verdict on R11
+was reached against one of those sets. The shipped ending and what it satisfies
+are in *[The shipped session: Odette
+Vachon](#the-shipped-session-odette-vachon)*.
 
-**Where the 419-frame record is actually documented**, since an earlier version
-of this pointer sent readers to two sections that describe retired sets
-(*Post-capture verification of `playthrough/frames/`* measures the 560-frame
-set, and the block opening at *The session was re-recorded* measures the
-395-frame one):
+**Where the current reference material is**, as distinct from the session
+records above:
 
-* **[Frame 397 correction after the death
-  ending](#frame-397-correction-after-the-death-ending)** — the one row-level
-  correction the shipped set needed.
-* **[Runtime QA remediation of the 419-frame
-  record](#runtime-qa-remediation-of-the-419-frame-record)** — the pass that
-  drove the shipped chain end to end, with the two defects it found and how
-  each was verified.
 * **[The pipeline as built](#the-pipeline-as-built)** — the subject-ordered
   current reference: build, environment, options, tileset, save layout,
-  render, lint and CI. Its
+  render, lint and CI. Two parts of it are layered rather than current
+  throughout, and both are called out in the table above:
   [Corrections that supersede earlier sections of this
-  page](#corrections-that-supersede-earlier-sections-of-this-page) table is
-  the single place every superseded figure is reconciled against a current
-  measurement, and it is the right place to start if a number anywhere above
-  looks wrong.
+  page](#corrections-that-supersede-earlier-sections-of-this-page), whose
+  closing rows correct its own opening ones and which is the right place to
+  start if a number anywhere on this page looks wrong, and *The derivative
+  chain, regenerated on a supported platform*, which is a **retired** account
+  of the 419-frame chain. The shipped chain's digests are in **[The shipped
+  derivative chain, as it
+  stands](#the-shipped-derivative-chain-as-it-stands)**.
 
 **And one more thing to read before any digest on this page.** Two passes
 described below originally corrected the record by editing it — eight `action`
@@ -141,16 +164,205 @@ Boundary-3 security review rejected that as CWE-345, and correctly: once
 captured evidence can be rewritten, every artifact derived from it is deniable.
 Both files have therefore been **restored byte for byte** to the state the
 session wrote them in, the two functions that could rewrite them have been
-deleted from `manifest.py` and `session.py`, and the corrections now live in
-**`playthrough/amendments.jsonl`** — 27 append-only amendments, each bound to the
-sha256 of the manifest line it concerns and each stating its basis and its
-reason. `manifest.resolve_rows()` applies them to a derivative and to nothing
-else, and refuses rather than skips when a digest no longer matches. The
-mechanism, the schema and the fail-closed rules are at *Three rows narrated an
-effect their own capture contradicts*; the artifact digests that resulted are at
-*The derivative chain, regenerated on a supported platform*. Any digest quoted
-elsewhere on this page for `manifest.jsonl`, `build/observations.jsonl`,
-`timeline.json`, either transcript or either MP4 predates that restoration.
+deleted from `manifest.py` and `session.py`, and corrections now live in
+**`playthrough/amendments.jsonl`** — **62 append-only amendments** in the
+shipped set, each bound to the sha256 of the manifest line it concerns and each
+stating its basis and its reason. `manifest.resolve_rows()` applies them to a
+derivative and to nothing else, and refuses rather than skips when a digest no
+longer matches. The mechanism, the schema and the fail-closed rules are at
+*Three rows narrated an effect their own capture contradicts*. Any digest quoted
+anywhere on this page for `manifest.jsonl`, `build/observations.jsonl`,
+`timeline.json`, either transcript or either MP4 predates the shipped set and
+describes a retired one; the shipped digests are in the block below.
+
+---
+
+## The shipped session: Odette Vachon
+
+Everything in this section was measured from the artifacts now in the tree, and
+it supersedes every count elsewhere on this page.
+
+### What shipped
+
+| Artifact | Measured |
+| --- | --- |
+| `playthrough/frames/` | **305** captures, `frame_00001.png` … `frame_00305.png`, every one 1920×1080 |
+| `playthrough/manifest.jsonl` | **305** rows, one per keystroke |
+| `playthrough/amendments.jsonl` | **62** append-only amendments |
+| `playthrough/timeline.json` | **305** entries; **219.750 s** of captures + **3.000 s** of transitions = **222.750 s**; floor 0.25 s, ceiling 10.0 s |
+| transitions | **3** flagged entries — frames **195**, **198** and **210** — materialised as `build/transitions/trans_00195_*.png`, `trans_00198_*.png` and `trans_00210_*.png`, twelve images each, **36** in total |
+| `playthrough/cata-play.mp4` | h264, 1920×1080, `yuv420p`, **342** encoded frames from 305 captures + 36 transition images, container **222.800 s**, **9 189 760** bytes |
+| `playthrough/cata-play-cc.mp4` | the same picture plus one `mov_text` subtitle stream tagged `language=eng`; **0** differing pixels against the base film at four sampled times, so nothing is burned in |
+| `playthrough/transcript.srt` | **305** cues, contiguous from 1, the last closing at **00:03:42,750** — the timeline's own total |
+| `playthrough/transcript.md` | **305** stamped entries, every stamp a cue start |
+| `playthrough/acceptance-report.txt` | the gate's own **117 of 117** passing verdicts over the tree at `ebbafd6f39`, which was its whole declared inventory at that moment. The gate now declares **120**: the single "every row records what was pressed and why" verdict became a two-part rationale contract, and two properties were added — that the readable record's sentences are the caption track's, and that the recording in the tree has a checkpoint pair of its own. A receipt is per-run: a failing run removes it rather than letting it vouch for a tree it never measured, and only a passing `--phase all` or `--phase post-commit` run writes a new one |
+
+### The survivor, mechanically
+
+Her own account of herself is `playthrough/dossier.md`, written and committed
+before the first keystroke. It carries no point accounting and no option values,
+because she would not write a page like that; the mechanical half lives here.
+
+**Odette Vachon**, 52, 5′9″, blood A+. Scenario **Missed**, profession
+**Fisher**, world **Barrows**. Base stats **Str 10 / Dex 8 / Int 7 / Per 10**.
+Traits, in the order the memorial lists them: *Strong Stomach* and *Tough*;
+against them *Addictive Personality*, *Heavy Sleeper* and *Bad Back*. Two skills bought in the creator — **mechanics
+0 → 2** and **fabrication 0 → 2**, each displaying "(2 + 1)" with the Fisher
+bonus — on top of the profession's survival 5, athletics 2, vehicles 2, and one
+level each of applied science, computers, electronics, food handling, health
+care and social. **Four points were deliberately left unspent**, which the
+creator asks about and which the record shows being confirmed.
+
+One item in the profession's kit is load-bearing for the whole timing model: the
+Fisher starts with a **`wristwatch`** \[data/json/professions.json\]. The
+sidebar clock only reads to the second when `u.has_watch()` is true
+\[src/display.cpp:207-219\]; without one the panel falls back to a coarse phrase
+and R4's duration model would have had nothing to difference. Her very first
+in-world frame, 158, records `08:00:00`.
+
+### How it ended, and what R11 that satisfies
+
+She woke at **08:00:00** on Thursday, May 20 and **died at 17:02:55** — the
+memorial's own words are "She died on Year 1, May 20 17:02:55. She was killed in
+a subway station in central Smithfield." Nine hours and two minutes, one kill,
+final HP zero in every limb. Her last words were "Camille."
+
+**R11 admits two endings and this is the second of them.** §0.2.1 states that
+"death by legitimate play is an acceptable, honest ending", and no debug or
+cheat action was used at any point — explicitly including to avoid death. The
+outcome was neither steered toward nor away from.
+
+**The part that failed review last time and does not fail now is the
+completion of the ending path.** Ambrose's session was stopped by signal inside
+`death_screen()`, so `cleanup_at_end()` \[src/do_turn.cpp:111-207\] never
+reached its housekeeping. This time every screen of it was answered and
+captured, in this order:
+
+| Frames | Screen | Answered |
+| --- | --- | --- |
+| 291-299 | the last-words prompt | typed one keystroke at a time, then `Return` |
+| 300 | "Watch the last moments of your life..?" | `N` |
+| 301 | the full-screen post-death message log | `Escape` |
+| 302 | "Open diary for the last time?" | `N` |
+| 303 | the scores window (ACHIEVEMENTS / CONDUCTS / SCORES / KILLS) | `Escape` |
+| 304-305 | the follower epilogue | `Escape` |
+
+And the filesystem shows the housekeeping ran:
+
+| Observed on disk | What it establishes |
+| --- | --- |
+| `graveyard/2026-08-10T04-04-38/#T2RldHRlIFZhY2hvbg==.sav` plus `.log .pt .ano.json .seen.0.0 .seen.0.-1 .zones.json` and four `.mm1/*.mmr` | `move_save_to_graveyard()` \[src/game_io.cpp:247-275\] ran and **renamed** the files rather than deleting them |
+| `memorial/Barrows/Odette Vachon-2026-08-10-04-04-38.{json,txt}` and `memorial/Odette Vachons_diary.txt` | `write_memorial_file()` \[src/do_turn.cpp:143\] ran |
+| `save/Barrows/` holds only `mods.json`, `world_timestamp.json` and `worldoptions.json` | she was the world's only character, so `WORLD_END` decided its fate; it is committed as `"reset"` — the engine's own default \[src/options.cpp:2836-2841\] — and `delete_world(name, false)` \[src/worldfactory.cpp:2458-2496\] cleared everything `isForbidden()` \[:2449-2456\] does not spare |
+| no character file anywhere under `save/` | the world is genuinely closed, not left half-open |
+
+**Why there is no in-game Save & Quit, and why that is not a gap this record can
+close.** After a death the engine makes `ACTION_SAVE` unreachable on both
+post-death branches — the argument is set out in full at *The ending is a death,
+and the engine has no Save & Quit after one*, and nothing here revisits it. R11
+reads "the survivor exits through the in-game Save & Quit path — immediately
+after waking if the ending was sleep", and that qualifier is the plan's own
+acknowledgement that the exit belongs to the sleep branch. For a death, the
+equivalent completion is the engine's own ending path run to its end, followed
+by the menu's own quit, and that is what this record contains. Reaching a Save &
+Quit from the save that predates the death would be exactly the death-avoidance
+§0.2.1 and R12 forbid outright.
+
+**Nothing in the record claims an exit that did not happen.** A
+case-insensitive search for "save & quit", "save and quit" and "saved and quit"
+across `transcript.md`, `transcript.srt`, `manifest.jsonl`, `timeline.json`,
+`dossier.md` and `amendments.jsonl` returns zero hits in every one of them.
+
+### R1's two commits, and which survivor they are about
+
+Both mandated commits exist, in order, and both are about **this** survivor —
+which is worth stating precisely, because the retired sessions' checkpoint pairs
+are still reachable from `HEAD` and an earlier version of this page cited
+**Delphine's** pair as evidence for **Ambrose's** session:
+
+| Checkpoint | Commit | Records |
+| --- | --- | --- |
+| `creation` | `57ee8afc3498ff12973cae284c16e1ae700bf089` | Barrows / Odette Vachon, 199 frames / 199 rows |
+| `final` | `7b7673677eb70a7466cb5618152590daa3209ed4` | Barrows / Odette Vachon, 305 frames / 305 rows |
+
+The retired pairs — `7e10721d4e` / `4e8a49879a` for Delphine, and Ambrose's own
+— remain in the history and are **not** evidence for anything in this tree. The
+committer resolves its anchor by reading `config/lastworld.json` out of each
+candidate commit's tree, so the pair above was matched on the survivor's name
+rather than on recency, and the acceptance gate independently asserts that the
+newest pair names the survivor `HEAD` actually holds.
+
+**R13's ordering is provable from the graph rather than asserted.** The
+dossier's introducing commit `1ad704df3b` is a **strict ancestor** of the first
+capture's `7117ef9700`, so the dossier existed before the first gameplay frame
+and one commit cannot stand for both.
+
+**R12 is discharged by an absence, and the absence is the evidence.** There is
+no `playthrough/userdir/config/keybindings.json` in the tree. The engine writes
+that file only when a binding is changed, so its absence is proof that the
+shipped bindings were the ones played — and in those, `debug_mode`, `debug` and
+`debug_hour_timer` are all declared with no `bindings` array at all
+\[data/raw/keybindings.json\], which makes them unreachable by any keystroke.
+
+### Three things about this record that are disclosed rather than buffed out
+
+**1. One keystroke was delivered without a frame, and the record says so.** The
+terminal `Y` answering the main menu's "Really quit?" did what it was asked: the
+application exited. The capture taken immediately afterwards was therefore
+genuinely black — `mean=0 stddev=0` — and `capture.sh` refused it and withdrew
+it to the runtime directory's `rejected/`. **The luminance guard was not
+weakened and no frame was fabricated**, which is why the artifact set is a
+consistent 305/305 rather than 306 with one black image in it. The keystroke's
+own journal, written before delivery and left behind by the halt, records it in
+full:
+
+```json
+{
+  "action": "press 'Y' -- yes, quit, there is nobody left in that world to go back to",
+  "capture_attempts": 1,
+  "commentary": "The world is called Barrows and it holds no one now.",
+  "display": ":99",
+  "frame": 306,
+  "frames_dir": "playthrough/frames",
+  "key": "Y",
+  "manifest": "playthrough/manifest.jsonl",
+  "opened_at": "2026-08-10T04:07:53.847Z",
+  "phase": "delivered",
+  "version": 2
+}
+```
+
+On disk it is a single line, as `json.dumps(..., sort_keys=True)` writes it; it is re-indented here for reading and is otherwise byte-for-byte the fields the halt left behind.
+
+R2 asks for one screenshot after every key press. This is the one place in the
+session where that did not happen, and the reason is that there was no longer an
+application to photograph. It is recorded here rather than smoothed over.
+
+**2. The `creation` checkpoint lands after the first autosave, not at the moment
+of creation.** CDDA writes no character file when a survivor is created — the
+`#<base64>.sav` appears only when the game next saves, and the autosave needs
+both 50 turns and 5 real minutes to elapse. A checkpoint taken at the instant
+the creator closed would therefore have had no save to commit, which is the
+thing R1's first commit exists to publish. So the checkpoint was taken at frame
+199, after the first autosave had written
+`save/Barrows/#T2RldHRlIFZhY2hvbg==.sav` and `master.gsav`.
+
+**3. `ebbafd6f39` carries the render, although its message names only a tooling
+fix.** That commit's subject is "let a later final checkpoint carry only the
+render", and it does contain that change — but it also contains
+`cata-play.mp4`, `cata-play-cc.mp4`, `transcript.md`, `transcript.srt`,
+`timeline.json`, the four `build/*.json` receipts, `build/concat.txt`, the 36
+transition images, and the edits to this page and to `amendments.jsonl`. The
+cause is a safety feature behaving as designed: the preceding `commit_artifacts.sh
+final` run refused, and it deliberately "left the index staged so what would
+have been recorded can be inspected"; the next `git add` of two tooling files
+plus a commit therefore recorded the whole staged index. **No history was
+rewritten to tidy this**, because amending or resetting is forbidden here, so
+the remedy is this disclosure. Nothing functional depends on which commit
+carried the film: the newest `final` checkpoint is still `7b7673677e`, no
+lifecycle assertion reads the film's introducing commit, and the gate passed
+117 of 117 — its whole declared inventory at that moment, since grown to 120.
+
 
 ---
 
@@ -171,14 +383,19 @@ supersedes every count on this page taken from the 419-frame session.
 | transition frames | 1 group × 12 = **12** PNGs under `playthrough/build/transitions/`, never in `playthrough/frames/` |
 | concat list | **338** entries (326 captures + 12 transition frames, with the final entry repeated) |
 | `cata-play.mp4` | 3 749 146 bytes, `h264` 1920×1080, 339 read frames, container **219.560 s** against a computed 219.500 s (+0.060 s encoder rounding) |
-| `cata-play-cc.mp4` | 3 774 538 bytes; video stream copied intact (proved by stream hash), subtitle stream index 1, `mov_text`, `TAG:language=eng`, `SUBTITLE_DURATION=219.500000`, **326 cues in, 326 cues round-tripped**, zero audio streams |
+| `cata-play-cc.mp4` | 3 777 023 bytes; video stream copied intact (proved by stream hash), subtitle stream index 1, `mov_text`, `TAG:language=eng`, `SUBTITLE_DURATION=219.500000`, **326 cues in, 326 cues round-tripped**, zero audio streams |
+| `amendments.jsonl` | **57** append-only rows — 14 from the runtime QA pass, **43 added at the scripting code-review checkpoint** to complete narration that stated what was pressed and not why; each bound to the sha256 of the manifest line it concerns, and `manifest.jsonl` itself unchanged |
 | `transcript.srt` / `transcript.md` | 326 cues and 326 stamps, last cue closing at `00:03:39,500` = the timeline's own 219.500 s |
 | non-blank | sampled frames 1 / 119 / 200 / 326 measure mean 0.00524 / 0.0990 / 0.1088 / 0.0224 with stddev 0.0645 / 0.1574 / 0.1767 / 0.1250, and a frame pulled back **out of the captioned film** at t=120 s measures mean 0.1037 stddev 0.1759 — every one `mean > 0` **and** `stddev > 0` |
 
-The **117 reconciled clocks** are frames 1–118, the character creation: there
-is no survivor and therefore no sidebar clock to read, so the timeline carries
-each of them flagged with its reason rather than inventing a reading. The
-first frame with a real clock is **119**, at `08:00:00`, `Thursday, May 20`.
+The **117 reconciled clocks** are frames **1–117**, the character creation:
+there is no survivor and therefore no sidebar clock to read, so the timeline
+carries each of them flagged `clock-missing` rather than inventing a reading.
+The first frame with a real clock is **118**, at `08:00:00`, `Thursday, May 20`,
+and 209 of the 326 frames carry one. (An earlier version of this paragraph said
+frames 1–118 and first clock at 119, which was off by one; the current figures
+are `[x['frame'] for x in timeline['frames'] if x['reconciled']]` → 1..117 and
+the first non-null `ingame_clock` → 118.)
 
 ### The character, and why the point pool matters
 
@@ -220,29 +437,85 @@ frames: fists did *no damage*; the welding hood would not fit over his mail
 carrier hat; wielded as a club it also did *no damage*, until one critical for
 **2**; it grabbed his right leg and he **broke the grab** after some twenty
 attempts; he tried to smash out through the wall; his stamina gave out, so he
-could neither dodge nor block; six limbs broke; he died at **08:02:40**. The
+could neither dodge nor block; the damage accumulated across head, arms and
+right leg — *"My head is ringing"* (row 242), *"My arms are water"* (276),
+*"My left arm has stopped answering"* (296), *"It went through the glasses"*
+(308), with two deep bite wounds in the memorial log at `"time": 5212897` and
+`5212923`; he died at **08:02:40**. An earlier version of this sentence put a
+number on it — "six limbs broke" — which is a reading of the sidebar's limb
+display rather than a measurement: that display is graphical, the crop OCRs as
+`HIN\.. TORSO HIN.. R LEG IIIS.` on frame 300, and no committed artifact carries
+the count. The named rows and the memorial entries above are what the evidence
+actually supports. The
 engine's own epitaph: *"In memory of: Ambrose Halloran. Survived: 2 mins 48
 secs. Kills: 0."* He filed last words — **"On my way."** — and declined the
 offer to watch the replay. **The record ends there, at frame 326.**
 
-- **R11 is satisfied by its death branch.** The requirement is "realistic
-  sleep **or** death", and the plan states that death by legitimate play is an
-  acceptable, honest ending. No debug menu, no spawning, no healing, no stat
-  edit, no teleport: the fight was lost on its merits, and the committed
-  `keybindings.json` carries no binding for `debug`, `debug_mode` or
-  `debug_hour_timer` for a stranger to check.
-- **The sleep branch was attempted and not reached.** He chose a windowless
-  room with one door and tried to wait the day out; the interruption came
-  about one in-game minute later. The review's remediation asked specifically
-  for sleep → wake → in-game Save & Quit. That did not happen, the in-game
-  Save & Quit is unreachable after death for the engine reason the review
-  itself identified, and **no artifact says otherwise**.
-- **The defect the review actually raised is fixed.** Its complaint was that
-  the old record *appended five frames of post-death menu navigation* and that
-  the surrounding claims implied a compliant ending. This time, after the
-  death rite the engine was **stopped by signal rather than driven back
-  through its menus**, precisely so that no post-death menu frame and no
-  dead-man commentary could enter the record.
+**R11 HAS TWO HALVES AND THIS RECORD MEETS ONE OF THEM.** An earlier version of
+this passage opened with "R11 is satisfied by its death branch", which claimed
+more than the evidence carries and was correctly refused at code review. The
+requirement is *"The session ends only by realistic sleep or by death"* **and**
+*"After the ending condition, the survivor exits through the in-game Save & Quit
+path"* (§0.1.1 R11). Half of that is in the frames; half of it is not.
+
+- **The ending condition is MET, and legitimately.** Death by play, with no
+  debug menu, no spawning, no healing, no stat edit and no teleport; the AAP
+  sanctions the outcome in terms that leave no room for doubt — *"Death by
+  legitimate play is an acceptable, honest ending"* (§0.2.1) — and the
+  committed userdir carries no `config/keybindings.json` at all, so the
+  unbound `debug`, `debug_mode` and `debug_hour_timer` declarations
+  \[data/raw/keybindings.json:3398-3409, 3466-3471\] are the ones that were
+  played, for a stranger to check.
+- **The exit is UNMET. Expected in-game Save & Quit sequences after the ending:
+  at least 1. Actual: 0.** No frame in this record shows one, and none is
+  claimed to. The reason is control flow rather than a choice made during the
+  session — `ACTION_SAVE` exists at one place in the engine
+  \[src/handle_action.cpp:3030-3031\] and both post-death paths exclude it, as
+  *AAP R11: the ending is legitimate, and the Save & Quit element is UNMET*
+  works through line by line for the earlier record. The consequence is the
+  same here: **there is no keystroke sequence in this engine that reaches Save
+  & Quit after the character is dead.**
+- **The engine's own post-death housekeeping is INCOMPLETE, and that is a
+  second unmet thing rather than a footnote to the first.** After the death
+  rite the engine was **stopped by signal rather than driven back through its
+  menus** — deliberately, because the previous record's defect was five
+  appended frames of post-death menu navigation and dead-man commentary, and
+  this record was not going to repeat it. The price is that the engine never
+  ran `cleanup_at_end()` to completion: there is **no `graveyard/` directory
+  and no archived memorial pair** under `playthrough/userdir/`, only
+  `achievements`, `cache`, `config`, `save` and `templates`.
+- **The committed save is therefore a PRE-DEATH state, and the arithmetic is
+  here so nobody has to take that on trust.** `save/Apshawa/` still holds a
+  live-shaped character save recording `"turn": 5212950` against
+  `"game_start": 5212800`. The engine's own epitaph reads *"Survived: 2 mins 48
+  secs"* — 168 seconds, so death fell at turn 5212968 — and the memorial log's
+  last entry is at `"time": 5212923`. The saved state is **18 turns before the
+  death** and 10 before the clock on the last captured frame (08:02:40). It is
+  a save of a man who was still alive, of a man who is dead.
+- **The review's remedy — re-record to sleep → wake → Save & Quit — was NOT
+  performed, and the reason is the AAP itself.** Two routes exist and both are
+  refused:
+  1. *Resume the committed save and steer it to a sleep ending.* That save
+     predates the death by 18 turns, so resuming it is **reloading to escape a
+     death**. The AAP forbids exactly that, by name: no cheating "for any
+     reason, explicitly including avoiding death" (§0.2.1). A compliant record
+     cannot be manufactured by an act the same document calls cheating, and no
+     amount of tidy evidence afterwards would make it one.
+  2. *Record a fourth session from scratch.* That is a different session, not a
+     repair of this one: it retires the 326 frames, the manifest, the film and
+     the captions that R2, R3, R4, R5, R6, R8 and R10 currently pass on, and it
+     cannot be captured on this host at all, because
+     `PLAYTHROUGH_ALLOW_EOL_PLATFORM` is a registered trust bypass and
+     `capture.sh` refuses a production frame under it. It is the honest way to
+     close R11, and `playthrough/tooling/supported_env.sh` exists so that it
+     can be done on a supported release — but it is a new recording, and this
+     page will not describe one it did not make.
+- **So the status, stated once and plainly: R11 is PARTIALLY met.** Ending
+  condition met by death; in-game Save & Quit not performed; post-death
+  persistence incomplete; the committed save is the pre-death state described
+  above. Closing it requires a fresh session on a supported release that ends
+  in sleep, waking and Save & Quit, with the four commit milestones taken in
+  their order. Nothing in this record is offered as a substitute for that.
 
 Independent corroboration, all of it committed: the character's own memorial
 log at `playthrough/userdir/save/Apshawa/#QW1icm9zZSBIYWxsb3Jhbg==.log`
@@ -253,7 +526,7 @@ is the moment he first struck the zombie, the third the moment he first struck
 the wall — and *"Received a deep bite wound"* twice. There is also an
 achievements file under the same name.
 
-### Three blemishes in this record, disclosed rather than buffed out
+### Four blemishes in this record, disclosed rather than buffed out
 
 An append-only record cannot be tidied afterwards, which is the point of it
 being append-only. So:
@@ -275,6 +548,40 @@ being append-only. So:
    `SESSION_MODE=resume` for him. Anyone resuming this world should know they
    would be resuming a corpse's save file; the memorial log above is the
    authority on what happened to him.
+4. **Twenty-nine rows restate the action instead of giving a reason for it**,
+   which is a shortfall against R7's "why", and it is measured rather than
+   estimated. Counted over the committed record — rows whose entire commentary
+   is drawn from the words *again*, *and*, *pull*, *swing*, *one*, *more* —
+   they are **220, 222, 230, 238-239, 241, 246, 249, 251, 259, 264-265, 269,
+   271, 274-275, 281, 291, 293, 297, 299, 301, 303-305, 309-310, 312-313**:
+   "Again.", "Pull.", "Swing.", "One more." Every one falls inside a stretch of
+   the same key pressed repeatedly — breaking the grab on his right leg, then
+   swinging at something that would not go down — where the survivor's reason
+   was the same as the previous row's and was not written again.
+
+   **They are not repaired, and the reason is the same rule that makes the rest
+   of the record worth anything.** The manifest is immutable; the telemetry
+   beside it records the clock, the digest, the date, the luminance and whether
+   the screen changed, but no contemporaneous *reason*; and the amendment
+   ledger exists to correct a recorded reading against evidence, not to author
+   a motive that was never captured. Writing a "why" into those rows now would
+   be inventing evidence — the one thing the pipeline refuses everywhere else,
+   and the thing that would make every derived artifact deniable. The honest
+   repair is a session recorded with the reason taken at each keystroke, which
+   is the same session R11's unmet half needs.
+
+```console
+$ python - <<'PY'
+import json, re
+echo = {'again', 'and', 'pull', 'swing', 'one', 'more'}
+rows = [json.loads(l) for l in open('playthrough/manifest.jsonl')]
+hit = [r['frame'] for r in rows
+       if set(re.findall(r'[a-z]+', r['commentary'].lower())) <= echo]
+print(len(hit), hit)
+PY
+29 [220, 222, 230, 238, 239, 241, 246, 249, 251, 259, 264, 265, 269, 271, 274,
+    275, 281, 291, 293, 297, 299, 301, 303, 304, 305, 309, 310, 312, 313]
+```
 
 ### One rendering artifact worth naming
 
@@ -1699,10 +2006,16 @@ All four are present:
 
 | Artifact | State | Its own tests |
 | --- | --- | --- |
-| `playthrough/tooling/run_pipeline.sh` | present, 8 stages | `test_run_pipeline.py`, 37 |
-| `playthrough/tooling/verify_artifacts.sh` | present, 111 checks | `test_verify_artifacts.py`, 21 |
-| `playthrough/tooling/commit_artifacts.sh` | present, 3 checkpoints | `test_commit_artifacts.py`, 142 |
+| `playthrough/tooling/run_pipeline.sh` | present, 8 stages | `test_run_pipeline.py`, **106** |
+| `playthrough/tooling/verify_artifacts.sh` | present, **120** checks | `test_verify_artifacts.py`, **193** |
+| `playthrough/tooling/commit_artifacts.sh` | present, 3 checkpoints | `test_commit_artifacts.py`, **213** |
 | `playthrough/README.md` | present | — |
+
+(Every figure in this table has moved since it was first written: the gate
+declared 111 checks and its suite held 21 tests, and the committer's suite held
+142. The current numbers are the ones above, re-measured on 2026-08-10 with
+`TestLoader.countTestCases()`, and *The tooling's own suites, mechanically
+counted* carries the whole set.)
 
 What the old text said about the *session* remains accurate and is kept: the
 stages were invoked directly and in the same order the sequencer uses —
@@ -1750,9 +2063,10 @@ Stages, in order:
 `verify` runs the functional half — is the film watchable, do the captions line
 up with the frames, does every capture match its attestation — and guards the
 commit. `attest` runs the history half afterwards and reports what the commit
-published. Neither repeats the other's checks; the two declared totals are 99
-and 111, and they differ by exactly the twelve verdicts the earlier phase
-defers. `--no-commit` drops **both** the checkpoint and the attestation, because
+published. Neither repeats the other's checks; the two declared totals are
+**106** and **31** against **120** for the whole audit — 89 properties are asked
+only before the commit, 14 only after it, and 17 by both — so the earlier phase
+defers exactly the fourteen the later one exists for. `--no-commit` drops **both** the checkpoint and the attestation, because
 with nothing committed the attestation would fail for a reason the operator
 asked for.
 
@@ -1849,6 +2163,30 @@ stray write becomes readable evidence instead of vanishing.
 
 ### A lifecycle divergence in this history that cannot be repaired
 
+> **RESOLVED FOR THE SHIPPED RECORD, AND WORTH READING ANYWAY.** This section
+> describes the tree as it stood when the record was Ambrose Halloran's: the only
+> trailer pair in the history named a retired survivor, and no honest change
+> could fix it. It was fixed the only way it could be — the session was played
+> again, for R11's sake as well as this one, and the new record was checkpointed
+> as it was made: `dossier`, then `creation`, then the session, then `final`, in
+> that order and in the history that carried the bytes.
+>
+> **The part that does not travel with the artifacts is the history itself.**
+> `checkpoint_commits` reads `git log --grep '^Playthrough-Checkpoint: ' HEAD`,
+> so the two checks that ask about the pair — *the lifecycle checkpoints are
+> about the survivor in the tree* and *the recording in the tree has a checkpoint
+> pair of its own* — are answered against whatever history they are run on. A
+> history that has been rebased, squashed or re-published without those two
+> commits carries no trailer for the record it delivers, and both checks then
+> report exactly that, correctly. It is not closable by committing again:
+> `commit_artifacts.sh dossier` and `creation` refuse the moment the session has
+> left any trace, precisely so that a checkpoint taken after the fact cannot
+> manufacture the right ancestry over the wrong history. Closing it needs a
+> session recorded and checkpointed in the history that publishes it.
+>
+> Everything below is the account of the earlier state, kept because the
+> structural cause it identifies is what the committer was fixed for.
+
 The trailer commits do not describe the survivor whose evidence the tree
 carries, and no honest change fixes it.
 
@@ -1904,8 +2242,30 @@ grow without fabricating captures, and the only `creation` checkpoint in the
 history is Delphine's. The committer therefore refuses a `final` here — which is
 the correct answer, arrived at for the right reason. The full three-step
 lifecycle is exercised end to end in `test_commit_artifacts.py`, whose fixture
-models real growth (4 rows at creation, 7 after the session), and the gate's
-post-commit phase reaches 111 of 111 on a fully committed tree.
+models real growth (4 rows at creation, 7 after the session).
+
+**The count this paragraph originally carried — the post-commit phase reaching
+111 of 111 on a fully committed tree — has since moved three times, and is
+corrected here rather than left to be believed.** It became 114, then 117, and
+the audit now declares **120** across the two phases (106 before a commit, 31
+after one). A later pass also turned this very divergence from the `WARN` quoted
+above into a **`FAIL` of its own**, which is why a tree carrying a retired
+survivor's pair measured **113 of 114 with one failure** on Sunday, August 9,
+2026: `VERIFY_CHECKS=114 VERIFY_PASSES=113 VERIFY_FAILURES=1 VERIFY=fail`. The
+session shipped here WAS checkpointed as it was made — `dossier`, `creation`,
+play, `final`, in that order — so whether these two checks can see it is a
+property of the history the artifacts arrive in, not of the artifacts. Measured
+over the history as published here on 2026-08-10:
+`VERIFY_CHECKS=120 VERIFY_PASSES=117 VERIFY_FAILURES=3`, the three being the
+repository-local identity this host does not permit setting and both lifecycle
+checks, because the newest trailer pair reachable from HEAD is `7e10721d4e` /
+`4e8a49879a` — *Fern Creek / Delphine Ouellette*, a retired recording — while
+HEAD carries *Barrows / Odette Vachon*. Both verdicts are true statements about
+that history and are meant to read red rather than be talked away; every one of
+the other 117 properties holds, and the frames, the record, the films, the
+transcripts and the save are the session's own. See *Closed, with one condition:
+the recording's own checkpoint pair* and *Open: the repository-local identity is
+set per checkout* below.
 
 Two reconstruction attempts are recorded so nobody repeats them. Delphine's
 `final` checkpoint *does* have legitimate row growth, 194 to 419, but that
@@ -2242,7 +2602,8 @@ taken there:
     $ git config --local --list | grep -c '^user\.'
     0
     $ git config --show-origin --get user.name
-    file:/root/.gitconfig   Blitzy Agent
+    file:<the operator's global git configuration, outside this
+    checkout>   Blitzy Agent
     $ git var GIT_AUTHOR_IDENT
     Blitzy Agent <agent@blitzy.com> 1786095278 +0000
 
@@ -2442,7 +2803,7 @@ session length. Expanding the glob in the shell first would be the version of
 "batching" that has a limit to respect. Nothing here rewrites history, amends,
 forces, pushes, tags, resets or cleans.
 
-## Frame 397 correction after the death ending
+## RETIRED: frame 397 correction after the death ending (419-frame record, Delphine Ouellette)
 
 **Recorded on Thursday, August 6, 2026.** Frame 397's `y` was chosen while
 Delphine was still visible in the crush, as one more attempt to break the
@@ -2460,7 +2821,20 @@ whose action responds to the observed last-words screen, and the engine's
 graveyard and memorial artifacts establish that Delphine died at 08:30:48 on
 Thursday, May 20 in the game. No row was rewritten after the fact.
 
-## AAP R11: the ending is legitimate, and the Save & Quit element is UNMET
+## RETIRED: AAP R11, the ending is legitimate and the Save & Quit element is UNMET (419-frame record, Delphine Ouellette)
+
+**Which capture set this section is about, and what has since changed.**
+Everything below was measured against the **419-frame** set played by Delphine
+Ouellette. That set is retired. The verdict in this heading — UNMET — was
+reached against a record whose post-death screens were appended after the fact,
+and against the **326-frame** Ambrose set, whose ending path was cut short by a
+signal so that `cleanup_at_end()` never ran at all. **Neither is the shipped
+record.** The 305-frame set now in the tree runs the engine's own ending path to
+completion and exits through the menu's own quit; what that satisfies, and why
+`ACTION_SAVE` is still unreachable after any death, is set out at *[The shipped
+session: Odette Vachon](#the-shipped-session-odette-vachon)*. The engine
+analysis below is unchanged and still correct — it is the reason the shipped
+record takes the ending it takes.
 
 R11 has two parts, and this record satisfies one of them. Stating which is
 which, with the reason, is the whole point of this section.
@@ -2545,7 +2919,7 @@ re-runnable the moment it has a supported one.
 
 ---
 
-## Runtime QA remediation of the 419-frame record
+## RETIRED: runtime QA remediation of the 419-frame record (Delphine Ouellette)
 
 **Recorded on Thursday, August 6, 2026.** A runtime QA pass drove the shipped
 capture chain end to end — launch and configuration, the whole Custom Character
@@ -3952,15 +4326,24 @@ refusal**, and both halves of the requirement hold at once:
   is listed in one message, and `render_srt` refuses per cue on its own account,
   so a caller assembling cues by hand cannot get past it either.
 
-The committed cue file is now 104 one-line and 315 two-line cues, longest line
-42 columns, and re-running the generator over the committed timeline reproduces
-both artifacts byte-for-byte. `test_make_srt.py` and `test_manifest.py` gained
+The committed cue file held 104 one-line and 315 two-line cues when that pass
+measured it, which was the 419-cue set; **recounted on the shipped file on
+2026-08-10 it is 71 one-line and 255 two-line cues, 326 in all**, longest line
+still 42 columns. Re-running the generator over the committed timeline
+reproduces both artifacts byte-for-byte. `test_make_srt.py` and `test_manifest.py` gained
 six tests between them for the refusal and the new vocabulary, and
 `test_artifacts.py`'s assertion that no line cap may exist — which was the
 defect codified as a test — now asserts the cap's value and the absence of an
 elision mark instead.
 
 ### The ending is a death, and the engine has no Save & Quit after one
+
+**Which capture set this section is about.** The rows it cites are the
+**419-frame** set's, which is retired. The engine argument is set-independent and
+still holds: no keystroke reaches `ACTION_SAVE` after a death, on either
+post-death branch. What the shipped 305-frame record does with that fact — run
+the ending path to completion rather than stop inside it — is at *[The shipped
+session: Odette Vachon](#the-shipped-session-odette-vachon)*.
 
 The review's last finding reads that rows 415–419 walk the post-death screens to
 the main menu and that no in-game Save & Quit follows, the only save command in
@@ -4118,8 +4501,10 @@ each keystroke, and row 84's commentary — which had claimed *"That is the whol
 of me on one page"* over a page that had come back unchanged — now reads *"That
 did nothing. The page is exactly as I left it."*
 
-This supersedes the third blemish disclosed in *Three blemishes in this record*:
-that entry said rows 78–84 recorded keystrokes that had no effect, which was
+This supersedes the first blemish disclosed in *Four blemishes in this record*
+(item 1 there, not item 3 — an ordinal this sentence had wrong until the
+2026-08-10 remediation pass): that entry said rows 78–84 recorded keystrokes
+that had no effect, which was
 true but incomplete — the rows also described a screen that was not there.
 
 **What the closing frames actually show (amendments 8–14, findings F2, F3, F4).**
@@ -4310,6 +4695,34 @@ unsolicited `/favicon.ico` probe.
 
 ### R11's Save & Quit: already documented as UNMET, and this record stops one screen earlier than the last one
 
+**RETRACTED IN TWO PLACES, and about a retired set throughout.** Everything
+below is about the **326-frame** Ambrose Halloran set, which is not in the tree.
+Two of its claims are withdrawn rather than merely superseded:
+
+* **Its closing paragraph cites `7e10721d4e` and `4e8a49879a` as "R1's own
+  commits" for that session. They are not.** Those two are **Delphine
+  Ouellette's** checkpoint pair, from the set retired before Ambrose's. Ambrose's
+  session had no checkpoint pair of its own, which is precisely the defect a
+  later review recorded as M-02. The shipped set's real pair is
+  `57ee8afc3498ff12973cae284c16e1ae700bf089` (creation) and
+  `7b7673677eb70a7466cb5618152590daa3209ed4` (final), both naming Barrows /
+  Odette Vachon.
+* **Its reading of the signalled tree as resumable is withdrawn.** It states
+  that "`session.py probe` will still report `SESSION_MODE=resume` for him" and
+  treats the live-shaped save as the thing that satisfies R1. That behaviour was
+  a defect, not a property: a save left live-shaped for a survivor the record
+  shows dead is not resumable, and reporting it as such invited a second session
+  to be layered onto a dead one. `probe_save_resume()` now refuses that tree and
+  says how to recover from it. The two follow-on defects found while recording
+  the shipped session — the refusal firing on a session recording *its own*
+  death, and the death proof reading raw rows so the amendment ledger could not
+  correct it — are described at *[The shipped session: Odette
+  Vachon](#the-shipped-session-odette-vachon)* and were fixed in `a4df06c275`.
+
+The engine reasoning below, and the disk evidence for exactly where the signal
+stopped the process, are kept because they are what established that a
+signalled ending cannot stand.
+
 The pass re-raised R11's missing exit. It is a real divergence, it was already
 recorded as one, and nothing here revisits that verdict: *AAP R11: the ending is
 legitimate, and the Save & Quit element is UNMET* is the authority on why no
@@ -4351,7 +4764,7 @@ files out to `graveyard/`, then clear the world folder of everything but
 `worldoptions.json`, `mods.json` and the dictionaries
 \[src/worldfactory.cpp:2449-2456, :2458-2496\].
 
-That revises item 3 of *Three blemishes in this record*, which reads the missing
+That revises item 3 of *Four blemishes in this record*, which reads the missing
 `graveyard/` as purely a cost. The cost is real and the caveat stands — the
 engine never ran its post-death housekeeping, `save/Apshawa/` therefore holds a
 live-shaped save for a dead man, and `session.py probe` will still report
@@ -4374,8 +4787,37 @@ needs §0.8.2 relaxed to authorise another session.
 
 ### The provenance anchor is refusing a re-composition, not the film's artwork
 
-`tileset_provenance.py verify --directory 'gfx/MShockXotto+'` exits 1 on this
-host and names two files:
+> **CLOSED, AND CLOSED THE ONE HONEST WAY.** The section below is the analysis of
+> the divergence; it ends by naming two routes and refusing to take either
+> casually. The second was then taken deliberately: the pack was re-composed from
+> the pinned authoritative upstream commit `6e864adbd2c5` with this repository's
+> own `tools/format/json_formatter.cgi` and `tools/gfx_tools/compose.py`, every
+> composer-produced file was confirmed byte-identical to the cache and the
+> non-composer files byte-identical to upstream, and the anchor was then formally
+> re-derived — `tree_sha256 7d853c21de2e…` over 22 files — and the pack installed
+> at `gfx/MShockXotto+`. The film shipped here was rendered against that pack.
+>
+> Measured after the re-derivation:
+>
+> ```console
+> $ "$PLAYTHROUGH_PYTHON" -B playthrough/tooling/tileset_provenance.py verify \
+>       --directory 'gfx/MShockXotto+'
+> TILESET_PROVENANCE=verified
+> TILESET_PROVENANCE_TREE_SHA256=7d853c21de2e9281258d144409f104f58b14e8ece5dfdf3b724213702e3be3fe
+> TILESET_PROVENANCE_FILES=22
+> TILESET_PROVENANCE_UPSTREAM_COMMIT=6e864adbd2c5d0e68f8517b34e3c7d58eb22747d
+> ```
+>
+> `launch_game.sh tileset` reports `origin=required-installed` with the anchor
+> VERIFIED, the acceptance gate's four artwork checks pass, and
+> `test_tileset_provenance` is 58 tests with one skip rather than an error. The
+> reasoning below is kept because it is what a reader needs the next time a pack
+> and an anchor disagree: the artwork is checked first, a generated index is not
+> the artwork, and an anchor is re-derived deliberately and on its own or not at
+> all.
+
+`tileset_provenance.py verify --directory 'gfx/MShockXotto+'` exited 1 before
+that, naming two files:
 
 ```
 - 'SHA256SUMS' hashes to 9c3d302f4acb…; the anchor names ac372c1947e7…
@@ -4656,9 +5098,38 @@ wrong.
 | Distribution | Ubuntu 24.04 noble | `Ubuntu 25.10` questing, `VERSION_ID="25.10"`, `uname -srm` → `Linux 6.12.85+ x86_64` | questing is past end of life, so every stage runs under an explicit logged waiver — see "Every stage ran under an explicit, logged platform waiver" above |
 | SDL3 availability | "packages no SDL3 at all"; `apt-cache policy libsdl3-dev` returns nothing | `libsdl3-dev` **is** packaged: `Candidate: 3.2.20+ds-2`, `Installed: (none)`; `pkg-config --exists sdl3` exits `1` | `SDL3=0` is still mandatory, but because 3.2.20 is **below** the Makefile's `--atleast-version=3.4.0` gate, not because the package is missing |
 | ImageMagick | 6.9.12-98 legacy branch; "the v7 unified `magick` entry point does **not** exist" | `ImageMagick 7.1.2-3 Q16 x86_64` (apt `8:7.1.2.3+dfsg1-1ubuntu0.1`); `/usr/bin/magick` **exists**, and so do `convert`, `identify`, `import`, all four as `/etc/alternatives` symlinks | the opposite of the warning: IM7 is installed *and* keeps the legacy names, so the pipeline's `convert`/`import`/`identify` calls work unchanged. `magick` and `convert` were checked to agree to the last digit on the same frame |
-| Memory and swap | ~3.85 GiB RAM, zero swap | `MemTotal: 4029526764 kB` = 3.75 **TiB**; `SwapTotal: 8388604 kB` on `/swapfile` | the memory ceiling that forced `-j3` does not exist here; the parallelism limit is CPU, not RAM |
+| Memory and swap | ~3.85 GiB RAM, zero swap | **`/proc` is not namespaced here, so it answers for the machine and not for this container.** It reports `MemTotal: 4029526764 kB` = 3.75 **TiB** and, remeasured 2026-08-10, `SwapTotal: 6291452 kB` = 6 GiB (an earlier reading of `8388604 kB` on `/swapfile` was correct when taken; the host's swap has changed since). The container's own figures come from its cgroup, `/sys/fs/cgroup/$(cut -d: -f3 /proc/self/cgroup)/`: `memory.max` `137438953472` = **128 GiB**, `memory.swap.max` **`0`**, `cpu.max` `400000 100000` = **4 CPUs** | the memory ceiling that forced `-j3` does not exist here — 128 GiB is the cap, not 3.85 — so the parallelism limit is CPU, not RAM. Read the cgroup, never `free` or `/proc/meminfo`, when the question is what this container may use |
 | CPU count | 128 CPUs | `nproc` → `4`, `nproc --all` → `128`, `getconf _NPROCESSORS_ONLN` → `128` | the pod's cgroup gives four usable CPUs out of 128 present. Size a build from `nproc`, never from `nproc --all` |
 | tesseract / ffmpeg | 5.3.4 / 6.1.1 | `tesseract 5.5.0` with `leptonica-1.84.1`; `ffmpeg`/`ffprobe` `7.1.1-1ubuntu4.2` | newer on both counts; the OCR figures in the plan were taken against 5.3.4 and are not reproduced here (see the render-path section) |
+
+**Node capacity and pod capacity are two different numbers here, and only one
+of them can be probed.** This matters because an earlier version of this table
+printed the node's memory beside the plan's pod-sized figure as though they were
+rival measurements of one thing, and it printed a swap total that no probe on
+this host returns.
+
+* **What `/proc/meminfo` reports is the NODE, not this container.** `/proc` is
+  not namespaced for memory, so `MemTotal: 4029526764 kB` (3.75 TiB) and
+  `MemAvailable: 3804147244 kB` are the whole machine's. `free -h` agrees
+  (`3.8Ti` total) because it reads the same file. Sizing a build from either
+  would be sizing it from hardware this process cannot have.
+* **Swap is 6.0 GiB, not 8.** `SwapTotal: 6291452 kB` in `/proc/meminfo`, and
+  `/proc/swaps` lists exactly one backing store, the file `/swapfile`, at the
+  same `6291452` kB. The `8388604 kB` this table used to carry is not a figure
+  any probe on this host returns; it has been removed rather than reconciled.
+* **The pod's own memory limit cannot be read from inside it.** Every
+  `/sys/fs/cgroup/memory.max`, `memory.high` and `memory.swap.max` is **absent**
+  at this container's cgroup root, and so is `cpu.max`; `/proc/self/cgroup`
+  places it under
+  `kubepods.slice/kubepods-burstable.slice/kubepods-burstable-pod…`, and a
+  *burstable* pod is one whose limits may be unset. So the pod's memory
+  allowance is a **platform declaration** rather than a measurement: the setup
+  record states 3.9 GiB, and this page cannot confirm or contradict it.
+* **The consequence for `-j`.** The plan's `-j3` was justified by ~3.85 GiB of
+  RAM, which is close to the platform's declared pod allowance. Nothing measured
+  here disproves that reasoning — the node's 3.75 TiB is simply not the
+  relevant number, and the pod's is not visible. The binding limit that *is*
+  measurable is CPU: `nproc` returns 4.
 
 The rest of the inventory, measured the same way: `make` 4.4.1,
 `pkg-config` 1.8.1, `ccache` 4.11.2, `msgfmt` (GNU gettext-tools) 0.23.1,
@@ -4788,9 +5259,12 @@ difference.
 * **`nproc` is 4 and `nproc --all` is 128 on this host.** Neither figure feeds
   `-j` anywhere in the tooling. They are worth knowing only because they
   explain why nothing here wants `-j$(nproc --all)`: `make -j128` on four
-  usable CPUs is slower than `make -j4`, not faster, and the machine's 3.75 TiB
-  of RAM and 8 GiB of swap mean the memory argument for the cap is inherited
-  from the plan's host rather than measured on this one.
+  usable CPUs is slower than `make -j4`, not faster. The memory half of the
+  plan's argument for the cap can be neither confirmed nor refuted from inside
+  this container — `/proc/meminfo` reports the node (3.75 TiB, 6.0 GiB of swap)
+  and the pod's own `memory.max` is absent — so it is inherited from the plan's
+  host rather than measured on this one. The separation of the two is set out at
+  *The host this file was written on, measured rather than assumed*.
 
 **Four `make` variables must never be passed.** The first two are stated by
 the plan; the second two are the ones that would break this feature
@@ -5301,12 +5775,18 @@ itself wrote — five of its 175 entries, and the last four are the reason the
 answer is not the obvious one:
 
 ```json
-{ "name": "TILES",             "value": "MshockXottoplus" }
-{ "name": "USE_DISTANT_TILES", "value": "false"           }
-{ "name": "DISTANT_TILES",     "value": "ASCIITiles"      }
-{ "name": "USE_OVERMAP_TILES", "value": "true"            }
-{ "name": "OVERMAP_TILES",     "value": "Larwick Overmap" }
+[
+  { "name": "TILES",             "value": "MshockXottoplus" },
+  { "name": "USE_DISTANT_TILES", "value": "false"           },
+  { "name": "DISTANT_TILES",     "value": "ASCIITiles"      },
+  { "name": "USE_OVERMAP_TILES", "value": "true"            },
+  { "name": "OVERMAP_TILES",     "value": "Larwick Overmap" }
+]
 ```
+
+(Five entries of the array `options.json` holds, quoted as a valid JSON
+fragment; the file itself carries the same objects with their `info` and
+`default` fields, in one array.)
 
 `DISTANT_TILES = ASCIITiles` looks like ASCII art in the film until the
 prerequisite chain is read: `get_option( "DISTANT_TILES" ).setPrerequisite(
@@ -5687,10 +6167,14 @@ entries carrying their own `duration` lines. MoviePy stays genuinely
 load-bearing — it does the fade arithmetic and the text composition — while
 ffmpeg remains the only encoder.
 
-Measured in the committed tree: two transition groups,
-`build/transitions/trans_00315_*.png` and `trans_00316_*.png`, twelve images
-each, 24 in total, and 24 references in the concat list. That count is not a
-coincidence — see the timeline paragraph below.
+Measured in the committed tree: three transition groups,
+`build/transitions/trans_00195_*.png`, `trans_00198_*.png` and
+`trans_00210_*.png`, twelve images each, 36 in total, and 36 references in the
+concat list. The three group indices are not chosen — they are exactly the
+three timeline entries whose raw clock delta exceeded the ten-second ceiling
+(frame 195 at 10,794 s, frame 198 at 21,601 s and frame 210 at 47 s), so the
+group count and the flag count are the same number by construction. That
+count is not a coincidence — see the timeline paragraph below.
 
 #### MoviePy 2's API invalidates essentially every v1 example
 
@@ -5954,6 +6438,17 @@ hold on this host, and a global zero is achievable here and was achieved.
 Both numbers are recorded so a future reader can tell which situation they
 are in.
 
+**Superseded on 2026-08-10 as to which situation this host is in.** The
+`flake8` reached by `PATH` is now `/usr/local/bin/flake8` **7.3.0** (pyflakes
+3.4.0), not the apt 7.1.1 measured above, and under it the bare repository-wide
+run reports the four pre-existing `F824` findings and `make python-check` exits
+non-zero. The apt candidate is still `7.1.1-3` on this release, so both linters
+are reachable and the two measurements above and below are each true of their
+own tool. The scoped criterion `flake8 playthrough/` reports zero findings under
+either. The current numbers are in the paragraph headed *Re-measured 2026-08-10,
+because both the surface and the linter moved* and in *Recounted on Monday,
+August 10, 2026, and the figures above are superseded*.
+
 #### CodeQL-safe by construction
 
 The `python` leg of `.github/workflows/codeql-analysis.yml` scans this tree —
@@ -6070,6 +6565,66 @@ that combined them added a few more where two fixes met.
 The figures sum to **2284** and the discovery run collects 2284, which is the
 check that no module was silently missed.
 
+**Two defects the phase split left behind, found by running each phase
+rather than by reading the code.** `--phase post-commit` performed exactly the
+31 checks it declares and then FAILED its own inventory, reporting *"31 distinct
+of 120 declared"*: the per-group table was selected with `tracking_phase()`,
+which is true for `all` **and** for `post-commit` because it means "this phase
+measures the history", so the shorter phase was compared against the whole
+audit's table. Underneath that sat the reason the comparison was meaningless
+either way — `group()` numbered groups by their turn in the run, so in a phase
+where six groups do not run, version control opened as *group 2* and
+`register_check` filed its seventeen verdicts under group 2's ledger. Both are
+fixed: the table is chosen by `${PHASE}` in a three-way `case`, and `group` takes
+its own number, so a post-commit report now reads `=== 1.`, `=== 7.`, `=== 9.`,
+`=== 10.` and is directly comparable with a full one. Measured after the fix:
+`--phase all` 120 of 120 with 119 passes, `--phase pre-commit` 106 of 106 with
+105, `--phase post-commit` 31 of 31 with 29 — the one failure in each being the
+repository-local identity, and the second in the post-commit run being the
+uncommitted gate file the fix itself was in.
+
+**Recounted on Monday, August 10, 2026, over the integrated tree**, after three
+further code-review remediations — the capture and configuration pass, the
+scripting and test-surface pass, and the performance and documentation pass —
+were combined and their seams repaired:
+
+```console
+$ . playthrough/tooling/env.sh
+$ "$PLAYTHROUGH_PYTHON" -B -m unittest discover -s playthrough/tooling \
+      -p 'test_*.py'
+Ran 3017 tests in 1427.759s
+OK (skipped=1)
+```
+
+Per module, counted the same mechanical way — `TestLoader.loadTestsFromName`
+then `countTestCases()`:
+
+| Module | Tests | | Module | Tests |
+| --- | ---: | --- | --- | ---: |
+| `test_artifacts` | 122 | | `test_preflight_capture` | 22 |
+| `test_capture` | 109 | | `test_readme` | 54 |
+| `test_commit_artifacts` | 213 | | `test_render_movie` | 136 |
+| `test_embed_captions` | 113 | | `test_run_pipeline` | 106 |
+| `test_env` | 178 | | `test_seed_options` | 125 |
+| `test_launch_game` | 198 | | `test_session` | 225 |
+| `test_make_srt` | 133 | | `test_sidebar_geometry` | 78 |
+| `test_make_transitions` | 104 | | `test_supported_env` | 36 |
+| `test_manifest` | 245 | | `test_tileset_provenance` | 58 |
+| `test_ocr_clock` | 195 | | `test_timeline` | 374 |
+| | | | `test_verify_artifacts` | 193 |
+|  |  | | **total (21 modules)** | **3017** |
+
+**The per-module figures sum to 3017 exactly, which equals the discovery run's
+own `Ran 3017 tests`** — the same agreement check as before. Two figures are
+worth calling out because they are where the combining showed: the gate's suite
+went to **193** (the caption comparison, the recalibrated rationale contract, the
+phase split and the frame-geometry reachability all have cases of their own), and
+the sequencer's to **106** (the dependency closure, the lifecycle preflight, the
+capacity model and the run receipt). The single skip is
+`test_tileset_provenance...test_an_unreadable_file_is_refused`, declining because
+this account ignores file modes; the error the previous recount carried is gone,
+because the artwork anchor was re-derived and now verifies.
+
 #### Re-measured on Sunday, August 9, 2026, after the staging pass on `commit_artifacts.sh`
 
 The block above is dated on purpose and is left exactly as it was measured. This
@@ -6122,16 +6677,120 @@ FAILED (errors=1, skipped=5)
   list (only `E265, W504` are), so a continuation must break **after** a binary
   operator, never before it.
 
-**Shell and lint, measured in the same pass.** The surface is **five** `.sh`
-files — `capture.sh`, `commit_artifacts.sh`, `embed_captions.sh`, `env.sh`,
-`launch_game.sh` — and **24** `.py` files, nine modules plus fifteen test
-modules. `shellcheck` 0.10.0 reports **0** findings over all five at `-S style`
-*and* at `-x`; `bash -n` is clean on all five; `flake8` 7.1.1 reports **0**
-findings for `flake8 playthrough/`; `make python-check` exits 0 with no output
-beyond its own command echo, i.e. clean repository-wide; and every one of the 24
-modules compiles under `python -B -c "compile(...)"` while creating **zero**
+**Shell and lint, measured in the same pass.** The surface then was **five**
+`.sh` files — `capture.sh`, `commit_artifacts.sh`, `embed_captions.sh`,
+`env.sh`, `launch_game.sh` — and **24** `.py` files, nine modules plus fifteen
+test modules. `shellcheck` 0.10.0 reported **0** findings over all five at
+`-S style` *and* at `-x`; `bash -n` was clean on all five; `flake8` 7.1.1
+reported **0** findings for `flake8 playthrough/`; and every one of the 24
+modules compiled under `python -B -c "compile(...)"` while creating **zero**
 `__pycache__` directories, which is the byte-compile form used precisely because
 `python -m py_compile` writes the `.pyc` whatever `-B` says.
+
+#### Re-measured on Monday, August 10, 2026, after the session was re-recorded and the death-ending gates were fixed
+
+The two blocks above are dated on purpose and are left exactly as they were
+measured. **This is the current measurement**, taken after the pass that
+re-recorded the session as Odette Vachon and fixed the three defects that pass
+exposed — a session unable to record its own death, an acceptance gate that
+demanded a live world after one, and a committer that would not commit the
+render:
+
+```console
+$ for f in playthrough/tooling/test_*.py; do python -B "$f"; done
+20 modules, 2681 tests, every module OK, one skip
+```
+
+**Measured per module rather than by one discovery run, and the reason is worth
+recording.** A single `unittest discover` over the whole folder DID complete here
+at an earlier point in this pass — `Ran 2677 tests in 1013.201s`, `OK
+(skipped=1)` — but a later re-run of it was killed part-way through, leaving no
+verdict at all. One process per module costs a little more wall clock and buys
+two things: a death takes one module's result with it instead of the whole
+sweep's, and a failure is already isolated to a file when you read it. The
+2677-test figure above and the 2681 here differ by the four tests added in
+this pass to `test_verify_artifacts.py` — two for the death-ending save shape's
+harness guard and two for the report's trailing whitespace.
+
+Per module, and these are the numbers each module's own run reported:
+
+| Module | Tests | | Module | Tests |
+| --- | ---: | --- | --- | ---: |
+| `test_artifacts` | 122 | | `test_preflight_capture` | 22 |
+| `test_capture` | 109 | | `test_render_movie` | 122 |
+| `test_commit_artifacts` | 154 | | `test_run_pipeline` | 51 |
+| `test_embed_captions` | 105 | | `test_seed_options` | 125 |
+| `test_env` | 169 | | `test_session` | 213 |
+| `test_launch_game` | 198 | | `test_sidebar_geometry` | 78 |
+| `test_make_srt` | 131 | | `test_supported_env` | 36 |
+| `test_make_transitions` | 104 | | `test_tileset_provenance` | 58 |
+| `test_manifest` | 245 | | `test_timeline` | 361 |
+| `test_ocr_clock` | 195 | | `test_verify_artifacts` | 83 |
+|  |  | | **total (20 modules)** | **2681** |
+
+**The per-module figures sum to 2681, and every one of the twenty modules
+reported `OK`.** The sum is the check that no module was silently skipped: the
+folder holds exactly twenty `test_*.py` files, and twenty verdicts were
+collected.
+
+**Four modules exist that the August 7 table does not list** —
+`test_preflight_capture`, `test_run_pipeline`, `test_supported_env` and
+`test_verify_artifacts` — which is why "16 modules" there and "20 modules" here
+are both correct as dated statements. The three largest movements since are
+`test_session` 180 → 213 (the phase-scoped resume veto and the amendment-aware
+death proof), `test_commit_artifacts` 88 → 154 (the staging pass, then the
+render-only `final` carve-out), and `test_verify_artifacts` 21 → 83 (the
+lifecycle, closure, diagnostics, durability and inventory gates, then the
+death-ending save shape and the harness guard below).
+
+**The one skip is unchanged and still named rather than smoothed.** It is
+`test_tileset_provenance.EveryFailureToReadIsARefusal.test_an_unreadable_file_is_refused`,
+whose own message reads *running as a user that ignores file modes*: a test that
+removes read permission and expects a refusal cannot assert anything as root, so
+it declines instead of passing vacuously. Every other conditional skip in the
+suite fires only when an artifact is **absent**, and this checkout holds the
+complete set, so none of them fired.
+
+#### Running the suites used to delete the committed acceptance report
+
+Found by running them. The full sweep above completed `OK`, and `git status`
+afterwards read `D playthrough/acceptance-report.txt` — a committed artifact,
+removed by a green test run.
+
+The cause is one correct behaviour meeting one careless harness.
+`publish_report` in `verify_artifacts.sh` **removes** a stale
+`playthrough/acceptance-report.txt` whenever a run fails, and its reason is
+sound: *"a report from an earlier run must not stand as evidence for the
+artifacts as they are now"*. Several tests in `test_verify_artifacts.py` make
+the gate fail deliberately — an unresolvable linter, a world-writable
+`PLAYTHROUGH_FLAKE8` override — and `GateInvocation` runs the **real** script
+with `cwd` at the **real** repository root. So the refusals worked, the tests
+passed, and the artifact went. Isolated exactly:
+
+```console
+$ python -B playthrough/tooling/test_verify_artifacts.py -k LintCheck
+Ran 4 tests in 75.911s
+OK
+$ git status --porcelain -- playthrough/acceptance-report.txt
+ D playthrough/acceptance-report.txt
+```
+
+`GateInvocation`'s own docstring already claimed the property it did not have
+— *"Run the real gate, and prove it changed nothing by doing so"*. It now has
+it: `run_gate` takes the report out of the way before every invocation and
+writes it back byte-for-byte afterwards, in a `finally`, so a failing
+assertion cannot skip the restoration. Removing it first rather than
+restoring it later is deliberate — the gate then finds nothing to remove and
+nothing to overwrite, so no run from the suite can publish a report either,
+and there is no window in which a reader sees a half-written one.
+
+The production behaviour is untouched, because it is the right behaviour; what
+changed is that the test suite no longer exercises it against the real tree.
+Two tests hold the guarantee, one of them by making the gate fail and then
+asserting the report's bytes are unchanged. **Verified after the fix:** the
+whole suite runs `83 tests ... OK` and `git status` reports nothing for the
+report, whose digest is `0591e2a39ae7…` before and after — and the same holds
+across a sweep of all twenty modules, which is the case that first exposed it.
 
 #### The declared versions, exactly as installed
 
@@ -6196,12 +6855,12 @@ M       .gitattributes
 M       .gitignore
 
 $ git diff --name-only f38c2fbae3..HEAD | awk -F/ '{print $1}' | sort | uniq -c | sort -rn
-    522 playthrough
+    434 playthrough
       1 .gitignore
       1 .gitattributes
 
 $ git diff --name-status f38c2fbae3..HEAD | awk '{print $1}' | sort | uniq -c
-    522 A
+    434 A
       2 M
 
 $ git diff --stat f38c2fbae3..HEAD -- .gitignore .gitattributes
@@ -6210,8 +6869,11 @@ $ git diff --stat f38c2fbae3..HEAD -- .gitignore .gitattributes
  2 files changed, 26 insertions(+)
 ```
 
-524 changed paths: 522 additions, all under `playthrough/`, and two
-modifications. **Zero deletions** — no `D` in the status tally. Nothing under
+436 changed paths: 434 additions, all under `playthrough/`, and two
+modifications. **Zero deletions** — no `D` in the status tally. (An earlier
+version of this section read 524 and 522; those were the retired 419-frame set's
+figures, and the difference is almost entirely the capture count.) Nothing
+under
 `src/`, `tests/`, `data/`, `gfx/`, `lang/`, `doc/`, `tools/`,
 `build-scripts/`, `Makefile`, `CMakeLists.txt`, `CMakePresets.json`,
 `.flake8`, `pyproject.toml`, `.astylerc` or `.github/`. And both
@@ -6247,6 +6909,43 @@ comment says its intent is to normalise explicitly rather than rely on
 detection [.gitattributes:33-34, "binary is a macro for -text -diff"], which
 is exactly what extending it for new artifact types does.
 
+#### Every one of those 436 paths, mapped to what owns it
+
+The platform's processed-file inventory carries **32 entries** for these 436
+paths, because it records one **representative** per repeating class rather than
+one per file — `frames/frame_00001.png` stands for every capture, and one
+`build/transitions/trans_*.png` for every transition image. A reader comparing
+the two lists directly will therefore find hundreds of paths with no entry of
+their own, which is the convention working as intended and not a gap. What was
+genuinely missing is this table: the mapping that lets all 436 be accounted for.
+
+| Class | Paths | Owned by |
+| --- | ---: | --- |
+| `playthrough/frames/frame_*.png` | 305 | the session — exactly one capture per keystroke, written by `capture.sh` through `session.py` |
+| `playthrough/build/transitions/trans_*.png` | 36 | `make_transitions.py` — three groups of twelve, one group per timeline entry over the ceiling |
+| `playthrough/tooling/*` (non-test) | 23 | authored tooling: the 10 Python modules, the 9 shell scripts, `requirements.txt`, `requirements.lock`, `tileset_provenance.json` and `environment/Dockerfile` |
+| `playthrough/tooling/test_*.py` | 20 | the tooling's own suites, one per module |
+| `playthrough/*` (narrative and media) | 11 | `README.md`, `TECHNICAL_NOTES.md`, `dossier.md`, `transcript.md`, `transcript.srt`, `manifest.jsonl`, `amendments.jsonl`, `timeline.json`, `cata-play.mp4`, `cata-play-cc.mp4`, `acceptance-report.txt` |
+| `userdir/graveyard/<timestamp>/*` | 11 | the **engine**, via `move_save_to_graveyard()` at death |
+| `playthrough/build/*` (receipts) | 7 | the pipeline's own stage receipts: `concat.txt`, `movie.json`, `transcript.json`, `transitions.json`, `frame_digests.jsonl`, `frame_dates.jsonl`, `observations.jsonl` |
+| `userdir/cache/**` | 7 | the engine |
+| `userdir/config/*` | 6 | the engine, with three values seeded by `seed_options.py` |
+| `userdir/memorial/**` | 3 | the engine, via `write_memorial_file()` |
+| `userdir/save/<World>/*` | 3 | the engine — what `WORLD_END=reset` left of the world |
+| `.gitignore`, `.gitattributes` | 2 | the only pre-existing tracked files this feature changes |
+| `userdir/achievements/*` | 1 | the engine, via `save_achievements()` |
+| `userdir/templates/*` | 1 | the engine, written by the character creator |
+| **total** | **436** | |
+
+**One inventory entry names a file that no longer exists**, and it is worth
+saying so rather than leaving a reader to discover it:
+`playthrough/build/transitions/trans_00001_00.png` was the representative
+recorded when the first capture set was processed. Transition groups are indexed
+by the frame whose delta exceeded the ceiling, so the index changes with every
+re-record; the shipped set's groups are `trans_00195_*`, `trans_00198_*` and
+`trans_00210_*`, and no `trans_00001_*` has existed since. It is the only
+inventory entry not present in the current changed set.
+
 The consequence for CI is that almost every gate sees nothing it can act on:
 with no C++, JSON or CMake change, the astyle, json, cmake-format,
 clang-tidy, iwyu, matrix and MSVC workflows receive no eligible input. Two
@@ -6254,11 +6953,27 @@ gates are newly exercised — flake8 and the `python` leg of CodeQL — and both
 are satisfied by construction rather than by exemption, as the previous
 section measures.
 
-**And nothing at all gates a Markdown change, which is worth knowing before
-someone looks for the check that approved this page.** Measured across all 35
-workflow files: no workflow lists a `.md` path in its `paths:` filter, and
-there is no `markdownlint`, `mdl` or `remark-lint` anywhere in the tree. Two
-that might be assumed to apply do not — `linter.yml` (Code Style Reviewer)
+**"Nothing to act on" is not "not triggered", and an earlier version of this
+paragraph ran the two together.** Re-classified on 2026-08-10 across all 35
+workflow files by reading each `on:` block: **twelve** workflows fire on a push
+or pull request and declare **no `paths:` filter at all**, so every one of them
+starts on any commit here, prose included — `astyle.yml` and `json.yml` (both
+bare `on: pull_request`), `clang-tidy.yml`, `codeql-analysis.yml`, `iwyu.yml`,
+`matrix.yml`, `CBA.yml`, `pr-validator.yml`, and the four `pull_request_target`
+housekeepers `check-branch-name.yml`, `labeler.yml`,
+`label-first-time-contributor.yml` and `request-review.yml`. `msvc-full-features`
+filters by `paths-ignore`, and that list never names `playthrough/`,
+`.gitignore` or `.gitattributes`, so it matches too. They run and they pass,
+which is a different fact from not running, and it matters to anyone predicting
+a CI result from this page.
+
+**What is true is that nothing gates a Markdown change specifically, which is
+worth knowing before someone looks for the check that approved this page.**
+Measured across all 35 workflow files: no workflow lists a `.md` path in its
+`paths:` filter, and there is no `markdownlint`, `mdl` or `remark-lint` anywhere
+in the tree — so no gate reads this prose, even though the filterless workflows
+above are started by the commit that carries it. Two that might be assumed to
+apply do not — `linter.yml` (Code Style Reviewer)
 filters on `Makefile`, `.astylerc`, `**.json`, `**.cpp`, `**.h` and `**.c`
 [.github/workflows/linter.yml:6-14], and the spell check runs inside
 `text-changes-analyzer.yml`, whose filter is its own file plus
@@ -6299,8 +7014,8 @@ Blitzy Agent <agent@blitzy.com>
 ```
 
 Repository-local `user.name` and `user.email` are both empty and were left
-empty. The effective identity comes from a higher-scope configuration
-(`/root/.gitconfig`, outside this checkout) and is `Blitzy Agent
+empty. The effective identity comes from the operator's own **global** git
+configuration, outside this checkout, and is `Blitzy Agent
 <agent@blitzy.com>`; every one of the commits on this branch since the base
 carries exactly that author and committer.
 
@@ -6317,8 +7032,9 @@ resolved and never overwriting a pair the repository already carries — so the
 author and committer are byte-identical whether or not it ran, and it cannot
 override an attribution. What settled the earlier position was a measurement
 rather than a re-reading: inside the declared container, which mounts the
-checkout, reassigns `HOME` and forwards no `GIT_*`, an identity in
-`/root/.gitconfig` does not exist at all, so the gate's identity check reported
+checkout, reassigns `HOME` and forwards no `GIT_*`, an identity in the
+operator's global configuration does not exist at all, so the gate's identity
+check reported
 `user.name='' user.email=''` and a checkpoint exited 3. The local keys appear
 when a checkpoint is taken; the console block above shows a checkout where none
 had been. See *"The commit identity: the script now records it, in this
@@ -6447,7 +7163,10 @@ playthrough/tooling/commit_artifacts.sh        PRESENT
 
 The functional gap the old text described — "no single orchestrator and no
 single shell-level gate" — is closed. There is one sequencer over eight stages,
-one gate declaring 111 checks across two phases, and one committer taking three
+one gate declaring 120 checks across two phases — 111 when this was written,
+then 114, then 117, and every addition since is listed in the gate's own
+per-group table beside `GROUP_CHECKS_ALL` — and one
+committer taking three
 ordered checkpoints, each with its own regression suite. `test_artifacts.py`
 still holds the acceptance checks over the shipped artifacts and is unchanged by
 any of it; the shell gate is an addition to it, not a replacement.
@@ -6578,12 +7297,27 @@ cost time to learn:
 ### Corrections that supersede earlier sections of this page
 
 Collected in one place, because this page grew by accretion and a reader
-should not have to reconcile four capture sets by hand. Every figure below was
-re-measured in the pass that wrote this part; every superseded figure was
-correct when it was written.
+should not have to reconcile four capture sets by hand. Every superseded figure
+was correct when it was written.
+
+**This table is LAYERED, and reading it as a flat list of current facts is the
+one way to get it wrong.** Rows were appended pass by pass, so a row's
+"Current measurement" means *current at the pass that added it* — and several
+early rows were themselves superseded by later ones. The rule is simple: **the
+later row wins**, and the explicit divider below separates the rows measured on
+the retired 419-frame record from the rows measured on the shipped 326-frame
+one. Where a digest, a count or a chain is what you are after rather than a
+history of corrections, go to *The shipped derivative chain, as it stands*,
+which states the current values once, with the date they were taken.
+
+**Read the first row first.** The table below was written when the tree held
+Ambrose Halloran's 326-frame set, and its own top row announces that set as
+current. It no longer is. The row added above it on **Monday, August 10, 2026**
+supersedes it and everything downstream of it that carries a 326 or a 419.
 
 | Earlier statement | Where | Current measurement |
 | --- | --- | --- |
+| **the shipped session is Ambrose Halloran's, 326 frames, 218.500 + 1.000 = 219.500 s, with no amendment ledger, ended by a signal inside `death_screen()`** | **the row below, and every section it points at** | **superseded wholesale.** The tree holds a **305**-frame session played by **Odette Vachon** in **Barrows**, totalling **219.750 + 3.000 = 222.750 s**, with a **62**-entry amendment ledger. The reason is R11 again, from the other direction: Ambrose's ending path was cut short by a signal, so `cleanup_at_end()` never ran, there was no `graveyard/` or `memorial/`, and the tree kept a live-shaped save for a dead man. Odette's death ran the engine's whole ending path and every screen of it was captured. Derived artifacts: **305** cues (206 one-line, 99 two-line, longest line 42 columns), **305** transcript entries, **341** concat entries with the final `file` repeated to 342 lines, **3** transition groups of 12 frames (**36** images), **305** tracked PNGs, **342** encoded frames, container **222.800 s**. Digests, measured on the shipped tree: `manifest.jsonl` **`9307363ad4c0…`** 69 574 B and `build/observations.jsonl` **`096a7292e89b…`** — both byte-identical to the capture; `amendments.jsonl` **`1274d753815b…`** 54 615 B, 62 rows; `timeline.json` **`3c4339c0412f…`** 200 163 B; `transcript.md` **`374f6f0b97b2…`** 14 465 B, titled `# Odette Vachon — what I did, and why`; `transcript.srt` **`7dd7ec12a9f7…`** 19 462 B; `cata-play.mp4` **`990ad52b4710…`** 9 189 760 B; `cata-play-cc.mp4` **`a82d6ffb387d…`** 9 205 909 B; `build/concat.txt` **`c37bee284844…`** 16 692 B; `build/movie.json` **`26bae7499ea5…`** and `build/transitions.json` **`96ac1c53e770…`**. The gate's own verdict over this tree is committed at `playthrough/acceptance-report.txt`: **117 of 117** checks passed, which was its whole declared inventory then; the gate now declares **120** and the receipt is the run that published the record rather than a statement about the current inventory. Suites, recounted 2026-08-10 over the integrated tree: **3017** tests across **21** modules, `OK (skipped=1)`. See *[The shipped session: Odette Vachon](#the-shipped-session-odette-vachon)* |
 | **the shipped session is Delphine Ouellette's, 419 frames, 233.000 s, with a 27-entry amendment ledger** | **essentially this whole page** | **superseded wholesale.** The tree now holds a **326**-frame session played by **Ambrose Halloran**, totalling **218.500 + 1.000 = 219.500 s**, with **no** amendment ledger (there is nothing to amend: the record was written once and not corrected). Frames, manifest, telemetry, digest ledger, date audit, timeline, both transcripts, both films, the dossier and the userdir were all replaced. The reason is R11: Delphine died, `ACTION_SAVE` is unreachable after death, so the Save & Quit her artifacts implied had never happened — and a captured record cannot be edited into compliance. See *The re-recorded session: Ambrose Halloran* |
 | 419-frame counts of every derived artifact — SRT cues, transcript entries, concat entries, transition groups, tracked PNGs | throughout | **326** cues, **326** transcript entries, **338** concat entries, **1** transition group of 12 frames, **326** tracked PNGs |
 | 560 frames / 560 rows | the first session log | **419** frames, **419** manifest rows, **419** tracked PNGs, **419** SRT cues, **419** transcript entries — itself now historical; see the row above |
@@ -6592,15 +7326,15 @@ correct when it was written.
 | "246 of 395 clock readings were reconciled" | same | **204 of 419**, all with `reconciled_reason: clock-missing` |
 | the date line's weekday disagreement | its own section | this set reports `date_corrected_count` **0** and `date_conflict_count` **0**; 215 `confirmed`, 204 `unverified` |
 | two advisory hits on "frame" at rows 509/523; then **three** at rows 233/235/237 | the transcript-clean section | **none**: the blunt pattern, `frame` included, now returns nothing against `transcript.md`, `transcript.srt` or `dossier.md` — the published entries say `window`, which is the noun the game's own message used, supplied by amendments 9-11 of the ledger rather than by an edit to those three recorded rows |
-| 1377 tests across eleven test modules (and 152 earlier still), then 1992, then 2035, 2048, 1998 and 2222 in the individual remediation passes | the suite sections | **2284** tests across **sixteen** modules, `OK (skipped=1)` — see *The tooling's own suites, mechanically counted*, which names the one skip and reconciles every intermediate figure. Each was correct for the tree it was measured in; this one is measured on the integrated tree |
-| "four AAP artifacts do not exist", then "three" | its own section | **none**: `run_pipeline.sh`, `verify_artifacts.sh`, `commit_artifacts.sh` and `playthrough/README.md` all exist, each of the three scripts with its own suite (37, 21 and 142 tests) |
+| 1377 tests across eleven test modules (and 152 earlier still), then 1992, then 2035, 2048, 1998 and 2222 in the individual remediation passes | the suite sections | 2284 across sixteen modules when this row was written; then 2607 across 20; **recounted 2026-08-10 over the integrated tree it is 3017 tests across 21 modules, `OK (skipped=1)`** — the artwork anchor was re-derived and now verifies, so the error that recount carried is gone, and the one remaining skip is the read-permission test declining as root. See *The tooling's own suites, mechanically counted*. Each earlier figure was correct for the tree it was measured in |
+| "four AAP artifacts do not exist", then "three" | its own section | **none**: `run_pipeline.sh`, `verify_artifacts.sh`, `commit_artifacts.sh` and `playthrough/README.md` all exist, each of the three scripts with its own suite. Those suites were 37, 21 and 142 tests when this row was written; **recounted 2026-08-10 they are 63, 50 and 157** |
 | the commit identity element is "UNMET, and blocked", and `commit_artifacts.sh` "does not, and will not" write it | the commit-identity section | **implemented**: `persist_identity_locally` records the identity git already resolved, `--local` only, never overwriting an existing pair. The container measurement is what settled it — with `HOME` reassigned and no `GIT_*` forwarded, an identity outside the mounted tree does not exist inside it |
 | "the two checkpoints" | the checkpoint section | **three**: `dossier` → `creation` → `final`, because "before the first gameplay frame" is ancestry between two commits |
 | under `-fps_mode vfr` the header's `nb_frames` is "routinely absent" | the packet-counting section | `nb_frames=444` is present and agrees with the packet count |
 | "the committed list sums to `301.000000` s" | the transition-remainder section | **`233.000000` s** — 419 capture durations summing to `231.000000` plus 24 transition shares summing to `2.000000`, which is the timeline's declared `total` |
 | "`nb_read_packets=540` against 539 planned entries" | the packet-counting section | **444** against **443** planned entries (419 captures + 24 transition frames), the extra packet being the repeated final `file` line |
 | `transcript.srt` / `.md` byte-identical at `a67fcce909…` / `c924d91f1d…` and `cata-play-cc.mp4` at `da957b72ee…`; then `6267922b48…` / `fd2f204dd9…` and `3d3a41daf5…`; the film at `5e1344bac9f1…`, 8 051 910 B; both generation manifests binding to timeline `f030d75f65ff…` | the regenerated-chain tables of the 419-frame QA pass, the render tables and `build/movie.json` / the transition provenance | every one of those was correct when it was written, and all of them are superseded. The record was restored to its captured bytes, the narration corrections moved into `playthrough/amendments.jsonl`, and the whole derived chain was regenerated from record-plus-ledger on a supported platform. Current, measured on the integrated tree: `manifest.jsonl` **`c50160309e8b…`** 117 109 B and `build/observations.jsonl` **`78e51463eabb…`** — both byte-identical to the capture; `amendments.jsonl` **`92e5797fb225…`** 129 230 B, 117 rows; `timeline.json` **`8f0dcd4130bf…`** 292 477 B; `transcript.md` **`edaf3195fa98…`** 30 253 B; `transcript.srt` **`afce6be7e33d…`** 37 183 B; `cata-play.mp4` **`5cf3c11e5821…`** 8 051 911 B; `cata-play-cc.mp4` **`386f32f766a7…`** 8 084 371 B; `build/concat.txt` still **`5e7741e8c1b3…`**; `build/transitions.json` **`e65e3ab8a42b…`** and `build/movie.json` **`bfab90c6c346…`**, both naming the current timeline. `cata-play.mp4`, `build/concat.txt` and all 24 transition PNGs came out of that regeneration BYTE-IDENTICAL, which is the strongest available statement that only prose moved |
-| the cue file may carry however many lines a sentence needs, with a stderr advisory past four | the caption sections | at most **two** lines of 42 columns, enforced as a refusal naming every offending entry (`CUE_MAX_LINES`); the shipped file is 104 one-line and 315 two-line cues, longest line 42 columns. Nothing is truncated to achieve that and no elision mark exists to reach for — the sentences the transcript publishes were shortened by amendment against the immutable record, and the chain regenerated |
+| the cue file may carry however many lines a sentence needs, with a stderr advisory past four | the caption sections | at most **two** lines of 42 columns, enforced as a refusal naming every offending entry (`CUE_MAX_LINES`); the file that pass measured was 104 one-line and 315 two-line cues (the retired 419-cue set); the shipped file is 71 one-line and 255 two-line cues, 326 in all, recounted 2026-08-10, longest line 42 columns. Nothing is truncated to achieve that and no elision mark exists to reach for — the sentences the transcript publishes were shortened by amendment against the immutable record, and the chain regenerated |
 | `transcript.md` opens straight onto "Timestamps are cumulative video time." | the transcript sections | it opens `# Delphine Ouellette — what I did, and why`, then that same line. The title is deliberately the heading `dossier.md` already uses, so a reader arriving at either meets the same person; it carries no timestamp-shaped string and no apparatus word, because exactly one stamp may appear per entry and none anywhere else |
 | the 419-frame pointer names *Post-capture verification of `playthrough/frames/`* and "everything from *The session was re-recorded* onward" as the shipped record's sections | the *Read this before any count* block | both of those measure RETIRED sets (560 and 395). The shipped record is documented in *Frame 397 correction after the death ending*, *Runtime QA remediation of the 419-frame record* and *The pipeline as built*, and the pointer now links those three |
 | "no checkout of this repository has a binary"; "the binary is absent from this clone" | the build sections | the binary is never TRACKED, so a *fresh* checkout has none — but a warmed worktree that has built carries an ignored one, measured here at **284 407 600** B reporting `c9b7d915e1 +tiles, +sound`. Neither is the session's binary, which is `e50300eeb0` in the frames' own pixels and in the memorial header |
@@ -6612,12 +7346,13 @@ correct when it was written.
 | "`capture.sh` refuses `PLAYTHROUGH_CAPTURE_AUDIT` *and* `PLAYTHROUGH_CAPTURE_AUDIT_PATH` outright in diagnostic mode"; "An explicit `PLAYTHROUGH_CAPTURE_AUDIT=on` still records one" | the two date-audit sections | refusing the variable's *presence* refused the pipeline's only caller: `launch_game.sh` declares `PLAYTHROUGH_CAPTURE_AUDIT=off` at its probe call site, so the probe exited `EX_USAGE`, the launcher read that as "the screen could not be read", and **every resumed launch published `INITIAL_UI_STATE=unverified`** — the resume proof was structurally disabled. Current contract, one API both scripts hold to: in diagnostic mode `=off` is **accepted** (it names the value the mode forces and can enable nothing), `=on` is **refused**, any `PLAYTHROUGH_CAPTURE_AUDIT_PATH` is **refused** at any value including beside `off`, and anything else is refused by the shared `on|off` case. The launcher additionally treats `EX_USAGE` from the probe as **fatal** rather than as an unreadable screen, so a future disagreement between the two scripts stops the run instead of quietly removing a proof |
 | "**The derived stages are deliberately unaffected** … timeline, transitions, render, transcripts and the caption mux can be re-run over an existing record" | the platform-waiver section | **two of the five DO refuse**: `render_movie.assert_trusted_render()` raises "REFUSING to encode the film while the trust state is diagnostic" [render_movie.py:605] and `embed_captions.sh` exits **8** at `playthrough_assert_trusted "the caption mux"` [embed_captions.sh:874]. `timeline.py`, `make_transitions.py` and `make_srt.py` carry no trust gate and are genuinely unaffected. Measured under this host's waiver; both films byte-identical after the probe |
 | the declared capture environment is `ubuntu:24.04`, with an eleven-stage table measured there | *The supported release is now DECLARED* | the base is **`ubuntu:26.04`** (EOL 2031-04) and every stage figure was **re-measured** there. 24.04 was rejected on a functional ground the dated table cannot express: its **SDL 2.30.0 delivers no keyboard input to the engine's ImGui screens**, so the character creator cannot be driven, and a full rebuild inside 24.04 (1570 s, 446 objects, compile and runtime both 2.30.0) did not change it. 26.04's **SDL 2.32.10** drives them. Consequences recorded with the base: `g++-14` stays pinned against 26.04's GCC 15 default; SDL3 3.4.2 is now *present* but every `make` still carries `SDL3=0`; and because 26.04 has no `python3.12` while `env.sh` pins that ABI for `requirements.lock`'s `cp312` wheels, the image **builds CPython 3.12.13 from a sha256-pinned python.org tarball** rather than relaxing the closure |
-| the 326-frame record carries **no** amendment ledger, "there is nothing to amend: the record was written once and not corrected" | the first row of this table, and *The re-recorded session* | `playthrough/amendments.jsonl` now holds **14** amendments over **11** frames (79–84, 313, 314, 317, 319, 324), sha256 `3e93306d92ad…5825fb68`, attested in `timeline.json` as `{"rows": 14, "applied": 14}`. The record itself is still byte-for-byte what the session wrote; see *Runtime QA remediation of the 326-frame record* for what each amendment corrects and the measurement behind it |
+| the 326-frame record carries **no** amendment ledger, "there is nothing to amend: the record was written once and not corrected" | the first row of this table, and *The re-recorded session* | `playthrough/amendments.jsonl` holds **57** amendments today — the 14 that row's own successor described (over frames 79–84, 313, 314, 317, 319, 324) plus **43 commentary amendments added at the scripting code-review checkpoint** — sha256 `460fd833fc49f358…`, attested in `timeline.json` as `{"rows": 57, "applied": 57}`. Its intermediate figure of 14 amendments at `3e93306d92ad…5825fb68` is superseded. The record itself is still byte-for-byte what the session wrote; see *Code-review remediation of the scripting checkpoint* |
+| the derived digests `timeline.json` `d04c2d72849d69ce…`, `transcript.srt` `4cdec24bf43d7413…`, `transcript.md` `2ec57c3d13df3208…`, and `cata-play-cc.mp4` at 3 774 538 bytes | the regenerated-chain tables, and the row above them | superseded by the 43-amendment regeneration, which changed 43 commentary sentences and nothing else: `timeline.json` **`ceecc003bbe05f17…`**, `transcript.srt` **`6b63c565a1b6d22f…`**, `transcript.md` **`0e1aa56841f8ef60…`**, `cata-play-cc.mp4` **`ec87f157a1785d92…`** at 3 777 023 bytes. `manifest.jsonl` `ce694804dcb7463a…`, `build/frame_digests.jsonl` `2d2a5d833bf582e1…`, `build/concat.txt` `da6a4cd484fa79c0…` and `cata-play.mp4` `23da4ae0210a048a…` are all **unchanged**, and so are the 12 transition PNGs — the re-render reproduced the film byte for byte |
 | `transcript.md` opens `# Delphine Ouellette — what I did, and why`, and "the title is deliberately the heading `dossier.md` already uses" | two rows above, and the transcript sections | the file opens **`# Ambrose Halloran — what I did, and why`**, and the title is no longer a literal in `make_srt.py` at all: it is DERIVED from `dossier.md`'s own first heading, so the property that row asserted is now mechanical rather than manual. The earlier statement was the exact defect a runtime QA pass caught — the name in that constant had gone stale when the session was re-recorded |
-| rows 78–84 "record keystrokes that had no effect", offered as a blemish | *Three blemishes in this record* | true but incomplete: rows 79–84 also DESCRIBED a list-filter screen that was not on the display. The measurement and the seven amendments that correct it are in *Runtime QA remediation of the 326-frame record* |
+| rows 78–84 "record keystrokes that had no effect", offered as a blemish | *Four blemishes in this record* | true but incomplete: rows 79–84 also DESCRIBED a list-filter screen that was not on the display. The measurement and the seven amendments that correct it are in *Runtime QA remediation of the 326-frame record* |
 | the current `transcript.srt` / `transcript.md` / `cata-play-cc.mp4` digests, and both generation manifests binding to timeline `d04c2d72…` predecessor `e9f2d138…` | the regenerated-chain tables | superseded by the ledger regeneration: `timeline.json` **`d04c2d72849d69ce…`**, `transcript.srt` **`4cdec24bf43d7413…`**, `transcript.md` **`2ec57c3d13df3208…`**, with `cata-play.mp4` still **`23da4ae0210a048a…`**, `build/concat.txt` still **`da6a4cd484fa79c0…`** and all 12 transition PNGs byte-identical |
 | "the last captured frame is the main menu it returned to" | the R11 sections written for the 419-frame record | true of that record and NOT of this one: this session's last frame is the death screen's own message log, because the engine was stopped by signal there deliberately. That is also why this tree has no `graveyard/` and no `memorial/` |
-| item 3 reads the missing `graveyard/` as purely the *cost* of stopping the engine by signal | *Three blemishes in this record* | true as far as it goes, and the corpse-shaped save is still a real caveat for anyone resuming this world — but `WORLD_END` is committed as `"reset"`, so letting `cleanup_at_end()` finish would have moved the character files into `graveyard/` **and then**, on a now-empty character list, called `delete_world( name, false )` — "Clear out everything except options and mods and compression dictionaries" — emptying `master.gsav`, `o.0.0`, `o.1.0` and `maps/` out of `save/Apshawa/` \[src/do_turn.cpp:142-197\]\[src/worldfactory.cpp:2458-2490\]. Stopping where it stopped is also the only reason there is a save under `save/<world>/` to commit. Measured in *R11's Save & Quit: already documented as UNMET, and this record stops one screen earlier than the last one* |
+| item 3 reads the missing `graveyard/` as purely the *cost* of stopping the engine by signal | *Four blemishes in this record* | true as far as it goes, and the corpse-shaped save is still a real caveat for anyone resuming this world — but `WORLD_END` is committed as `"reset"`, so letting `cleanup_at_end()` finish would have moved the character files into `graveyard/` **and then**, on a now-empty character list, called `delete_world( name, false )` — "Clear out everything except options and mods and compression dictionaries" — emptying `master.gsav`, `o.0.0`, `o.1.0` and `maps/` out of `save/Apshawa/` \[src/do_turn.cpp:142-197\]\[src/worldfactory.cpp:2458-2490\]. Stopping where it stopped is also the only reason there is a save under `save/<world>/` to commit. Measured in *R11's Save & Quit: already documented as UNMET, and this record stops one screen earlier than the last one* |
 | R1 is satisfied by a graveyard save, `save/<world>/` correctly holding only `mods.json`, `world_timestamp.json` and `worldoptions.json` | *AAP R11: the ending is legitimate*, and *The ending is a death* | that is the RETIRED record's shape, produced by letting `cleanup_at_end()` finish. This record was stopped inside `death_screen()`, so it has no `graveyard/` at all and R1 is satisfied by the live save directory instead: `save/Apshawa/` still holds `master.gsav`, `dimension_data.gsav`, `o.0.0`, `o.1.0`, `maps/` and the full `#QW1icm9zZSBIYWxsb3Jhbg==.*` set. Both are committed; the route differs |
 
 
@@ -6695,7 +7430,7 @@ directory out loud: ffmpeg looked for
 `playthrough/build/playthrough/frames/frame_00001.png`, which is the list's
 own directory with the entry appended, from a working directory that was the
 repository root in both runs. So the committed list carries
-`../frames/frame_00001.png` for a capture and `transitions/trans_00315_00.png`
+`../frames/frame_00001.png` for a capture and `transitions/trans_00195_00.png`
 for a transition frame, one form throughout, no absolute path anywhere, and
 the committed artifact is itself runnable — which is the property that makes
 "the encoder was handed this file" checkable rather than claimed. The probe
@@ -6794,14 +7529,30 @@ finished `22 checks, 0 failure(s)`. It is deliberately not a committed file:
 the properties it checks are already asserted by `render_movie.py` itself and
 covered by `test_render_movie.py`'s 108 tests, so a second copy in the tree
 would be a third place for the same rules to drift. Alongside it, the whole
-tooling suite reports **2284 tests across sixteen modules, all OK** with the
-single named skip, and both `flake8 playthrough/` and `make python-check`
-report **zero findings**.
+tooling suite reported **2284 tests across sixteen modules, all OK** with the
+single named skip when this section was written; **recounted 2026-08-10 it is
+2607 across 20 modules with one error and five skips**, the error being the
+artwork anchor divergence rather than anything in the tooling (see *Recounted on
+Monday, August 10, 2026*). `flake8 playthrough/` reports **zero findings** then
+and now; `make python-check` exits **1** under flake8 7.3.0 on four pre-existing
+`F824` findings under `tools/`, none of them this feature's.
 
-### The derivative chain, regenerated on a supported platform
+### RETIRED: the derivative chain, regenerated on a supported platform (419-frame record, Ubuntu 24.04)
 
-Three places on this page point here, so this is the section that says where
-each shipped artifact was actually produced and what its digest is.
+> **This section is history and is kept for its method, not its numbers.** It
+> describes the regeneration of the **retired 419-frame** chain inside a
+> container rebuilt from the **`ubuntu:24.04`** recipe, and every digest, byte
+> count and entry count in it — `5cf3c11e5821…`, 8 051 911 B, 443 concat
+> entries, 24 transition PNGs, `CUES_IN=419` — belongs to Delphine Ouellette's
+> record. Two things in it are also superseded in their own right: the declared
+> image base moved to **`ubuntu:26.04`** because 24.04's SDL 2.30.0 delivers no
+> keyboard input to the engine's ImGui screens, and the shipped chain was
+> regenerated again afterwards. **The shipped chain's digests are in *The
+> shipped derivative chain, as it stands*, immediately below.** Nothing here is
+> a statement about what is in the tree today.
+
+Three places on this page pointed here, so this is the section that said where
+each artifact of that record was produced and what its digest was.
 
 **Why this had to happen somewhere else.** The platform policy described in
 *The one relaxable check that was not treated as one* left this host unable to
@@ -7064,8 +7815,10 @@ refusal that names each offender. The refusal is what shipped, because it is
 what both reviews' own resolutions asked for — "enforce the two-line contract
 without post-capture truncation", "fail generation with actionable frame/cue
 identifiers … retain full text by shortening the source" — and because the
-amended sentences make it unnecessary to cut anything: the published file is
-**104 one-line and 315 two-line cues**, longest line 42 columns, nothing
+amended sentences make it unnecessary to cut anything: the file this section
+measured was **104 one-line and 315 two-line cues** — the 419-cue set, since
+retired; the shipped file is **71 one-line and 255 two-line cues**, 326 in all,
+recounted 2026-08-10 — longest line 42 columns, nothing
 elided, and `make_srt.CUE_ELISION` does not exist for a later pass to reach
 for. The geometry is asserted three times over: at generation, in the renderer
 whatever assembled the cue, and on the bytes of the published file.
@@ -7123,6 +7876,84 @@ the composed cache and re-verified against the tracked anchor:
 `TILESET_PROVENANCE_TREE_SHA256=3d6c2ef4871654fd…`, `FILES=22`,
 `UPSTREAM_COMMIT=6e864adbd2c5d0e6…`.
 
+### The shipped derivative chain, as it stands
+
+**One place, one date, one set of numbers.** Everything above this point that
+quotes a digest is either superseded or describes a retired record; this is the
+chain in the tree, measured with `sha256sum` and `stat -c%s` on **2026-08-10** at
+`5f902536e8`. Each row also says what binds it to its inputs, because a digest
+with no binding proves only that a file exists.
+
+| Artifact | sha256 | Bytes | Bound to its inputs by |
+| --- | --- | ---: | --- |
+| `playthrough/manifest.jsonl` | `ce694804dcb7463a867ceb466928c5a3b5de305588537257987665b2f58cb9af` | 80 370 | the capture itself — byte-for-byte what the session wrote, never edited |
+| `playthrough/build/observations.jsonl` | `c02994c258f59b05…` | 230 538 | likewise, one telemetry row per capture |
+| `playthrough/build/frame_digests.jsonl` | `2d2a5d833bf582e1…` | 84 369 | 326 rows, attested in `timeline.json` as `"verified": 326` |
+| `playthrough/build/frame_dates.jsonl` | `1e19517b01164f48…` | 72 206 | the per-frame date audit `ocr_clock.py` wrote as it read |
+| `playthrough/amendments.jsonl` | `3e93306d92ad5653…` | 15 158 | 14 rows over 11 frames, each bound to the sha256 of the manifest line it amends |
+| `playthrough/timeline.json` | `d04c2d72849d69ceef392500211e1ee67f96489b8696de1be965ca2353e48747` | 220 427 | names `manifest.jsonl` `ce694804…` with `"rows": 326`, the ledger `3e93306d…` with `{"rows": 14, "applied": 14}`, and the digest ledger `2d2a5d83…` |
+| `playthrough/build/concat.txt` | `da6a4cd484fa79c0813b52b721942e0a455bb802715fd8424ca082865adc9cc5` | 16 354 | 339 `file` directives, 338 `duration` lines |
+| `playthrough/build/transitions.json` | `9d92e92fa43b26d4…` | 2 962 | one group at frame 139, 12 outputs, and the font `data/font/Terminus.ttf` `e0d64567…` |
+| `playthrough/cata-play.mp4` | `23da4ae0210a048a4324650ad4bf687bf98ef095cd1914a28e54fb34124b02e9` | 3 749 146 | `build/movie.json` names this digest, the concat list `da6a4cd4…` and the timeline `d04c2d72…` |
+| `playthrough/build/movie.json` | `0e138eee9953a84b…` | 619 | the generation manifest for the row above |
+| `playthrough/transcript.srt` | `4cdec24bf43d7413329d853ab43fb1067e04e225d0ae434e6b8e734d7e0225f0` | 29 078 | `build/transcript.json` names it beside the timeline `d04c2d72…` |
+| `playthrough/transcript.md` | `2ec57c3d13df32088754bd60b285ac1b810453f168bcfac03963652939f65469` | 23 727 | same generation manifest, same timeline, same pass |
+| `playthrough/build/transcript.json` | `68d26e3c821c90d2…` | 530 | the generation manifest for the two rows above |
+| `playthrough/cata-play-cc.mp4` | `5d75bc23f88df922…` | 3 774 677 | the base film's video stream copied intact plus the cue file above, muxed as `mov_text` |
+| `playthrough/dossier.md` | `167f60d958c83083…` | 9 965 | the survivor's own account; `make_srt.py` derives `transcript.md`'s title from its first heading |
+
+**The one transition group is `trans_00139_00.png` … `trans_00139_11.png`**, and
+frame 139 is the only entry the ceiling engaged on (raw delta 13.0 s, held at
+10.0 s). There is no `trans_00001_*` and there should not be: frame 1's raw
+delta was 0.0 s, so it takes the 0.25 s floor and flags no transition. A
+reference to a frame-1 transition anywhere is a reference to a file that has
+never existed in this record.
+
+**Container facts, from `ffprobe` on the same date.** `cata-play.mp4`: one
+stream, `h264` High, `yuv420p`, 1920×1080, `nb_read_packets=339`,
+`duration=219.560000`, no audio. `cata-play-cc.mp4`: stream 0 `h264` (untagged
+language), stream 1 `mov_text` with `TAG:language=eng`, `duration=219.560000`,
+no audio. The computed timeline is 218.500 s of capture windows plus 1.000 s of
+transition, i.e. **219.500 s**, and `final_cue_end` equals it exactly.
+
+### R1's repository-local identity: what this branch carries
+
+R1 asks for a repository-local git identity, and `commit_artifacts.sh`
+implements it — `persist_identity_locally` writes the pair git already resolved
+with `--local` only, never `--global`, never `--system`, never over an existing
+pair. That is the design, and *The one configuration the committer writes, and
+the fence around it* describes it.
+
+**What this branch actually carries is not that, and the difference is recorded
+rather than papered over.** The commits here were taken with plain `git commit`
+instead of through that script, so:
+
+```console
+$ git config --local user.email; echo "exit=$?"
+exit=1
+$ git config --show-origin user.name; git config --show-origin user.email
+file:/root/.gitconfig   Blitzy Agent
+file:/root/.gitconfig   agent@blitzy.com
+$ git log -1 --format='A:%an <%ae> C:%cn <%ce>'
+A:Blitzy Agent <agent@blitzy.com> C:Blitzy Agent <agent@blitzy.com>
+```
+
+There is no local pair to read; the identity resolves from the host's global
+configuration, and every commit in this branch is authored and committed as
+`Blitzy Agent <agent@blitzy.com>`. **The execution environment for this work
+forbids running `git config user.name` or `git config user.email` at all**, so
+writing the local pair is not available to these passes even as a deliberate
+act — which is why it has not been done rather than been overlooked.
+
+The consequence, stated exactly: **R1's substance holds and its mechanism does
+not.** Every commit carries a real, attributable identity, which is what the
+requirement is for; the identity is not recorded in `.git/config`, which is what
+the requirement says. Anyone who needs the local pair should take the next
+checkpoint through `commit_artifacts.sh` in an environment that permits
+`git config --local`, and it will be written there and then. Nothing about the
+committed artifacts depends on it.
+
+
 ### No user-specified rules exist for this project
 
 `review_rules` returns "No user rules provided", and that was read in full
@@ -7163,3 +7994,307 @@ point. It is the engineer-facing document by design — measurements, pitfalls a
 divergences — and `playthrough/README.md` is the user-facing counterpart it used
 to defer to without one existing. That one now exists, so the deferral resolves
 somewhere.
+
+---
+
+## Code-review remediation of the scripting checkpoint
+
+The last pass over the shipped 326-frame record. A code review read every shell
+and Python unit in `playthrough/tooling/` end to end and returned fifteen
+findings — one critical, twelve major, two minor. What follows is what changed,
+what was measured, and the three things that were still open, stated as open.
+Two of the three were resolved afterwards by re-recording the session; each of
+the three sections below opens with what became of it.
+
+### The narration: 43 sentences that said what was pressed and not why
+
+> **THE CONTRACT WAS RECALIBRATED FOR THE RECORD SHIPPED NOW, and the reason is
+> that the two records narrate differently.** Measured over the 305-row Barrows
+> record, the contract described below flagged 37 entries that plainly do give a
+> reason — the reason was in the action note rather than in the commentary, or
+> split across the two. So it now reads **the action note and the commentary
+> together**, as one sentence about one keystroke, and it separates what it is
+> sure of from what it is only suspicious of: a reading with no word beyond the
+> key that produced it, or one that does not close as a sentence, is a FAIL; a
+> single-word reading, or one repeated inside its own neighbourhood, is a WARN
+> that names the frame. Measured over the shipped record: all 305 entries pass
+> the falsifiable half — each closes as a sentence and each carries a word beyond
+> its own keystroke, 73 of them a single character transcribed during a spelling
+> run — with 14 single-word entries and 12 that repeat a sentence used within the
+> previous three reported as warnings, and the five thinnest named for a reader
+> to judge. The figures in the rest of this section are the 326-row record's and
+> are kept as the measurement they were.
+
+R7 asks for first-person commentary explaining **why** each action was taken,
+and the gate that was supposed to check it only checked that the commentary was
+non-empty. Replacing that with a falsifiable contract — each entry must close as
+a sentence, use at least two distinct words, carry at least one word its own
+action does not, and differ from the three entries before it — found **43 rows**
+that failed it: 22 one-word labels (`Mail.`, `Hearing.`, `Again.`), 17 that only
+echoed their own action note (`Swing.` against `press '2' -- swing`), and 4
+verbatim repeats of a neighbour (frame 130 of 127, 152 of 150, 188 of 186, 305
+of 304).
+
+Each was completed through **`playthrough/amendments.jsonl`**, appended to and
+never edited, taking the ledger from 14 rows to **57**. The first 14 rows are
+byte-identical afterwards, and `manifest.jsonl` is untouched: the fragment the
+session wrote is still in the record, and the amendment sits beside it.
+
+**Where the added words come from, because that is the only interesting
+question.** Each sentence keeps the recorded fragment's own word and adds only
+what the committed record already carries — this frame's own action note, and
+the survivor's own sentences at named neighbouring frames, both quoted in the
+amendment's `basis` so a reader can check the derivation without trusting it.
+The `basis` also names the capture and its sha256 as
+`build/frame_digests.jsonl` records it, and every one of the 43 frames was
+re-hashed against that ledger before a single row was appended. **No amendment
+asserts a new observation about a picture.** Two drafts were rewritten during
+review for exactly that reason: frame 246 lost "I can hear it tear" (a sensory
+claim the record does not carry) and frame 152 lost "now that it has finished
+warning me" (which read as the software warning him rather than as his own
+words at 151).
+
+Four properties were enforced before the append, not after it: the repair set
+had to equal the gate's failing set exactly; the **whole 326-row sequence** had
+to be re-measured, because the no-repeats rule is about neighbours and a
+sentence cannot be cleared alone; every sentence had to pass
+`manifest.meta_vocabulary_problem` against all 28 curated concepts; and every
+sentence had to wrap inside `CUE_MAX_LINES` at `CUE_LINE_WIDTH` — the longest
+is 75 characters and wraps to two lines.
+
+**What the gate says now, and what it still refuses to claim.** The verdict
+reads *"326 entr(ies) measured … each closes as a sentence, uses at least two
+distinct words, adds at least one word its action does not carry, and differs
+from the 3 before it"*, and then says in the same breath that *"the addition is
+a REASON is not machine-decidable and is not claimed here"*. Beside it an INFO
+names the five thinnest surviving entries — frames 105 `There. Ambrose.`, 112
+`Nearly done.`, 277 `Swing anyway.`, 304 `One more.` and 319 `On my.` — each of
+which passes the contract and is left exactly as the survivor wrote it. Three
+words can be a complete reason and thirty can be padding; the program measures
+the half it can and hands the reader the half it cannot.
+
+### The derived chain, regenerated — and the film reproduced byte for byte
+
+The tools refused twice before they consented, and both refusals were correct.
+`embed_captions.sh` refused on the host because the platform waiver puts the
+trust state at `diagnostic`; run inside the declared image it refused again,
+because `cata-play.mp4`'s sidecar recorded the timeline digest the film was
+paced by (`d04c2d72…`) and the captions had been written from a different one
+(`ceecc003…`). That is the single-source-of-truth guard doing precisely its job.
+The correct route is the whole derived chain, in order, inside
+`playthrough-capture:26.04` via `supported_env.sh run`:
+
+| Stage | Result |
+| --- | --- |
+| `timeline.py` | 326 frames, 1 transition, **218.500 + 1.000 = 219.500 s** — unchanged. Diff against the previous timeline: the 43 commentaries, their `amended` flags, and the amendments provenance block. Every duration, every cue window and every clock reading byte-identical |
+| `make_transitions.py` | 1 group × 12 frames, **all 12 PNGs byte-identical** to the committed ones |
+| `render_movie.py` | 338 concat entries, container 219.560 s against a computed 219.500 s. `cata-play.mp4` **byte-identical** — md5 `ef590f3e2e96fbf7b0bbdb5f90499a53` before and after, sha256 `23da4ae0210a048a…`. Only `build/movie.json` changed, because it records the timeline digest |
+| `make_srt.py` | 326 entries / 326 cues / 326 stamps, last cue closing at `00:03:39,500` = 219.500 s. Cue **timings** diff-identical to before |
+| `embed_captions.sh` | `cata-play-cc.mp4` 3 777 023 bytes, `VIDEO_COPY_PROOF=stream-hash-sha256`, `AUDIO_STREAMS=0`, `SUBTITLE_CODEC=mov_text`, `SUBTITLE_LANGUAGE=eng`, `CUES_IN=326`, `CUES_ROUND_TRIP=326`, `CONTAINER_DURATION=219.560` |
+
+A film that re-renders to the same bytes from the same frames is worth stating
+plainly: the render is deterministic on this toolchain, so the encode is
+reproducible evidence rather than a one-off artifact.
+
+The gate then measured the whole set: **101 of 101 pre-commit checks performed,
+101 pass, 0 fail** — the pre-commit phase declares **106** as this is written,
+and the additions are listed in the gate's own per-group table.
+
+### Closed, with one condition: the recording's own checkpoint pair
+
+> **CLOSED BY PLAYING AGAIN.** The record shipped here — Barrows / Odette
+> Vachon, 305 frames — was checkpointed as it was made, in the history that
+> carried the bytes: `dossier`, then `creation`, then the session, then `final`.
+> R1's two mandated commits and R13's before-play ordering are therefore both
+> readable for the survivor whose evidence the tree holds, and the check reports
+> them as such.
+>
+> **The one condition is that the trailers live in the history, not in the
+> artifacts.** `checkpoint_commits` reads
+> `git log --grep '^Playthrough-Checkpoint: ' HEAD`, so a history that has been
+> rebased, squashed or re-published without those two commits delivers the
+> artifacts without the evidence about when they were committed, and both
+> lifecycle checks then report — correctly — that the recording in the tree has
+> no checkpoint pair of its own. That is a statement about the published
+> history; it is not repairable inside the artifacts, and the paragraph below on
+> `commit_artifacts.sh dossier` is why it must not be faked afterwards.
+>
+> **Measured on the history as published here**, so nobody has to wonder which
+> way it fell: `--phase all` reports 120 of 120 declared with 117 passes and
+> three failures — the repository-local identity, and both lifecycle checks. The
+> newest trailer pair reachable from HEAD is `7e10721d4e` (creation) and
+> `4e8a49879a` (final), both naming *Fern Creek / Delphine Ouellette*, while HEAD
+> carries *Barrows / Odette Vachon*; the gate names exactly that. Closing it
+> needs a session recorded and checkpointed in the history that publishes it —
+> and it is worth being precise about what is NOT affected: the frames, the
+> manifest, the amendment ledger, the timeline, both films, both transcripts, the
+> save and the graveyard are the session's own and every one of the other 117
+> properties holds over them.
+>
+> The account of the earlier state is kept below, because the structural cause
+> it identifies is what the committer was fixed for.
+
+The critical finding, as it stood then. The gate's lifecycle check verified that every `final`
+checkpoint commit was anchored to a `creation` checkpoint for **the same
+survivor** — which it is — and then only WARNED when that survivor is not the
+one whose evidence HEAD carries. The only checkpoint trailer pair in this
+history is `7e10721d4e` (creation) and `4e8a49879a` (final), and both read
+*Fern Creek / Delphine Ouellette*: a **retired** recording. The shipped
+Apshawa / Ambrose Halloran record landed wholesale in a single commit,
+`421659a9cf`, with the dossier, the frames, the manifest and the save together
+and **no trailer at all**.
+
+So two AAP properties are unproven for the recording actually in the tree, and
+a warning was the wrong verdict for both:
+
+* **R1's two mandated commits** — one after character creation, one after Save
+  & Quit — do not exist for this survivor.
+* **R13's before-play ordering** — the dossier committed before the first
+  gameplay frame — cannot be read out of a single commit that carries both.
+  One commit does not precede itself.
+
+The gate now FAILS on this, in a check of its own (*the recording in the tree
+has a checkpoint pair of its own*), and names what it found: *"HEAD carries
+Apshawa / Ambrose Halloran and no 'final' checkpoint records that survivor; the
+'final' checkpoint(s) in this history are 4e8a49879a (Fern Creek / Delphine
+Ouellette)"*. That verdict is a **true statement about this record** and it is
+meant to stay red until a recording exists that can turn it green.
+
+**It cannot be closed by committing harder, and the committer now enforces
+that.** `commit_artifacts.sh dossier` refuses the moment the session has left
+any trace — a capture on disk, a capture in the index, a manifest row, a
+telemetry row or a capture attestation — because a dossier commit taken after
+the fact would produce the right ancestry over the wrong history. And the
+before-play ordering is now read from the commit that introduced the bytes **now
+at HEAD** rather than from the oldest commit that ever touched those paths,
+so a retired generation's tidy ordering cannot be inherited by a later one.
+Closing this requires a fresh session, recorded on a supported release, with
+`integration` → `dossier` → `creation` → play → `final` taken in that order.
+That is exactly what was then done, which is what the note at the head of this
+section records.
+
+### Open: the repository-local identity is set per checkout
+
+The gate asks whether **this repository's own** config records a
+`user.name` and a `user.email`, read with `git config --local --get`, and
+whether the newest commit touching `playthrough/` is authored by that same
+identity. An identity resolving from a broader scope is deliberately not
+accepted: it is not this repository's, it does not travel with the branch, and
+the whole integrity claim here is about who committed the evidence.
+
+`commit_artifacts.sh` persists one with `git config --local` before it takes any
+checkpoint, so a checkout that has run the committer answers this. A checkout
+that has not — or one on a host where writing repository-local git config is not
+permitted — reports that one property as **FAIL** while every other property
+holds, and the report says which of the two names is unset and what the cascade
+would have answered instead. The remedy is one command in the checkout that
+publishes the record; nothing about the artifacts changes.
+
+### Open: R11's exit, and why neither remedy was taken
+
+> **PARTLY CLOSED BY THE RE-RECORDING, which is why the paragraph below reads
+> as it does about a tree that is no longer here.** On the record shipped now,
+> the engine's own ending path ran to completion: `cleanup_at_end()` finished,
+> `move_save_to_graveyard()` relocated the save into
+> `graveyard/2026-08-10T04-04-38/`, the memorial pair was written, the world was
+> cleared at the engine default `WORLD_END=reset`, and the survivor left through
+> the main menu's own quit. What remains unmet is the same engine fact stated
+> below: `ACTION_SAVE` is unreachable after a death, so an in-game Save & Quit
+> cannot follow that ending in any keystroke sequence. The account below is of
+> the retired record, kept for the engine behaviour it pins down.
+
+Stated in full at *The re-recorded session → How it ended, and what that does
+and does not satisfy*, and summarised here because it is one of the three things
+still open: the ending condition is met by legitimate death, the in-game Save &
+Quit was not performed and cannot be reached after death in this engine, the
+engine's post-death housekeeping never ran (no `graveyard/`, no archived
+memorial pair), and the committed save is a live-shaped state from **18 turns
+before the death** (`"turn": 5212950` against a 168-second epitaph from
+`"game_start": 5212800`). Resuming that save to reach a sleep ending would be
+reloading to escape a death, which the AAP forbids by name (§0.2.1); recording a
+fourth session is the honest route and is a new recording rather than a repair
+of this one.
+
+### Open: the artwork reproduces to a different `tile_config.json`
+
+`gfx/` is git-ignored, so the pack itself is host state and the committed
+evidence about it is the anchor at `playthrough/tooling/tileset_provenance.json`.
+On this host, `tileset_provenance.py verify` reports exactly **2** differences
+out of 22 files: `tile_config.json` hashes to
+`064f4708e596207dd65eea9abb84d217a20f20465b0a9a8ef16b76915a93548b` where the
+anchor names `9725384838a54404bb7524993940aa4c9b3771cb24601bde677e53b0fbd504ec`,
+and the in-pack `SHA256SUMS` differs because it lists that file.
+
+What was measured, so the gap is bounded rather than merely reported:
+
+* The pack was re-composed from the pinned upstream clone at the anchor's own
+  commit `6e864adbd2c5` with the anchor's documented command, in a clean tree.
+* **All 17 PNG sheets reproduce byte-identically to the anchor.** The artwork
+  is right; one JSON file is not.
+* The composed `tile_config.json` hashes to `064f4708…` **with or without** the
+  repository's own `tools/format/json_formatter.cgi` — built for the purpose and
+  found to leave the composed file byte-unchanged — so formatting is ruled out
+  as the cause by measurement rather than by argument.
+* No copy on this host hashes to the anchor value, and the container image
+  carries no `pyvips`, so the pack was not composed there either.
+* **The gap predates this pass.** The pack cached by the environment setup, never
+  touched here, already hashes to `064f4708…`, and the fresh composition
+  reproduced it byte for byte. Two independent composition runs on this host
+  therefore agree with each other and disagree with the anchor — which is what
+  "environment-specific" means, stated as a measurement rather than as a guess.
+* The consequence for the test suite is stated plainly rather than smoothed
+  over: `test_tileset_provenance.py`'s
+  `test_the_installed_artwork_verifies_against_it` **errors on this host**, and
+  that is the anchor gate doing its job on host state. It was not weakened, and
+  the pack was not uninstalled to make the check skip — a green run bought by
+  hiding the artwork would be worth less than a red one that names the two
+  files.
+
+The conclusion is an environment-specific reproduction gap in one generated
+JSON file, and **the anchor was deliberately not rewritten**: regenerating it
+to match this host would make the committed evidence describe a different pack
+than the one the record was captured under, which is the opposite of what an
+anchor is for. `launch_game.sh` verifies the installed tree against the anchor
+before every launch, so a recording cannot be made under a mismatched pack —
+the gate reports this as a WARN because it is host state, and the launcher
+treats it as fatal because it is a precondition for evidence.
+
+### What else changed, in one place
+
+* **The two repository rule files finally have a committer.** `.gitignore`'s
+  terminal negation and `.gitattributes`' six rows were checked by every
+  checkpoint and committed by none, which left the plan's own requirement that
+  both be modified *and* committed resting on nobody. `commit_artifacts.sh
+  integration` now commits exactly those two paths, before any artifact exists,
+  refuses to publish them in a state that would leave the save data ignored on
+  a fresh clone, and manufactures no empty commit when HEAD already carries
+  them. It is the only milestone that stages a path outside `playthrough/`.
+* **A repository-local identity that disagrees with the commit is now
+  replaced.** It used to be left "exactly as found" the moment both values were
+  present — so a checkout carrying a stale pair reported deference and then
+  committed under a different identity, while the gate reads the configuration.
+  Both values are now replaced together and read back before they are believed.
+* **The scope refusal speaks NUL end to end.** It used to re-emit git's
+  NUL-delimited list one path per line before counting it, and a file whose
+  name is a single newline character arrived as two empty records that the
+  reader skipped as blank — count zero, no refusal, a path from outside the
+  feature published inside a checkpoint. Refusals that can be switched off by
+  naming a file oddly are not boundaries.
+* **Three `printf | grep -Fqx` tests were replaced by pipe-free whole-line
+  matches.** `grep -q` exits on its first match and can close the pipe under a
+  `printf` that has not finished writing, which under `pipefail` makes the
+  pipeline's status 141 and turns an attribute row that IS present into a
+  reported problem. A false refusal is a defect in the same family as a false
+  pass.
+* **The gate grew from 111 declared checks to 114** (101 of them functional),
+  and every count in its own derivation table was maintained with it. It
+  declares **120** as this is written — 106 before a commit, 31 after one, 17 of
+  them in both phases — and the derivation table beside `GROUP_CHECKS_ALL`
+  remains the authority on which group holds which. It is
+  clean under `shellcheck` with no arguments, which it was not: a dead
+  `check_frame_geometry` was deleted and two intentional `awk` literals carry
+  narrowly scoped directives instead of a file-wide one.
+* **The mandated three-section report now exists** at
+  `playthrough/REPORT.md` — *A) Screen Recording and Animation*, *B) Character
+  Creation*, *C) Playing the Game*, in that order, with every figure in it
+  measured by a command rather than recalled.

@@ -296,6 +296,17 @@ def read_bytes(path):
         return handle.read()
 
 
+def read_text(path):
+    """Return a file decoded as UTF-8, which is what it is written as.
+
+    Decoded STRICTLY: a malformed sequence raises here rather than
+    becoming a replacement character that an equality test would then
+    happily compare against another replacement character.
+    """
+    with open(path, "r", encoding="utf-8", errors="strict") as handle:
+        return handle.read()
+
+
 @contextlib.contextmanager
 def workspace():
     """Yield a temporary root with all three artifact paths redirected.
@@ -1332,6 +1343,72 @@ class TestWritingBothArtifacts(unittest.TestCase):
                 data.decode("utf-8")
                 self.assertTrue(data.endswith(b"\n"))
                 self.assertFalse(data.endswith(b"\n\n"))
+
+    def test_non_ascii_words_survive_into_both_artifacts_exactly(self):
+        """UTF-8 asserted with text that actually needs it.
+
+        The encoding was checked by decoding output that was pure ASCII,
+        which any encoding decodes -- so the assertion held whatever the
+        module did with a character above U+007F.  It matters here for a
+        plain reason: this is a survivor in New England, the places and
+        the people have French names, and the survivor's own account of
+        himself is what the caption track carries.  A dropped accent or a
+        replacement character is a word he did not say.
+
+        Asserted in three places, because they can fail separately: the
+        SubRip cue body, the Markdown entry, and the bytes on disk.  The
+        sentences are short enough to caption whole and free of the
+        vocabulary the out-of-character gate greps for.
+        """
+        spoken = (
+            "I cut west along the rivi\u00e8re toward Sainte-Ad\u00e8le.",
+            "Th\u00e9r\u00e8se left her caf\u00e9 unlocked \u2014 twice.",
+            "The cold came in \u2026 and I stayed put anyway.",
+            "My grand-p\u00e8re called this weather a na\u00efve winter.",
+            "\u00c9tienne\u2019s coat still smells of woodsmoke.",
+            "I counted forty-two \u00b0F on the porch thermometer.",
+            "Then I slept, and dreamt of Qu\u00e9bec in \u00e9t\u00e9.",
+        )
+        with workspace() as root:
+            seed_timeline(root, build(words=spoken))
+            self.assertEqual(make_srt.main(["-q"], root=root), 0)
+            srt = read_text(os.path.join(root, "transcript.srt"))
+            markdown = read_text(os.path.join(root, "transcript.md"))
+            for sentence in spoken:
+                with self.subTest(sentence=sentence):
+                    # The Markdown keeps the whole sentence, always.
+                    self.assertIn(sentence, markdown)
+                    # The caption keeps every word; a sentence longer
+                    # than one line is wrapped, so it is compared with
+                    # its own line breaks collapsed rather than by
+                    # assuming it fits on one.
+                    self.assertIn(sentence,
+                                  " ".join(srt.split("\n")))
+            for name in ("transcript.srt", "transcript.md"):
+                with self.subTest(artifact=name):
+                    data = read_bytes(os.path.join(root, name))
+                    # Real multi-byte sequences on disk, not escapes and
+                    # not U+FFFD.
+                    self.assertIn("Th\u00e9r\u00e8se".encode("utf-8"),
+                                  data)
+                    self.assertIn("\u2014".encode("utf-8"), data)
+                    self.assertNotIn(b"\\u00e9", data)
+                    self.assertNotIn("\ufffd".encode("utf-8"), data)
+                    self.assertEqual(data.decode("utf-8").count("\ufffd"),
+                                     0)
+
+    def test_a_non_ascii_survivor_name_reaches_the_title(self):
+        """The heading is read from the dossier, so it carries them too."""
+        survivor = "Th\u00e9odore Beaus\u00e9jour"
+        with workspace() as root:
+            seed_timeline(root)
+            seed_dossier(root, name=survivor)
+            self.assertEqual(make_srt.main(["-q"], root=root), 0)
+            markdown = read_text(os.path.join(root, "transcript.md"))
+            self.assertIn(survivor, markdown)
+            self.assertIn(survivor.encode("utf-8"),
+                          read_bytes(os.path.join(root,
+                                                  "transcript.md")))
 
     def test_the_same_timeline_always_gives_the_same_bytes(self):
         with workspace() as root:

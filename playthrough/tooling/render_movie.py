@@ -110,9 +110,15 @@ forbidden.  There is no audio input, so the container carries no audio
 stream.
 
 USE
-    python3 -B playthrough/tooling/render_movie.py
-    python3 -B playthrough/tooling/render_movie.py --concat-only
-    python3 -B playthrough/tooling/render_movie.py --timeline PATH
+    . playthrough/tooling/env.sh
+    RM='playthrough/tooling/render_movie.py'
+    "$PLAYTHROUGH_PYTHON" -B "$RM"
+    "$PLAYTHROUGH_PYTHON" -B "$RM" --concat-only
+    "$PLAYTHROUGH_PYTHON" -B "$RM" --timeline PATH
+
+    env.sh exports PLAYTHROUGH_PYTHON, the pinned CPython 3.12 this
+    tooling is installed against, and -B keeps a re-included
+    __pycache__ out of the tree.
 
     import render_movie
     plan = render_movie.plan_render(document)
@@ -412,6 +418,33 @@ MOVIE_SUFFIX = ".mp4"
 FFMPEG = "ffmpeg"
 FFPROBE = "ffprobe"
 
+# The shell the trust gate is asked through, named here beside the other
+# two because it is a tool of exactly the same standing.
+#
+# IT USED TO BE THE LITERAL STRING "bash" IN A subprocess ARGUMENT LIST,
+# resolved through PATH like any bare command name -- and a review named
+# what that costs.  assert_trusted_render is the control that decides
+# whether this film may be encoded at all, and it reaches its verdict
+# from the EXIT STATUS of that shell.  A `bash` earlier on PATH that does
+# nothing but `exit 0` therefore returns "trusted" without reading
+# env.sh, without evaluating a single check, and the encode proceeds --
+# so the one gate standing between a relaxed host and a committed film
+# was the only tool in this module resolved without verification, while
+# ffmpeg and ffprobe, which merely move pixels, were both checked.  The
+# asymmetry was exactly backwards.
+SHELL = "bash"
+
+# Which apt package ships each tool, so a missing-tool message says what
+# to install rather than only what is absent.  Kept beside the names it
+# describes and consulted by verified_tool; the shell entry exists
+# because bash does NOT come from the ffmpeg package, and a message that
+# said it did would send an operator to the wrong place.
+TOOL_PACKAGE = {
+    FFMPEG: "ffmpeg",
+    FFPROBE: "ffmpeg",
+    SHELL: "bash",
+}
+
 # Exit statuses.  run_pipeline.sh reads nothing else, so a wrong status
 # is a whole stage that appears to have worked.
 EXIT_OK = 0
@@ -625,10 +658,19 @@ def assert_trusted_render(root: Optional[str] = None) -> Optional[str]:
             "skipped: a film produced while a security check was "
             "relaxed is not evidence, and this render would be "
             "committed" % "/".join(ENV_SCRIPT_REL_PARTS))
+    # THE SHELL IS VERIFIED BEFORE IT IS ASKED, through the same
+    # ownership-and-writability walk ffmpeg and ffprobe go through.  The
+    # verdict below is read from this process's EXIT STATUS, so a
+    # PATH-shadowed `bash` that only exits 0 would report "trusted"
+    # without ever sourcing env.sh -- see the note beside SHELL.  A shell
+    # that cannot be vouched for is a refusal rather than a fallback:
+    # "I could not ask" and "the answer was no" leave the same film
+    # unattested, which is this function's stated rule.
+    shell = verified_tool(SHELL)
     try:
         result = subprocess.run(
-            ["bash", "--noprofile", "--norc", "-c", TRUST_PROGRAM,
-             "bash", script, TRUST_CONTEXT],
+            [shell, "--noprofile", "--norc", "-c", TRUST_PROGRAM,
+             shell, script, TRUST_CONTEXT],
             cwd=base, stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
             timeout=TRUST_TIMEOUT, check=False)
@@ -1013,9 +1055,10 @@ def verified_tool(name: str) -> str:
     if not candidate:
         raise RenderError(
             "%s was not found on %s.  The render toolchain is listed "
-            "in playthrough/tooling/requirements.txt; on this host both "
-            "%s and %s come from the ffmpeg package."
-            % (name, origin, FFMPEG, FFPROBE))
+            "in playthrough/tooling/requirements.txt; on this host %s "
+            "comes from the %s package."
+            % (name, origin, name,
+               TOOL_PACKAGE.get(name, "unknown")))
     real = os.path.realpath(candidate)
     if not os.path.isfile(real) or not os.access(real, os.X_OK):
         raise RenderError(

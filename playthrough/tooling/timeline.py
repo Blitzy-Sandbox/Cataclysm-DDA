@@ -94,10 +94,18 @@ UNVERIFIED in the artifact rather than presented as established, and
 run that must not accept one.
 
 USE
-    python3 playthrough/tooling/timeline.py
-    python3 playthrough/tooling/timeline.py --stdout
-    python3 playthrough/tooling/timeline.py --verify
-    python3 playthrough/tooling/timeline.py --require-date
+    . playthrough/tooling/env.sh
+    TL='playthrough/tooling/timeline.py'
+    "$PLAYTHROUGH_PYTHON" -B "$TL"
+    "$PLAYTHROUGH_PYTHON" -B "$TL" --stdout
+    "$PLAYTHROUGH_PYTHON" -B "$TL" --verify
+    "$PLAYTHROUGH_PYTHON" -B "$TL" --require-date
+
+    env.sh exports PLAYTHROUGH_PYTHON, the pinned CPython 3.12 this
+    tooling is installed against, and -B matters here specifically:
+    this module imports a sibling, so an interpreter left free to write
+    bytecode would leave a playthrough/tooling/__pycache__ that
+    .gitignore's terminal !/playthrough/** negation makes committable.
 
     import timeline
     doc = timeline.build_timeline(rows)
@@ -135,9 +143,9 @@ reconciled -- and the decision it produces is recorded as unverified,
 never as confirmed.
 
 USE
-    python3 -B playthrough/tooling/timeline.py
-    python3 -B playthrough/tooling/timeline.py --stdout
-    python3 -B playthrough/tooling/timeline.py --verify
+    "$PLAYTHROUGH_PYTHON" -B playthrough/tooling/timeline.py
+    "$PLAYTHROUGH_PYTHON" -B playthrough/tooling/timeline.py --stdout
+    "$PLAYTHROUGH_PYTHON" -B playthrough/tooling/timeline.py --verify
 
 The mathematics is exposed as pure functions -- parse, absolutise,
 delta, clamp, flag, cue walk, formatter -- separately from every
@@ -189,8 +197,8 @@ import tempfile
 import time
 
 from dataclasses import dataclass
-from typing import (Any, Dict, Iterable, List, Mapping, NamedTuple,
-                    Optional, Sequence, Set, Tuple)
+from typing import (Any, Dict, Iterable, Iterator, List, Mapping,
+                    NamedTuple, Optional, Sequence, Set, Tuple)
 
 # Set BEFORE the sibling import below, which is the only import here
 # that can write into the repository working tree.  env.sh exports
@@ -4599,6 +4607,202 @@ def read_timeline(
             "%s is not JSON: %s" % (path, err)) from err
 
 
+# ---------------------------------------------------------------------
+# READING THE DOCUMENT WITHOUT HOLDING IT
+#
+# read_timeline() above returns the whole document, which is the right
+# answer for the producers: this module builds it, the renderer plans
+# from it and the caption generator walks it, and each of those needs
+# every entry anyway.
+#
+# IT IS THE WRONG ANSWER FOR A CONSUMER THAT ONLY WALKS.  The session
+# length is deliberately unbounded, and json.loads() of a document with
+# one entry per keystroke costs roughly a kilobyte of interpreter objects
+# per entry -- measured shape: ~700 bytes of pretty-printed JSON becoming
+# ~1 kB of dict, so a hundred thousand keystrokes is hundreds of
+# megabytes resident, on a host with under four gigabytes and a video
+# encoder to run.  Three consumers in the acceptance gate only ever walk
+# the entries in order, and one of them walks them twice.
+#
+# So the array is offered as an EVENT STREAM, one entry at a time, and
+# the surrounding document is offered separately with the array emptied.
+# Both live here rather than in the consumer, for the reason every other
+# format decision does: the reader of these bytes cannot then drift from
+# the writer of them.
+# ---------------------------------------------------------------------
+
+#: How the frames array announces itself.  A JSON key, so both quotes are
+#: part of the pattern, and that is what makes searching the raw text
+#: safe: ``playthrough/frames/frame_00001.png`` contains the word without
+#: the quotes, and a string value that spelled the token out would have to
+#: escape its quotes to be valid JSON -- ``\"frames\": [`` -- which this
+#: pattern does not match.  So the first match is the array itself.
+_FRAMES_ARRAY_RE = re.compile(r'"frames"\s*:\s*\[')
+
+#: How much of the document is read at a time while scanning.  Large
+#: enough that one entry is almost always complete in the first chunk,
+#: small enough that the reader's own footprint is a rounding error.
+_STREAM_CHUNK = 65536
+
+
+def _open_timeline_for_stream(path: str) -> Any:
+    """Open a timeline for reading, refusing a symbolic link.
+
+    The same O_NOFOLLOW rule read_timeline() applies, for the same
+    reason: a redirected read would hand a consumer somebody else's
+    document while every downstream count still tallied.
+    """
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError as err:
+        if err.errno in (errno.ELOOP, errno.EMLINK):
+            raise TimelineError(
+                "the timeline path is a symbolic link: %s.  Refusing "
+                "to follow it." % path) from err
+        raise TimelineError(
+            "could not read the timeline %s: %s" % (path, err)) from err
+    try:
+        return os.fdopen(descriptor, "r", encoding="utf-8")
+    except OSError as err:
+        os.close(descriptor)
+        raise TimelineError(
+            "could not read the timeline %s: %s" % (path, err)) from err
+
+
+def _find_frames_array(handle: Any) -> Optional[str]:
+    """Read up to the frames array and return what follows its ``[``.
+
+    Returns None when the document carries no frames array at all, which
+    is the bare-array and the malformed case; the caller then falls back
+    to reading the whole document, which is bounded by the fact that such
+    a document is not one this pipeline wrote.
+    """
+    buffer = ""
+    while True:
+        match = _FRAMES_ARRAY_RE.search(buffer)
+        if match is not None:
+            return buffer[match.end():]
+        chunk = handle.read(_STREAM_CHUNK)
+        if not chunk:
+            return None
+        # Only the tail can carry a partial match, so the buffer is
+        # trimmed rather than allowed to become the whole document.
+        buffer = buffer[-32:] + chunk
+
+
+def iter_timeline_frames(path: str) -> Iterator[Dict[str, Any]]:
+    """Yield the timeline's per-frame entries, one at a time.
+
+    An event reader: the file is consumed in chunks and each entry is
+    decoded, handed to the caller and released, so the memory a walk
+    costs is one entry rather than the session.  The decoding itself is
+    the standard library's, so an entry that is not valid JSON raises
+    here exactly as json.loads() would -- a streamed read is not a
+    lenient one.
+
+    A document with no frames array yields nothing, which is the honest
+    answer for one: the caller's own "this timeline carries no entries"
+    verdict is what should be reported, not an exception from the reader.
+    """
+    decoder = json.JSONDecoder()
+    with _open_timeline_for_stream(path) as handle:
+        buffer = _find_frames_array(handle)
+        if buffer is None:
+            return
+        while True:
+            buffer = buffer.lstrip()
+            while buffer[:1] == ",":
+                buffer = buffer[1:].lstrip()
+            if buffer[:1] == "]":
+                return
+            if not buffer:
+                chunk = handle.read(_STREAM_CHUNK)
+                if not chunk:
+                    raise TimelineError(
+                        "%s ends inside its frames array" % path)
+                buffer = chunk
+                continue
+            try:
+                entry, offset = decoder.raw_decode(buffer)
+            except ValueError:
+                chunk = handle.read(_STREAM_CHUNK)
+                if not chunk:
+                    raise TimelineError(
+                        "%s ends inside an entry of its frames array"
+                        % path)
+                buffer += chunk
+                continue
+            buffer = buffer[offset:]
+            yield entry
+
+
+def read_timeline_header(path: str) -> Any:
+    """Return the document with its frames array emptied.
+
+    Everything except the per-frame entries: the version, the three
+    provenance blocks, the declared constants and the declared totals.
+    The array is replaced by an empty one rather than removed, so a
+    caller reads ``document["frames"] == []`` and cannot mistake a
+    streamed read for a document that never had entries -- and every
+    other key is exactly the one on disk.
+
+    A document with no frames array is returned whole, because there is
+    nothing to leave out.
+    """
+    decoder = json.JSONDecoder()
+    with _open_timeline_for_stream(path) as handle:
+        prefix = ""
+        buffer = ""
+        while True:
+            match = _FRAMES_ARRAY_RE.search(buffer)
+            if match is not None:
+                prefix += buffer[:match.end()]
+                buffer = buffer[match.end():]
+                break
+            chunk = handle.read(_STREAM_CHUNK)
+            if not chunk:
+                # No array: the whole document is the header.
+                try:
+                    return json.loads(prefix + buffer)
+                except ValueError as err:
+                    raise TimelineError(
+                        "%s is not JSON: %s" % (path, err)) from err
+            prefix += buffer
+            buffer = chunk
+        # Walk the entries without keeping them, to find the ``]`` that
+        # closes the array; what follows it is the rest of the header.
+        while True:
+            buffer = buffer.lstrip()
+            while buffer[:1] == ",":
+                buffer = buffer[1:].lstrip()
+            if buffer[:1] == "]":
+                break
+            if not buffer:
+                chunk = handle.read(_STREAM_CHUNK)
+                if not chunk:
+                    raise TimelineError(
+                        "%s ends inside its frames array" % path)
+                buffer = chunk
+                continue
+            try:
+                _, offset = decoder.raw_decode(buffer)
+            except ValueError:
+                chunk = handle.read(_STREAM_CHUNK)
+                if not chunk:
+                    raise TimelineError(
+                        "%s ends inside an entry of its frames array"
+                        % path)
+                buffer += chunk
+                continue
+            buffer = buffer[offset:]
+        suffix = buffer + handle.read()
+    try:
+        return json.loads(prefix + suffix)
+    except ValueError as err:
+        raise TimelineError(
+            "%s is not JSON: %s" % (path, err)) from err
+
+
 def manifest_row_problems(
     rows: Sequence[Any],
     allow_index_gaps: bool = False,
@@ -5190,7 +5394,9 @@ def _drift_problems(
     where = manifest_path or manifest.default_manifest_path()
     problems = [
         "%s does not match a fresh computation from %s; regenerate it "
-        "with `python3 playthrough/tooling/timeline.py`"
+        "with `\"$PLAYTHROUGH_PYTHON\" -B "
+        "playthrough/tooling/timeline.py`, having sourced "
+        "playthrough/tooling/env.sh"
         % (path, where)]
     stored_frames = stored.get("frames") if isinstance(
         stored, dict) else None

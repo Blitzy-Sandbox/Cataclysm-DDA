@@ -343,23 +343,58 @@ stage_engine() {
 }
 
 # ---------------------------------------------------------------------
-# 5  THE DISPLAY
+# 6  THE DISPLAY
 #
-# playthrough_headless_up is the composite env.sh already uses: the
-# platform, the video driver (never `dummy`, which renders no pixels and
-# is the regression the luminance gate exists to catch), the X server,
-# the window manager, access control, and the geometry.
+# `launch_game.sh headless` is the composite the production path itself
+# uses: the platform, the video driver (never `dummy`, which renders no
+# pixels and is the regression the luminance gate exists to catch), the X
+# server, the window manager, access control, and the geometry.
+#
+# IT RUNS IN THE SCRATCH CHECKOUT, and that is the whole point of the
+# stage's position.  env.sh records X ownership PER CHECKOUT, so whoever
+# starts the server is the only tree that can prove it is theirs.  This
+# stage used to call playthrough_headless_up from the REAL checkout, one
+# stage earlier; the server was then foreign to the scratch checkout that
+# stage 7 launches into, which held the trust state at 'diagnostic' and
+# made the capture launch refuse -- correctly, and for a reason this file
+# had created itself.  Measured: PREFLIGHT_STAGE_7=fail with ":99 is
+# served by infrastructure this checkout did not start".
+#
+# The values are read back from the launcher's own KEY=value channel and
+# from the scratch tree's own env.sh, so they describe the server that
+# was actually started rather than the one this shell would derive.
 # ---------------------------------------------------------------------
 stage_display() {
-    playthrough_headless_up || return 1
-    note DISPLAY "${PLAYTHROUGH_DISPLAY}"
-    note SCREEN "${PLAYTHROUGH_SCREEN}"
-    note XAUTHORITY_ORIGIN "${PLAYTHROUGH_XAUTHORITY_ORIGIN-}"
+    local out="" log="${SCRATCH_BASE}/display.err"
+    # The single quotes are the point: this program text is expanded by
+    # the SCRATCH tree's shell, not by this one.  Expanding it here would
+    # substitute the real checkout's values -- the very leak scratch_run
+    # exists to prevent.
+    # shellcheck disable=SC2016
+    if ! out="$(scratch_run bash -c '
+            . playthrough/tooling/env.sh || exit 1
+            bash playthrough/tooling/launch_game.sh headless \
+                >/dev/null || exit 1
+            printf "DISPLAY=%s\n" "${PLAYTHROUGH_DISPLAY}"
+            printf "SCREEN=%s\n" "${PLAYTHROUGH_SCREEN}"
+            printf "XAUTHORITY_ORIGIN=%s\n" \
+                "${PLAYTHROUGH_XAUTHORITY_ORIGIN-}"
+        ' 2>"${log}")"; then
+        playthrough_warn "the scratch checkout could not bring up a" \
+            "display it owns; its diagnosis follows"
+        tail -n 30 "${log}" >&2 || true
+        return 1
+    fi
+    local key
+    for key in DISPLAY SCREEN XAUTHORITY_ORIGIN; do
+        note "${key}" "$(printf '%s\n' "${out}" |
+            sed -n "s/^${key}=//p" | tail -n 1)"
+    done
     return 0
 }
 
 # ---------------------------------------------------------------------
-# 6  THE SCRATCH CHECKOUT
+# 5  THE SCRATCH CHECKOUT
 #
 # The tooling is COPIED rather than symlinked because env.sh derives the
 # repository root from its own location: a symlinked script would resolve
@@ -416,6 +451,25 @@ stage_scratch() {
     # verify.  It was right to refuse; the omission was the defect.
     cp -pR "${PLAYTHROUGH_TOOLING_DIR}/." \
         "${SCRATCH}/playthrough/tooling/" || return 1
+    # AND THE DOSSIER, because the caption stage cannot run without it.
+    # make_srt.py titles the transcript with the name the dossier gives
+    # "and with no other", so a scratch tree without one fails stage 10
+    # with a message about a missing dossier rather than about the
+    # captions -- which is exactly how it failed once this file got far
+    # enough to reach that stage.  The REAL dossier is copied rather than
+    # a synthetic one written, so the stage proves the format the record
+    # actually uses; it is read-only here and the whole tree is removed
+    # in teardown.
+    if [ ! -f "${PLAYTHROUGH_DIR}/dossier.md" ]; then
+        playthrough_warn "the checkout has no playthrough/dossier.md," \
+            "so the caption stage could not be proved: make_srt.py" \
+            "titles the transcript with the name the dossier gives and" \
+            "refuses to write anything without it.  It is a tracked" \
+            "artifact -- restore it before running this."
+        return 1
+    fi
+    cp -p "${PLAYTHROUGH_DIR}/dossier.md" \
+        "${SCRATCH}/playthrough/dossier.md" || return 1
     # The engine's own file name, taken from the argument form the
     # engine is launched with rather than assumed, so the scratch
     # checkout carries it at exactly the path launch_game.sh looks for.
@@ -857,13 +911,20 @@ main() {
         run_stage "the toolchain env.sh requires" stage_toolchain
         run_stage "the pinned Python closure" stage_python
         run_stage "the engine" stage_engine
-        run_stage "an authenticated headless display" stage_display
+        # THE SCRATCH CHECKOUT COMES BEFORE THE DISPLAY, because the
+        # display has to be OWNED by the checkout that will be captured
+        # on it.  env.sh records X ownership per checkout, so a display
+        # brought up by the real checkout is foreign to the scratch one:
+        # it held the trust state at 'diagnostic' and the capture launch
+        # in stage 7 was correctly refused.  Creating the scratch tree
+        # first lets it start, own and authenticate its own server.
+        run_stage "a scratch checkout to prove into" stage_scratch
     else
         playthrough_warn "stages 2 to 11 were NOT attempted: they all" \
             "depend on the trust state stage 1 measured"
     fi
     if [ "${FAILURES}" -eq 0 ]; then
-        run_stage "a scratch checkout to prove into" stage_scratch
+        run_stage "an authenticated headless display" stage_display
     fi
     if [ "${FAILURES}" -eq 0 ]; then
         run_stage "the engine, launched" stage_launch

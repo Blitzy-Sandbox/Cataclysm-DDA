@@ -202,9 +202,16 @@ EVERY WRITE IS CONFINED, AND ALL WRITES COMMIT TOGETHER
     with nobody told which half landed.
 
 USAGE
-    $ python3 playthrough/tooling/seed_options.py
-    $ python3 playthrough/tooling/seed_options.py --dry-run --explain
-    $ python3 playthrough/tooling/seed_options.py --verify-only
+    $ . playthrough/tooling/env.sh
+    $ SO='playthrough/tooling/seed_options.py'
+    $ "$PLAYTHROUGH_PYTHON" -B "$SO"
+    $ "$PLAYTHROUGH_PYTHON" -B "$SO" --dry-run --explain
+    $ "$PLAYTHROUGH_PYTHON" -B "$SO" --verify-only
+
+    ``env.sh`` exports ``PLAYTHROUGH_PYTHON``, the pinned CPython 3.12
+    this tooling is installed against; this file is tracked mode 644 and
+    is not on PATH, so it is always invoked through that interpreter,
+    and ``-B`` keeps a re-included ``__pycache__`` out of the tree.
 
     Standard output carries only ``KEY=value`` lines, the same
     machine-readable channel ``launch_game.sh`` uses, so the resolved
@@ -246,6 +253,22 @@ OPT_TERMINAL_X = "TERMINAL_X"
 OPT_TERMINAL_Y = "TERMINAL_Y"
 OPT_POINT_POOLS = "CHARACTER_POINT_POOLS"
 OPT_WORLD_COMPRESSION = "WORLD_COMPRESSION2"
+# THE REST OF THE GEOMETRY, and it is not decoration.  TERMINAL_X and
+# TERMINAL_Y alone do not decide the window: the engine multiplies them
+# by the FONT dimensions [src/sdltiles.cpp:595-596], the window manager
+# places the result according to FULLSCREEN [src/options.cpp:2715-2724],
+# SCALING_FACTOR multiplies it again, SCALING_MODE decides whether the
+# rendered image is resampled at all, and SIDEBAR_POSITION decides which
+# side of the frame the clock is on.  Every one of those is an input to
+# the capture rectangle and to the OCR crop, so seeding two of the six
+# and verifying only those two -- which is what a review found -- proves
+# the grid is 240x67 while leaving the pixels it lands on unproven.
+OPT_FONT_WIDTH = "FONT_WIDTH"
+OPT_FONT_HEIGHT = "FONT_HEIGHT"
+OPT_SIDEBAR_POSITION = "SIDEBAR_POSITION"
+OPT_FULLSCREEN = "FULLSCREEN"
+OPT_SCALING_MODE = "SCALING_MODE"
+OPT_SCALING_FACTOR = "SCALING_FACTOR"
 
 # ---------------------------------------------------------------------
 # The values that are seeded, and the constraints they are checked
@@ -267,6 +290,39 @@ TERMINAL_X_WANTED = 240
 # src/options.cpp:2413-2416 add( "TERMINAL_Y", ..., 24, 270, 24, ... )
 TERMINAL_Y_RANGE = (24, 270)
 TERMINAL_Y_WANTED = 67
+
+# src/options.cpp:2430-2433 add( "FONT_WIDTH", ..., 6, 100, 8, ... )
+FONT_WIDTH_RANGE = (6, 100)
+FONT_WIDTH_WANTED = 8
+
+# src/options.cpp:2435-2438 add( "FONT_HEIGHT", ..., 8, 100, 16, ... )
+FONT_HEIGHT_RANGE = (8, 100)
+FONT_HEIGHT_WANTED = 16
+
+# src/options.cpp:2132-2136 { "left", "right" }, "right".  The clock is
+# read out of the sidebar column, so which side it is on decides the crop
+# [src/display.cpp:207-219; data/json/ui/sidebar.json].
+SIDEBAR_POSITIONS = ("left", "right")
+SIDEBAR_POSITION_WANTED = "right"
+
+# src/options.cpp:2715-2724 { "no", "maximized", "fullscreen",
+# "windowedbl" }, "windowedbl" on every non-MSVC build.  The capture
+# contract is a borderless window centred in the X root, which is what
+# "windowedbl" produces; "maximized" and "fullscreen" both let the window
+# manager decide the size instead.
+FULLSCREEN_MODES = ("no", "maximized", "fullscreen", "windowedbl")
+FULLSCREEN_WANTED = "windowedbl"
+
+# src/options.cpp:2806-2815 { "none", "nearest", "linear" }, "none".
+# Anything but "none" resamples the rendered image, which softens the
+# 8x16 glyphs the clock OCR reads.
+SCALING_MODES = ("none", "nearest", "linear")
+SCALING_MODE_WANTED = "none"
+
+# src/options.cpp:2818-2825 { "1", "2", "4" }, "1".  A factor above 1
+# multiplies the window past the root and the grid is then clipped.
+SCALING_FACTORS = ("1", "2", "4")
+SCALING_FACTOR_WANTED = "1"
 
 # src/options.cpp:2893-2897 { "any", "multi_pool", "story_teller" },
 # "story_teller".  src/newcharacter.cpp:462-467: the first two below
@@ -1960,6 +2016,30 @@ REASONS = {
         "keeps the committed character file a plain #<b64>.sav rather "
         "than #<b64>.sav.zzip [src/game_io.cpp:601-621; "
         "src/worldfactory.h:25]"),
+    OPT_FONT_WIDTH: (
+        "8 px cells: the window is TERMINAL_X * FONT_WIDTH wide "
+        "[src/sdltiles.cpp:595-596], so this is half of what makes the "
+        "grid 1920 px [src/options.cpp:2430-2433]"),
+    OPT_FONT_HEIGHT: (
+        "16 px cells: the window is TERMINAL_Y * FONT_HEIGHT tall "
+        "[src/sdltiles.cpp:595-596], so this is half of what makes the "
+        "grid 1072 px [src/options.cpp:2435-2438]"),
+    OPT_SIDEBAR_POSITION: (
+        "the clock is read out of the sidebar column, and this decides "
+        "which side of the frame that column is on "
+        "[src/options.cpp:2132-2136]"),
+    OPT_FULLSCREEN: (
+        "windowed borderless is the capture contract's window: the grid "
+        "centred in the X root with no decoration "
+        "[src/options.cpp:2715-2724]"),
+    OPT_SCALING_MODE: (
+        "'none' renders at native resolution; nearest or linear "
+        "resample the image and soften the 8x16 glyphs the clock OCR "
+        "reads [src/options.cpp:2806-2815]"),
+    OPT_SCALING_FACTOR: (
+        "1x keeps the window at the grid's own size; a larger factor "
+        "scales it past the 1920x1080 root and clips the grid "
+        "[src/options.cpp:2818-2825]"),
 }
 
 
@@ -2163,6 +2243,22 @@ def patch(
         (OPT_POINT_POOLS, _validated_choice(
             OPT_POINT_POOLS, wanted_pools, POINT_POOLS)),
         (OPT_WORLD_COMPRESSION, _bool_text(bool(wanted_zip))),
+        # The other four inputs to the window the capture is cropped
+        # out of, and the one that decides which side the clock is on.
+        (OPT_FONT_WIDTH, _validated_range(
+            OPT_FONT_WIDTH, FONT_WIDTH_WANTED, FONT_WIDTH_RANGE)),
+        (OPT_FONT_HEIGHT, _validated_range(
+            OPT_FONT_HEIGHT, FONT_HEIGHT_WANTED, FONT_HEIGHT_RANGE)),
+        (OPT_SIDEBAR_POSITION, _validated_choice(
+            OPT_SIDEBAR_POSITION, SIDEBAR_POSITION_WANTED,
+            SIDEBAR_POSITIONS)),
+        (OPT_FULLSCREEN, _validated_choice(
+            OPT_FULLSCREEN, FULLSCREEN_WANTED, FULLSCREEN_MODES)),
+        (OPT_SCALING_MODE, _validated_choice(
+            OPT_SCALING_MODE, SCALING_MODE_WANTED, SCALING_MODES)),
+        (OPT_SCALING_FACTOR, _validated_choice(
+            OPT_SCALING_FACTOR, SCALING_FACTOR_WANTED,
+            SCALING_FACTORS)),
     ]
     if report.tileset is not None:
         plan.insert(3, (OPT_TILES, report.tileset.ident))
@@ -2599,6 +2695,8 @@ SEEDED_OPTIONS = (
     OPT_24_HOUR, OPT_SOUND_ENABLED, OPT_USE_TILES, OPT_TILES,
     OPT_TERMINAL_X, OPT_TERMINAL_Y, OPT_POINT_POOLS,
     OPT_WORLD_COMPRESSION,
+    OPT_FONT_WIDTH, OPT_FONT_HEIGHT, OPT_SIDEBAR_POSITION,
+    OPT_FULLSCREEN, OPT_SCALING_MODE, OPT_SCALING_FACTOR,
 )
 
 
@@ -2706,6 +2804,54 @@ def verify(
             f"{observed.get(OPT_WORLD_COMPRESSION)!r}, expected "
             f"{_bool_text(wanted_zip)!r}")
 
+    # THE ACTIVE SIDEBAR LAYOUT, which is not an option at all: the
+    # engine persists it in <userdir>/config/panel_options.json
+    # [src/panels.cpp:492-503] and defaults it in its own constructor
+    # [src/panels.cpp:412-418].  It belongs in this aggregation because
+    # it is an input to the same crop the option keys above feed: the
+    # layout decides the sidebar's WIDTH IN CELLS, and a layout other
+    # than the one sidebar_geometry.py computes against would put the
+    # clock outside the cropped column while every option here still
+    # read correctly.  The import is local so that verifying an options
+    # file stays possible in a tree where the geometry module is absent.
+    try:
+        from sidebar_geometry import (  # noqa: E402  (local by design)
+            DEFAULT_LAYOUT_ID, GeometryError, read_current_layout_id)
+    except ImportError as err:                    # pragma: no cover
+        problems.append(
+            f"the sidebar layout could not be verified because "
+            f"sidebar_geometry is not importable ({err}); the crop the "
+            f"clock is read from depends on it")
+    else:
+        try:
+            layout, source = read_current_layout_id(root=root)
+        except GeometryError as err:
+            problems.append(
+                f"the active sidebar layout could not be read: {err}")
+        else:
+            if layout != DEFAULT_LAYOUT_ID:
+                problems.append(
+                    f"the active sidebar layout is {layout!r} (from "
+                    f"{source}), expected {DEFAULT_LAYOUT_ID!r} -- the "
+                    f"OCR crop is computed from that layout's width in "
+                    f"cells, so another layout puts the clock outside "
+                    f"the cropped column [src/panels.cpp:412-418, "
+                    f":484]")
+
+    # THE CHOICE-VALUED GEOMETRY KEYS, checked before the numeric ones
+    # so that one call reports every wrong value rather than the first.
+    for name, expected in (
+        (OPT_SIDEBAR_POSITION, SIDEBAR_POSITION_WANTED),
+        (OPT_FULLSCREEN, FULLSCREEN_WANTED),
+        (OPT_SCALING_MODE, SCALING_MODE_WANTED),
+        (OPT_SCALING_FACTOR, SCALING_FACTOR_WANTED),
+    ):
+        value = observed.get(name)
+        if value != expected:
+            problems.append(
+                f"{name} is {value!r}, expected {expected!r} -- "
+                f"{REASONS[name]}")
+
     expected_x = str(TERMINAL_X_WANTED if terminal_x is None
                      else terminal_x)
     expected_y = str(TERMINAL_Y_WANTED if terminal_y is None
@@ -2713,6 +2859,8 @@ def verify(
     for name, expected, bounds in (
         (OPT_TERMINAL_X, expected_x, TERMINAL_X_RANGE),
         (OPT_TERMINAL_Y, expected_y, TERMINAL_Y_RANGE),
+        (OPT_FONT_WIDTH, str(FONT_WIDTH_WANTED), FONT_WIDTH_RANGE),
+        (OPT_FONT_HEIGHT, str(FONT_HEIGHT_WANTED), FONT_HEIGHT_RANGE),
     ):
         value = observed.get(name)
         if value != expected:
@@ -2790,18 +2938,25 @@ Run this AFTER the game's first launch has written options.json.  A
 fresh userdir has no options file at all, and this module patches what
 the engine wrote rather than creating one.
 
+Source playthrough/tooling/env.sh first: it exports PLAYTHROUGH_PYTHON,
+the pinned CPython 3.12 this tooling is installed against, and -B keeps
+a re-included __pycache__ out of the tree.
+
+  . playthrough/tooling/env.sh
+  SO='playthrough/tooling/seed_options.py'
+
 Standard output carries only KEY=value lines, so it can be read with
-  SEEDED="$(python3 playthrough/tooling/seed_options.py)"
+  SEEDED="$("$PLAYTHROUGH_PYTHON" -B "$SO")"
   echo "$SEEDED" | grep '^PLAYTHROUGH_TILESET_SEEDED='
 Every diagnostic goes to stderr; --explain writes the human-readable
 report there, which is the text to paste into
 playthrough/TECHNICAL_NOTES.md.
 
 Examples:
-  python3 playthrough/tooling/seed_options.py
-  python3 playthrough/tooling/seed_options.py --dry-run --explain
-  python3 playthrough/tooling/seed_options.py --verify-only
-  python3 playthrough/tooling/seed_options.py --worlds patch
+  "$PLAYTHROUGH_PYTHON" -B "$SO"
+  "$PLAYTHROUGH_PYTHON" -B "$SO" --dry-run --explain
+  "$PLAYTHROUGH_PYTHON" -B "$SO" --verify-only
+  "$PLAYTHROUGH_PYTHON" -B "$SO" --worlds patch
 """
 
 

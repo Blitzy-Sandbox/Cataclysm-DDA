@@ -97,14 +97,20 @@ manager is never invoked, no subprocess is started, and no network call
 of any kind is made.
 
 USAGE
-    $ python3 playthrough/tooling/sidebar_geometry.py
+    $ . playthrough/tooling/env.sh
+    $ "$PLAYTHROUGH_PYTHON" -B playthrough/tooling/sidebar_geometry.py
     352x1072+1568+4
 
+``env.sh`` exports ``PLAYTHROUGH_PYTHON``, the pinned CPython 3.12 this
+tooling is installed against; this file is tracked mode 644 and is not
+on PATH, so it is always invoked through that interpreter, and ``-B``
+keeps a re-included ``__pycache__`` out of the tree.
+
 Standard output carries exactly the geometry string and nothing else, so
-``RECT="$(python3 playthrough/tooling/sidebar_geometry.py)"`` is safe,
-and ``--layout-id`` pins a named layout instead of reading the game's
-own choice.  Every diagnostic, warning and fallback notice goes to
-stderr.
+capturing the invocation above in a ``RECT="$(...)"`` substitution is
+safe, and ``--layout-id`` pins a named layout instead of reading the
+game's own choice.  Every diagnostic, warning and fallback notice goes
+to stderr.
 """
 import argparse
 import json
@@ -1740,7 +1746,8 @@ def narrow_to_rows(
 #
 # STDOUT CARRIES EXACTLY THE GEOMETRY STRING AND NOTHING ELSE, so that
 #
-#     RECT="$(python3 playthrough/tooling/sidebar_geometry.py)"
+#     RECT="$("${PLAYTHROUGH_PYTHON}" -B \
+#         playthrough/tooling/sidebar_geometry.py)"
 #     convert "${FRAME}" -crop "${RECT}" +repage ... png:-
 #
 # is safe with no parsing, no trimming and no decoration to strip.
@@ -1751,21 +1758,25 @@ def narrow_to_rows(
 
 _EPILOG = """\
 examples (run from the repository root; this file is tracked mode 644
-and is not on PATH, so it is always invoked through the interpreter):
+and is not on PATH, so it is always invoked through the pinned
+interpreter -- source playthrough/tooling/env.sh first, which exports
+it as PLAYTHROUGH_PYTHON):
+  SG='playthrough/tooling/sidebar_geometry.py'
+
   # the live configuration, for capture.sh
-  python3 playthrough/tooling/sidebar_geometry.py
+  "$PLAYTHROUGH_PYTHON" -B "$SG"
 
   # show how the rectangle was derived (stderr) as well
-  python3 playthrough/tooling/sidebar_geometry.py --explain
+  "$PLAYTHROUGH_PYTHON" -B "$SG" --explain
 
   # a different layout, without touching any file
-  sidebar_geometry.py --layout-id custom_sidebar
+  "$PLAYTHROUGH_PYTHON" -B "$SG" --layout-id custom_sidebar
 
   # a width no shipped preset declares
-  sidebar_geometry.py --sidebar-cells 40
+  "$PLAYTHROUGH_PYTHON" -B "$SG" --sidebar-cells 40
 
   # a left-hand sidebar
-  python3 playthrough/tooling/sidebar_geometry.py --position left
+  "$PLAYTHROUGH_PYTHON" -B "$SG" --position left
 
 Exit status: 0 on success, 1 when the crop cannot be computed
 honestly, 2 on a command line error.

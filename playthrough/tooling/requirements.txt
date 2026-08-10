@@ -269,25 +269,223 @@ imageio==2.37.4  # frame and video IO used by MoviePy
 # the bundled binary is what encodes -- so keep it exported.
 imageio-ffmpeg==0.6.0  # encoder bridge for MoviePy and imageio
 
-# System packages the pipeline also needs.  They cannot be expressed as
-# pip requirements but are equally load-bearing: without them the
-# capture, OCR and render stages fail at run time.  ffmpeg and ffprobe
-# render and probe, imagemagick captures and preprocesses, tesseract-ocr
-# reads the sidebar clock, xdotool delivers keystrokes, and xvfb with
-# x11-utils, openbox and scrot provide the headless surface.  See
-# playthrough/README.md for the versions this pipeline was verified
-# against.
+# =====================================================================
+# SYSTEM PACKAGES: THREE SEPARATE INVENTORIES, EACH COMPLETE
+# =====================================================================
 #
-#     apt-get install -y ffmpeg imagemagick tesseract-ocr xdotool xvfb \
-#         x11-utils openbox scrot
+# These cannot be expressed as pip requirements but are equally
+# load-bearing: without them the build, capture, OCR and render stages
+# fail at run time.
 #
-# coreutils is not listed there because no base system omits it, but one
-# of its tools is load-bearing enough to name: sha256sum takes each
-# capture's digest at the instant the frame is published, and a capture
-# whose digest cannot be computed is WITHDRAWN rather than recorded.  On
-# a stripped image that lacks it, capture.sh fails as a prerequisite --
-# which is the correct outcome, since an unattested frame is exactly the
-# state the digest ledger exists to prevent.
+# WHY THREE LISTS RATHER THAN ONE.  There used to be a single apt line
+# here -- ffmpeg, imagemagick, tesseract-ocr, xdotool, xvfb, x11-utils,
+# openbox, scrot -- and a review found it incomplete in a way that a
+# single list is structurally prone to.  It described the CAPTURE
+# RUNTIME and was read as though it described everything, so two whole
+# capability sets were missing from the document that is supposed to be
+# the inventory: the development libraries the tiles build links
+# against, and the container runtime the supported-platform path needs.
+# An operator following it got a host that could photograph a game it
+# could not build.
+#
+# The three sets are genuinely different jobs, and most hosts need only
+# some of them -- which is the other reason to separate rather than
+# merge.  A machine that only renders and verifies existing artifacts
+# needs group 2 alone; a machine that builds the engine needs 1 and 2; a
+# machine driving the supported container needs 3 and nothing else,
+# because everything else is inside the image.
+#
+# EVERY VERSION BELOW WAS READ BACK FROM THE PROVISIONED HOST with
+# `dpkg-query -W -f='${Version}'` rather than being copied from
+# documentation.  They record what this pipeline was verified against;
+# they are not minimums, and apt is not asked to pin them.
+#
+# ---------------------------------------------------------------------
+# 1. HOST BUILD -- needed only to produce ./cataclysm-tiles
+# ---------------------------------------------------------------------
+# The COMMANDS and the DEVELOPMENT LIBRARIES are both required, and the
+# distinction is the one that used to cost an hour: make, g++-14,
+# pkg-config and ccache can all be present on a host with no SDL2
+# headers at all, and the build then fails several hundred object files
+# in with a compiler error about a missing header rather than a sentence
+# naming a package.  launch_game.sh's assert_build_capabilities probes
+# every module in this list with pkg-config BEFORE it spawns anything,
+# and reports all of them at once.
+#
+#     apt-get install -y build-essential g++-14 make pkg-config ccache \
+#         gettext zlib1g-dev libncurses-dev libsdl2-dev \
+#         libsdl2-ttf-dev libsdl2-image-dev libsdl2-mixer-dev \
+#         libfreetype-dev
+#
+#   build-essential      12.12ubuntu1     base toolchain and linker
+#   g++-14               14.3.0-8ubuntu1  the SANCTIONED compiler.  Not
+#                                         the default g++ on this
+#                                         archive, and the difference is
+#                                         load-bearing: the Makefile
+#                                         builds with -Werror, so a
+#                                         newer compiler's new warnings
+#                                         are build failures.
+#   make                 4.4.1-2          the primary build driver
+#   pkg-config           1.8.1-4build1    how the Makefile asks the host
+#                                         about SDL and FreeType; it is
+#                                         also the mechanism behind the
+#                                         Makefile's SDL3 version gate
+#   ccache               4.11.2-2         used via CCACHE=1
+#   gettext              0.23.1-2build2   msgfmt, for the .mo catalogues
+#   zlib1g-dev           1:1.3.dfsg+really1.3.1-1ubuntu2
+#                                         the save layer is compressed
+#   libncurses-dev       6.5+20250216-2ubuntu0.1
+#                                         the shared curses code
+#                                         compiles even in a tiles build
+#   libsdl2-dev          2.32.4+dfsg-1    SDL2 core
+#   libsdl2-ttf-dev      2.24.0+dfsg-2    font rendering
+#   libsdl2-image-dev    2.8.8+dfsg-1     tile and image loading
+#   libsdl2-mixer-dev    2.8.1+dfsg-2     audio, present because SOUND=1
+#                                         even though it is muted at run
+#                                         time
+#   libfreetype-dev      2.13.3+dfsg-1ubuntu0.1
+#                                         FreeType headers.  NOTE the
+#                                         name: libfreetype6-dev, which
+#                                         the project's own COMPILING.md
+#                                         install line uses, is
+#                                         transitional here and
+#                                         dpkg-query reports it as not
+#                                         installed.  This is the real
+#                                         package.  libncursesw5-dev is
+#                                         transitional in the same way.
+#
+# SDL3 IS DELIBERATELY ABSENT.  SDL3=0 is mandatory on this archive and
+# the Makefile hard-errors without it, so the SDL3 development packages
+# are not part of this inventory and the SDL3 GPU shader path is not
+# exercised.  Never pass TESTS=0.
+#
+# ---------------------------------------------------------------------
+# 2. CAPTURE RUNTIME -- the headless surface, capture, OCR and render
+# ---------------------------------------------------------------------
+#     apt-get install -y xvfb openbox x11-utils x11-xserver-utils \
+#         xauth imagemagick ffmpeg tesseract-ocr tesseract-ocr-eng \
+#         xdotool scrot fontconfig util-linux coreutils
+#
+#   xvfb                 2:21.1.18-1ubuntu1.1   the headless X server
+#   openbox              3.6.1-12ubuntu2  a minimal window manager.  NOT
+#                                         cosmetic: a bare X server has
+#                                         no focus model and xdotool key
+#                                         delivery to an unfocused
+#                                         window is unreliable, so this
+#                                         is load-bearing for the
+#                                         one-frame-per-keystroke
+#                                         invariant.
+#   x11-utils            7.7+7            xdpyinfo, xwininfo, xprop --
+#                                         display geometry, window
+#                                         geometry, and the check for
+#                                         whether a WM owns the display
+#   x11-xserver-utils    7.7+11           X session utilities
+#   xauth                1:1.1.2-1.1      WAS MISSING FROM THE OLD LIST
+#                                         AND IS NOT OPTIONAL.  Xvfb is
+#                                         started with -auth and a fresh
+#                                         128-bit MIT-MAGIC-COOKIE-1,
+#                                         and the pipeline ASSERTS that a
+#                                         client without the cookie is
+#                                         refused.  Without xauth the
+#                                         cookie cannot be recorded, the
+#                                         display has no access control,
+#                                         and every local account can
+#                                         read the screen being captured
+#                                         and inject keystrokes into the
+#                                         session -- so a recorded
+#                                         session is refused rather than
+#                                         merely warned about.
+#   imagemagick          8:7.1.2.3+dfsg1-1ubuntu0.1
+#                                         import captures the root
+#                                         window, convert crops and
+#                                         preprocesses, identify
+#                                         inspects, compare measures
+#                                         change between frames.  All
+#                                         four entry points ship in this
+#                                         one package.
+#   ffmpeg               7:7.1.1-1ubuntu4.2
+#                                         ffmpeg encodes and muxes,
+#                                         ffprobe verifies
+#   tesseract-ocr        5.5.0-1          reads the sidebar clock
+#   tesseract-ocr-eng    1:4.1.0-2        the English data the OCR needs;
+#                                         tesseract without a language
+#                                         pack reads nothing
+#   xdotool              1:3.20160805.1-5.1
+#                                         focuses the window by class and
+#                                         delivers exactly one keystroke
+#   scrot                1.12.1-1         the fallback capturer
+#   fontconfig           2.15.0-2.3ubuntu1
+#                                         font resolution for the
+#                                         transition card
+#   util-linux           2.41-4ubuntu4.2  flock, which is how every lock
+#                                         in this pipeline is held, and
+#                                         mcookie for the X cookie
+#   coreutils            9.5-1ubuntu2+0.0.0~ubuntu24
+#                                         NAMED EXPLICITLY DESPITE BEING
+#                                         UNIVERSAL, for one tool:
+#                                         sha256sum takes each capture's
+#                                         digest at the instant the frame
+#                                         is published, and a capture
+#                                         whose digest cannot be computed
+#                                         is WITHDRAWN rather than
+#                                         recorded.  On a stripped image
+#                                         that lacks it capture.sh fails
+#                                         as a prerequisite, which is the
+#                                         correct outcome: an unattested
+#                                         frame is exactly the state the
+#                                         digest ledger exists to
+#                                         prevent.  stat, readlink and
+#                                         chmod come from here too, and
+#                                         env.sh resolves those three
+#                                         from fixed system directories
+#                                         rather than from PATH, because
+#                                         they are the programs every
+#                                         ownership check is made of.
+#
+# grep, sed, mawk (or gawk) and bash are required and are not listed as
+# an install line: no base system omits them, and a host that did could
+# not run these scripts at all.  env.sh's playthrough_tool_package names
+# the package for each of them anyway, so a missing-tool diagnostic says
+# what to install rather than only what is absent.
+#
+# ---------------------------------------------------------------------
+# 3. SUPPORTED CONTAINER -- the trusted path when the host is not
+# ---------------------------------------------------------------------
+# A compliant capture must run on a release that is IN SUPPORT (see the
+# platform requirement below).  Where the host is not, the sanctioned
+# route is the container this repository builds and drives through
+# playthrough/tooling/supported_env.sh, which needs a container runtime
+# on the HOST and nothing else -- groups 1 and 2 live inside the image.
+#
+#     apt-get install -y docker.io
+#     # or Docker CE plus the compose plugin, which is what this host
+#     # carries: docker-ce 5:29.7.0 and docker-compose-plugin 5.3.1
+#
+#   a container runtime  docker-ce 5:29.7.0-1~ubuntu.25.10~questing
+#                                         supported_env.sh requires
+#                                         `docker` on PATH AND a
+#                                         RESPONDING DAEMON -- it probes
+#                                         `docker info`, because an
+#                                         installed client with a dead
+#                                         daemon is a different fault
+#                                         from an absent one and needs a
+#                                         different fix.  The IMAGE may
+#                                         be produced by any OCI builder;
+#                                         only the run path is
+#                                         docker-specific.
+#   docker-compose-plugin
+#                        5.3.1-1~ubuntu.25.10~questing
+#                                         present on this host; the
+#                                         pipeline itself does not use
+#                                         compose, so this is recorded
+#                                         rather than required.
+#
+# ---------------------------------------------------------------------
+# NOT A DEPENDENCY OF ANY OF THE THREE: shellcheck (0.10.0-1 here) and
+# flake8 gate this tooling during development.  They are deliberately
+# excluded from every inventory above and from the pins in this file,
+# because a developer tool that the pipeline never invokes at run time
+# is not a dependency of the pipeline.
 #
 # THE PLATFORM REQUIREMENT IS PART OF THAT LIST, because a version
 # number is only as good as the archive still publishing fixes for it.

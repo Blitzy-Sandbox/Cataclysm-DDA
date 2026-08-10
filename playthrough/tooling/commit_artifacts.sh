@@ -108,11 +108,23 @@
 # named and staged on its own, and `git add --` without -A is enough
 # because since git 2.0 a pathspec add records deletions as well as
 # additions (measured on git 2.51: `git add -- <dir>` staged a D, an M
-# and an A in one call).  The captures are additionally staged in
-# BOUNDED CHUNKS of ${STAGE_BATCH_SIZE} paths, so a session of any
-# length cannot approach the argument-list limit, and the chunk list is
-# built by `find -print0` and read NUL-delimited rather than by letting
-# a shell glob expand into thousands of words.
+# and an A in one call).
+#
+# THE CAPTURES ARE STREAMED, NEVER ACCUMULATED.  One capture per
+# keystroke and a deliberately unbounded session length mean the capture
+# population is the one list in this file that must never become a shell
+# array: it used to be read into one by `find -print0`, COPIED into a
+# second inside the batcher, and only then handed to git in chunks of
+# ${STAGE_BATCH_SIZE}.  The argv was bounded; the two arrays before it
+# were not.  So a path is now read, judged and written out one at a time
+# into a NUL-delimited PATHSPEC FILE in the mode-0700 runtime directory,
+# and git is given that file with `--pathspec-from-file=<file>
+# --pathspec-file-nul`: ONE `git add`, and therefore one index read and
+# one index write, however long the session was.  On a git too old for
+# that option (it arrived in 2.25) the same file is replayed in chunks of
+# ${STAGE_BATCH_SIZE} into a bounded argv array, which is the previous
+# behaviour minus the accumulation.  Nothing proportional to the session
+# is ever resident.
 #
 # EXPLICIT ENUMERATION HAS ONE FAILURE MODE, AND IT IS CLOSED HERE.  A
 # named list can omit a class somebody adds later, which would quietly
@@ -142,6 +154,23 @@
 #     CREATION     the hash of the `creation` checkpoint, empty when
 #                  there is not one yet
 #
+# `status` adds three more, which together are the answer to "would
+# `final` be taken?" asked without taking it -- and asked, above all, by
+# a caller that is about to spend an hour producing what a checkpoint
+# would carry:
+#
+#     CREATION_SURVIVOR  the survivor the NEWEST creation records
+#     FINAL_ANCHOR       the creation checkpoint `final` would actually
+#                        anchor to: the newest one recording THIS
+#                        survivor, which may be an older commit than the
+#                        newest one.  Empty when there is none.
+#     FINAL_ELIGIBLE     yes | no
+#     FINAL_REASON       empty when eligible; otherwise one stable token
+#                        -- no-survivor-loaded, no-record,
+#                        no-creation-checkpoint,
+#                        no-creation-for-this-survivor,
+#                        anchor-carries-no-record, record-has-not-grown
+#
 # THE TRAILER IS THE LIFECYCLE'S MEMORY.  Each commit carries
 # `Playthrough-Checkpoint: <name>` as a trailer, and `final` finds the
 # `creation` commit by searching for it.  A message a human wrote is not
@@ -165,6 +194,28 @@ _ca_on_error() {
         "commit_artifacts.sh failed at line ${2} (exit ${1})" >&2
 }
 trap '_ca_on_error "$?" "${LINENO}"' ERR
+
+# THE ONE FILE THIS SCRIPT WRITES OUTSIDE THE INDEX, and it is removed on
+# every exit path including a refusal.  It carries the NUL-delimited
+# pathspecs one staging call is about -- see STAGING IS EXPLICIT below --
+# and it lives in the mode-0700 runtime directory env.sh created, never in
+# the working tree, because a stray file under playthrough/ would itself
+# be an unstaged artifact the completeness sweep would refuse.
+_CA_PATHSPEC_FILE=""
+
+# The removal cannot be allowed to fail loudly: this runs on EVERY exit
+# path, including a refusal whose exit code is the message, and a
+# diagnostic from the cleanup would be printed after it.  A pathspec file
+# that outlives its run is harmless -- a unique name in a mode-0700
+# directory -- so the failure is swallowed rather than reported.
+# shellcheck disable=SC2317
+_ca_cleanup() {
+    if [ -n "${_CA_PATHSPEC_FILE}" ] &&
+            [ -f "${_CA_PATHSPEC_FILE}" ]; then
+        rm -f -- "${_CA_PATHSPEC_FILE}" 2>/dev/null || true
+    fi
+}
+trap _ca_cleanup EXIT
 
 # ---------------------------------------------------------------------
 # Locate this file, then load the one definition of the environment.
@@ -253,6 +304,27 @@ rel() {
     playthrough_rel "$1"
 }
 
+# name_sample TOTAL NAME... -- the collected names, and how many were not
+# collected.
+#
+# Every population this file diagnoses is the session's size, so the names
+# in a refusal are a bounded sample while the count is exact.  Saying so
+# explicitly is the point: "8 of 12,043" is a diagnosis, whereas eight
+# names presented as if they were all of them is a misleading one.
+name_sample() {
+    local total="$1"
+    shift
+    if [ "$#" -eq 0 ]; then
+        printf 'no names were collected'
+        return 0
+    fi
+    printf '%s' "$*"
+    if [ "${total}" -gt "$#" ]; then
+        printf ' (and %d more)' "$((total - $#))"
+    fi
+    return 0
+}
+
 # ---------------------------------------------------------------------
 # The toolchain.  git is the subject; the rest is what the gates are
 # made of.  playthrough_require_tools reports every missing tool at
@@ -302,12 +374,16 @@ readonly AWK="${PLAYTHROUGH_BIN_AWK}"
 # order, and each refuses to run out of turn:
 #
 #     dossier    the survivor described, before a single frame exists
-#     creation   the survivor and the save she starts from
+#     creation   the survivor and the save they start from
 #     final      the closed session and its artifacts
 readonly TRAILER_KEY="Playthrough-Checkpoint"
 readonly CHECKPOINT_DOSSIER="dossier"
 readonly CHECKPOINT_CREATION="creation"
 readonly CHECKPOINT_FINAL="final"
+# The fourth milestone, and the only one whose subject is not the
+# session: the two repository-wide rule files the evidence depends on.
+# See do_integration for why it exists and why it is separate.
+readonly CHECKPOINT_INTEGRATION="integration"
 
 # The subjects.  Written here rather than passed in, because a
 # checkpoint whose message a caller chooses is a checkpoint whose
@@ -318,6 +394,8 @@ readonly SUBJECT_CREATION="Commit the survivor's creation and the save \
 it produced"
 readonly SUBJECT_FINAL="Commit the closed session, its final save and \
 its artifacts"
+readonly SUBJECT_INTEGRATION="Commit the repository rules the \
+playthrough evidence depends on"
 
 # The lock this step takes, as a BASENAME: env.sh appends a digest of
 # this checkout's root so that two runs over ONE working tree serialise
@@ -333,19 +411,67 @@ its artifacts"
 readonly CHECKPOINT_LOCK_BASENAME="checkpoint"
 readonly CHECKPOINT_LOCK_TIMEOUT_DEFAULT=120
 
-# The one pathspec this file will ever read or write the index through.
-# Anything else in the repository -- including .gitignore and
-# .gitattributes, whose terminal negation and binary attributes this
-# tree depends on -- is somebody else's change and is left exactly as
-# found.  A checkpoint that also carried an unrelated root-file edit
-# would be a checkpoint about two things.
+# The one pathspec a SESSION checkpoint will ever read or write the index
+# through.  Anything else in the repository is somebody else's change and
+# is left exactly as found: a checkpoint that also carried an unrelated
+# root-file edit would be a checkpoint about two things.
+#
+# .gitignore and .gitattributes are the deliberate exception, and they are
+# not an exception to this array -- they have a milestone of their own
+# (INTEGRATION_PATHS, do_integration) which stages exactly those two and
+# refuses everything else, including everything under playthrough/.  The
+# two sets are disjoint on purpose, so no commit this file takes is ever
+# about both the session and the repository's rules.
 readonly -a PATHSPECS=("playthrough")
 
-# How many paths go into one `git add` invocation.  The captures are the
-# only class big enough to matter and 256 keeps each argv far below any
-# platform's limit while still being one call per 256 frames rather than
-# one per frame.
+# How many paths go into one `git add` invocation ON THE FALLBACK PATH.
+# When git can read its pathspecs from a file the whole class goes in one
+# call and this bound is not reached at all; on a git older than 2.25 the
+# streamed pathspec file is replayed in chunks of this size, which keeps
+# each argv far below any platform's limit while still being one call per
+# 256 frames rather than one per frame.
 readonly STAGE_BATCH_SIZE=256
+
+# The name of capture number one, formatted from env.sh's own capture
+# format rather than spelled out here, so this file cannot disagree with
+# manifest.py or capture.sh about what a capture is called.  `printf -v`
+# writes into the variable directly: a command substitution would be a
+# subshell whose status `readonly` would mask (ShellCheck SC2155).
+#
+# SC2059 objects to a variable used as a printf format.  Here that is the
+# entire point -- the format is env.sh's single definition, shared with
+# manifest.py, and inlining a second copy of '%05d' is exactly the
+# divergence this indirection exists to prevent -- and capture.sh carries
+# the same suppression for the same reason.  The expansion is asserted
+# immediately below, so a format that does not expand is a refusal rather
+# than a filename spelled 'frame_%05d.png'.
+FIRST_CAPTURE_BASENAME=""
+# shellcheck disable=SC2059
+printf -v FIRST_CAPTURE_BASENAME -- "${PLAYTHROUGH_FRAME_FORMAT}" 1
+if [ -z "${FIRST_CAPTURE_BASENAME}" ] ||
+        [ "${FIRST_CAPTURE_BASENAME}" = "${PLAYTHROUGH_FRAME_FORMAT}" ]; \
+        then
+    die "${EX_PREREQ}" "PLAYTHROUGH_FRAME_FORMAT=" \
+        "'${PLAYTHROUGH_FRAME_FORMAT}' did not expand; env.sh must" \
+        "supply a printf format containing %05d.  Nothing was" \
+        "committed."
+fi
+readonly FIRST_CAPTURE_BASENAME
+
+# HOW MANY OFFENDING PATHS A REFUSAL NAMES.
+#
+# Every diagnostic in this file is about a population whose size is the
+# session's: "nothing is staged" names one path per capture, and a
+# refusal that holds one string per frame to print them all is the same
+# unbounded list the staging path was just relieved of.  The COUNT is
+# always exact and always reported; this bounds how many are named.
+readonly DIAGNOSTIC_LIMIT=8
+
+# How many lines of "what a checkpoint would stage" `status` prints.  The
+# preview is a REPORT for an operator, and a report that is one line per
+# capture is not one: the total is stated exactly and the first few are
+# shown, so the answer is readable at any session length.
+readonly PREVIEW_LIMIT=20
 
 # ---------------------------------------------------------------------
 # THE IDENTITY GATE.
@@ -510,13 +636,39 @@ persist_identity_locally() {
     mail="${mail%>}"
     existing_name="$(local_config_value user.name)"
     existing_mail="$(local_config_value user.email)"
-    if [ -n "${existing_name}" ] && [ -n "${existing_mail}" ]; then
-        playthrough_log "this repository already records its own" \
-            "committer identity (${existing_name} <${existing_mail}>);" \
-            "leaving it exactly as found"
+    # AN EXISTING PAIR IS ONLY LEFT ALONE WHEN IT IS THE RIGHT ONE.
+    #
+    # This used to return the moment both values were present, without
+    # ever comparing them with the identity the commit was about to be
+    # made under -- so a checkout carrying a STALE local pair (a previous
+    # session's, another agent's, a hand-edited one) reported "leaving it
+    # exactly as found" and then committed under a different identity
+    # altogether.  The two are supposed to be the same fact written in
+    # two places; when they disagree, the configuration is describing
+    # somebody who did not make the commit, and the acceptance gate
+    # reads the configuration.
+    #
+    # So the pair is required to EQUAL the resolved identity, and when it
+    # does not, BOTH values are replaced -- both, because replacing one
+    # would leave a mixed identity that is neither of the two.
+    if [ "${existing_name}" = "${name}" ] &&
+            [ "${existing_mail}" = "${mail}" ]; then
+        playthrough_log "this repository already records ${name}" \
+            "<${mail}> as its own committer identity, which is the" \
+            "identity this commit will carry; leaving it exactly as" \
+            "found"
         return 0
     fi
-    if [ -z "${existing_name}" ] &&
+    if [ -n "${existing_name}" ] || [ -n "${existing_mail}" ]; then
+        playthrough_log "this repository records" \
+            "'${existing_name}' <${existing_mail}> as its committer" \
+            "identity while git resolves this commit's author as" \
+            "${name} <${mail}>; replacing BOTH local values with the" \
+            "resolved pair, so the configuration and the history cannot" \
+            "disagree about who committed the evidence.  Neither" \
+            "--global nor --system is touched."
+    fi
+    if [ "${existing_name}" != "${name}" ] &&
             ! "${GIT}" config --local user.name "${name}"; then
         die "${EX_IDENTITY}" "user.name could not be written into" \
             "this repository's own configuration.  The identity has to" \
@@ -526,11 +678,22 @@ persist_identity_locally() {
             "be written is a repository the commit itself would fail" \
             "in a moment later.  Nothing was committed."
     fi
-    if [ -z "${existing_mail}" ] &&
+    if [ "${existing_mail}" != "${mail}" ] &&
             ! "${GIT}" config --local user.email "${mail}"; then
         die "${EX_IDENTITY}" "user.email could not be written into" \
             "this repository's own configuration.  Nothing was" \
             "committed."
+    fi
+    # READ BACK, because "the write returned zero" is not the same claim
+    # as "the configuration now says this".
+    if [ "$(local_config_value user.name)" != "${name}" ] ||
+            [ "$(local_config_value user.email)" != "${mail}" ]; then
+        die "${EX_IDENTITY}" "this repository's configuration still" \
+            "records '$(local_config_value user.name)'" \
+            "<$(local_config_value user.email)> after being asked for" \
+            "${name} <${mail}>, so the identity the acceptance gate" \
+            "reads would not be the identity the commit carries." \
+            "Nothing was committed."
     fi
     playthrough_log "recorded ${name} <${mail}> as this REPOSITORY's" \
         "committer identity (git config --local, never --global and" \
@@ -611,54 +774,111 @@ assert_repository() {
 # -- `git add` is given pathspecs and cannot reach past them -- so those
 # are reported and left alone.
 #
-# .gitignore AND .gitattributes ARE DELIBERATELY OUT OF SCOPE.  The
-# terminal `!/playthrough/**` negation and the `*.sav`/`*.mp4`/`*.zzip`
-# binary attributes are load-bearing for this tree, and this file CHECKS
-# both -- see assert_not_ignored -- but it does not commit either.  They
-# are repository-wide configuration, they are edited by whoever owns
-# that decision, and they belong in their own commit rather than inside
-# a checkpoint whose subject is a survivor's save.
+# .gitignore AND .gitattributes ARE OUT OF SCOPE OF EVERY SESSION
+# CHECKPOINT, AND HAVE A MILESTONE OF THEIR OWN.  The terminal
+# `!/playthrough/**` negation and the `*.sav`/`*.mp4`/`*.zzip` binary
+# attributes are load-bearing for this tree, and every checkpoint CHECKS
+# both -- see assert_not_ignored and assert_committed_vcs_rules.  No
+# session checkpoint commits either: they are repository-wide
+# configuration and they do not belong inside a commit whose subject is
+# a survivor's save.
+#
+# They did, however, need a committer.  Both files are MODIFIED by this
+# feature, and a negation that was never committed loses the save data on
+# the next fresh clone while every working-tree check still passes -- so
+# `do_integration` commits exactly those two, before any artifact exists,
+# and refuses to publish them in a state that would leave the save data
+# ignored.
 # ---------------------------------------------------------------------
 
+# WHICH PATHS THE MILESTONE IN PROGRESS MAY COMMIT.
+#
+# Three of the four milestones are about the session and commit
+# playthrough/ and nothing else.  The fourth is about the two
+# repository-wide rule files this tree depends on, and it commits exactly
+# those two and nothing else -- including nothing under playthrough/.
+# The mode is set ONCE by the milestone and read by in_scope, so "what
+# may be committed" has one answer per run rather than one per call site.
+readonly SCOPE_SESSION="playthrough"
+readonly SCOPE_VCS="vcs"
+SCOPE_MODE="${SCOPE_SESSION}"
+
 # in_scope PATH -- true when a repository-relative path is one this file
-# is allowed to commit.
+# is allowed to commit IN THE CURRENT MODE.
 in_scope() {
     local path="$1"
+    if [ "${SCOPE_MODE}" = "${SCOPE_VCS}" ]; then
+        case "${path}" in
+            .gitignore|.gitattributes) return 0 ;;
+        esac
+        return 1
+    fi
     case "${path}" in
         playthrough|playthrough/*) return 0 ;;
     esac
     return 1
 }
 
-# staged_out_of_scope -- every staged path this file may not commit, one
-# per line.  -z is the only format that survives a path with a space, a
+# staged_out_of_scope -- every staged path this file may not commit, NUL
+# terminated.  -z is the only format that survives a path with a space, a
 # quote or a newline in it; --diff-filter is deliberately absent so a
 # staged deletion counts too.
+#
+# THE NUL SURVIVES ALL THE WAY TO THE REFUSAL, and that is a correctness
+# requirement rather than tidiness.  This used to re-emit each offending
+# path followed by a NEWLINE, and assert_scope then read those records
+# line by line and skipped the empty ones -- so a staged path whose name
+# is made only of newline characters became a run of empty lines, every
+# one of them skipped, and the refusal saw nothing to refuse.  A file
+# named "\n\n" is legal on every filesystem this pipeline runs on, and
+# the consequence was that an out-of-scope path could be swept into a
+# checkpoint by the one check written to prevent exactly that.
 staged_out_of_scope() {
     local path
     while IFS= read -r -d '' path; do
         if ! in_scope "${path}"; then
-            printf '%s\n' "${path}"
+            printf '%s\0' "${path}"
         fi
     done < <("${GIT}" diff --cached --name-only -z HEAD --)
     return 0
 }
 
 assert_scope() {
-    local staged=() path
-    while IFS= read -r path; do
-        [ -n "${path}" ] || continue
+    local staged=() path rendered=()
+    # -d '' on both sides: an empty record can only come from an empty
+    # path, which git never emits, so nothing has to be skipped here and
+    # nothing CAN be skipped by accident.
+    while IFS= read -r -d '' path; do
         staged+=("${path}")
     done < <(staged_out_of_scope)
     if [ "${#staged[@]}" -gt 0 ]; then
-        die "${EX_SCOPE}" "the index already carries changes outside" \
-            "$(rel "${PLAYTHROUGH_DIR}"): ${staged[*]}.  A commit" \
-            "publishes the whole index, so those would be swept into a" \
-            "checkpoint that says it is about the playthrough." \
-            "Unstage them ('git restore --staged -- <path>') and commit" \
-            "them separately -- .gitignore and .gitattributes in" \
-            "particular are repository-wide configuration and are never" \
-            "staged by this script.  Nothing was committed."
+        # %q per path, so a name carrying a newline, a tab or a quote
+        # appears in the refusal as itself rather than as a hole in the
+        # message -- the whole point of carrying the NUL this far.
+        for path in "${staged[@]}"; do
+            rendered+=("$(printf '%q' "${path}")")
+        done
+        if [ "${SCOPE_MODE}" = "${SCOPE_VCS}" ]; then
+            die "${EX_SCOPE}" "the index already carries" \
+                "${#staged[@]} change(s) that are neither .gitignore" \
+                "nor .gitattributes: ${rendered[*]}.  A commit" \
+                "publishes the whole index, so those would be swept" \
+                "into a checkpoint that says it is about the two" \
+                "repository rule files.  Unstage them ('git restore" \
+                "--staged -- <path>') and take the session checkpoints" \
+                "for anything under $(rel "${PLAYTHROUGH_DIR}")." \
+                "Nothing was committed."
+        fi
+        die "${EX_SCOPE}" "the index already carries ${#staged[@]}" \
+            "change(s) outside $(rel "${PLAYTHROUGH_DIR}"):" \
+            "${rendered[*]}.  A commit publishes the whole index, so" \
+            "those would be swept into a checkpoint that says it is" \
+            "about the playthrough.  Unstage them ('git restore" \
+            "--staged -- <path>') and commit them separately --" \
+            ".gitignore and .gitattributes have their own milestone" \
+            "('commit_artifacts.sh ${CHECKPOINT_INTEGRATION}') and are" \
+            "never staged by a session checkpoint.  Nothing was" \
+            "committed."
     fi
     return 0
 }
@@ -700,10 +920,14 @@ report_foreign_worktree_changes() {
         # checked here (assert_not_ignored) and committed elsewhere, and
         # silence about them would look like an oversight.
         playthrough_warn "${vcs[*]} carr(ies) uncommitted changes." \
-            "This script checks that the terminal '!/playthrough/**'" \
-            "negation still rescues the save data, and never commits" \
-            "the file that carries it -- repository-wide configuration" \
-            "belongs in its own commit.  Commit it separately."
+            "A SESSION checkpoint never stages them: repository-wide" \
+            "configuration belongs in its own commit, and this one is" \
+            "about the survivor.  That commit is this script's own" \
+            "'${CHECKPOINT_INTEGRATION}' milestone -- run" \
+            "'commit_artifacts.sh ${CHECKPOINT_INTEGRATION}' first," \
+            "which commits exactly those two files after checking that" \
+            "the terminal '${IGNORE_NEGATION}' negation and the" \
+            "attribute rows are what they have to be."
     fi
     return 0
 }
@@ -723,8 +947,8 @@ report_foreign_worktree_changes() {
 #
 # So HEAD's own copies are read.  The negation must be the LAST effective
 # rule in the committed .gitignore, because git applies the last matching
-# pattern; and the six attribute rows must be committed, because `* 
-# text=auto` alone leaves the film, the save and the map archives to
+# pattern; and the six attribute rows must be committed, because
+# `* text=auto` alone leaves the film, the save and the map archives to
 # content detection.  This is a REFUSAL rather than a warning: a
 # checkpoint taken over a history that does not carry these rules is a
 # checkpoint whose evidence a clone will not have.
@@ -744,6 +968,128 @@ readonly -a REQUIRED_ATTRIBUTES=(
     "*.jsonl text"
 )
 
+# ---------------------------------------------------------------------
+# THE ATTRIBUTES AS GIT ACTUALLY APPLIES THEM, which is not the same
+# question as whether the six rows are present.
+#
+# git applies the LAST matching pattern, exactly as it does for
+# .gitignore -- so a row added AFTER `*.mp4 binary` that also matches an
+# mp4 silently overrides it, and the row-by-row check above still passes
+# because the row it wants is still there.  The consequence is not
+# cosmetic: with the film left to `text`, `git add` runs end-of-line
+# normalisation over an h264 stream and commits a corrupted container,
+# and every count in this script still tallies.  The .gitignore half of
+# this trap is already guarded -- the negation must be the LAST effective
+# rule -- and this is the same guard for the other file.
+#
+# So git is ASKED, with `git check-attr`, about one representative path
+# per row.  A witness path need not exist: check-attr is pattern
+# matching, so `playthrough/cata-play.mp4` answers for the film whether
+# or not it has been rendered yet.  `binary` is a macro for
+# `-text -diff -merge`, so the property to require of a binary artifact
+# is that `text` is UNSET, and of a text artifact that it is SET.
+# ---------------------------------------------------------------------
+
+# One witness per required row: PATH|ATTRIBUTE|VALUE.  The paths are the
+# real artifact spellings this feature commits, so a rule scoped to a
+# directory rather than to a suffix is measured the way it will apply.
+readonly -a ATTRIBUTE_WITNESSES=(
+    "playthrough/cata-play.mp4|text|unset"
+    "playthrough/userdir/save/World/maps.zzip|text|unset"
+    "playthrough/userdir/save/World/#character.sav|text|unset"
+    "playthrough/userdir/save/World/master.gsav|text|unset"
+    "playthrough/transcript.srt|text|set"
+    "playthrough/manifest.jsonl|text|set"
+)
+
+# effective_attribute PATH ATTRIBUTE [SOURCE] -- what git would apply.
+#
+# `git check-attr` prints `<path>: <attribute>: <value>`, and the value is
+# what is wanted; anything unreadable prints nothing, which the caller
+# reports rather than treating as agreement.  SOURCE, when given, is a
+# tree-ish read with --source so HEAD's own rules can be asked about
+# instead of the working tree's.
+effective_attribute() {
+    local path="$1" attribute="$2" source="${3-}"
+    local line=""
+    if [ -n "${source}" ]; then
+        line="$("${GIT}" check-attr --source="${source}" \
+            "${attribute}" -- "${path}" 2>/dev/null || printf '')"
+    else
+        line="$("${GIT}" check-attr "${attribute}" -- "${path}" \
+            2>/dev/null || printf '')"
+    fi
+    # The path may itself contain ': ', so the VALUE is taken from the
+    # end of the line rather than by splitting from the front.
+    printf '%s' "${line##*: }"
+}
+
+# check_attr_supports_source -- whether this git can be asked about a
+# tree-ish.  --source arrived in git 2.40; on anything older the working
+# tree remains the only readable answer, and saying so is better than
+# reporting a refusal an operator cannot act on.
+check_attr_supports_source() {
+    "${GIT}" check-attr --source=HEAD text -- .gitattributes \
+        >/dev/null 2>&1
+}
+
+# attribute_semantics_problems [SOURCE] -- one line per witness whose
+# effective attribute is not what this feature requires.
+attribute_semantics_problems() {
+    local source="${1-}"
+    local witness="" path="" attribute="" wanted="" actual=""
+    for witness in "${ATTRIBUTE_WITNESSES[@]}"; do
+        path="${witness%%|*}"
+        attribute="${witness#*|}"
+        attribute="${attribute%%|*}"
+        wanted="${witness##*|}"
+        actual="$(effective_attribute "${path}" "${attribute}" \
+            "${source}")"
+        if [ "${actual}" = "${wanted}" ]; then
+            continue
+        fi
+        printf '%s\n' "git would apply '${attribute}: \
+${actual:-unreadable}' to ${path}, not '${attribute}: ${wanted}' -- a \
+later rule overrides the row this feature declares, and git applies the \
+LAST matching pattern"
+    done
+    return 0
+}
+
+# assert_attribute_semantics LABEL [SOURCE] -- refuse a ruleset whose
+# effective attributes are not the ones this feature declares.
+#
+# Asked of the WORKING TREE at every checkpoint, because that is the
+# ruleset the `git add` in this run will apply, and of HEAD wherever
+# HEAD's rows are checked, because that is the ruleset a fresh clone
+# gets.  Both are EX_PREREQ: the fix is an edit to .gitattributes, not
+# anything about the session.
+assert_attribute_semantics() {
+    local label="$1" source="${2-}"
+    local -a problems=()
+    local problem=""
+    while IFS= read -r problem; do
+        [ -n "${problem}" ] || continue
+        problems+=("${problem}")
+    done < <(attribute_semantics_problems "${source}")
+    if [ "${#problems[@]}" -gt 0 ]; then
+        die "${EX_PREREQ}" "${label}'s .gitattributes declares the" \
+            "rows this feature needs but git would not apply them:" \
+            "${problems[*]}.  git takes the LAST matching pattern, so a" \
+            "rule added after this feature's rows silently replaces" \
+            "them -- and with the film left to 'text', 'git add' runs" \
+            "end-of-line normalisation over an h264 stream and commits" \
+            "a container nothing can play, while every count here still" \
+            "tallies.  Move this feature's rows after whatever" \
+            "overrides them.  Nothing was committed."
+    fi
+    playthrough_log "git applies this feature's attributes to" \
+        "${label}'s ${#ATTRIBUTE_WITNESSES[@]} witness paths -- the" \
+        "film, the map archive, the character save, the world save, the" \
+        "cue file and the record -- so no later rule overrides them"
+    return 0
+}
+
 # committed_lines PATH -- the file as HEAD carries it, with blank lines
 # and comments dropped and surrounding whitespace collapsed, so a rule
 # written with a tab is recognised as the rule it is.  Empty when HEAD
@@ -759,6 +1105,63 @@ committed_lines() {
                     gsub(/[ \t]+/, " ");
                     if ($0 != "" && $0 !~ /^#/) { print } }' ||
         printf ''
+}
+
+# worktree_lines PATH -- the same normalisation as committed_lines,
+# applied to the file ON DISK.  Empty when the path is not there.
+#
+# The integration milestone needs this and the committed reading cannot
+# serve: that milestone exists precisely for the case where HEAD does NOT
+# yet carry the rules, so asking HEAD about them would refuse the one
+# situation the milestone is for.
+worktree_lines() {
+    [ -f "$1" ] || { printf ''; return 0; }
+    # SC2016: the '$' characters belong to the awk program, exactly as in
+    # committed_lines above.
+    # shellcheck disable=SC2016
+    "${AWK}" '{ gsub(/^[ \t]+|[ \t]+$/, "");
+                gsub(/[ \t]+/, " ");
+                if ($0 != "" && $0 !~ /^#/) { print } }' "$1" ||
+        printf ''
+}
+
+# vcs_rule_problems READER -- every way the two rule files read through
+# READER fail this feature, one problem per line, nothing when they hold.
+#
+# READER is the NAME of a function taking a path and printing that file's
+# effective lines, so the identical requirement can be asserted against
+# the working tree and against HEAD without two descriptions of it.
+vcs_rule_problems() {
+    local reader="$1"
+    local ignore_rules="" last="" attributes="" row=""
+    ignore_rules="$("${reader}" ".gitignore")"
+    if [ -z "${ignore_rules}" ]; then
+        printf '%s\n' "there is no .gitignore with any effective rule \
+in it, so the terminal '${IGNORE_NEGATION}' negation this tree depends \
+on is missing entirely"
+    else
+        last="${ignore_rules##*$'\n'}"
+        if [ "${last}" != "${IGNORE_NEGATION}" ]; then
+            printf '%s\n' "the last effective rule in .gitignore is \
+'${last}', not '${IGNORE_NEGATION}' -- git applies the LAST matching \
+pattern, so anything after the negation re-excludes what it rescued"
+        fi
+    fi
+    attributes="$("${reader}" ".gitattributes")"
+    for row in "${REQUIRED_ATTRIBUTES[@]}"; do
+        # WHOLE-LINE MATCHING WITHOUT A PIPE.  This was `printf | grep
+        # -Fqx`, and `grep -q` exits the instant it matches -- which can
+        # close the pipe under a `printf` that has not finished writing,
+        # making the PIPELINE's status 141 under `pipefail` and turning a
+        # row that IS present into a reported problem.  Nothing here
+        # needs a subprocess: the newline fences below are an exact
+        # whole-line test, and they cannot be raced.
+        case $'\n'"${attributes}"$'\n' in
+            *$'\n'"${row}"$'\n'*) ;;
+            *) printf '%s\n' ".gitattributes carries no '${row}' row" ;;
+        esac
+    done
+    return 0
 }
 
 assert_committed_vcs_rules() {
@@ -786,10 +1189,13 @@ assert_committed_vcs_rules() {
     fi
     attributes="$(committed_lines ".gitattributes")"
     for row in "${REQUIRED_ATTRIBUTES[@]}"; do
-        if ! printf '%s\n' "${attributes}" |
-                "${GREP}" -Fqx -- "${row}"; then
-            missing+=("${row}")
-        fi
+        # Whole-line matching with no pipe in it; see vcs_rule_problems
+        # for why `grep -q` on the far end of a pipe can report a row
+        # that is present as missing.
+        case $'\n'"${attributes}"$'\n' in
+            *$'\n'"${row}"$'\n'*) ;;
+            *) missing+=("${row}") ;;
+        esac
     done
     if [ "${#missing[@]}" -gt 0 ]; then
         die "${EX_PREREQ}" "HEAD's .gitattributes is missing" \
@@ -799,6 +1205,20 @@ assert_committed_vcs_rules() {
             "text; without those rows they are left to '* text=auto'," \
             "which is content detection rather than a declaration." \
             "Commit .gitattributes first.  Nothing was committed."
+    fi
+    # THE ROWS ARE THERE; WOULD GIT APPLY THEM?  A row that a later rule
+    # overrides is present and inert, so HEAD is asked the effective
+    # question too -- with --source, which is what makes it HEAD's answer
+    # rather than the working tree's.
+    if check_attr_supports_source; then
+        assert_attribute_semantics "HEAD" HEAD
+    else
+        playthrough_warn "this git cannot be asked what attributes a" \
+            "tree-ish would apply ('git check-attr --source' arrived in" \
+            "git 2.40), so HEAD's six rows were checked as rows and not" \
+            "as effective attributes.  The working tree's effective" \
+            "attributes are checked either way, and they are the ones" \
+            "this run's 'git add' applies."
     fi
     playthrough_log "HEAD's own .gitignore ends with" \
         "'${IGNORE_NEGATION}' and its .gitattributes carries all" \
@@ -837,9 +1257,91 @@ readonly -a HYGIENE_NAMES=(
     ".*.rejected.mp4"
     "*.orig"
     "*.rej"
+    # RUNTIME AND AUTH STATE, which is the same hazard one step worse.
+    #
+    # Everything above is merely not evidence.  These are diagnostics and
+    # a CREDENTIAL: the X authority cookie whoever holds it can use to
+    # read the screen being captured and inject keystrokes into the
+    # session, the pid and ownership records, and the per-stage stderr
+    # captures.  env.sh keeps them in a private runtime root outside the
+    # working tree precisely so they cannot be staged -- and refuses a
+    # nominated root inside the checkout -- but the terminal
+    # `!/playthrough/**` negation means that if one ever does land here it
+    # is committable, and a cookie in a commit cannot be un-published.
+    "Xauthority"
+    "*.pid"
+    "x-ownership*"
+    "capture-stage-*.err"
 )
 
+# TWO PATTERNS ARE DELIBERATELY ABSENT FROM THAT LIST, and this note is
+# here because both look like obvious omissions and adding either would
+# break the checkpoint outright.
+#
+#   *.lock  would match playthrough/tooling/requirements.lock, which is a
+#           REQUIRED tracked artifact -- the hash-pinned install contract
+#           for the six declared libraries.  Every checkpoint would be
+#           refused.  Measured before it shipped: a `find` over the real
+#           tree for the runtime patterns returned requirements.lock and
+#           nothing else.  The runtime locks live in <runtime>/lock/ and
+#           are covered by the containment refusal below, which is the
+#           control that actually addresses them.
+#   *.log   would match the engine's own `#<name>.log` character log and
+#           config/debug.log, both of which are EVIDENCE and are
+#           committed on purpose -- the debug log is what makes the
+#           no-cheating claim auditable rather than asserted.  The
+#           pipeline's own three logs are named individually where that
+#           matters and otherwise live outside the tree.
+#
+# The lesson generalises: inside playthrough/ a name-based refusal is
+# applied to a tree that mixes diagnostics with evidence, so a pattern
+# has to be justified against BOTH.
+
+# assert_runtime_root_is_outside -- the root cause, refused here too.
+#
+# env.sh already refuses a PLAYTHROUGH_RUNTIME_DIR inside the checkout,
+# and this is not a duplicate of that check but the same rule applied at
+# the one stage where breaking it does permanent damage.  Two reasons it
+# belongs here as well:
+#
+#   * env.sh decides at SOURCE time, and a caller can export the variable
+#     afterwards -- a value this script would then inherit and honour;
+#   * a checkpoint is the only irreversible act in the pipeline.  A frame
+#     written to the wrong place can be deleted; a credential committed to
+#     a branch that has been published cannot be un-published, and the
+#     honest remedy is to rotate the cookie and rewrite history.
+#
+# So the containment is asserted immediately before staging, against the
+# value in force at that moment, and it covers both directions: a runtime
+# root inside the repository, and one ABOVE the repository that contains
+# it.  Reported with the remedy, because the fix is a one-line change to
+# an environment variable and nothing about the tree needs repairing.
+assert_runtime_root_is_outside() {
+    local runtime="${PLAYTHROUGH_RUNTIME_DIR:-}"
+    if [ -z "${runtime}" ]; then
+        return 0
+    fi
+    if playthrough_path_within "${PLAYTHROUGH_REPO_ROOT}" "${runtime}" ||
+       playthrough_path_within "${runtime}" "${PLAYTHROUGH_REPO_ROOT}"
+    then
+        die "${EX_SCOPE}" "the pipeline runtime root" \
+            "'$(rel "${runtime}")' is inside this checkout (or" \
+            "contains it), and a checkpoint is about to stage" \
+            "$(rel "${PLAYTHROUGH_DIR}").  That root holds the X" \
+            "authority COOKIE, the pid and lock files and any withdrawn" \
+            "frame, and .gitignore's terminal '!/playthrough/**'" \
+            "negation re-includes everything under this tree -- so the" \
+            "cookie would be committed, and a credential in a published" \
+            "commit cannot be withdrawn, only rotated.  Unset" \
+            "PLAYTHROUGH_RUNTIME_DIR to use the default beneath" \
+            "\$XDG_RUNTIME_DIR, or nominate a directory outside the" \
+            "repository, then run this again.  Nothing was committed."
+    fi
+    return 0
+}
+
 assert_no_machine_files() {
+    assert_runtime_root_is_outside
     local -a predicates=()
     local name found=()
     local path
@@ -1574,6 +2076,119 @@ assert_dossier() {
 }
 
 # ---------------------------------------------------------------------
+# THE FINAL REPORT GATE.
+#
+# The feature's deliverable is not only the film: it is the film PLUS the
+# report that says what was recorded, who the survivor was and how the
+# session ended.  Its shape is fixed rather than a matter of taste --
+# EXACTLY three sections, in this order:
+#
+#     A) Screen Recording and Animation
+#     B) Character Creation
+#     C) Playing the Game
+#
+# and the reason to enforce it here is that nothing else did.  The report
+# was named in env.sh as PLAYTHROUGH_REPORT and STAGED with the narrative
+# class, and staging an absent path is deliberately not fatal --
+# stage_batch skips it and says so -- so a `final` checkpoint could be
+# taken, and pass every other gate, with no report in the tree at all.
+# The omission would then be a line in a log nobody re-reads, and the
+# published history would carry a film with nothing explaining it.
+#
+# So at `final` the report must exist, be non-empty, and carry those three
+# section headings and no fourth.  A missing one, a renamed one, an extra
+# one and a reordered set are each their own refusal, because each is a
+# different mistake: a report with two sections is unfinished, one with
+# four has grown a section the requirement does not have, and one with
+# the sections in another order is not the document that was asked for.
+#
+# WHAT THIS DOES NOT DO.  It does not read the prose or judge whether a
+# section says enough -- that is a reader's job and cannot be a shell
+# script's.  It holds the STRUCTURE, which is the part that can be
+# checked and the part whose absence is invisible.
+#
+# The other three checkpoints are untouched: `integration` and `dossier`
+# run before the session, and `creation` runs before a single frame is
+# rendered, so at none of them can a report about the finished recording
+# honestly exist yet.
+# ---------------------------------------------------------------------
+
+# The three headings, in order, as ATX level-two Markdown -- which is how
+# the report writes them and how a reader's table of contents finds them.
+# Level three subsections are deliberately not counted: the report has
+# many, and they are its internal structure rather than its shape.
+readonly -a REPORT_SECTIONS=(
+    "## A) Screen Recording and Animation"
+    "## B) Character Creation"
+    "## C) Playing the Game"
+)
+
+# report_sections -- every level-two heading of the report, in order, one
+# per line, with surrounding whitespace collapsed so a heading written
+# with a trailing space is recognised as the heading it is.
+report_sections() {
+    # SC2016: the '$' characters belong to the awk program -- the
+    # end-of-line anchor and $0 -- exactly as in committed_lines above.
+    # shellcheck disable=SC2016
+    "${AWK}" '/^##[ \t]+[^#]/ {
+        gsub(/^[ \t]+|[ \t]+$/, "");
+        gsub(/[ \t]+/, " ");
+        print
+    }' "$1" 2>/dev/null || printf ''
+}
+
+assert_report() {
+    local checkpoint="$1"
+    local path="${PLAYTHROUGH_REPORT}"
+    local -a found=()
+    local heading="" expected="" index=0
+    if [ "${checkpoint}" != "${CHECKPOINT_FINAL}" ]; then
+        return 0
+    fi
+    if [ ! -e "${path}" ]; then
+        die "${EX_EVIDENCE}" "there is no final report at" \
+            "$(rel "${path}").  It is the document the recording is" \
+            "delivered as -- what was captured, who the survivor was," \
+            "how the session ended -- and its three sections are" \
+            "'${REPORT_SECTIONS[0]#\#\# }'," \
+            "'${REPORT_SECTIONS[1]#\#\# }' and" \
+            "'${REPORT_SECTIONS[2]#\#\# }', in that order.  Write it," \
+            "then take this checkpoint.  Nothing was committed."
+    fi
+    if [ ! -s "${path}" ]; then
+        die "${EX_EVIDENCE}" "$(rel "${path}") is empty, which is the" \
+            "same absence with a file in the way.  Nothing was" \
+            "committed."
+    fi
+    while IFS= read -r heading; do
+        [ -n "${heading}" ] || continue
+        found+=("${heading}")
+    done < <(report_sections "${path}")
+    if [ "${#found[@]}" -ne "${#REPORT_SECTIONS[@]}" ]; then
+        die "${EX_EVIDENCE}" "$(rel "${path}") carries" \
+            "${#found[@]} top-level section(s) --" \
+            "${found[*]:-none} -- where the report has exactly" \
+            "${#REPORT_SECTIONS[@]}: ${REPORT_SECTIONS[*]}.  A report" \
+            "with fewer is unfinished; one with more has grown a" \
+            "section the requirement does not have.  Nothing was" \
+            "committed."
+    fi
+    for index in "${!REPORT_SECTIONS[@]}"; do
+        expected="${REPORT_SECTIONS[${index}]}"
+        if [ "${found[${index}]}" != "${expected}" ]; then
+            die "${EX_EVIDENCE}" "$(rel "${path}") has" \
+                "'${found[${index}]}' where section" \
+                "$((index + 1)) must be '${expected}'.  The three" \
+                "sections are fixed and so is their order:" \
+                "${REPORT_SECTIONS[*]}.  Nothing was committed."
+        fi
+    done
+    playthrough_log "the final report at $(rel "${path}") carries all" \
+        "${#REPORT_SECTIONS[@]} of its sections, in order"
+    return 0
+}
+
+# ---------------------------------------------------------------------
 # THE NOT-IGNORED GATE -- THE TRIPWIRE ON THE ONE FAILURE THAT REPORTS
 # SUCCESS.
 #
@@ -1605,18 +2220,37 @@ assert_dossier() {
 # commit is still the last word.
 # ---------------------------------------------------------------------
 
-# first_capture -- the lowest-numbered capture on disk, or nothing.  One
-# frame is enough to prove the frames directory is not excluded, and
-# asking about one keeps this gate O(1) in session length.
+# first_capture -- one capture on disk, by name, or nothing.
+#
+# ONE FRAME IS ENOUGH: this gate asks whether the frames directory is
+# excluded by an ignore rule, and any capture answers it.  So the FIRST
+# one is named rather than searched for.  manifest.py formats a capture as
+# frame_%05d.png from a 1-based index, so frame 1 is exactly
+# ${FIRST_CAPTURE_BASENAME} and a single stat answers the question.
+#
+# It used to `find` the whole directory and pipe it through `sort`, which
+# is O(N log N) in the session length AND cannot emit its first line until
+# it has consumed every one of them -- `sort` buffers by definition -- for
+# a question with an O(1) answer.
+#
+# The scan remains as a FALLBACK for a tree whose frame 1 is absent, and
+# it takes whatever name comes first rather than the lowest: when the
+# canonical name is gone, "any capture" is still the question, and an
+# unsorted walk that stops at the first name it is given costs one
+# directory read.
 first_capture() {
+    local canonical="${PLAYTHROUGH_FRAMES_DIR}/${FIRST_CAPTURE_BASENAME}"
     local path first=""
+    if [ -f "${canonical}" ]; then
+        printf '%s' "${canonical}"
+        return 0
+    fi
     while IFS= read -r path; do
         [ -n "${path}" ] || continue
         first="${path}"
         break
     done < <("${FIND}" "${PLAYTHROUGH_FRAMES_DIR}" -mindepth 1 \
-        -maxdepth 1 -type f -name 'frame_*.png' -print 2>/dev/null |
-        "${SORT}")
+        -maxdepth 1 -type f -name 'frame_*.png' -print 2>/dev/null)
     if [ -z "${first}" ]; then
         return 1
     fi
@@ -1727,6 +2361,13 @@ creation_commits() {
         2>/dev/null || printf ''
 }
 
+# final_commits -- EVERY final checkpoint, newest first.
+final_commits() {
+    "${GIT}" log --format=%H \
+        --grep="^${TRAILER_KEY}: ${CHECKPOINT_FINAL}\$" HEAD -- \
+        2>/dev/null || printf ''
+}
+
 # ---------------------------------------------------------------------
 # WHICH SURVIVOR A COMMIT IS ABOUT.
 #
@@ -1779,17 +2420,26 @@ loaded_survivor() {
     printf '%s / %s' "${LOADED_WORLD}" "${LOADED_CHARACTER}"
 }
 
-# creation_commit_for_survivor -- the newest creation checkpoint whose
-# own tree names the survivor this run is about, or nothing.
+# creation_commit_for_survivor [SURVIVOR] -- the newest creation
+# checkpoint whose own tree names that survivor, or nothing.
 #
 # This is what makes the anchor SURVIVOR-SPECIFIC rather than merely
 # newest, and it fixes the cause as well as the symptom: because
 # do_creation refuses a second creation only when one exists FOR THIS
 # SURVIVOR, a genuinely new survivor can now take a creation checkpoint
-# of her own instead of being blocked by a previous recording's.
+# of their own instead of being blocked by a previous recording's.
+#
+# THE SURVIVOR IS AN ARGUMENT, defaulting to the one this run loaded, so
+# that `status` can ask the same question about a survivor it read for
+# itself without the evidence gates having run.  One implementation
+# answers it for both, which is the point: `status` used to compare
+# against the NEWEST creation instead, and reported "'final' would
+# REFUSE" for a session whose own anchor was simply an older commit.
 creation_commit_for_survivor() {
-    local commit="" mine=""
-    mine="$(loaded_survivor)"
+    local commit="" mine="${1-}"
+    if [ -z "${mine}" ]; then
+        mine="$(loaded_survivor)"
+    fi
     while IFS= read -r commit; do
         [ -n "${commit}" ] || continue
         if [ "$(survivor_at "${commit}" || printf '')" = "${mine}" ]
@@ -1799,6 +2449,21 @@ creation_commit_for_survivor() {
         fi
     done < <(creation_commits)
     return 1
+}
+
+# manifest_rows_at COMMIT -- how many rows the record held in that
+# commit's own tree, or nothing when the tree carries no readable
+# record.  Streamed through wc rather than captured, so the size of the
+# record does not decide whether this can be asked.
+manifest_rows_at() {
+    local rows=""
+    rows="$("${GIT}" show "$1:playthrough/manifest.jsonl" \
+        2>/dev/null | "${WC}" -l | "${TR}" -d ' ' || printf '')"
+    case "${rows}" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    printf '%s' "${rows}"
+    return 0
 }
 
 assert_creation_checkpoint() {
@@ -1822,7 +2487,7 @@ assert_creation_checkpoint() {
                 "tell the two apart, because a record re-recorded from" \
                 "scratch has 'grown' too.  Take" \
                 "'${CHECKPOINT_CREATION}' for THIS survivor before" \
-                "playing her session.  Nothing was committed."
+                "playing their session.  Nothing was committed."
         fi
         die "${EX_LIFECYCLE}" "there is no '${CHECKPOINT_CREATION}'" \
             "checkpoint in this branch's history, so a" \
@@ -1832,19 +2497,14 @@ assert_creation_checkpoint() {
             "is created, play the session, then take this one." \
             "Nothing was committed."
     fi
-    local before
-    before="$("${GIT}" show \
-        "${CREATION_COMMIT}:playthrough/manifest.jsonl" 2>/dev/null |
-        "${WC}" -l | "${TR}" -d ' ' || printf '')"
-    case "${before}" in
-        ''|*[!0-9]*)
-            die "${EX_LIFECYCLE}" "the" \
-                "'${CHECKPOINT_CREATION}' checkpoint" \
-                "${CREATION_COMMIT} carries no readable manifest, so" \
-                "there is nothing to measure this session's progress" \
-                "against.  Nothing was committed."
-            ;;
-    esac
+    local before=""
+    if ! before="$(manifest_rows_at "${CREATION_COMMIT}")"; then
+        die "${EX_LIFECYCLE}" "the" \
+            "'${CHECKPOINT_CREATION}' checkpoint" \
+            "${CREATION_COMMIT} carries no readable manifest, so" \
+            "there is nothing to measure this session's progress" \
+            "against.  Nothing was committed."
+    fi
     if [ "${ROW_COUNT}" -le "${before}" ]; then
         die "${EX_LIFECYCLE}" "the record held ${before} row(s) at" \
             "the '${CHECKPOINT_CREATION}' checkpoint and holds" \
@@ -1884,26 +2544,126 @@ stageable() {
     return 1
 }
 
-# stage_batch LABEL PATH... -- stage one artifact class in bounded
-# chunks.
+# git_supports_pathspec_file -- whether `git add` will read its pathspecs
+# from a NUL-delimited file (the option pair arrived in git 2.25).
 #
-# `git add --` with NO -A, NO -f and NO shell glob.  Since git 2.0 a
-# pathspec add records deletions as well as additions and modifications,
-# so -A would add nothing here except the appearance of a blanket add
-# (measured on git 2.51: `git add -- <dir>` staged a D, an M and an A in
-# one call).  -f is refused on principle: if a path needed forcing, the
-# .gitignore negation is wrong and that is a bug to fix in .gitignore,
-# not to paper over here.
-stage_batch() {
-    local label="$1"
-    shift
-    local -a present=() chunk=() absent=()
-    local path
-    for path in "$@"; do
-        if stageable "${path}"; then
-            present+=("${path}")
+# PROBED, NOT ASSUMED FROM A VERSION STRING, and probed with an EMPTY list
+# so the probe cannot stage anything: a git that knows the options exits 0
+# having added nothing, and one that does not exits non-zero with "unknown
+# option".  --dry-run is belt and braces on top of that.  The answer is
+# cached for the run.
+PATHSPEC_FILE_SUPPORTED=""
+git_supports_pathspec_file() {
+    if [ -z "${PATHSPEC_FILE_SUPPORTED}" ]; then
+        if "${GIT}" add --pathspec-from-file=/dev/null \
+                --pathspec-file-nul --dry-run >/dev/null 2>&1; then
+            PATHSPEC_FILE_SUPPORTED="yes"
         else
-            absent+=("$(rel "${path}")")
+            PATHSPEC_FILE_SUPPORTED="no"
+        fi
+    fi
+    [ "${PATHSPEC_FILE_SUPPORTED}" = "yes" ]
+}
+
+# open_pathspec_file -- a fresh, empty, NUL-delimited pathspec file in the
+# runtime directory, reused for each staging call and removed on exit.
+open_pathspec_file() {
+    if [ ! -d "${PLAYTHROUGH_RUNTIME_DIR}" ]; then
+        die "${EX_PREREQ}" "the runtime directory" \
+            "'$(rel "${PLAYTHROUGH_RUNTIME_DIR}")' does not exist;" \
+            "env.sh creates and verifies it at mode 0700, so" \
+            "re-source playthrough/tooling/env.sh.  Nothing was" \
+            "committed."
+    fi
+    if [ -z "${_CA_PATHSPEC_FILE}" ]; then
+        if ! _CA_PATHSPEC_FILE="$(mktemp \
+                "${PLAYTHROUGH_RUNTIME_DIR}/commit.pathspec.XXXXXX")"; \
+                then
+            die "${EX_PREREQ}" "cannot create a pathspec file under" \
+                "'$(rel "${PLAYTHROUGH_RUNTIME_DIR}")'.  Nothing was" \
+                "committed."
+        fi
+        chmod 600 "${_CA_PATHSPEC_FILE}"
+    fi
+    : >"${_CA_PATHSPEC_FILE}"
+}
+
+# add_from_pathspec_file LABEL -- hand git the streamed pathspec file.
+#
+# One call when git can read the file, and the file replayed in chunks of
+# ${STAGE_BATCH_SIZE} when it cannot.  Either way the shell holds at most
+# one chunk, and the one-call path means one index read and one index
+# write for a whole artifact class -- which is the cost that actually
+# scales, because the index is the size of the repository and not of the
+# batch.
+#
+# `git add` with NO -A, NO -f and NO shell glob, on both paths.  Since git
+# 2.0 a pathspec add records deletions as well as additions and
+# modifications, so -A would add nothing here except the appearance of a
+# blanket add (measured on git 2.51, and again through the pathspec file:
+# an M and a D staged from one NUL-delimited list).  -f is refused on
+# principle: if a path needed forcing, the .gitignore negation is wrong
+# and that is a bug to fix in .gitignore, not to paper over here.
+add_from_pathspec_file() {
+    local label="$1"
+    local path
+    local -a chunk=()
+    if git_supports_pathspec_file; then
+        if ! "${GIT}" add \
+                --pathspec-from-file="${_CA_PATHSPEC_FILE}" \
+                --pathspec-file-nul; then
+            die "${EX_COMMIT}" "git could not stage the ${label}." \
+                "This run committed nothing."
+        fi
+        return 0
+    fi
+    while IFS= read -r -d '' path; do
+        [ -n "${path}" ] || continue
+        chunk+=("${path}")
+        if [ "${#chunk[@]}" -ge "${STAGE_BATCH_SIZE}" ]; then
+            if ! "${GIT}" add -- "${chunk[@]}"; then
+                die "${EX_COMMIT}" "git could not stage the ${label}." \
+                    "This run committed nothing."
+            fi
+            chunk=()
+        fi
+    done <"${_CA_PATHSPEC_FILE}"
+    if [ "${#chunk[@]}" -gt 0 ]; then
+        if ! "${GIT}" add -- "${chunk[@]}"; then
+            die "${EX_COMMIT}" "git could not stage the ${label}." \
+                "This run committed nothing."
+        fi
+    fi
+    return 0
+}
+
+# stage_stream LABEL -- stage one artifact class from a NUL-delimited
+# stream of paths on stdin.
+#
+# THE ONE STAGING IMPLEMENTATION in this file, so the named classes and
+# the capture population are staged by the same code and cannot drift
+# apart.  A path is read, judged by stageable() and written into the
+# pathspec file one at a time; what survives the loop is two counters and
+# a BOUNDED sample of the names that were skipped.
+#
+# It must be fed by REDIRECTION rather than by a pipe, because a pipeline
+# would run it in a subshell where die() could only exit that subshell --
+# and a staging failure has to end the run.
+stage_stream() {
+    local label="$1"
+    local path present=0 unstageable=0
+    local -a absent=()
+    open_pathspec_file
+    while IFS= read -r -d '' path; do
+        [ -n "${path}" ] || continue
+        if stageable "${path}"; then
+            printf '%s\0' "${path}" >>"${_CA_PATHSPEC_FILE}"
+            present=$((present + 1))
+        else
+            unstageable=$((unstageable + 1))
+            if [ "${#absent[@]}" -lt "${DIAGNOSTIC_LIMIT}" ]; then
+                absent+=("$(rel "${path}")")
+            fi
         fi
     done
     # WHICH NAMED PATHS WERE NOT THERE, SAID OUT LOUD.  stageable()
@@ -1914,65 +2674,69 @@ stage_batch() {
     # omitted from every commit with nothing in the log to show it.
     # Reported rather than refused, because which of these classes are
     # optional is a judgement this function is the wrong place to make;
-    # what it can do is make the omission visible.
-    if [ "${#absent[@]}" -gt 0 ]; then
-        playthrough_log "not staging ${#absent[@]} named path(s) in" \
+    # what it can do is make the omission visible.  The count is exact;
+    # the names are the first ${DIAGNOSTIC_LIMIT} of them.
+    if [ "${unstageable}" -gt 0 ]; then
+        local more=""
+        if [ "${unstageable}" -gt "${#absent[@]}" ]; then
+            more=" (and $((unstageable - ${#absent[@]})) more)"
+        fi
+        playthrough_log "not staging ${unstageable} named path(s) in" \
             "the ${label} because they are neither on disk nor" \
-            "tracked: ${absent[*]}"
+            "tracked: ${absent[*]}${more}"
     fi
-    if [ "${#present[@]}" -eq 0 ]; then
+    if [ "${present}" -eq 0 ]; then
         playthrough_log "no ${label} to stage"
         return 0
     fi
-    for path in "${present[@]}"; do
-        chunk+=("${path}")
-        if [ "${#chunk[@]}" -ge "${STAGE_BATCH_SIZE}" ]; then
-            if ! "${GIT}" add -- "${chunk[@]}"; then
-                die "${EX_COMMIT}" "git could not stage the ${label}." \
-                    "This run committed nothing."
-            fi
-            chunk=()
-        fi
-    done
-    if [ "${#chunk[@]}" -gt 0 ]; then
-        if ! "${GIT}" add -- "${chunk[@]}"; then
-            die "${EX_COMMIT}" "git could not stage the ${label}." \
-                "This run committed nothing."
-        fi
-    fi
-    playthrough_log "staged the ${label}: ${#present[@]} path(s)"
+    add_from_pathspec_file "${label}"
+    playthrough_log "staged the ${label}: ${present} path(s)"
     return 0
 }
 
-# stage_captures -- the one class big enough to need real batching.
+# stage_batch LABEL PATH... -- one named artifact class.
 #
-# The list is built by `find -print0` and read NUL-delimited, because a
-# shell glob over several thousand frames is exactly the "batching" that
-# has an argument-list limit to respect.  A capture that git tracks and
-# the filesystem no longer has is added to the list too, so a removal is
-# recorded as a removal instead of being left in the index as a ghost --
-# not that any capture may ever be removed: no decimation, no sampling,
-# no deduplication.  The point is that if one ever went missing, the
-# checkpoint would show it rather than hide it.
-stage_captures() {
-    local -a captures=()
+# A thin adapter onto stage_stream: the named classes are a handful of
+# paths each, so naming them as arguments is the readable form, and the
+# staging itself is the streamed one.
+stage_batch() {
+    local label="$1"
+    shift
+    if [ "$#" -eq 0 ]; then
+        playthrough_log "no ${label} to stage"
+        return 0
+    fi
+    stage_stream "${label}" < <(printf '%s\0' "$@")
+    return 0
+}
+
+# capture_pathspecs -- every capture the checkpoint must record, one
+# NUL-terminated path at a time and never a list.
+#
+# Two sources.  The filesystem, walked by `find -print0` because a shell
+# glob over several thousand frames is exactly the argument list this
+# design exists to avoid; and the INDEX, so a capture git tracks and the
+# filesystem no longer has is named too and its removal is recorded as a
+# removal instead of being left in the index as a ghost.  Not that any
+# capture may ever be removed -- no decimation, no sampling, no
+# deduplication -- but if one ever went missing the checkpoint would show
+# it rather than hide it.
+capture_pathspecs() {
     local path
-    while IFS= read -r -d '' path; do
-        captures+=("${path}")
-    done < <("${FIND}" "${PLAYTHROUGH_FRAMES_DIR}" -mindepth 1 \
-        -maxdepth 1 -type f -name 'frame_*.png' -print0 2>/dev/null)
+    "${FIND}" "${PLAYTHROUGH_FRAMES_DIR}" -mindepth 1 -maxdepth 1 \
+        -type f -name 'frame_*.png' -print0 2>/dev/null || true
     while IFS= read -r -d '' path; do
         [ -n "${path}" ] || continue
         if [ ! -e "${path}" ]; then
-            captures+=("${path}")
+            printf '%s\0' "${path}"
         fi
     done < <("${GIT}" ls-files -z -- "${PLAYTHROUGH_FRAMES_DIR}" \
         2>/dev/null)
-    if [ "${#captures[@]}" -eq 0 ]; then
-        playthrough_log "no captures to stage"
-        return 0
-    fi
-    stage_batch "captured frames" "${captures[@]}"
+}
+
+# stage_captures -- the one class whose size is the session's.
+stage_captures() {
+    stage_stream "captured frames" < <(capture_pathspecs)
     return 0
 }
 
@@ -1987,16 +2751,46 @@ stage_artifacts() {
     #    game's source tree.
     stage_batch "pipeline tooling" "${PLAYTHROUGH_TOOLING_DIR}"
     # 2. The narrative record: the dossier written before play, the
-    #    transcript, the engineering notes, the feature readme.
+    #    transcript, the engineering notes, the feature readme, and the
+    #    three-section report the feature is required to deliver.
+    #    The report is named here for the same reason README.md is --
+    #    the class list is exhaustive over playthrough/ by design, and
+    #    assert_tree_fully_staged below refuses a checkpoint that leaves
+    #    any path in the tree unstaged, so a mandated document missing
+    #    from this list would stop the checkpoint rather than slip
+    #    through it.  It is named ONCE, through env.sh's
+    #    PLAYTHROUGH_REPORT: the mandated three-section account is one
+    #    document, and a second copy of it under another name is two
+    #    answers to a question that has one.
     stage_batch "narrative and documentation" \
         "${PLAYTHROUGH_DOSSIER}" \
         "${PLAYTHROUGH_DIR}/README.md" \
         "${PLAYTHROUGH_TECH_NOTES}" \
+        "${PLAYTHROUGH_REPORT}" \
         "${PLAYTHROUGH_TRANSCRIPT_MD}" \
         "${PLAYTHROUGH_TRANSCRIPT_SRT}"
     # 3. The engine's own tree -- save, config, achievements, memorial,
-    #    graveyard, templates, cache.  Authored by the game, committed
-    #    here, never edited by this pipeline.
+    #    graveyard, templates, cache.
+    #
+    #    MOSTLY THE GAME'S, AND THE CONFIGURATION IS PARTLY OURS.  This
+    #    used to read "never edited by this pipeline", which was not true
+    #    and mattered: seed_options.py patches
+    #    <userdir>/config/options.json IN PLACE, key by key, to set the
+    #    values the capture depends on -- 24_HOUR=24h so the sidebar clock
+    #    is the fixed-width form the OCR regex needs, SOUND_ENABLED=false
+    #    to match SDL_AUDIODRIVER=dummy, the tileset id, and the terminal
+    #    and font geometry the crop is computed from.  A reader who
+    #    believed the whole subtree was engine-authored would have no
+    #    reason to look for those edits, and they are exactly the edits
+    #    that decide what every frame looks like and how it is read.
+    #
+    #    The honest division: the SAVE is the engine's alone and is never
+    #    touched here; the CONFIG is engine-created and then patched in
+    #    place by the pipeline; everything else under the userdir is the
+    #    engine's.  Nothing in the tree is rewritten by THIS script,
+    #    which only stages what it finds -- and that narrower claim is
+    #    the one worth making, because it is the one an operator is
+    #    relying on when they read a checkpoint.
     stage_batch "engine save and configuration" "${PLAYTHROUGH_USERDIR}"
     # 4. The captures.
     stage_captures
@@ -2039,9 +2833,17 @@ stage_artifacts() {
 # AFTER the terminal negation and re-excluded one path inside this tree
 # would otherwise be committed around in perfect silence.  Asking for the
 # ignored entries turns that into its own refusal.
+# THE DIAGNOSTIC IS BOUNDED, THE COUNT IS NOT.  The failure this refusal
+# describes is "a class nobody enumerated", and the realistic shape of it
+# on a played session is one entry per capture -- so the entries are
+# COUNTED as they stream past and only the first ${DIAGNOSTIC_LIMIT} names
+# are kept.  The count in the message is exact either way, which is what
+# an operator needs first; the names are what they need next, and eight of
+# them identify the class as well as ten thousand would.
 assert_tree_fully_staged() {
     local -a pending=() ignored=()
     local entry xy path origin=""
+    local pending_count=0 ignored_count=0
     while IFS= read -r -d '' entry; do
         xy="${entry:0:2}"
         path="${entry:3}"
@@ -2054,26 +2856,35 @@ assert_tree_fully_staged() {
                 ;;
         esac
         if [ "${xy}" = "!!" ]; then
-            ignored+=("${path}")
+            ignored_count=$((ignored_count + 1))
+            if [ "${#ignored[@]}" -lt "${DIAGNOSTIC_LIMIT}" ]; then
+                ignored+=("${path}")
+            fi
         elif [ "${xy}" = "??" ] || [ "${xy:1:1}" != " " ]; then
-            pending+=("${path}")
+            pending_count=$((pending_count + 1))
+            if [ "${#pending[@]}" -lt "${DIAGNOSTIC_LIMIT}" ]; then
+                pending+=("${path}")
+            fi
         fi
     done < <("${GIT}" status --porcelain -z --untracked-files=all \
         --ignored=matching -- "${PATHSPECS[@]}")
-    if [ "${#ignored[@]}" -gt 0 ]; then
-        die "${EX_SCOPE}" "${#ignored[@]} path(s) inside" \
+    if [ "${ignored_count}" -gt 0 ]; then
+        die "${EX_SCOPE}" "${ignored_count} path(s) inside" \
             "$(rel "${PLAYTHROUGH_DIR}") are IGNORED by git and would" \
-            "be committed around in silence: ${ignored[*]}.  Nothing in" \
+            "be committed around in silence:" \
+            "$(name_sample "${ignored_count}" "${ignored[@]}")." \
+            "Nothing in" \
             "this tree may be excluded -- the terminal" \
             "'!/playthrough/**' negation exists to make sure of it, and" \
             "a rule placed AFTER it re-excludes whatever it matches." \
             "Fix .gitignore so the negation is the last matching rule." \
             "Nothing was committed."
     fi
-    if [ "${#pending[@]}" -gt 0 ]; then
-        die "${EX_COMMIT}" "${#pending[@]} path(s) under" \
+    if [ "${pending_count}" -gt 0 ]; then
+        die "${EX_COMMIT}" "${pending_count} path(s) under" \
             "$(rel "${PLAYTHROUGH_DIR}") are still not staged after" \
-            "every artifact class was staged: ${pending[*]}." \
+            "every artifact class was staged:" \
+            "$(name_sample "${pending_count}" "${pending[@]}")." \
             "Everything in this tree is evidence and everything is" \
             "committed, so this is not skipped quietly: either the" \
             "path belongs to a new artifact class that must be added" \
@@ -2093,21 +2904,36 @@ assert_tree_fully_staged() {
 # written between that sweep and this moment, or a path an interrupted
 # earlier run left in the index -- and it is the check that has to pass
 # for `git commit` to be reached.
+#
+# THE SWEEP IS STREAMED AND THE DIAGNOSTICS ARE BOUNDED.  The index it
+# reads is the whole checkpoint -- one entry per capture -- so the entries
+# are judged as they arrive and each refusal keeps an exact count and the
+# first ${DIAGNOSTIC_LIMIT} names.
 assert_index_hygiene() {
     local -a bytecode=() outside=()
     local path
+    local bytecode_count=0 outside_count=0
     while IFS= read -r -d '' path; do
         if ! in_scope "${path}"; then
-            outside+=("${path}")
+            outside_count=$((outside_count + 1))
+            if [ "${#outside[@]}" -lt "${DIAGNOSTIC_LIMIT}" ]; then
+                outside+=("${path}")
+            fi
             continue
         fi
         case "${path}" in
-            *__pycache__*|*.pyc|*.pyo) bytecode+=("${path}") ;;
+            *__pycache__*|*.pyc|*.pyo)
+                bytecode_count=$((bytecode_count + 1))
+                if [ "${#bytecode[@]}" -lt "${DIAGNOSTIC_LIMIT}" ]; then
+                    bytecode+=("${path}")
+                fi
+                ;;
         esac
     done < <("${GIT}" diff --cached --name-only -z HEAD --)
-    if [ "${#bytecode[@]}" -gt 0 ]; then
+    if [ "${bytecode_count}" -gt 0 ]; then
         die "${EX_SCOPE}" "the index carries interpreter bytecode:" \
-            "${bytecode[*]}.  Inside this one tree .gitignore's" \
+            "$(name_sample "${bytecode_count}" "${bytecode[@]}")." \
+            "Inside this one tree .gitignore's" \
             "terminal '!/playthrough/**' negation RE-INCLUDES" \
             "__pycache__ and *.pyc, so bytecode is committable here" \
             "and nothing but this check stops it being archived as" \
@@ -2116,9 +2942,10 @@ assert_index_hygiene() {
             "PYTHONDONTWRITEBYTECODE=1) and run this again.  Nothing" \
             "was committed."
     fi
-    if [ "${#outside[@]}" -gt 0 ]; then
-        die "${EX_SCOPE}" "the index carries ${#outside[@]} path(s)" \
-            "outside $(rel "${PLAYTHROUGH_DIR}"): ${outside[*]}.  A" \
+    if [ "${outside_count}" -gt 0 ]; then
+        die "${EX_SCOPE}" "the index carries ${outside_count} path(s)" \
+            "outside $(rel "${PLAYTHROUGH_DIR}"):" \
+            "$(name_sample "${outside_count}" "${outside[@]}").  A" \
             "commit publishes the whole index, so a checkpoint about" \
             "the playthrough would carry them.  Unstage them and" \
             "commit them separately.  Nothing was committed."
@@ -2127,10 +2954,26 @@ assert_index_hygiene() {
 }
 
 # staged_paths -- the repository-relative paths currently staged against
-# HEAD, one per line.
+# HEAD, one per line.  Consumed by STREAMING it (`while read`), never by
+# capturing it: the list is one line per capture on a checkpoint that
+# stages the session.
 staged_paths() {
     "${GIT}" diff --cached --name-only HEAD -- "${PATHSPECS[@]}" \
         2>/dev/null || printf ''
+}
+
+# anything_staged -- whether the index differs from HEAD under this
+# feature's pathspec.  Git's own boolean: --quiet exits 1 when there IS a
+# difference and 0 when there is none, and prints nothing either way.
+#
+# It replaces `[ -z "$(staged_paths)" ]`, which materialised one line per
+# staged path -- every capture in the session -- to answer yes or no.
+anything_staged() {
+    if "${GIT}" diff --cached --quiet HEAD -- "${PATHSPECS[@]}" \
+            2>/dev/null; then
+        return 1
+    fi
+    return 0
 }
 
 # staged_classes -- one line per artifact class present in the index,
@@ -2194,7 +3037,7 @@ commit_checkpoint() {
     local name="$1" subject="$2"
     local -a body=()
     local class
-    if [ -z "$(staged_paths)" ]; then
+    if ! anything_staged; then
         playthrough_warn "nothing to commit for the '${name}'" \
             "checkpoint: every path this step stages is already" \
             "recorded at HEAD.  No empty commit was manufactured."
@@ -2256,13 +3099,19 @@ verify_attribution_and_trailer() {
             "failure and not a detail."
     fi
     message="$("${GIT}" log -1 --format=%B HEAD)"
-    if ! printf '%s' "${message}" |
-            "${GREP}" -Fqx -- "${TRAILER_KEY}: ${name}"; then
-        die "${EX_COMMIT}" "the commit does not carry the" \
-            "'${TRAILER_KEY}: ${name}' trailer, so the lifecycle" \
-            "cannot find it again.  The commit exists; its place in" \
-            "the lifecycle does not."
-    fi
+    # A WHOLE LINE, matched without a pipe: the trailer has to be its own
+    # line -- a body that merely mentions the words is not a trailer --
+    # and `grep -q` behind a pipe can be raced into reporting a trailer
+    # that is present as absent.  See vcs_rule_problems.
+    case $'\n'"${message}"$'\n' in
+        *$'\n'"${TRAILER_KEY}: ${name}"$'\n'*) ;;
+        *)
+            die "${EX_COMMIT}" "the commit does not carry the" \
+                "'${TRAILER_KEY}: ${name}' trailer, so the lifecycle" \
+                "cannot find it again.  The commit exists; its place" \
+                "in the lifecycle does not."
+            ;;
+    esac
     return 0
 }
 
@@ -2291,10 +3140,103 @@ commit_touched() {
         2>/dev/null || printf ''
 }
 
-# introducing_commit PATH -- the oldest commit that touched PATH.
-introducing_commit() {
-    "${GIT}" log --format=%H -- "$1" 2>/dev/null |
-        "${TR}" -d '\r' | tail -n 1 || printf ''
+# ---------------------------------------------------------------------
+# THE COMMIT THAT PUT THE CURRENT CONTENT THERE, WHICH IS NOT THE SAME
+# AS THE COMMIT THAT FIRST CREATED THE PATH
+#
+# There used to be an `introducing_commit()` here -- `git log --format=%H
+# -- PATH | tail -n 1`, the OLDEST commit that touched a path -- and the
+# dossier ordering was asserted from it.  It is deleted rather than kept
+# beside its replacement, because a helper that answers the wrong
+# question is one call away from being used again.
+#
+# "When did this PATH first appear" is the wrong question for a tree that
+# has been re-recorded.  The
+# paths are reused across recordings -- playthrough/dossier.md and
+# playthrough/frames/frame_00001.png exist in every generation -- so on a
+# tree whose evidence has been replaced, the ordering check was reading
+# commits belonging to a RETIRED survivor and reporting the ordering as
+# proven for the current one.  Measured on this history: the dossier's
+# oldest commit is from the first recording and the first capture's from
+# the second, the ancestry holds between them, and neither commit has
+# anything to do with the survivor whose files are in the tree.
+#
+# generation_commit() answers the question that matters: which commit put
+# the content HEAD CARRIES NOW into the tree.  It is the NEWEST commit
+# that changed the path, because any later commit touching it would have
+# changed it again -- so this is exactly the commit that produced the
+# current blob, and the ordering asserted from it is an ordering about
+# the current recording.
+generation_commit() {
+    "${GIT}" log --max-count=1 --format=%H HEAD -- "$1" 2>/dev/null |
+        "${TR}" -d '\r' || printf ''
+}
+
+# tracked_at_head PATH -- true when HEAD carries that exact path.
+tracked_at_head() {
+    "${GIT}" rev-parse --verify --quiet "HEAD:$1" >/dev/null 2>&1
+}
+
+# ---------------------------------------------------------------------
+# THE ONE CASE WHERE A `final` CHECKPOINT LEGITIMATELY CARRIES NO SAVE.
+#
+# The save assertion below reads the requirement as "a commit after
+# character creation AND a commit after the session closed", and refuses
+# a `final` that carries no save because such a commit is the second of
+# those two in name only.  That reasoning holds for the checkpoint that
+# IS the second of the two.  It does not hold for a LATER one.
+#
+# The render cannot exist until the session is over: the film, the
+# captioned film, the transcripts and the timeline are all computed from
+# the finished record.  An operator who closes the session, checkpoints
+# the save the engine just rewrote, and only then renders, has done
+# exactly what the requirement asks -- and is then left holding a set of
+# artifacts the requirement separately asks to be committed, with no
+# userdir change to accompany them.  Refusing that commit would make the
+# film uncommittable by the tool that exists to commit it.
+#
+# So the assertion accepts a `final` with no save when a PREVIOUS `final`
+# of THIS SESSION already published one.
+#
+# "THIS SESSION" IS DECIDED BY ANCESTRY, AND THE REASON IS NOT
+# THEORETICAL.  Retiring a superseded recording deletes files; it does
+# not rewrite history, so that recording's own `final` checkpoint is
+# still reachable from HEAD.  A carve-out phrased as "some reachable
+# final carried a save" would therefore be satisfied by somebody else's
+# session, and an operator who forgot to save and quit would sail
+# through.  A retired session's final is NOT a descendant of this
+# survivor's creation anchor, and that is exactly the discriminator --
+# strictly, since a commit is not its own descendant.
+# ---------------------------------------------------------------------
+published_final_for_this_session() {
+    local commit=""
+    if [ -z "${CREATION_COMMIT}" ]; then
+        return 1
+    fi
+    while IFS= read -r commit; do
+        [ -n "${commit}" ] || continue
+        [ "${commit}" != "${CREATION_COMMIT}" ] || continue
+        "${GIT}" merge-base --is-ancestor "${CREATION_COMMIT}" \
+            "${commit}" 2>/dev/null || continue
+        if [ -n "$(commit_touched "${commit}" \
+                "${PLAYTHROUGH_USERDIR}")" ]; then
+            printf '%s' "${commit}"
+            return 0
+        fi
+    done < <(final_commits)
+    return 1
+}
+
+# render_completion_note COMMIT -- what to say when the carve-out
+# applies.  One phrasing, used by both assertions, because two copies of
+# an explanation drift.
+render_completion_note() {
+    playthrough_log "this '${CHECKPOINT_FINAL}' checkpoint records no" \
+        "change under $(rel "${PLAYTHROUGH_USERDIR}"), and it does not" \
+        "need to: ${1:0:10} already published this session's save, and" \
+        "this commit carries the render -- the film, the transcripts" \
+        "and the timeline -- which cannot exist until the session is" \
+        "over and which the requirement separately asks to be committed"
 }
 
 # assert_staged_records_the_save -- the same property as
@@ -2311,17 +3253,23 @@ introducing_commit() {
 # It fires only when a commit is actually going to be made.  A `final`
 # re-run over an unchanged tree stages nothing, commit_checkpoint makes
 # no empty commit, and there is no claim to check.
+#
+# BOTH QUESTIONS ARE ASKED AS BOOLEANS.  "Is anything staged" and "is any
+# of it under the userdir" were each answered by capturing a list of every
+# staged path -- one line per capture, and a second list for the save --
+# to test whether it was empty.  git answers both with --quiet and prints
+# nothing at all.
 assert_staged_records_the_save() {
-    if [ -z "$(staged_paths)" ]; then
+    if ! anything_staged; then
         return 0
     fi
-    # Named for the userdir rather than "staged": staged_out_of_scope
-    # already uses `staged` as a local ARRAY, and shellcheck reads one
-    # name used both ways across this file as SC2178/SC2128.
-    local staged_save=""
-    staged_save="$("${GIT}" diff --cached --name-only HEAD -- \
-        "${PLAYTHROUGH_USERDIR}" 2>/dev/null || printf '')"
-    if [ -n "${staged_save}" ]; then
+    if ! "${GIT}" diff --cached --quiet HEAD -- \
+            "${PLAYTHROUGH_USERDIR}" 2>/dev/null; then
+        return 0
+    fi
+    local published=""
+    if published="$(published_final_for_this_session)"; then
+        render_completion_note "${published}"
         return 0
     fi
     die "${EX_LIFECYCLE}" "this '${CHECKPOINT_FINAL}' checkpoint would" \
@@ -2333,14 +3281,23 @@ assert_staged_records_the_save() {
         "a final commit carrying no save is the second of those two in" \
         "name only, and the acceptance gate rejects it.  Save and quit" \
         "inside the game first, so the engine rewrites the save, then" \
-        "take this checkpoint.  NOTHING WAS COMMITTED; the index is" \
-        "left staged so what would have been recorded can be inspected" \
-        "with 'git diff --cached', and nothing was rewritten."
+        "take this checkpoint.  (A later '${CHECKPOINT_FINAL}' that" \
+        "carries only the render is allowed, but only once an earlier" \
+        "one descending from this survivor's creation anchor has" \
+        "published the save -- and none has.)  NOTHING WAS COMMITTED;" \
+        "the index is left staged so what would have been recorded can" \
+        "be inspected with 'git diff --cached', and nothing was" \
+        "rewritten."
 }
 
 assert_final_recorded_the_save() {
-    local touched=""
+    local touched="" published=""
     touched="$(commit_touched HEAD "${PLAYTHROUGH_USERDIR}")"
+    if [ -z "${touched}" ] &&
+            published="$(published_final_for_this_session)"; then
+        render_completion_note "${published}"
+        return 0
+    fi
     if [ -z "${touched}" ]; then
         die "${EX_COMMIT}" "the '${CHECKPOINT_FINAL}' checkpoint" \
             "${COMMIT_HASH:0:10} records no change anywhere under" \
@@ -2351,7 +3308,10 @@ assert_final_recorded_the_save() {
             "closed -- a final commit that carries no save is the" \
             "second of those two in name only.  Save and quit inside" \
             "the game first, so the engine rewrites the save, then" \
-            "take this checkpoint."
+            "take this checkpoint.  (A later checkpoint carrying only" \
+            "the render is allowed once an earlier one descending from" \
+            "this survivor's creation anchor has published the save --" \
+            "and none has.)"
     fi
     local recorded=0
     # Same reason as tracked_capture_count: one number, always, whatever
@@ -2365,38 +3325,58 @@ assert_final_recorded_the_save() {
 
 assert_dossier_precedes_captures() {
     local dossier="" capture="" frame=""
-    dossier="$(introducing_commit "${PLAYTHROUGH_DOSSIER}")"
     if ! capture="$(first_capture)"; then
         return 0
     fi
-    frame="$(introducing_commit "${capture}")"
+    # BOUND TO THIS GENERATION, not to the first time either path
+    # existed.  See generation_commit for the measurement this replaces
+    # and why the old one could be satisfied by a retired recording.
+    if ! tracked_at_head "$(rel "${PLAYTHROUGH_DOSSIER}")" ||
+            ! tracked_at_head "$(rel "${capture}")"; then
+        die "${EX_COMMIT}" "HEAD does not carry both" \
+            "$(rel "${PLAYTHROUGH_DOSSIER}") and $(rel "${capture}")," \
+            "so which commit put the CURRENT content of each there" \
+            "cannot be read, and the ordering the requirement asks for" \
+            "is about the current content.  Take" \
+            "'commit_artifacts.sh ${CHECKPOINT_DOSSIER}' and then" \
+            "'${CHECKPOINT_CREATION}' in that order."
+    fi
+    dossier="$(generation_commit "$(rel "${PLAYTHROUGH_DOSSIER}")")"
+    frame="$(generation_commit "$(rel "${capture}")")"
     if [ -z "${dossier}" ] || [ -z "${frame}" ]; then
-        die "${EX_COMMIT}" "the dossier's introducing commit is" \
-            "'${dossier:-none}' and the first capture's is" \
-            "'${frame:-none}', so the ordering the requirement asks" \
-            "for cannot be read out of this history at all."
+        die "${EX_COMMIT}" "the commit that put the current dossier in" \
+            "the tree is '${dossier:-none}' and the one that put the" \
+            "current first capture there is '${frame:-none}', so the" \
+            "ordering the requirement asks for cannot be read out of" \
+            "this history at all."
     fi
     if [ "${dossier}" = "${frame}" ]; then
-        die "${EX_COMMIT}" "${dossier:0:10} introduced BOTH" \
-            "$(rel "${PLAYTHROUGH_DOSSIER}") and $(rel "${capture}")," \
-            "so 'the dossier was written before the first gameplay" \
-            "frame' is unprovable from this history -- one commit" \
-            "cannot precede itself.  Commit the dossier on its own" \
-            "first ('commit_artifacts.sh ${CHECKPOINT_DOSSIER}'), then" \
-            "'${CHECKPOINT_CREATION}', then this one."
+        die "${EX_COMMIT}" "${dossier:0:10} put BOTH the current" \
+            "$(rel "${PLAYTHROUGH_DOSSIER}") and the current" \
+            "$(rel "${capture}") into the tree, so 'the dossier was" \
+            "written before the first gameplay frame' is unprovable" \
+            "from this history -- one commit cannot precede itself." \
+            "A recording published in a single bundled commit cannot" \
+            "acquire that ordering afterwards: commit the dossier on" \
+            "its own first ('commit_artifacts.sh" \
+            "${CHECKPOINT_DOSSIER}'), then '${CHECKPOINT_CREATION}'," \
+            "then this one."
     fi
     if ! "${GIT}" merge-base --is-ancestor "${dossier}" "${frame}" \
             2>/dev/null; then
-        die "${EX_COMMIT}" "${dossier:0:10} introduced the dossier and" \
-            "${frame:0:10} introduced the first capture, and" \
-            "${dossier:0:10} is not an ancestor of it.  The" \
-            "requirement is an ORDER, and on separate branches neither" \
-            "commit precedes the other."
+        die "${EX_COMMIT}" "${dossier:0:10} put the current dossier in" \
+            "the tree and ${frame:0:10} put the current first capture" \
+            "there, and ${dossier:0:10} is not an ancestor of it.  The" \
+            "requirement is an ORDER: on separate branches neither" \
+            "commit precedes the other, and a dossier REWRITTEN after" \
+            "the session was captured is a dossier whose current words" \
+            "were not committed before play."
     fi
-    playthrough_log "the dossier's introducing commit" \
-        "${dossier:0:10} is a strict ancestor of the first capture's" \
-        "${frame:0:10}, so the before-play ordering is provable from" \
-        "this history"
+    playthrough_log "the commit that put the current dossier in the" \
+        "tree (${dossier:0:10}) is a strict ancestor of the one that" \
+        "put the current first capture there (${frame:0:10}), so the" \
+        "before-play ordering is provable for THIS recording rather" \
+        "than for whichever generation first used these paths"
     return 0
 }
 
@@ -2537,10 +3517,19 @@ run_common_gates() {
     assert_scope
     report_foreign_worktree_changes
     assert_committed_vcs_rules
+    # HEAD's rules are a clone's; the WORKING TREE's are the ones the
+    # `git add` in this run applies, so the effective attributes are
+    # asked of both.
+    assert_attribute_semantics "the working tree"
     assert_no_machine_files
     assert_save_tree "${checkpoint}"
     assert_evidence
     assert_dossier "${checkpoint}"
+    # The deliverable's own document, at the one checkpoint that
+    # publishes a finished recording.  Beside the dossier because the two
+    # are the same kind of requirement -- a written artifact whose
+    # absence every other check would tolerate.
+    assert_report "${checkpoint}"
     # After the save and the record are known, and before anything is
     # staged: the paths this checkpoint exists to preserve must not be
     # ones `git add` would silently skip.
@@ -2582,6 +3571,210 @@ tracked_capture_count() {
         "${WC}" -l | "${TR}" -d ' '
 }
 
+# ---------------------------------------------------------------------
+# HAS THE SESSION BEGUN?
+#
+# Every trace a started session leaves, wherever it leaves it: a capture
+# on the disk, a capture in the index, a row in the record, or a line in
+# either sidecar the capture stage appends as it goes.  Any one of them is
+# proof that play began, and the dossier checkpoint exists precisely to
+# come BEFORE that moment.
+#
+# Read from the disk AND from the index, because the two answer different
+# questions and only their union answers this one: the index answers "was
+# it published", the filesystem answers "did it happen".
+disk_capture_count() {
+    "${FIND}" "${PLAYTHROUGH_FRAMES_DIR}" -mindepth 1 -maxdepth 1 \
+        -type f -name 'frame_*.png' -print 2>/dev/null |
+        "${WC}" -l | "${TR}" -d ' '
+}
+
+# nonblank_line_count PATH -- rows in a JSONL sidecar, 0 when absent.
+nonblank_line_count() {
+    [ -f "$1" ] || { printf '0'; return 0; }
+    "${GREP}" -c . -- "$1" 2>/dev/null || printf '0'
+}
+
+assert_play_has_not_begun() {
+    local -a evidence=()
+    local count=""
+    count="$(disk_capture_count)"
+    if [ "${count:-0}" -gt 0 ]; then
+        evidence+=("${count} capture(s) on disk in \
+$(rel "${PLAYTHROUGH_FRAMES_DIR}")")
+    fi
+    count="$(tracked_capture_count)"
+    if [ "${count:-0}" -gt 0 ]; then
+        evidence+=("${count} capture(s) already tracked by git")
+    fi
+    count="$(nonblank_line_count "${PLAYTHROUGH_MANIFEST}")"
+    if [ "${count:-0}" -gt 0 ]; then
+        evidence+=("${count} row(s) in $(rel "${PLAYTHROUGH_MANIFEST}")")
+    fi
+    count="$(nonblank_line_count "${PLAYTHROUGH_OBSERVATIONS}")"
+    if [ "${count:-0}" -gt 0 ]; then
+        evidence+=("${count} row(s) in \
+$(rel "${PLAYTHROUGH_OBSERVATIONS}"), which the capture stage appends \
+as each frame is taken")
+    fi
+    count="$(nonblank_line_count "${PLAYTHROUGH_FRAME_DIGESTS}")"
+    if [ "${count:-0}" -gt 0 ]; then
+        evidence+=("${count} row(s) in \
+$(rel "${PLAYTHROUGH_FRAME_DIGESTS}")")
+    fi
+    if [ "${#evidence[@]}" -eq 0 ]; then
+        return 0
+    fi
+    die "${EX_LIFECYCLE}" "the session has already left evidence" \
+        "behind -- ${evidence[*]} -- so a '${CHECKPOINT_DOSSIER}'" \
+        "checkpoint taken now could not put the dossier ahead of the" \
+        "first gameplay frame, and putting it ahead of them is the only" \
+        "thing this checkpoint does.  It belongs immediately after the" \
+        "dossier is written and before the first keystroke of the" \
+        "session.  If this evidence is a superseded recording, retire" \
+        "it in its own commit first; if it is the current one, its" \
+        "dossier ordering cannot be established after the fact and the" \
+        "session has to be re-recorded.  Nothing was committed."
+}
+
+# ---------------------------------------------------------------------
+# THE REPOSITORY-INTEGRATION MILESTONE
+#
+# The three session checkpoints REFUSE to run over a history whose
+# .gitignore does not end in the terminal '!/playthrough/**' negation,
+# and they are right to: without it a fresh clone re-ignores the engine's
+# own '#<name>.sav' and '*.log' files and the save data is simply absent.
+# But refusing was the whole of it -- the remedy was "commit them
+# yourself, elsewhere, by hand", which left the one change this feature
+# cannot work without outside the only tool that knows what it has to
+# say.  A committer that owns the evidence and disowns the two rules the
+# evidence depends on is a committer with a hole in it exactly where the
+# silent failure lives.
+#
+# So this milestone owns them, and owns nothing else:
+#
+#   * the scope is EXACTLY .gitignore and .gitattributes.  Not
+#     playthrough/, not a third root file, not a directory.  The index is
+#     refused if it carries anything else, the two paths are added by
+#     name, and the staged set is read back and required to be those two.
+#   * the CONTENT is asserted BEFORE the commit, from the working tree,
+#     because committing a .gitignore that does not end in the negation
+#     would publish the silent failure rather than fix it.
+#   * it is IDEMPOTENT.  When both files are already committed and
+#     unmodified there is nothing to do, and it says so and exits zero
+#     rather than manufacturing an empty commit.
+#   * it is checked AFTER the commit through the same read-back the
+#     session checkpoints use: HEAD must now carry both rules.
+#
+# It carries no survivor and no keystroke count in its message, because
+# it is not about a session -- it is the one commit in this pipeline that
+# would be identical whichever survivor was recorded.
+readonly -a INTEGRATION_PATHS=(".gitignore" ".gitattributes")
+
+assert_worktree_vcs_rules() {
+    local -a problems=()
+    local problem=""
+    while IFS= read -r problem; do
+        [ -n "${problem}" ] || continue
+        problems+=("${problem}")
+    done < <(vcs_rule_problems worktree_lines)
+    if [ "${#problems[@]}" -eq 0 ]; then
+        playthrough_log "the working tree's .gitignore ends in" \
+            "'${IGNORE_NEGATION}' and its .gitattributes carries all" \
+            "${#REQUIRED_ATTRIBUTES[@]} rows this feature depends on," \
+            "so committing them publishes rules that are already right"
+        # The rows are present; this asks whether git would apply them,
+        # which is the property publishing them is FOR.
+        assert_attribute_semantics "the working tree"
+        return 0
+    fi
+    die "${EX_PREREQ}" "the working tree's own rule files are not yet" \
+        "what this feature depends on -- ${problems[*]}.  This" \
+        "milestone commits those two files, so it will not publish them" \
+        "in a state that leaves the save data ignored on the next fresh" \
+        "clone.  Fix the files first, then take this milestone." \
+        "Nothing was committed."
+}
+
+# integration_staged_paths -- the staged paths, NUL terminated, restricted
+# to the two this milestone owns.
+integration_staged_paths() {
+    "${GIT}" diff --cached --name-only -z HEAD -- \
+        "${INTEGRATION_PATHS[@]}" 2>/dev/null || printf ''
+}
+
+do_integration() {
+    SCOPE_MODE="${SCOPE_VCS}"
+    assert_identity
+    assert_repository
+    persist_identity_locally
+    # In this mode assert_scope refuses anything staged that is NOT one
+    # of the two files -- including anything under playthrough/, which
+    # belongs to the session checkpoints.
+    assert_scope
+    assert_no_machine_files
+    assert_worktree_vcs_rules
+
+    local -a staged=()
+    local path=""
+    if ! "${GIT}" add -- "${INTEGRATION_PATHS[@]}"; then
+        die "${EX_COMMIT}" "git refused to stage" \
+            "${INTEGRATION_PATHS[*]}.  Nothing was committed."
+    fi
+    while IFS= read -r -d '' path; do
+        staged+=("${path}")
+    done < <(integration_staged_paths)
+    # READ BACK AND HELD TO THE SAME SCOPE.  `git add` was given two
+    # names, so this cannot ordinarily differ -- and that is exactly why
+    # it is cheap to assert rather than assume.
+    for path in "${staged[@]}"; do
+        if ! in_scope "${path}"; then
+            die "${EX_SCOPE}" "staging left" \
+                "$(printf '%q' "${path}") in the index, which is" \
+                "neither .gitignore nor .gitattributes.  Nothing was" \
+                "committed."
+        fi
+    done
+    assert_scope
+
+    if [ "${#staged[@]}" -eq 0 ]; then
+        playthrough_log "HEAD already carries .gitignore and" \
+            ".gitattributes exactly as the working tree has them, so" \
+            "there is nothing for the" \
+            "'${CHECKPOINT_INTEGRATION}' milestone to commit.  No" \
+            "empty commit was manufactured."
+        COMMITTED="no"
+        COMMIT_HASH=""
+        assert_committed_vcs_rules
+        report "${CHECKPOINT_INTEGRATION}" ""
+        return 0
+    fi
+
+    local -a message=("-m" "${SUBJECT_INTEGRATION}")
+    message+=("-m" "$(printf -- '- %s\n' "${staged[@]}")")
+    message+=("-m" "${TRAILER_KEY}: ${CHECKPOINT_INTEGRATION}")
+    if ! "${GIT}" commit --quiet "${message[@]}"; then
+        die "${EX_COMMIT}" "git refused the" \
+            "'${CHECKPOINT_INTEGRATION}' milestone commit.  The index" \
+            "is left staged so the failure can be inspected; nothing" \
+            "was rewritten."
+    fi
+    if ! COMMIT_HASH="$("${GIT}" rev-parse HEAD 2>/dev/null)"; then
+        die "${EX_COMMIT}" "the '${CHECKPOINT_INTEGRATION}' milestone" \
+            "commit was made but its hash could not be read back, so" \
+            "it cannot be verified."
+    fi
+    COMMITTED="yes"
+    playthrough_log "committed the '${CHECKPOINT_INTEGRATION}'" \
+        "milestone as ${COMMIT_HASH} (${staged[*]})"
+    verify_attribution_and_trailer "${CHECKPOINT_INTEGRATION}"
+    # The point of the commit, asserted from the history it just made
+    # rather than from the fact that the commit succeeded.
+    assert_committed_vcs_rules
+    report "${CHECKPOINT_INTEGRATION}" ""
+    return 0
+}
+
 do_dossier() {
     assert_identity
     assert_repository
@@ -2589,30 +3782,35 @@ do_dossier() {
     assert_scope
     report_foreign_worktree_changes
     assert_committed_vcs_rules
+    # HEAD's rules are a clone's; the WORKING TREE's are the ones the
+    # `git add` in this run applies, so the effective attributes are
+    # asked of both.
+    assert_attribute_semantics "the working tree"
     assert_no_machine_files
     # Existence and substance only: the tracked-at-HEAD half of
     # assert_dossier is what THIS commit is about to establish.
     assert_dossier "${CHECKPOINT_DOSSIER}"
-    local tracked=0
-    tracked="$(tracked_capture_count)"
-    if [ "${tracked}" -gt 0 ]; then
-        die "${EX_LIFECYCLE}" "${tracked} capture(s) are already" \
-            "tracked, so a '${CHECKPOINT_DOSSIER}' checkpoint taken" \
-            "now could not put the dossier ahead of the first gameplay" \
-            "frame -- and putting it ahead of them is the only thing" \
-            "this checkpoint does.  It belongs immediately after the" \
-            "dossier is written and before the session is played." \
-            "Nothing was committed."
-    fi
+    # PLAY MUST NOT HAVE BEGUN, AND "TRACKED" IS THE WRONG QUESTION.
+    #
+    # This used to count only the captures git already carries, which
+    # asks whether the evidence was COMMITTED rather than whether it
+    # EXISTS.  On the ordinary post-session tree -- captures written, the
+    # record appended, nothing committed yet -- the count was zero and
+    # the refusal did not fire, so a dossier commit taken there would
+    # claim to precede a session that had already been played and whose
+    # frames were sitting on the disk beside it.  The requirement is
+    # about the ORDER OF EVENTS, so what is measured is whether the
+    # session has left any trace at all, wherever that trace is.
+    assert_play_has_not_begun
     if "${GIT}" ls-files --error-unmatch -- "${PLAYTHROUGH_DOSSIER}" \
             >/dev/null 2>&1 &&
             [ -z "$(commit_touched HEAD "${PLAYTHROUGH_DOSSIER}")" ] &&
             [ -z "$("${GIT}" status --porcelain -- \
                 "${PLAYTHROUGH_DOSSIER}" 2>/dev/null)" ]; then
         playthrough_log "$(rel "${PLAYTHROUGH_DOSSIER}") is already" \
-            "tracked and unchanged, and no capture is tracked yet, so" \
-            "the ordering this checkpoint establishes is already in" \
-            "the history"
+            "tracked and unchanged, and the session has left no trace" \
+            "on disk or in the history, so the ordering this" \
+            "checkpoint establishes is already in the history"
     fi
     # ONE path, by name.  A dossier commit that also swept up the tooling
     # or the notes would be the bundled commit this step exists to split.
@@ -2707,9 +3905,25 @@ do_final() {
 # One pathspec, no -A, and only a REPORT: this is the one place a whole
 # subtree is named in a single `git add`, and it is the place where doing
 # so cannot change anything.
+#
+# EVERY CALLER STREAMS IT.  The output is one line per path a checkpoint
+# would add, which on a first checkpoint of a played session is one line
+# per capture; the two questions asked of it -- "is there anything?" and
+# "show me some of it" -- are both answered without it being held.
 staged_paths_preview() {
     "${GIT}" add --dry-run -- "${PATHSPECS[@]}" 2>/dev/null ||
         printf ''
+}
+
+# anything_to_add -- whether the working tree would give a checkpoint
+# anything, read from the FIRST line of the preview and no further.
+anything_to_add() {
+    local first=""
+    while IFS= read -r first; do
+        [ -n "${first}" ] || continue
+        return 0
+    done < <(staged_paths_preview)
+    return 1
 }
 
 # has_pending_changes -- true when a checkpoint would record anything.
@@ -2719,14 +3933,116 @@ staged_paths_preview() {
 # diff --cached answers for the INDEX and says nothing about a file that
 # has not been added yet.  Asking only one of them would let a second
 # creation checkpoint through on the other one's blind spot.
+#
+# Each half is now a BOOLEAN rather than a captured population: one line
+# of the preview, and git's own --quiet exit status for the index.
 has_pending_changes() {
-    if [ -n "$(staged_paths_preview)" ]; then
+    if anything_to_add; then
         return 0
     fi
-    if [ -n "$(staged_paths)" ]; then
+    if anything_staged; then
         return 0
     fi
     return 1
+}
+
+# report_pending_preview -- what a checkpoint would stage, bounded.
+#
+# The exact total and the first ${PREVIEW_LIMIT} lines, in ONE pass over
+# the preview: `status` used to capture the whole thing into a variable
+# and print all of it, which is one line per capture both in memory and on
+# the operator's terminal.  A count they can read plus a sample they can
+# scan is the report; the whole list is what `git status` is for.
+report_pending_preview() {
+    local line total=0
+    local -a shown=()
+    while IFS= read -r line; do
+        [ -n "${line}" ] || continue
+        total=$((total + 1))
+        if [ "${#shown[@]}" -lt "${PREVIEW_LIMIT}" ]; then
+            shown+=("${line}")
+        fi
+    done < <(staged_paths_preview)
+    if [ "${total}" -eq 0 ]; then
+        playthrough_log "a checkpoint would stage nothing; every path" \
+            "is already recorded at HEAD"
+        return 0
+    fi
+    if [ "${total}" -gt "${#shown[@]}" ]; then
+        playthrough_log "a checkpoint would stage ${total} path(s);" \
+            "the first ${#shown[@]} are:"
+    else
+        playthrough_log "a checkpoint would stage ${total} path(s):"
+    fi
+    printf '%s\n' "${shown[@]}" >&2
+    return 0
+}
+
+# ---------------------------------------------------------------------
+# THE LIFECYCLE ELIGIBILITY ANSWER, ASKED WITHOUT COMMITTING ANYTHING.
+#
+# `final` refuses unless a `creation` checkpoint exists FOR THIS
+# SURVIVOR and the record has grown since it.  Both halves are settled
+# facts about the history and the record before any rendering starts --
+# so a caller that is about to spend an hour producing the artifacts a
+# checkpoint would carry can be told NOW that the checkpoint will not be
+# taken.  run_pipeline.sh reads exactly this, before its first stage,
+# for exactly that reason: the sequence used to discover the refusal at
+# stage seven, after every expensive stage had already run.
+#
+# It is a REPORT, not a gate: this function refuses nothing, changes
+# nothing, and answers with the same two predicates
+# assert_creation_checkpoint enforces -- creation_commit_for_survivor
+# and manifest_rows_at -- so there is one implementation and the report
+# cannot drift from the refusal it predicts.
+#
+# FINAL_REASON is a stable token rather than prose, because a caller
+# branches on it; the prose that explains it goes to stderr as usual.
+# ---------------------------------------------------------------------
+FINAL_ANCHOR=""
+FINAL_ELIGIBLE="no"
+FINAL_REASON=""
+
+# assess_final_eligibility WORLD CHARACTER ROWS
+#   Set the three variables above.  Every argument may be empty, which
+#   is itself an answer: a session whose survivor cannot be read is one
+#   whose checkpoint would refuse for that reason first.
+assess_final_eligibility() {
+    local world="$1" character="$2" rows="$3"
+    local before=""
+    FINAL_ANCHOR=""
+    FINAL_ELIGIBLE="no"
+    FINAL_REASON=""
+    if [ -z "${world}" ] || [ -z "${character}" ]; then
+        FINAL_REASON="no-survivor-loaded"
+        return 0
+    fi
+    case "${rows}" in
+        ''|*[!0-9]*)
+            FINAL_REASON="no-record"
+            return 0
+            ;;
+    esac
+    if ! FINAL_ANCHOR="$(creation_commit_for_survivor \
+            "${world} / ${character}")"; then
+        FINAL_ANCHOR=""
+        if [ -z "$(creation_commit)" ]; then
+            FINAL_REASON="no-creation-checkpoint"
+        else
+            FINAL_REASON="no-creation-for-this-survivor"
+        fi
+        return 0
+    fi
+    if ! before="$(manifest_rows_at "${FINAL_ANCHOR}")"; then
+        FINAL_REASON="anchor-carries-no-record"
+        return 0
+    fi
+    if [ "${rows}" -le "${before}" ]; then
+        FINAL_REASON="record-has-not-grown"
+        return 0
+    fi
+    FINAL_ELIGIBLE="yes"
+    return 0
 }
 
 do_status() {
@@ -2743,16 +4059,9 @@ do_status() {
             "configuration, but it will not invent one."
     fi
     assert_repository
-    local pending creation
-    pending="$(staged_paths_preview)"
+    local creation
+    report_pending_preview
     creation="$(creation_commit)"
-    if [ -n "${pending}" ]; then
-        playthrough_log "a checkpoint would stage:"
-        printf '%s\n' "${pending}" >&2
-    else
-        playthrough_log "a checkpoint would stage nothing; every path" \
-            "is already recorded at HEAD"
-    fi
     if [ -n "${creation}" ]; then
         playthrough_log "the '${CHECKPOINT_CREATION}' checkpoint is" \
             "${creation}"
@@ -2807,8 +4116,24 @@ do_status() {
                 "cannot tell two survivors apart.  Take" \
                 "'${CHECKPOINT_DOSSIER}' and then" \
                 "'${CHECKPOINT_CREATION}' for this survivor before" \
-                "playing her session."
+                "playing their session."
         fi
+    fi
+    # THE ANSWER A CALLER BRANCHES ON, computed with the same two
+    # predicates the refusal uses, and reported whether or not the
+    # newest creation happens to be the anchor.  The warning above is
+    # about the NEWEST checkpoint; this is about the one `final` would
+    # actually anchor to, which may be an older commit entirely.
+    assess_final_eligibility "${world}" "${character}" "${rows}"
+    if [ "${FINAL_ELIGIBLE}" = "yes" ]; then
+        playthrough_log "'${CHECKPOINT_FINAL}' is eligible: it would" \
+            "anchor to ${FINAL_ANCHOR:0:10}, which records this" \
+            "session's own survivor, and the record has grown since it"
+    else
+        playthrough_warn "'${CHECKPOINT_FINAL}' would REFUSE" \
+            "(${FINAL_REASON}).  It anchors to the" \
+            "'${CHECKPOINT_CREATION}' checkpoint of the survivor it is" \
+            "about, and the record has to have grown between the two."
     fi
     emit "CHECKPOINT" "status"
     emit "COMMITTED" "no"
@@ -2821,6 +4146,9 @@ do_status() {
     emit "CREATION" "${creation}"
     emit "CREATION_SURVIVOR" "${anchor_survivor}"
     emit "TRACKED_CAPTURES" "$(tracked_capture_count)"
+    emit "FINAL_ELIGIBLE" "${FINAL_ELIGIBLE}"
+    emit "FINAL_ANCHOR" "${FINAL_ANCHOR}"
+    emit "FINAL_REASON" "${FINAL_REASON}"
     return 0
 }
 
@@ -2849,19 +4177,31 @@ usage() {
         printf '%s\n' "usage: \
 playthrough/tooling/commit_artifacts.sh <checkpoint>"
         printf '%s\n' ""
-        printf '  %-9s %s\n' \
+        printf '  %-11s %s\n' \
+            "integration" "commit .gitignore and .gitattributes, and \
+nothing else" \
             "dossier" "commit the survivor's dossier alone, BEFORE the \
 first frame" \
-            "creation" "commit the survivor and the save she starts \
+            "creation" "commit the survivor and the save they start \
 from" \
             "final" "commit the closed session and its artifacts" \
             "status" "report the lifecycle, changing nothing" \
             "help" "this text"
         printf '%s\n' ""
-        printf '%s\n' "THE THREE MUTATING STEPS ARE ORDERED AND EACH \
+        printf '%s\n' "THE FOUR MUTATING STEPS ARE ORDERED AND EACH \
 REFUSES TO RUN OUT OF TURN:"
-        printf '%s\n' "  dossier -> creation -> play the session -> \
-final."
+        printf '%s\n' "  integration -> dossier -> creation -> play the \
+session -> final."
+        printf '%s\n' "'integration' is the one milestone that is not \
+about a session: it commits"
+        printf '%s\n' "the two repository-wide rule files the evidence \
+depends on -- the terminal"
+        printf '%s\n' "'!/playthrough/**' negation and the six binary \
+and text attribute rows --"
+        printf '%s\n' "and nothing else.  The other three refuse over a \
+history without them,"
+        printf '%s\n' "so it comes first; it is idempotent, so running \
+it again commits nothing."
         printf '%s\n' "The dossier is its own commit because 'written \
 before the first gameplay"
         printf '%s\n' "frame' is checked as ANCESTRY between two \
@@ -2873,21 +4213,31 @@ THE SAME survivor and"
         printf '%s\n' "refuses across a survivor change, which a row \
 count cannot detect."
         printf '%s\n' ""
-        printf '%s\n' "It stages playthrough/ and nothing else, by \
-artifact class, in bounded"
-        printf '%s\n' "batches -- never a blanket add, never -A, never \
--f, never a shell glob."
-        printf '%s\n' ".gitignore and .gitattributes are CHECKED here \
--- in the working tree AND"
-        printf '%s\n' "as HEAD carries them -- and committed elsewhere."
+        printf '%s\n' "A SESSION checkpoint stages playthrough/ and \
+nothing else, by artifact"
+        printf '%s\n' "class, in bounded batches -- never a blanket \
+add, never -A, never -f, never"
+        printf '%s\n' "a shell glob.  .gitignore and .gitattributes are \
+CHECKED by all of them --"
+        printf '%s\n' "in the working tree AND as HEAD carries them -- \
+and are committed by the"
+        printf '%s\n' "'integration' milestone, which stages those two \
+paths and refuses any other."
         printf '%s\n' "It records the identity git already resolves in \
 THIS repository's own"
         printf '%s\n' "configuration (git config --local, never \
 --global and never --system), so"
         printf '%s\n' "the attribution travels with the checkout into \
-the container.  It never"
-        printf '%s\n' "invents an identity, never rewrites history and \
-never pushes."
+the container.  A local"
+        printf '%s\n' "pair that already matches is left as found; one \
+that DISAGREES with the"
+        printf '%s\n' "identity the commit will carry is replaced, both \
+values together, because"
+        printf '%s\n' "the configuration and the history are one fact \
+and the gate reads the"
+        printf '%s\n' "configuration.  It never invents an identity, \
+never rewrites history and"
+        printf '%s\n' "never pushes."
         printf '%s\n' "A mutating step takes a lock scoped to this \
 checkout, so two runs over one"
         printf '%s\n' "working tree serialise and two runs over \
@@ -2977,6 +4327,10 @@ main() {
             usage 1
             return "${EX_OK}"
             ;;
+        "${CHECKPOINT_INTEGRATION}")
+            take_checkpoint_lock
+            do_integration
+            ;;
         "${CHECKPOINT_DOSSIER}")
             take_checkpoint_lock
             do_dossier
@@ -3009,4 +4363,3 @@ main() {
 }
 
 main "$@"
-

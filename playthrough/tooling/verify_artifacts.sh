@@ -79,20 +79,21 @@
 # ---------------------------------------------------------------------
 # THE TWO PHASES, AND WHY A SINGLE-PHASE GATE COULD NEVER PASS
 #
-# A dozen of the properties below are properties OF THE COMMIT: the save
-# is tracked, every artifact class is tracked, the tracked capture count
-# equals the on-disk one, nothing under playthrough/ is left
-# uncommitted, the checkpoints are ordered, the committed .gitignore
-# still carries the negation, the change surface since the base commit
-# is only this feature.  NONE OF THEM CAN HOLD BEFORE THE COMMIT THAT
-# MAKES THEM TRUE.
+# FOURTEEN of the properties below are properties OF THE COMMIT: the
+# save is tracked, every artifact class is tracked, the tracked capture
+# count equals the on-disk one, nothing under playthrough/ is left
+# uncommitted, the checkpoints are ordered and are about the survivor in
+# the tree, the committed .gitignore still carries the negation, the
+# change surface since the base commit is only this feature.  NONE OF
+# THEM CAN HOLD BEFORE THE COMMIT THAT MAKES THEM TRUE.  They are
+# enumerated one by one beside GROUP_CHECKS_ALL below.
 #
 # Every other property -- the record, the timeline, the container, the
 # caption track, the luminance, the absence of cheating, the artwork,
 # the lint -- is a property OF THE ARTIFACTS, and holds the instant the
 # render finishes, with nothing committed at all.
 #
-# Run as one undivided gate ahead of a commit, the first dozen fail on
+# Run as one undivided gate ahead of a commit, those fourteen fail on
 # any tree that is not already fully committed, and a sequencer that
 # puts the gate before the checkpoint can therefore never reach the
 # checkpoint.  That is not a hypothetical: it was measured, on a genuine
@@ -105,19 +106,41 @@
 #            commit         commit_artifacts.sh takes the checkpoint
 #     --phase post-commit   ...and the history now says so
 #
-#   pre-commit    every property of the ARTIFACTS.  The dozen
+#   pre-commit    every property of the ARTIFACTS.  The fourteen
 #                 commit-shaped ones are deferred, and the deferral is
 #                 REPORTED as an informational note naming them, so a
 #                 shorter report explains its own length instead of
 #                 reading exactly as green as a complete one.
-#   post-commit   everything, the commit-shaped properties included.
-#   all           identical to post-commit, and THE DEFAULT, so an
-#                 operator auditing a committed tree runs this file
-#                 with no arguments and gets the whole gate, exactly as
-#                 before phases existed.
+#   post-commit   THE HISTORY, AND WHAT IT TAKES TO MEASURE IT: the
+#                 measuring environment, the version-control group, the
+#                 change surface, and the inventory of the report.
+#                 Nothing else.
+#   all           EVERYTHING, and THE DEFAULT, so an operator auditing a
+#                 committed tree runs this file with no arguments and
+#                 gets the whole gate.
+#
+# WHY post-commit IS NOT "EVERYTHING" ANY MORE, which it used to be.
+#
+# The two phases were designed as complementary halves and one of them
+# was not a half: `post-commit` ran every check `pre-commit` had just
+# run, minutes earlier, over artifacts NOTHING had touched in between --
+# the commit changes the history, not the bytes on disk.  So a default
+# sequencer run performed the eighty-nine artifact checks twice: two
+# whole-set digest sweeps, two decodes of each film, two lint runs, two
+# runs of the timeline suite.  At the session lengths this pipeline is
+# built for that is the expensive half of the gate, paid twice, for an
+# answer that cannot have changed.
+#
+# `post-commit` is therefore what its name says: the properties that
+# became answerable BECAUSE of the commit, plus group 1, which is what
+# establishes that this run can measure at all.  `all` remains the
+# explicit full audit -- it is the right thing to run when the question
+# is "is this committed tree what it claims to be" rather than "did the
+# checkpoint publish what the gate had just passed", and it is what an
+# operator gets by default.
 #
 # The declared check count is per phase (see EXPECTED_CHECKS below), so
-# neither phase can quietly return a short report.
+# no phase can quietly return a short report.
 #
 # EVERY VERDICT PRINTS ITS EVIDENCE.  A FAIL prints the observed value
 # next to the expected one; a PASS prints the observed value too, so the
@@ -185,6 +208,13 @@ set -o errtrace
 # where is a gate nobody can repair.  It fires only on an unhandled
 # failure: every deliberate check runs inside an `if` or an `||`, both
 # of which errexit exempts.
+#
+# SC2317 is disabled for exactly this function and no other: ShellCheck
+# cannot see a call site because the only one is the `trap` below, and
+# leaving the diagnostic in place would make the DEFAULT invocation of
+# `shellcheck verify_artifacts.sh` exit non-zero -- which is how a real
+# finding in this file gets lost in the noise of an expected one.
+# shellcheck disable=SC2317
 _va_on_error() {
     printf 'playthrough: FATAL: %s\n' \
         "verify_artifacts.sh failed at line ${2} (exit ${1})" >&2
@@ -206,8 +236,12 @@ readonly EX_LAYOUT=3
 # verified interpreter, the tool resolution and PYTHONDONTWRITEBYTECODE;
 # none of it is restated here.
 # ---------------------------------------------------------------------
+# The one place no resolved tool can be used, because this is what finds
+# the file that resolves them: bash's own parameter expansion does the
+# job that `dirname` would, so the bootstrap invokes NO external command
+# at all rather than one it has not verified.
 _va_script_dir="$(
-    cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd
+    cd "${BASH_SOURCE[0]%/*}" >/dev/null 2>&1 && pwd
 )"
 if [ -z "${_va_script_dir}" ]; then
     printf '%s\n' "verify_artifacts.sh: FATAL: cannot resolve my own \
@@ -317,30 +351,49 @@ readonly EXTRACT_FRACTIONS="0.10 0.50 0.95"
 readonly LUMINANCE_REFERENCE="mean=0.270018 std=0.198145 \
 (one real frame, quoted as provenance only)"
 
-# HOW MANY CAPTURES THE LUMINANCE GATE READS: ALL OF THEM, BY DEFAULT.
+# HOW MANY CAPTURES THE LUMINANCE GATE DECODES: A DELIBERATE SPREAD.
 #
-# It used to read a spread of 32, and the hole that left was real rather
-# than theoretical.  The digest sweep in group 3 catches a frame
-# SUBSTITUTED after the fact at any index, because its bytes no longer
-# match the digest taken when it was captured -- but a frame that was
-# ALREADY BLANK when it was captured has an honest digest, and at a
-# non-sampled index nothing looked at its pixels at all.  Measured: a
-# black capture at index 157, with its digest correctly re-declared,
-# passed the whole gate.
+# THE PIXELS OF EVERY FRAME ARE STILL ACCOUNTED FOR, by two witnesses
+# that do not need this gate to decode a raster to speak:
 #
-# So the default is now the exhaustive sweep, and it is affordable
-# because of how it is measured rather than because the reading got
-# cheaper: one ImageMagick invocation per CHUNK of images, each reporting
-# geometry and both statistics for every image in the chunk, and ONE awk
-# program over the collected readings instead of one per frame.  Measured
-# on this host: 0.235 s per frame one at a time against 0.138 s in chunks
-# of 16, and the separate `identify` call for geometry disappears
-# entirely because %w and %h come back in the same line.
+#   * THE CONTEMPORANEOUS READING.  capture.sh measures the grayscale
+#     mean and standard deviation of each frame at the moment it takes
+#     it, refuses to publish a blank one, and commits the reading in
+#     playthrough/build/observations.jsonl beside that frame's sha256.
+#     check_recorded_luminance below reads EVERY one of those rows, on
+#     every run, at every session length -- so "no frame was blank when
+#     it was captured" is asserted over the whole population.
+#   * THE DIGEST SWEEP.  Group 3 holds every committed capture to the
+#     digest taken when it was captured, so a frame SUBSTITUTED after the
+#     fact -- blanked, re-encoded, swapped -- fails there whatever its
+#     index, again over the whole population.
 #
-# `--samples N` still reads a spread, for a quick look; the verdict always
-# says how many of how many it read, so a partial reading can never be
-# mistaken for a complete one.
-readonly LUMINANCE_SAMPLES_DEFAULT="all"
+# What a CURRENT-PIXEL decode adds on top of those two is one narrow
+# case: a frame that was already blank when it was captured AND whose
+# digest AND whose recorded reading were all three re-declared to match
+# it.  That case is worth sampling for, and it is not worth decoding an
+# unbounded number of full-resolution rasters for on every run: the
+# session length is deliberately unbounded, one decode is about 0.14 s in
+# chunks of 16, and an exhaustive default therefore turns into hours of
+# I/O on a long session -- for a reading two whole-population witnesses
+# have already answered.  Measured here: 326 frames decoded in 45 s of
+# an 89 s gate.
+#
+# So the default is a SPREAD, always including the first and the last
+# capture, and `--samples all` is the exhaustive audit -- the reading to
+# take when the question is precisely "were the pixels re-declared", and
+# the one an operator auditing a stranger's tree should take at least
+# once.  The verdict always says how many of how many it read, so a
+# sampled reading can never be mistaken for a complete one.
+#
+# The reading itself stays as cheap as it was made: one ImageMagick
+# invocation per CHUNK of images, each reporting geometry and both
+# statistics for every image in the chunk, and ONE awk program over the
+# collected readings instead of one process per frame.  Measured on this
+# host: 0.235 s per frame one at a time against 0.138 s in chunks of 16,
+# and the separate `identify` call for geometry disappears entirely
+# because %w and %h come back in the same line.
+readonly LUMINANCE_SAMPLES_DEFAULT="64"
 readonly LUMINANCE_SAMPLES_ALL="all"
 
 # How many images one ImageMagick invocation measures.  ImageMagick holds
@@ -348,6 +401,112 @@ readonly LUMINANCE_SAMPLES_ALL="all"
 # 1920x1080 rasters is a couple of hundred megabytes at most, and 21
 # invocations instead of 326 is where the saving comes from.
 readonly LUMINANCE_CHUNK="16"
+
+# ---------------------------------------------------------------------
+# EVERY MEASURING CHILD IS TIME-BOUNDED, AND THE BOUND IS DERIVED
+#
+# A gate holds the pipeline's lock while it runs.  A wedged ffmpeg, a
+# hung ffprobe against a truncated container, an ImageMagick that will
+# not return on a corrupt raster, a linter waiting on a filesystem: any
+# one of them stops the gate for ever with no verdict and no diagnosis,
+# which is the one outcome worse than a failure.  So every child that
+# MEASURES something runs under `timeout` -- every ffprobe, ffmpeg,
+# convert, identify and compare call, every Python checker, the linter,
+# the timeline suite, and every interpreter probe -- and every bound is
+# TERM followed by KILL over the child's PROCESS GROUP: GNU timeout puts
+# the command in a group of its own and signals the group, so a tool that
+# spawns a helper cannot outlive the ceiling by hiding behind it, and
+# --kill-after guarantees the advertised ceiling against a child that
+# ignores TERM.
+#
+# WHAT IS DELIBERATELY NOT WRAPPED, STATED PLAINLY.  The git plumbing
+# this gate reads history with, and the shell's own text utilities (wc,
+# sed, awk, grep, sort, sha256sum), are not individually bounded.  Their
+# cost is a query against the local object store or one pass over a
+# scratch file, with no size term this file could derive a ceiling from,
+# and wrapping several dozen of them would buy nothing the class above
+# does not already cover -- the audit spends its time in media decode and
+# in whole-population readers, and those are bounded.  The residual is
+# real and is recorded here rather than papered over: a wedged object
+# store can still stall this gate, and no ceiling inside it would help,
+# because the sequencer that owns the lock is the only thing that can
+# time out a whole stage.
+#
+# THE CEILINGS ARE DERIVED FROM THE WORK, NOT GUESSED.  A session length
+# is deliberately unbounded, so a fixed number is either too small for a
+# long film -- killing a healthy decode and reporting it as wedged -- or
+# so large it is no bound at all.  A film's ceiling therefore comes from
+# its own byte count at a deliberately pessimistic floor throughput, and
+# a checker's from the size of the population it reads.  Each verdict
+# that expires says which ceiling it hit and what it was derived from.
+readonly BOUND_KILL_GRACE="10"
+
+# A metadata read: one ffprobe, one `identify`, one `convert … info:`.
+# Bounded by the container header or a single raster, so it does not
+# scale with the session at all.
+readonly BOUND_PROBE_SECONDS="120"
+
+# One ImageMagick invocation over LUMINANCE_CHUNK rasters.
+readonly BOUND_CHUNK_SECONDS="600"
+
+# A whole-film pass -- the decode, the frame count, a frame extraction.
+# base + bytes / throughput floor, where the floor is deliberately far
+# below what any real host achieves (this one decodes about 90 MB/s), so
+# an expiry means wedged rather than slow.
+readonly BOUND_FILM_BASE_SECONDS="300"
+readonly BOUND_FILM_BYTES_PER_SECOND="1048576"
+
+# A Python checker over the whole artifact set.  The digest sweep is the
+# part that scales, at roughly the disk's read rate; the divisor is per
+# capture and, again, pessimistic.
+readonly BOUND_CHECKER_BASE_SECONDS="600"
+readonly BOUND_CHECKER_CAPTURES_PER_SECOND="20"
+
+# The linter over playthrough/, and the timeline's own suite.  Neither
+# scales with the session: both read the tooling directory.
+readonly BOUND_LINT_SECONDS="1800"
+readonly BOUND_SUITE_SECONDS="3600"
+
+# No ceiling this file derives may exceed a day.  A bound that large is
+# already a diagnosis rather than a limit, and it keeps arithmetic on a
+# byte count from producing something absurd.
+readonly BOUND_MAX_SECONDS="86400"
+
+# HOW MANY OFFENDING ITEMS ONE VERDICT NAMES.
+#
+# A verdict is reached on the FACT of a failure, and the first example
+# establishes it: what the rest add is length -- in the report, and in the
+# shell array the report was assembled from.  The failure this gate exists
+# for is a WHOLE capture set coming back blank, so "one entry per capture"
+# is the realistic shape of an unbounded diagnostic here.  The count is
+# always reported in full; this bounds how many are named.
+readonly DIAGNOSTIC_LIMIT="8"
+
+# `timeout` reports this when it fires, which is how an expiry is told
+# apart from the tool's own failure; 128+SIGKILL is what it reports when
+# the grace period elapsed too.
+readonly BOUND_EXPIRED="124"
+readonly BOUND_KILLED="137"
+
+# ---------------------------------------------------------------------
+# THE SCRATCH GENERATION, AND WHY STALE ONES ARE SWEPT
+#
+# This gate works in a private directory under the mode-0700 runtime root
+# and removes it on every exit path.  "Every exit path" is not every END:
+# SIGKILL, an OOM kill and a pod eviction all leave the directory behind,
+# and because the name is unique per run, the leftovers ACCUMULATE -- one
+# generation per killed audit, each holding the extracted frames and
+# per-film logs of a run nobody can read any more.  Measured shapes are
+# tens of megabytes each.
+#
+# So a run sweeps before it works.  A generation is removed only when its
+# owner is provably gone -- the pid it recorded is not a live process --
+# or, for a generation from a version that recorded no owner, when it is
+# older than the bound below.  A generation whose owner is alive is never
+# touched, which is what keeps two concurrent audits safe.
+readonly SCRATCH_PREFIX="verify."
+readonly SCRATCH_OWNER_FILE="owner.pid"
+readonly SCRATCH_STALE_SECONDS="21600"
 
 # The engine's own debug actions.  All three are declared in
 # data/raw/keybindings.json WITHOUT a `bindings` array -- debug_mode at
@@ -512,6 +671,33 @@ sys.stdout.write("%s / %s" % (world, character))
 # NON-whitespace delimiter is required: bash's `read` collapses runs of
 # a whitespace IFS character and drops leading and trailing ones, so a
 # tab-separated protocol would silently lose an empty field.
+# The WORLD_END the world was played under, read out of a
+# worldoptions.json on stdin.  The file is a LIST of option records
+# (src/worldfactory.cpp writes one object per override), so the value is
+# found by name rather than by key.  Exit 1 when the option is absent,
+# which is itself the answer: an absent override means the engine
+# default, and this reader is only consulted where the difference
+# between "reset", "delete" and everything else decides a verdict.
+readonly WORLDOPTIONS_STDIN_READER='
+import json
+import sys
+
+record = json.load(sys.stdin)
+if not isinstance(record, list):
+    raise SystemExit(1)
+for entry in record:
+    if not isinstance(entry, dict):
+        continue
+    if entry.get("name") != "WORLD_END":
+        continue
+    value = entry.get("value") or ""
+    if not value:
+        raise SystemExit(1)
+    sys.stdout.write("%s" % value)
+    raise SystemExit(0)
+raise SystemExit(1)
+'
+
 readonly VERDICT_SEPARATOR=$'\037'
 
 # ---------------------------------------------------------------------
@@ -524,26 +710,49 @@ readonly VERDICT_SEPARATOR=$'\037'
 # check.  So the count is DECLARED here, asserted at the end of the run,
 # and printed in the summary and in the machine block.
 #
+# THE COUNT IS PER GROUP AND IT IS EXACT, and both halves of that are a
+# fix.  A review found this declared as ONE total, asserted with "at
+# least" -- and that guard cannot do the job it exists for.  Several
+# checks report one verdict per offending item, so a broken artifact set
+# genuinely produces more verdicts than the declaration; but with one
+# global "at least", three extra per-frame failures in the luminance
+# group SILENTLY PAY FOR three checks that never ran in the record group,
+# and the report still says every declared check is present.  The
+# masking is not hypothetical: it is arithmetic.
+#
+# So the declaration is per group, the comparison is per group, and it is
+# an EQUALITY on the number of DISTINCT check names -- which is the
+# measure per-item repetition cannot inflate, because a check reporting
+# eleven times about eleven frames reports one name.  An extra name in
+# group 6 can no longer settle a debt in group 2, and a name that is not
+# in the declared inventory at all is now reported instead of welcomed.
+#
 # The derivation, group by group, on a complete artifact set -- with the
 # COMMIT-SHAPED verdicts counted separately, because they are the ones
 # the pre-commit phase defers:
 #
-#                                        all   pre-commit
-#    1  the measuring environment          6     6
-#    2  one frame per keystroke           13    13
-#    3  the timeline                      19    19
-#    4  the container and its inputs      20    20
-#    5  the caption track                 19    19
-#    6  the luminance gate                 5     5
-#    7  version control                   15     4
-#    8  no cheating                        3     3
-#    9  the binary, artwork and hygiene    10     9
-#   10  the inventory of this report        1     1
-#                                        ----  ----
-#                                         111    99
+#                                        all   pre   post
+#    1  the measuring environment         11    11    11
+#    2  one frame per keystroke           14    14     -
+#    3  the timeline                      19    19     -
+#    4  the container and its inputs      20    20     -
+#    5  the caption track                 20    20     -
+#    6  the luminance gate                 5     5     -
+#    7  version control                   17     4    17
+#    8  no cheating                        3     3     -
+#    9  the binary, artwork and hygiene    10     9     2
+#   10  the inventory of this report        1     1     1
+#                                        ----  ----  ----
+#                                         120   106    31
 #
-# The twelve the pre-commit phase defers, each named by the property it
-# reports, are:
+# The post-commit column is group 1 (a gate reports what it can measure
+# before it reports what it measured), the whole of group 7, group 9's
+# change-surface check and its closing bytecode sweep, and the inventory.
+# The artifact groups are absent because the commit did not touch the
+# artifacts; `--phase all` is how they are re-measured deliberately.
+#
+# The FOURTEEN the pre-commit phase defers, each named by the property
+# it reports, are:
 #
 #   group 7   the world's own save file is tracked
 #             the survivor's own save file is tracked
@@ -556,29 +765,88 @@ readonly VERDICT_SEPARATOR=$'\037'
 #             the committed .gitignore still rescues the save data
 #             the committed .gitattributes carries this feature's rows
 #             each checkpoint anchors to its own survivor's creation
+#             the lifecycle checkpoints are about the survivor in the
+#             tree
+#             the recording in the tree has a checkpoint pair of its own
 #   group 9   the change surface is only the two ignore files and
 #             playthrough/
 #
 # The table is maintained with the checks: adding one without adding it
 # here makes this assertion fail, which is the intended direction of that
 # mistake.
-#
-# THE ASSERTION IS "AT LEAST", and deliberately so.  Several checks
-# report one verdict per offending item -- a per-frame luminance failure,
-# a per-film container failure -- so a BROKEN artifact set legitimately
-# produces MORE verdicts than this.  Fewer is the fault being guarded
-# against: a check that returned early, a checker that died, or an
-# assertion an edited artifact managed to switch off.
-readonly EXPECTED_CHECKS_ALL=111
-readonly EXPECTED_CHECKS_PRE_COMMIT=99
+readonly -a GROUP_CHECKS_ALL=(
+    0 11 14 19 20 20 5 17 3 10 1
+)
+readonly -a GROUP_CHECKS_PRE_COMMIT=(
+    0 11 14 19 20 20 5 4 3 9 1
+)
+# The third phase, and the reason it is a THIRD count rather than a
+# synonym for `all`: `post-commit` used to resolve to the whole audit, so
+# the sequencer paid for every artifact check twice on any run that
+# reached its checkpoint.  The artifacts are not what a commit changed,
+# so post-commit asks the environment it measures with, the whole of
+# version control, group 9's change surface and bytecode sweep, and the
+# inventory -- and `--phase all` remains how the artifacts are
+# re-measured deliberately.
+readonly -a GROUP_CHECKS_POST_COMMIT=(
+    0 11 0 0 0 0 0 17 0 2 1
+)
+# The names, for a discrepancy that can say WHICH group is short rather
+# than only that the total is.  Index 0 is unused so that the index is
+# the group number a reader sees in the report.
+readonly -a GROUP_NAMES=(
+    ""
+    "the measuring environment"
+    "one frame per keystroke"
+    "the timeline"
+    "the container and its inputs"
+    "the caption track"
+    "the luminance gate"
+    "version control"
+    "no cheating"
+    "the binary, artwork and hygiene"
+    "the inventory of this report"
+)
+readonly GROUP_COUNT=10
+
+# The totals are SUMMED FROM THE TABLE rather than written down beside
+# it.  A hand-maintained total is a second place for the truth to live,
+# and the first thing that happens to it is that somebody updates one and
+# not the other.
+# Pure arithmetic: this runs at file scope, before any external command
+# has been resolved and verified, so `seq` is not available to it and
+# would not be used if it were.
+_expected_all=0
+_expected_pre_commit=0
+_expected_post_commit=0
+for ((_group_index = 1; _group_index <= GROUP_COUNT; _group_index++)); do
+    _expected_all=$((_expected_all + \
+        GROUP_CHECKS_ALL[_group_index]))
+    _expected_pre_commit=$((_expected_pre_commit + \
+        GROUP_CHECKS_PRE_COMMIT[_group_index]))
+    _expected_post_commit=$((_expected_post_commit + \
+        GROUP_CHECKS_POST_COMMIT[_group_index]))
+done
+readonly EXPECTED_CHECKS_ALL="${_expected_all}"
+readonly EXPECTED_CHECKS_PRE_COMMIT="${_expected_pre_commit}"
+readonly EXPECTED_CHECKS_POST_COMMIT="${_expected_post_commit}"
+unset _expected_all _expected_pre_commit _expected_post_commit
+unset _group_index
+
+# WHERE THE DURABLE REPORT LANDS.  Beside the artifacts it judges, inside
+# playthrough/, so it travels with them in the same commit and a reader
+# who has the tree has the measurement -- which is the whole point of
+# writing it down rather than streaming it at a terminal.  It is a
+# generated artifact like timeline.json and the concat list, not an
+# authored document, and it says so in its own first lines.
+readonly REPORT_BASENAME="acceptance-report.txt"
 
 # ---------------------------------------------------------------------
-# THE PHASES, as the three words the option accepts.  `all` and
-# `post-commit` run the same checks; they are kept as separate names
-# because the two callers mean different things by them -- an operator
-# auditing a committed tree asks for `all`, and the sequencer asks for
-# `post-commit` because that is the position it occupies in the
-# pipeline, and a report that says which one it was is easier to place.
+# THE PHASES, as the three words the option accepts.  Each measures a
+# different set: `pre-commit` the artifacts, `post-commit` the history,
+# and `all` both -- see WHY post-commit IS NOT "EVERYTHING" ANY MORE at
+# the head of this file.  A report says which phase produced it, so a
+# saved transcript can always be placed.
 # ---------------------------------------------------------------------
 readonly PHASE_ALL="all"
 readonly PHASE_PRE_COMMIT="pre-commit"
@@ -610,9 +878,27 @@ PHASE="${PHASE_DEFAULT}"
 EXPECTED_CHECKS="${EXPECTED_CHECKS_ALL}"
 
 # The tool paths, defaulted to the plain command names so that `set -u`
-# cannot trip before check group 1 has resolved and verified them.  A
-# tool that is genuinely absent makes the checks that use it FAIL, which
-# is the intended behaviour -- the gate keeps measuring everything else.
+# cannot trip before they have been resolved and verified.  A tool that
+# is genuinely absent makes the checks that use it FAIL, which is the
+# intended behaviour -- the gate keeps measuring everything else.
+#
+# EVERY EXTERNAL COMMAND THIS FILE INVOKES HAS ONE OF THESE, AND
+# NOTHING ELSE DOES.  That is a fix rather than tidiness.  A review found
+# the inventory covering nine commands while the gate also ran head,
+# tail, tr, sort, wc, cat, rm, mktemp, chmod, find, basename and cut --
+# and invoked even the CHECKED `sed` by bare name, so the verified path
+# was resolved and then not used.  A gate that says "every command this
+# gate needs is present and verified" has to mean all of them, and has to
+# call the thing it verified: PATH is not this process's to trust, and a
+# bare name re-searches it at every call.
+#
+# The set is kept EXACT in both directions.  `dirname` and `touch` are
+# not here because nothing invokes them -- the bootstrap that used to
+# call dirname now takes the directory with ${BASH_SOURCE[0]%/*}, which
+# needs no command at all -- and a declared tool the gate never runs is
+# the same drift in the opposite direction: it would make an operator
+# install something to satisfy a check that proves nothing.  ShellCheck
+# enforces this half automatically: an unused variable here is SC2034.
 FFPROBE="ffprobe"
 FFMPEG="ffmpeg"
 CONVERT="convert"
@@ -621,16 +907,95 @@ COMPARE="compare"
 GIT="git"
 AWK="awk"
 GREP="grep"
+SED="sed"
+HEAD="head"
+TAIL="tail"
+TR="tr"
+SORT="sort"
+WC="wc"
+CAT="cat"
+RM="rm"
+MKTEMP="mktemp"
+CHMOD="chmod"
+FIND="find"
+BASENAME="basename"
+CUT="cut"
+TIMEOUT="timeout"
 PYTHON="${PLAYTHROUGH_PYTHON}"
+
+# The commands above, in the order they are reported, so the resolution
+# and the inventory verdict cannot drift apart.
+readonly REQUIRED_COMMANDS="ffprobe ffmpeg convert identify compare \
+git awk grep sed head tail tr sort wc cat rm mktemp chmod find \
+basename cut timeout"
+
+# What the pre-scratch resolution found, reported as a verdict in group 1
+# rather than at the moment it happened: the resolution has to precede
+# the scratch directory (mktemp and chmod build it), and the report has
+# not started printing that early.
+TOOLS_RESOLVED=0
+TOOLS_DETAIL=""
+
+# The durable copy of this report.  Empty until open_scratch has made
+# somewhere private to write it; every line of the report is appended to
+# it as it is printed, and report_publication_target decides whether it
+# is published into the working tree.
+REPORT_FILE=""
 
 # The linter as an ARRAY rather than a string, because one of the four
 # ways it resolves is a multi-word `<python> -B -m flake8`; a string
 # would have to be re-split at the call site, which is the shape of
 # command construction this pipeline does not use.
 FLAKE8_CMD=()
+# Every linter candidate that was REFUSED, so a rejection is reported
+# rather than silently falling through to the next candidate.
+FLAKE8_REJECTED=""
+
+# say FORMAT [ARG...] -- one piece of the report, to stdout AND to the
+# durable copy.
+#
+# WHY THE REPORT IS CAPTURED AS IT IS PRINTED.  A review found the gate
+# streaming its verdicts and then deleting its scratch directory, leaving
+# no durable record that the ffprobe readings, the luminance statistics,
+# the git status, the checkpoint ids and the no-cheat searches were ever
+# made -- so "the artifacts were verified" rested on a terminal somebody
+# had closed.  Capturing here rather than teeing the whole process keeps
+# the counters in THIS shell (a pipeline would put them in a subshell and
+# lose every one) and needs no race with a background writer.
+#
+# The format string is always a literal from this file, so passing it
+# through is safe; SC2059 is disabled for exactly that reason.
+say() {
+    local format="$1"
+    shift
+    local line=""
+    # TRAILING WHITESPACE IS TRIMMED HERE, AT THE ONE POINT EVERY LINE OF
+    # THE REPORT PASSES THROUGH.
+    #
+    # Many verdicts quote a tool's own output with its newlines collapsed
+    # to spaces -- `--version` banners especially -- which leaves a
+    # trailing space on the line.  That is invisible on a terminal and
+    # very visible in the COMMITTED report: `git diff --check` reported
+    # playthrough/acceptance-report.txt for trailing whitespace on three
+    # lines, one of them the linter's own version banner.  Trimming at
+    # each call site would mean trimming at every future one too, and the
+    # one that forgot would be the one that shipped.
+    #
+    # Every format string in this file ends in \n, and the command
+    # substitution strips that trailing newline, so exactly one is added
+    # back.  A multi-line verdict keeps its interior newlines and loses
+    # only whitespace at its very end, which is the intent.
+    # shellcheck disable=SC2059
+    line="$(printf "${format}" "$@")"
+    line="${line%"${line##*[![:space:]]}"}"
+    printf '%s\n' "${line}"
+    if [ -n "${REPORT_FILE}" ]; then
+        printf '%s\n' "${line}" >>"${REPORT_FILE}"
+    fi
+}
 
 note() {
-    printf '%s=%s\n' "$1" "$2"
+    say '%s=%s\n' "$1" "$2"
 }
 
 # rel PATH -- the repository-relative spelling, delegated to env.sh so
@@ -650,29 +1015,61 @@ die() {
     exit "${status}"
 }
 
+# group NUMBER NAME -- open a group under its OWN number.
+#
+# THE NUMBER IS THE GROUP'S IDENTITY, NOT ITS POSITION IN THIS RUN.  It
+# used to be a running counter, which is the same thing only while every
+# group runs: under `--phase post-commit` four groups report, and the
+# counter numbered version control 2 and hygiene 3.  Every verdict is
+# filed under that number by register_check and the inventory reads the
+# files back, so the post-commit phase compared version control's
+# seventeen verdicts against group 2's declaration and reported both as
+# wrong while each had performed exactly what it declared.  Numbering
+# each group for itself also means a post-commit report and a full one
+# name the same group by the same number, which is what makes the two
+# comparable.
 group() {
-    GROUP=$((GROUP + 1))
-    printf '\n=== %d. %s ===\n' "${GROUP}" "$1"
+    GROUP="$1"
+    say '\n=== %d. %s ===\n' "${GROUP}" "$2"
+}
+
+# register_check NAME -- record that this check reported, in this group.
+#
+# The inventory assertion in group 10 counts DISTINCT names per group, so
+# every verdict that IS a check on the artifacts writes its name here.
+# INFO and WARN deliberately do not: they are notes rather than
+# judgements, and counting them would make the declared inventory a
+# count of report lines instead of a count of checks.
+#
+# Before the scratch directory exists there is nowhere to write, and
+# nothing reports that early -- group 1 opens after open_scratch.  The
+# guard is there so that a future caller which does cannot fail on a
+# redirection.
+register_check() {
+    [ -n "${SCRATCH}" ] && [ -d "${SCRATCH}" ] || return 0
+    printf '%s\n' "$1" >>"${SCRATCH}/checks-${GROUP}.seen"
 }
 
 record_pass() {
     PASSES=$((PASSES + 1))
-    printf 'PASS  %s\n' "$1"
+    register_check "$1"
+    say 'PASS  %s\n' "$1"
     if [ -n "${2-}" ]; then
-        printf '      observed: %s\n' "$2"
+        say '      observed: %s\n' "$2"
     fi
 }
 
 record_fail() {
     FAILURES=$((FAILURES + 1))
-    printf 'FAIL  %s\n' "$1"
-    printf '      observed: %s\n' "${2:-<nothing>}"
-    printf '      expected: %s\n' "${3:-<see the check name>}"
+    register_check "$1"
+    say 'FAIL  %s\n' "$1"
+    say '      observed: %s\n' "${2:-<nothing>}"
+    say '      expected: %s\n' "${3:-<see the check name>}"
 }
 
 record_info() {
     INFOS=$((INFOS + 1))
-    printf 'INFO  %s: %s\n' "$1" "${2:-<empty>}"
+    say 'INFO  %s: %s\n' "$1" "${2:-<empty>}"
 }
 
 # record_warn -- something an operator should see that is not itself a
@@ -680,7 +1077,7 @@ record_info() {
 # gate's job is to judge the evidence, and a note about the host it was
 # judged on is not evidence.
 record_warn() {
-    printf 'WARN  %s: %s\n' "$1" "${2:-<empty>}"
+    say 'WARN  %s: %s\n' "$1" "${2:-<empty>}"
 }
 
 # tracking_phase
@@ -689,12 +1086,28 @@ record_warn() {
 #   therefore cannot hold until the checkpoint has been taken.
 #
 #   One predicate, called at each of the two group call sites, rather
-#   than an `if` inside each of the eleven checks: a check that decides
+#   than an `if` inside each of the fourteen checks: a check that decides
 #   for itself whether to run is a check that can be talked out of
 #   running, and this way the classification is visible in one place
 #   beside the group it belongs to.
 tracking_phase() {
     [ "${PHASE}" != "${PHASE_PRE_COMMIT}" ]
+}
+
+# artifact_phase
+#   Whether THIS run measures the artifact-shaped properties: the record,
+#   the timeline, the container, the caption track, the luminance, the
+#   absence of cheating, the artwork and the lint.  True for `pre-commit`
+#   and for `all`; FALSE for `post-commit`, because a commit changes the
+#   history and not the bytes, so re-measuring them minutes after the
+#   pre-commit phase did is work with no question behind it.
+#
+#   The complement of tracking_phase in intent rather than in logic --
+#   `all` is both -- and, like it, one predicate at the group call sites
+#   rather than an `if` inside each of the eighty-nine artifact
+#   checks.
+artifact_phase() {
+    [ "${PHASE}" != "${PHASE_POST_COMMIT}" ]
 }
 
 # ---------------------------------------------------------------------
@@ -742,7 +1155,7 @@ consume_verdicts() {
 #   tree so that running the gate cannot add an untracked file to the
 #   evidence -- which check group 7 would then, correctly, report.
 emit_checker() {
-    cat >"${SCRATCH}/$1.py"
+    "${CAT}" >"${SCRATCH}/$1.py"
 }
 
 # run_checker LABEL [arg ...]
@@ -761,13 +1174,33 @@ run_checker() {
     local script="${SCRATCH}/${label}.py"
     local out="${SCRATCH}/${label}.verdicts"
     local err="${SCRATCH}/${label}.stderr"
+    local ceiling="" status=0 detail=""
+    ceiling="$(checker_bound)"
     : >"${out}"
-    if ! "${PYTHON}" -B "${script}" "$@" >"${out}" 2>"${err}"; then
-        local detail=""
-        detail="$(tail -n 3 "${err}" 2>/dev/null | tr '\n' ' ' || true)"
-        record_fail "the ${label} checks completed" \
-            "the checker exited non-zero: ${detail:-<no diagnostic>}" \
-            "a clean run emitting one verdict per property"
+    # THE CEILING IS DERIVED FROM THE POPULATION, and an expiry is
+    # reported as an expiry: a checker that hangs on a corrupt artifact
+    # would otherwise hold this gate -- and the pipeline's lock -- for
+    # ever, with no verdict at all.  Its stderr goes to a FILE and is
+    # quoted from there in bounded form, because a checker that prints a
+    # line per frame would otherwise put the whole session into one
+    # shell variable to explain one failure.
+    bounded "${ceiling}" "${PYTHON}" -B "${script}" "$@" \
+        >"${out}" 2>"${err}" || status=$?
+    if [ "${status}" -ne 0 ]; then
+        detail="$(excerpt "${err}" 3)"
+        if bound_expired "${status}"; then
+            record_fail "the ${label} checks completed" \
+                "the checker did not finish within ${ceiling}s and was \
+stopped (exit ${status}): ${detail:-<no diagnostic>}" \
+                "a clean run inside the ceiling derived from this \
+artifact set -- an expiry here means a checker is wedged rather than \
+slow, because the ceiling scales with the capture count"
+        else
+            record_fail "the ${label} checks completed" \
+                "the checker exited non-zero: ${detail:-<no \
+diagnostic>}" \
+                "a clean run emitting one verdict per property"
+        fi
     fi
     consume_verdicts <"${out}"
 }
@@ -782,8 +1215,8 @@ fact() {
     local fallback="${2-}"
     local value=""
     if [ -f "${SCRATCH}/facts" ]; then
-        value="$(sed -n "s/^${key}=//p" "${SCRATCH}/facts" \
-            2>/dev/null | head -n 1 || true)"
+        value="$("${SED}" -n "s/^${key}=//p" "${SCRATCH}/facts" \
+            2>/dev/null | "${HEAD}" -n 1 || true)"
     fi
     if [ -z "${value}" ]; then
         printf '%s' "${fallback}"
@@ -845,27 +1278,207 @@ is_real() {
     [[ "${1}" =~ ^[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?$ ]]
 }
 
+# ---------------------------------------------------------------------
+# BOUNDED EXECUTION
+#
+# bounded SECONDS COMMAND...
+#   Run one external command under a ceiling, TERM then KILL, over the
+#   command's own process group.  Every child this gate starts goes
+#   through here; see EVERY CHILD THIS GATE STARTS IS TIME-BOUNDED above
+#   for why, and note that the status is returned UNCHANGED -- an expiry
+#   is 124, a kill after the grace period 137, and each call site decides
+#   what to say about it.
+#
+#   `timeout` is invoked by the path playthrough_require_tools verified,
+#   exactly as every other tool here is.
+# ---------------------------------------------------------------------
+bounded() {
+    local seconds="$1"
+    shift
+    "${TIMEOUT}" --kill-after="${BOUND_KILL_GRACE}" --signal=TERM \
+        "${seconds}" "$@"
+}
+
+# bound_expired STATUS -- whether a bounded call was stopped by its
+# ceiling rather than by the tool's own refusal.
+bound_expired() {
+    [ "${1:-0}" = "${BOUND_EXPIRED}" ] || [ "${1:-0}" = "${BOUND_KILLED}" ]
+}
+
+# file_bytes PATH -- the size in bytes, or 0.  `wc -c` on a redirection
+# rather than `stat`, so no second tool has to be resolved and a missing
+# file is 0 instead of a diagnostic.  `wc` is invoked by the path
+# playthrough_require_tools verified, as every tool in this file is.
+file_bytes() {
+    local bytes=""
+    bytes="$("${WC}" -c <"$1" 2>/dev/null || printf '0')"
+    bytes="${bytes//[^0-9]/}"
+    printf '%s' "${bytes:-0}"
+}
+
+# film_bound FILE -- the ceiling for one whole-film pass over FILE,
+# derived from its byte count at the pessimistic throughput floor.
+film_bound() {
+    local seconds=0
+    seconds=$(( BOUND_FILM_BASE_SECONDS +
+        $(file_bytes "$1") / BOUND_FILM_BYTES_PER_SECOND ))
+    if [ "${seconds}" -gt "${BOUND_MAX_SECONDS}" ]; then
+        seconds="${BOUND_MAX_SECONDS}"
+    fi
+    printf '%s' "${seconds}"
+}
+
+# checker_bound -- the ceiling for one Python checker, derived from the
+# population it reads.  The capture count comes from the facts file once
+# group 2 has published it, and from the record's line count before that
+# -- one `wc -l`, so the first checker is bounded too without walking a
+# directory or holding one name in memory.
+checker_bound() {
+    local count="" seconds=0
+    count="$(fact capture_count)"
+    if ! is_count "${count}"; then
+        count="$("${WC}" -l <"${PLAYTHROUGH_MANIFEST}" 2>/dev/null ||
+            printf '0')"
+        count="${count//[^0-9]/}"
+    fi
+    seconds=$(( BOUND_CHECKER_BASE_SECONDS +
+        ${count:-0} / BOUND_CHECKER_CAPTURES_PER_SECOND ))
+    if [ "${seconds}" -gt "${BOUND_MAX_SECONDS}" ]; then
+        seconds="${BOUND_MAX_SECONDS}"
+    fi
+    printf '%s' "${seconds}"
+}
+
+# count_lines FILE -- how many non-empty lines FILE holds, as a number.
+#
+# `grep -c` EXITS NON-ZERO WHEN IT COUNTS ZERO, which is the trap this
+# exists to close: `$(grep -c . "$f" || printf 0)` captures grep's own
+# "0" AND the fallback's, and the two-line result then breaks the integer
+# test it was written for -- observed as a lint verdict reading "0
+# finding(s)" and failing anyway.  The status is discarded and the output
+# is reduced to digits.
+count_lines() {
+    local count=""
+    count="$("${GREP}" -c . "$1" 2>/dev/null || true)"
+    count="${count//[^0-9]/}"
+    printf '%s' "${count:-0}"
+}
+
+# excerpt FILE [LINES] -- the first few lines of a captured stream, on
+# one line, for a verdict's observed value.  A diagnostic is READ FROM A
+# FILE and bounded here rather than captured whole into a variable: a
+# tool that prints one line per frame would otherwise put the entire
+# session into the report, and into memory, to explain one failure.
+excerpt() {
+    local file="$1"
+    local lines="${2:-4}"
+    if [ ! -s "${file}" ]; then
+        printf ''
+        return 0
+    fi
+    "${HEAD}" -n "${lines}" "${file}" 2>/dev/null |
+        "${TR}" '\n' ';' || true
+}
+
+# THE HELPERS THAT SHELL OUT, AND WHY THEY KEEP THEIR STDERR
+#
+# Each of these turns a failure into an empty string, which is right: a
+# missing stream has to be a VERDICT rather than the end of the run.  What
+# was wrong -- and a review said so -- is that the tool's own explanation
+# went to /dev/null with it, so the report read "observed: <nothing>" for
+# a file that is missing, a file that is not a container, a codec that is
+# not built in and a permission error alike.  The reason exists; it was
+# being thrown away.
+#
+# So every one of them writes its stderr into a file inside the private
+# scratch directory, and the failing checks append a bounded tail of it to
+# what they observed -- bounded so a diagnostic cannot become the report.
+# Scratch is 0700 inside the runtime root, so a path or a filename in a
+# tool message stays as private as every other diagnostic this pipeline
+# writes.
+#
+# THE REASON IS KEPT IN THE FILE AND NOT IN A VARIABLE, and that is a
+# correctness requirement rather than a preference.  Every one of these
+# helpers is called inside `$( )`, which is a SUBSHELL: a variable it
+# assigned would be discarded the instant the substitution closed, and
+# the caller would read an empty reason for every failure -- the exact
+# silence this fix exists to end, reintroduced one layer down.  The file
+# is written by the subshell to the filesystem, so it survives; and
+# because `2>` TRUNCATES at redirection time, the file always holds
+# precisely the stderr of the most recent invocation for that tool,
+# emptied automatically by the next one that succeeds.
+# ---------------------------------------------------------------------
+
+# tool_error_file LABEL -- where a helper's stderr goes.  Before scratch
+# exists there is nowhere private to put it, so the answer is /dev/null
+# and no reason is available; every helper below runs after open_scratch
+# in practice.
+tool_error_file() {
+    if [ -z "${SCRATCH}" ] || [ ! -d "${SCRATCH}" ]; then
+        printf '%s' "/dev/null"
+        return 0
+    fi
+    printf '%s' "${SCRATCH}/tool-$1.err"
+}
+
+# because TOOL -- " (TOOL said: <reason>)" when TOOL's last invocation
+# explained itself, and NOTHING AT ALL when it did not, so a verdict
+# never carries an empty parenthesis.
+#
+# Two lines and 200 characters at the most.  ffmpeg in particular will
+# print a banner and a hundred lines of build configuration given the
+# chance; a verdict that scrolls is a verdict nobody reads, and this gate
+# reports what was observed next to what was required on one line each.
+#
+# CALL IT IMMEDIATELY AFTER THE PROBE IT EXPLAINS.  Several checks read
+# four fields from one file before reporting on any of them, and all four
+# share the one ffprobe error file, so a `because` deferred to verdict
+# time would attribute the fourth probe's complaint to the first.  The
+# convention is `x="$(probe_value ...)"; x_said="$(because ffprobe)"`,
+# which snapshots the reason while it is still the right one.
+because() {
+    local tool="${1:-the tool}"
+    local path="" reason=""
+    path="$(tool_error_file "${tool}")"
+    [ -f "${path}" ] || return 0
+    reason="$("${TAIL}" -n 2 -- "${path}" 2>/dev/null |
+        "${TR}" '\n\t' '  ' | "${CUT}" -c 1-200 || true)"
+    # Trailing whitespace from the newline translation.
+    reason="${reason%"${reason##*[![:space:]]}"}"
+    [ -n "${reason}" ] || return 0
+    printf ' (%s said: %s)' "${tool}" "${reason}"
+}
+
 # probe_field FILE SELECTOR ENTRIES
 #   One ffprobe read in KEY=value form, with the failure surfaced as an
 #   empty string rather than as an abort, so a missing stream is a
 #   verdict instead of the end of the run.
 probe_field() {
-    "${FFPROBE}" -v error -select_streams "$2" \
-        -show_entries "$3" -of default=nw=1 -i "$1" 2>/dev/null || true
+    local err
+    err="$(tool_error_file ffprobe)"
+    bounded "${BOUND_PROBE_SECONDS}" \
+        "${FFPROBE}" -v error -select_streams "$2" \
+        -show_entries "$3" -of default=nw=1 -i "$1" 2>"${err}" || true
 }
 
 # probe_value FILE SELECTOR ENTRY -- the bare first value, or "".
 probe_value() {
-    "${FFPROBE}" -v error -select_streams "$2" -show_entries "$3" \
-        -of default=noprint_wrappers=1:nokey=1 -i "$1" 2>/dev/null |
-        head -n 1 || true
+    local err
+    err="$(tool_error_file ffprobe)"
+    bounded "${BOUND_PROBE_SECONDS}" \
+        "${FFPROBE}" -v error -select_streams "$2" -show_entries "$3" \
+        -of default=noprint_wrappers=1:nokey=1 -i "$1" 2>"${err}" |
+        "${HEAD}" -n 1 || true
 }
 
 # probe_format FILE ENTRY -- a container-level value, such as duration.
 probe_format() {
-    "${FFPROBE}" -v error -show_entries "format=$2" \
-        -of default=noprint_wrappers=1:nokey=1 -i "$1" 2>/dev/null |
-        head -n 1 || true
+    local err
+    err="$(tool_error_file ffprobe)"
+    bounded "${BOUND_PROBE_SECONDS}" \
+        "${FFPROBE}" -v error -show_entries "format=$2" \
+        -of default=noprint_wrappers=1:nokey=1 -i "$1" 2>"${err}" |
+        "${HEAD}" -n 1 || true
 }
 
 # luminance PNG -- "mean std" over the grayscale conversion, or "" when
@@ -874,16 +1487,126 @@ probe_format() {
 # additionally catches a uniform solid-colour frame, which a mean-only
 # test would pass.
 luminance() {
-    "${CONVERT}" "$1" -colorspace Gray \
+    local err
+    err="$(tool_error_file convert)"
+    bounded "${BOUND_PROBE_SECONDS}" \
+        "${CONVERT}" "$1" -colorspace Gray \
         -format '%[fx:mean] %[fx:standard_deviation]' info: \
-        2>/dev/null || true
+        2>"${err}" || true
+}
+
+# geometry PNG -- "WxH", or "" when the file cannot be read.
+geometry() {
+    local err
+    err="$(tool_error_file identify)"
+    bounded "${BOUND_PROBE_SECONDS}" \
+        "${IDENTIFY}" -format '%wx%h' "$1" 2>"${err}" || true
+}
+
+# ---------------------------------------------------------------------
+# ONE DECODE PER FILM, AND ONE EXTRACTION PER OFFSET
+#
+# Four properties of a film need the pictures rather than the header:
+# that every packet decodes, how many frames come out, that the container
+# does not declare more than it can produce, and that the captioned
+# film's pixels are identical to the plain one's.  Each used to walk the
+# stream for itself, so the base film was read three times and the
+# captioned film twice on every run, and the same two offsets were
+# extracted twice from each of them.
+#
+# A decode is O(film), the film is O(session), and the session is
+# deliberately unbounded -- so the passes are made ONCE and cached in the
+# scratch generation, which exists for exactly the length of this run.
+# Freshness needs no reasoning about staleness: the cache cannot outlive
+# the artifacts it describes.
+#
+# film_decode_pass FILE
+#   Decode FILE from end to end, once, and leave the outcome in
+#   FILM_PASS_STATUS, FILM_PASS_FRAMES, FILM_PASS_CEILING and
+#   FILM_PASS_LOG.  -xerror makes a corrupt NAL unit, a partial packet or
+#   a missing picture a failure rather than a warning nobody sees, and
+#   -progress makes the same pass report how many frames it decoded --
+#   which is the number `ffprobe -count_frames` used to be run twice
+#   more to obtain.  Measured on this session: 0.9 s for the pass against
+#   1.8 s for each of the two counts it replaces.
+# ---------------------------------------------------------------------
+FILM_PASS_STATUS=""
+FILM_PASS_FRAMES=""
+FILM_PASS_CEILING=""
+FILM_PASS_LOG=""
+
+film_decode_pass() {
+    local file="$1"
+    local name="" state="" progress="" ceiling="" status=0 frames=""
+    name="$("${BASENAME}" "${file}")"
+    state="${SCRATCH}/decode-${name}.state"
+    FILM_PASS_LOG="${SCRATCH}/decode-${name}.log"
+    progress="${SCRATCH}/decode-${name}.progress"
+    if [ ! -f "${state}" ]; then
+        ceiling="$(film_bound "${file}")"
+        : >"${progress}"
+        bounded "${ceiling}" "${FFMPEG}" -nostdin -v error -xerror \
+            -i "${file}" -progress "${progress}" -f null - \
+            >/dev/null 2>"${FILM_PASS_LOG}" || status=$?
+        # The LAST frame= line the encoder wrote, which is the count at
+        # the end of the stream.  An expired or wedged pass leaves
+        # whatever it had reached, and the reading is reported as
+        # unusable rather than as a count, because a partial count that
+        # happened to match would be the worst possible outcome.
+        frames="$("${SED}" -n 's/^frame=[[:space:]]*//p' \
+            "${progress}" 2>/dev/null | "${TAIL}" -n 1 || true)"
+        frames="${frames//[^0-9]/}"
+        if [ "${status}" -ne 0 ]; then
+            frames=""
+        fi
+        printf '%s %s %s\n' "${status}" "${frames:-none}" \
+            "${ceiling}" >"${state}"
+    fi
+    FILM_PASS_STATUS=""
+    FILM_PASS_FRAMES=""
+    FILM_PASS_CEILING=""
+    read -r FILM_PASS_STATUS FILM_PASS_FRAMES FILM_PASS_CEILING \
+        <"${state}" || true
+    if [ "${FILM_PASS_FRAMES}" = "none" ]; then
+        FILM_PASS_FRAMES=""
+    fi
+}
+
+# extracted_frame FILE OFFSET
+#   The path of one frame taken OFFSET seconds into FILE, extracted once
+#   per (film, offset) and reused.  Returns 1 when nothing could be
+#   decoded there, which is itself a verdict at the call site: a film
+#   that stops early cannot answer for its later seconds.
+extracted_frame() {
+    local file="$1"
+    local offset="$2"
+    local name="" path="" marker="" ceiling=""
+    name="$("${BASENAME}" "${file}")"
+    path="${SCRATCH}/frame-${name}-${offset}.png"
+    marker="${path}.failed"
+    if [ -s "${path}" ]; then
+        printf '%s' "${path}"
+        return 0
+    fi
+    if [ -f "${marker}" ]; then
+        return 1
+    fi
+    ceiling="$(film_bound "${file}")"
+    if ! bounded "${ceiling}" "${FFMPEG}" -nostdin -y -v error \
+            -ss "${offset}" -i "${file}" -frames:v 1 "${path}" \
+            >/dev/null 2>&1 || [ ! -s "${path}" ]; then
+        : >"${marker}"
+        return 1
+    fi
+    printf '%s' "${path}"
+    return 0
 }
 
 # ---------------------------------------------------------------------
 # USAGE
 # ---------------------------------------------------------------------
 usage() {
-    cat <<'USAGE'
+    "${CAT}" <<'USAGE'
 verify_artifacts.sh -- the acceptance gate for the playthrough capture
 subsystem.  Reads the committed artifacts, reports one verdict per
 property, and exits non-zero if any property does not hold.
@@ -892,31 +1615,44 @@ property, and exits non-zero if any property does not hold.
 
 Options:
   --phase PHASE     which properties to measure.  One of:
-                      all           everything.  THE DEFAULT.
+                      all           everything, artifacts and history.
+                                    THE DEFAULT, and the full audit.
                       pre-commit    every property of the ARTIFACTS,
-                                    deferring the twelve that are
+                                    deferring the fourteen that are
                                     properties of the COMMIT and
                                     cannot hold before it is taken.
                                     This is the phase that runs AHEAD
                                     of commit_artifacts.sh.
-                      post-commit   everything, the commit-shaped
-                                    properties included.  This is the
-                                    phase that runs AFTER it.
+                      post-commit   THE HISTORY: the properties the
+                                    commit made answerable, plus the
+                                    measuring environment they are
+                                    read with.  This is the phase that
+                                    runs AFTER it, and it does NOT
+                                    re-measure the artifacts -- a
+                                    commit changes the history, not
+                                    the bytes.  Run `all` when the
+                                    question is the whole tree.
                     --pre-commit and --post-commit are accepted as
                     shorthands.  The declared check count is per phase,
-                    so neither can return a short report unnoticed.
+                    so none of them can return a short report unnoticed.
   --base COMMIT     the commit the change surface is measured from.
                     Defaults to the parent of the first commit that
                     touched playthrough/, which is the point this
                     feature began.
-  --samples N       read a spread of N captures in the luminance gate
-                    instead of all of them (minimum 2 -- the first and
-                    the last).  Quicker, and the verdict says how many
-                    of how many it read.
-  --samples all     read every capture.  THIS IS THE DEFAULT, because a
-                    frame that was already blank when it was captured
-                    has an honest digest and only its pixels give it
-                    away.  About forty seconds on a full session.
+  --samples N       DECODE the pixels of a spread of N captures in the
+                    luminance gate, always including the first and the
+                    last (minimum 2).  THE DEFAULT IS 64.  The verdict
+                    always says how many of how many it read, so a
+                    sampled reading cannot be mistaken for a complete
+                    one.
+  --samples all     decode every capture.  The exhaustive audit, and the
+                    reading to take when the question is whether a
+                    frame's digest AND the capture stage's own recorded
+                    reading were both re-declared to hide a blank frame
+                    -- every other blank-frame case is caught by those
+                    two whole-population witnesses.  About forty seconds
+                    per three hundred captures, so it scales with the
+                    session.
   -h, --help        print this and exit.
 
 Environment:
@@ -1016,13 +1752,17 @@ ${LUMINANCE_SAMPLES_DEFAULT}}"
     # that was asked for, and a report about the wrong phase is worse
     # than no report.
     case "${phase}" in
-        "${PHASE_ALL}"|"${PHASE_POST_COMMIT}")
+        "${PHASE_ALL}")
             PHASE="${phase}"
             EXPECTED_CHECKS="${EXPECTED_CHECKS_ALL}"
             ;;
         "${PHASE_PRE_COMMIT}")
             PHASE="${phase}"
             EXPECTED_CHECKS="${EXPECTED_CHECKS_PRE_COMMIT}"
+            ;;
+        "${PHASE_POST_COMMIT}")
+            PHASE="${phase}"
+            EXPECTED_CHECKS="${EXPECTED_CHECKS_POST_COMMIT}"
             ;;
         *)
             usage >&2
@@ -1063,7 +1803,7 @@ ${LUMINANCE_SAMPLES_DEFAULT}}"
 default_base_commit() {
     local first="" parent=""
     first="$("${GIT}" log --format='%H' -- playthrough 2>/dev/null |
-        tail -n 1 || true)"
+        "${TAIL}" -n 1 || true)"
     if [ -z "${first}" ]; then
         return 1
     fi
@@ -1090,7 +1830,7 @@ default_base_commit() {
 # shellcheck disable=SC2317
 _va_cleanup() {
     if [ -n "${SCRATCH}" ] && [ -d "${SCRATCH}" ]; then
-        rm -rf -- "${SCRATCH}"
+        "${RM}" -rf -- "${SCRATCH}"
     fi
 }
 trap _va_cleanup EXIT
@@ -1102,12 +1842,208 @@ open_scratch() {
             "does not exist; env.sh creates and verifies it at mode" \
             "0700, so re-source playthrough/tooling/env.sh"
     fi
-    SCRATCH="$(mktemp -d "${base}/verify.XXXXXX")"
+    SCRATCH="$("${MKTEMP}" -d "${base}/${SCRATCH_PREFIX}XXXXXX")"
     if [ -z "${SCRATCH}" ] || [ ! -d "${SCRATCH}" ]; then
         die "${EX_LAYOUT}" "cannot create a scratch directory under" \
             "'$(rel "${base}")'"
     fi
-    chmod 700 "${SCRATCH}"
+    "${CHMOD}" 700 "${SCRATCH}"
+    # THE OWNER, RECORDED INSIDE THE GENERATION.  It is what lets the
+    # next run tell a generation whose audit is still working from one
+    # whose audit was killed; see THE SCRATCH GENERATION above.
+    printf '%s\n' "$$" >"${SCRATCH}/${SCRATCH_OWNER_FILE}"
+    sweep_stale_scratch "${base}"
+    # THE DURABLE COPY STARTS HERE, one line behind stdout, so that every
+    # verdict printed from this point on is also written down.  It is
+    # assembled in the private scratch directory and only PUBLISHED into
+    # the working tree if the run passes, which keeps a half-written or
+    # failing report out of the tree while still capturing it for the
+    # operator reading this run's output.
+    REPORT_FILE="${SCRATCH}/acceptance-report.md"
+    : >"${REPORT_FILE}" || REPORT_FILE=""
+    if [ -n "${REPORT_FILE}" ]; then
+        "${CHMOD}" 600 "${REPORT_FILE}"
+    fi
+}
+
+# owner_is_alive PID -- whether that process still exists.  Both tests
+# are needed: `kill -0` answers "does it exist AND may I signal it",
+# which is false for a live process belonging to somebody else, and
+# /proc answers existence alone.  A generation is only ever removed when
+# BOTH say it is gone, because the cost of being wrong in that direction
+# is another audit's working directory.
+owner_is_alive() {
+    local pid="$1"
+    if kill -0 "${pid}" 2>/dev/null; then
+        return 0
+    fi
+    [ -d "/proc/${pid}" ]
+}
+
+# scratch_is_stale DIR -- whether a generation with no live owner may be
+# removed.  A generation that recorded no owner at all comes from a
+# version of this file that did not write one, so it is judged by age.
+scratch_is_stale() {
+    local dir="$1"
+    local owner="${dir}/${SCRATCH_OWNER_FILE}"
+    local pid="" modified="" now="${EPOCHSECONDS:-}"
+    if [ -f "${owner}" ]; then
+        IFS= read -r pid <"${owner}" 2>/dev/null || pid=""
+        case "${pid}" in
+            ''|*[!0-9]*) pid="" ;;
+        esac
+        if [ -n "${pid}" ]; then
+            if owner_is_alive "${pid}"; then
+                return 1
+            fi
+            return 0
+        fi
+    fi
+    # No usable owner.  Age is the only remaining evidence, and without a
+    # clock the generation is LEFT ALONE: removing somebody else's
+    # working directory on a guess is worse than leaving a stale one.
+    if [ -z "${now}" ]; then
+        return 1
+    fi
+    modified="$("${PLAYTHROUGH_UTIL_STAT:-stat}" -c '%Y' -- "${dir}" \
+        2>/dev/null || printf '')"
+    case "${modified}" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    [ "$(( now - modified ))" -ge "${SCRATCH_STALE_SECONDS}" ]
+}
+
+# sweep_stale_scratch BASE -- remove the generations of audits that were
+# killed outright.  Bounded to the mode-0700 runtime directory env.sh
+# created and verified, matched on this file's own prefix, never
+# following a symlink, and never touching this run's own generation:
+# those four together are what make `rm -rf` acceptable here at all.
+sweep_stale_scratch() {
+    local base="$1"
+    local dir="" removed=0
+    for dir in "${base}/${SCRATCH_PREFIX}"*; do
+        [ -d "${dir}" ] || continue
+        [ ! -L "${dir}" ] || continue
+        [ "${dir}" != "${SCRATCH}" ] || continue
+        if scratch_is_stale "${dir}"; then
+            "${RM}" -rf -- "${dir}" || continue
+            removed=$(( removed + 1 ))
+        fi
+    done
+    if [ "${removed}" -gt 0 ]; then
+        playthrough_log "swept ${removed} scratch generation(s) left" \
+            "behind by audits that were killed outright; a generation" \
+            "whose owner is still running is never touched"
+    fi
+}
+
+# publish_report
+#   Write the captured report to its durable path in the working tree.
+#
+#   WHY THIS EXISTS.  A review found the gate streaming every verdict it
+#   measured to stdout and then deleting its scratch directory on exit,
+#   so the
+#   acceptance evidence -- the ffprobe readings, the grayscale
+#   statistics, the checkpoint ids, the no-cheat searches -- survived
+#   only in whatever terminal happened to be attached.  Section 0.9 of
+#   the plan is a set of gates whose satisfaction is meant to be
+#   demonstrable rather than asserted, and a verdict nobody can re-read
+#   is an assertion.  This publishes the report AS A TRACKED ARTIFACT so
+#   that "the artifacts were verified" is itself a committed fact.
+#
+#   ONLY A PASSING RUN PUBLISHES.  A failing report is genuinely useful,
+#   but it belongs on the operator's terminal and in the exit status, not
+#   committed to the tree as though it were acceptance evidence -- and
+#   leaving the PREVIOUS passing report in place while the tree is broken
+#   would be worse still, so a failing run REMOVES a stale one rather
+#   than letting it vouch for artifacts it never measured.
+#   NOTHING HERE COUNTS A VERDICT.  publish_report runs after the totals
+#   have been printed, so a record_info at this point would increment a
+#   number the report has already stated and make the report disagree
+#   with its own arithmetic.  Its lines are emitted with a REPORT prefix,
+#   which reads as what it is: an act, not a measurement.
+publish_report() {
+    local target="${PLAYTHROUGH_DIR}/${REPORT_BASENAME}"
+    local lines=""
+    if [ -z "${REPORT_FILE}" ] || [ ! -f "${REPORT_FILE}" ]; then
+        return 0
+    fi
+    if [ "${FAILURES}" -ne 0 ]; then
+        if [ -f "${target}" ]; then
+            "${RM}" -f -- "${target}"
+            printf 'REPORT  %s\n' "removed the stale acceptance \
+report $(rel "${target}"): this run FAILED, and a report from an \
+earlier run must not stand as evidence for the artifacts as they are now"
+        else
+            printf 'REPORT  %s\n' "not published: this run FAILED, \
+and only a passing measurement is acceptance evidence"
+        fi
+        return 0
+    fi
+    # The pre-commit phase measures 106 of the 120 properties by
+    # design -- the fourteen commit-shaped ones cannot hold before the
+    # checkpoint exists -- so it is not the run that gets to publish the
+    # acceptance report.  It says so rather than publishing a partial
+    # one, and it leaves any existing full report alone: a pre-commit run
+    # has found nothing wrong with it.
+    if ! tracking_phase; then
+        printf 'REPORT  %s\n' "not published: phase '${PHASE}' \
+defers the commit-shaped checks, so this run is not a full acceptance \
+measurement. Run '--phase ${PHASE_POST_COMMIT}' after the checkpoint \
+to publish"
+        return 0
+    fi
+    target="$(report_publication_target)"
+    if [ -z "${target}" ]; then
+        printf 'REPORT  not published\n'
+        return 0
+    fi
+    if ! "${CAT}" -- "${REPORT_FILE}" >"${target}" 2>/dev/null; then
+        printf 'REPORT  could not be written to %s\n' \
+            "$(rel "${target}")"
+        return 0
+    fi
+    lines="$("${WC}" -l <"${target}" | "${TR}" -d ' ')"
+    printf 'REPORT  %s\n' "$(rel "${target}") -- ${lines} lines, the \
+full verdict set this run measured, for committing beside the artifacts \
+it judges"
+}
+
+# report_publication_target
+#   The path this run will publish to, or nothing.
+#
+#   ONE PREDICATE, READ TWICE: by summarise_run, so the machine block
+#   names the durable report and the durable report therefore contains
+#   its own path, and by publish_report, which performs the copy.  Two
+#   independent conditions would be a way for the report to name a file
+#   that was never written.
+report_publication_target() {
+    if [ -z "${REPORT_FILE}" ] || [ ! -f "${REPORT_FILE}" ]; then
+        return 1
+    fi
+    if [ "${FAILURES}" -ne 0 ] || ! tracking_phase; then
+        return 1
+    fi
+    printf '%s' "${PLAYTHROUGH_DIR}/${REPORT_BASENAME}"
+}
+
+# measured_commit -- WHICH TREE this report is about.
+#
+# Deliberately a commit and not a clock.  The durable report is a
+# committed artifact, so anything in it that changes without the
+# artifacts changing is churn in the history that carries no
+# information -- and it would additionally make a second verify before a
+# commit fail its own "nothing left uncommitted" check on a file this
+# gate had just dirtied.  A commit id is stable for a given tree, and it
+# says something a timestamp cannot: exactly which evidence was read.
+measured_commit() {
+    local head=""
+    head="$("${GIT}" rev-parse --short=10 HEAD 2>/dev/null || true)"
+    if [ -z "${head}" ]; then
+        printf 'a tree with no commits yet'
+        return 0
+    fi
+    printf 'HEAD %s' "${head}"
 }
 
 
@@ -1119,21 +2055,25 @@ open_scratch() {
 # stop: the remaining groups still run, and the ones that needed the
 # absent tool fail individually and say so.
 # ---------------------------------------------------------------------
+# resolve_tools -- resolve and verify EVERY external command, before the
+# scratch directory exists.
+#
+# It runs first in main(), ahead of open_scratch, because open_scratch is
+# itself built out of mktemp and chmod: resolving after it would leave two
+# of the gate's own tools unverified and invoked by bare name, which is
+# precisely the gap a review found.  Nothing is printed here -- the report
+# has not started -- so the outcome is kept and reported as a verdict by
+# check_tool_inventory in group 1.
 resolve_tools() {
-    local -a wanted=(
-        ffprobe ffmpeg convert identify compare git awk grep sed
-    )
+    local -a wanted=()
+    read -r -a wanted <<<"${REQUIRED_COMMANDS}"
     if playthrough_require_tools "${wanted[@]}"; then
-        record_pass "every command this gate needs is present and \
-verified" "${wanted[*]}"
+        TOOLS_RESOLVED=1
+        TOOLS_DETAIL="${wanted[*]}"
     else
-        record_fail "every command this gate needs is present and \
-verified" \
-            "playthrough_require_tools refused; the reason for each is \
-on stderr" \
-            "ffprobe, ffmpeg, convert, identify, compare, git, awk, \
-grep and sed -- apt: ffmpeg, imagemagick, git, coreutils, grep, sed, \
-mawk -- each owned by this user and not group- or world-writable"
+        TOOLS_RESOLVED=0
+        TOOLS_DETAIL="playthrough_require_tools refused; the reason for \
+each is on stderr"
     fi
     # Whatever was resolved is used; whatever was not falls back to the
     # bare name so that `set -u` cannot trip and the individual checks
@@ -1146,6 +2086,37 @@ mawk -- each owned by this user and not group- or world-writable"
     GIT="${PLAYTHROUGH_BIN_GIT:-git}"
     AWK="${PLAYTHROUGH_BIN_AWK:-awk}"
     GREP="${PLAYTHROUGH_BIN_GREP:-grep}"
+    SED="${PLAYTHROUGH_BIN_SED:-sed}"
+    HEAD="${PLAYTHROUGH_BIN_HEAD:-head}"
+    TAIL="${PLAYTHROUGH_BIN_TAIL:-tail}"
+    TR="${PLAYTHROUGH_BIN_TR:-tr}"
+    SORT="${PLAYTHROUGH_BIN_SORT:-sort}"
+    WC="${PLAYTHROUGH_BIN_WC:-wc}"
+    CAT="${PLAYTHROUGH_BIN_CAT:-cat}"
+    RM="${PLAYTHROUGH_BIN_RM:-rm}"
+    MKTEMP="${PLAYTHROUGH_BIN_MKTEMP:-mktemp}"
+    CHMOD="${PLAYTHROUGH_BIN_CHMOD:-chmod}"
+    FIND="${PLAYTHROUGH_BIN_FIND:-find}"
+    BASENAME="${PLAYTHROUGH_BIN_BASENAME:-basename}"
+    CUT="${PLAYTHROUGH_BIN_CUT:-cut}"
+    TIMEOUT="${PLAYTHROUGH_BIN_TIMEOUT:-timeout}"
+}
+
+# check_tool_inventory -- the verdict on the resolution main() already
+# performed.  Reported in group 1, where a reader looks for it.
+check_tool_inventory() {
+    if [ "${TOOLS_RESOLVED}" -eq 1 ]; then
+        record_pass "every command this gate invokes is present, \
+verified and called by its resolved path" "${TOOLS_DETAIL}"
+        return 0
+    fi
+    record_fail "every command this gate invokes is present, verified \
+and called by its resolved path" \
+        "${TOOLS_DETAIL}" \
+        "${REQUIRED_COMMANDS} -- apt: ffmpeg, imagemagick, git, \
+coreutils, findutils, grep, sed, mawk -- each owned by this user or \
+root and not group- or world-writable, resolved BEFORE the scratch \
+directory is opened because mktemp and chmod are what open it"
 }
 
 # THE IMAGEMAGICK ENTRY POINT.  `convert`, `identify` and `compare` are
@@ -1156,12 +2127,12 @@ mawk -- each owned by this user and not group- or world-writable"
 # is talking to so a reader of the report knows.
 check_imagemagick() {
     local version=""
-    version="$("${CONVERT}" --version 2>/dev/null |
-        head -n 1 || true)"
+    version="$(bounded "${BOUND_PROBE_SECONDS}" "${CONVERT}" --version \
+        2>"$(tool_error_file convert)" | "${HEAD}" -n 1 || true)"
     if [ -z "${version}" ]; then
         record_fail "ImageMagick answers through its classic entry \
 points" \
-            "'${CONVERT}' produced no version banner" \
+            "'${CONVERT}' produced no version banner$(because convert)" \
             "convert, identify and compare callable (apt: imagemagick)"
         return 0
     fi
@@ -1172,7 +2143,7 @@ points" \
 
 check_interpreter() {
     local version=""
-    version="$("${PYTHON}" -B -c \
+    version="$(bounded "${BOUND_PROBE_SECONDS}" "${PYTHON}" -B -c \
         'import sys; print(sys.version.split()[0])' 2>/dev/null || true)"
     if [ -z "${version}" ]; then
         record_fail "the verified interpreter runs" \
@@ -1182,6 +2153,78 @@ check_interpreter() {
     fi
     record_pass "the verified interpreter runs" \
         "${version} at $(rel "${PYTHON}")"
+}
+
+# THE DEPENDENCY CLOSURE, MEASURED RATHER THAN ASSUMED.
+#
+# The check above establishes that an interpreter runs, which a review
+# rightly said is not the closure: it says nothing about whether any of
+# the six declared libraries is installed, at what version, or whether
+# the graph beneath them is intact.  Section 0.9.1's R9 gate is that the
+# requirements file "resolves cleanly", and the exact `==` pins exist so
+# that a release cannot silently change the rendered film while every
+# gate still reports green -- which is precisely what an unmeasured
+# closure allows.
+#
+# The program is env.sh's, not this file's, because run_pipeline.sh must
+# refuse to produce artifacts under a broken closure and two
+# implementations of one assertion is how they come to disagree.  Here it
+# is consumed as five verdicts and one inventory note, through the same
+# channel as every other Python checker.
+check_dependency_closure() {
+    local script="${SCRATCH}/closure.py"
+    if ! playthrough_write_closure_checker "${script}"; then
+        # ONE FAILURE PER DECLARED VERDICT, so a gate that cannot run
+        # this checker reports the same five properties as unmeasured
+        # rather than reporting four fewer checks than it declares.
+        local name=""
+        for name in \
+            "the interpreter is the CPython \
+${PLAYTHROUGH_PYTHON_ABI} the lock was built for" \
+            "the declaration and the lock pin the same versions" \
+            "every declared library is installed at its declared \
+version" \
+            "every declared library imports" \
+            "every installed distribution has its own requirements \
+met"; do
+            record_fail "${name}" \
+                "the shared closure checker could not be written to \
+the scratch directory, so nothing about the closure was measured" \
+                "a writable scratch directory under the runtime root"
+        done
+        return 0
+    fi
+    # NOT run_checker, and for one specific reason: this program EXITS
+    # NON-ZERO when a closure verdict failed, because run_pipeline.sh
+    # needs that status to refuse the run.  run_checker reads any
+    # non-zero exit as a crash of the checker, which would add a spurious
+    # "the closure checks completed" failure on top of every genuine
+    # closure failure.  So a crash is distinguished by its own evidence
+    # instead: a traceback on stderr, or no verdicts at all.
+    local out="${SCRATCH}/closure.verdicts"
+    local err="${SCRATCH}/closure.stderr"
+    local detail=""
+    : >"${out}"
+    : >"${err}"
+    # BOUNDED like every other interpreter child.  The status is
+    # deliberately discarded rather than inspected -- see above for why a
+    # non-zero exit is a closure verdict rather than a crash -- so an
+    # expiry surfaces as the "no verdicts at all" condition below, which
+    # is the honest reading of a closure that could not be measured.
+    bounded "$(checker_bound)" "${PYTHON}" -B "${script}" \
+        "${VERDICT_SEPARATOR}" \
+        "${PLAYTHROUGH_REQUIREMENTS}" \
+        "${PLAYTHROUGH_REQUIREMENTS_LOCK}" \
+        >"${out}" 2>"${err}" || true
+    if [ -s "${err}" ] || [ ! -s "${out}" ]; then
+        detail="$("${TAIL}" -n 3 "${err}" 2>/dev/null |
+            "${TR}" '\n' ' ' || true)"
+        record_fail "the dependency closure was measurable" \
+            "the shared closure checker did not complete: \
+${detail:-<no diagnostic and no verdicts>}" \
+            "a clean run emitting one verdict per closure property"
+    fi
+    consume_verdicts <"${out}"
 }
 
 # THE LINTER, RESOLVED IN FOUR STEPS.  The repository's own contract is a
@@ -1202,38 +2245,96 @@ check_interpreter() {
 # same shape this host uses (/usr/local/bin/flake8 -> a dedicated venv),
 # and why an image without it makes the lint check FAIL rather than
 # quietly not run.
-resolve_flake8() {
-    local version=""
-    # The override is TRIED, not trusted: a PLAYTHROUGH_FLAKE8 that will
-    # not run is reported as an unresolved linter rather than producing a
-    # lint "finding" that is really a shell error, which is what an
-    # unvalidated override was measured to do (exit 127, "No such file").
-    if [ -n "${PLAYTHROUGH_FLAKE8:-}" ] &&
-            "${PLAYTHROUGH_FLAKE8}" --version >/dev/null 2>&1; then
-        FLAKE8_CMD=("${PLAYTHROUGH_FLAKE8}")
-    elif [ -n "${PLAYTHROUGH_FLAKE8:-}" ]; then
-        FLAKE8_CMD=()
-        record_info "the linter" \
-            "PLAYTHROUGH_FLAKE8='${PLAYTHROUGH_FLAKE8}' would not run, \
-so the lint check in group 9 reports it as unresolved"
+# NOTHING IS EXECUTED BEFORE IT IS VERIFIED, INCLUDING THE PROBE.
+#
+# A review found this resolver accepting PLAYTHROUGH_FLAKE8 on the
+# strength of a successful `--version`, which is not a check but the
+# first execution: by the time the exit status came back, an arbitrary
+# path taken from the environment had already run as this user, and it
+# would run again over every file under playthrough/ with its findings
+# read as the repository's lint verdict.  Ownership and writability are
+# the properties that matter and they are knowable WITHOUT running
+# anything, so they are established first, through env.sh's own
+# verifier -- the same one the twenty-three commands in group 1 pass
+# through, so the linter is no longer the single tool held to a weaker
+# standard than `cut`.
+#
+# EACH CANDIDATE IS REDUCED TO THE EXECUTABLE IT WOULD ACTUALLY RUN
+# before that verifier sees it.  For the two module forms the executable
+# is the INTERPRETER -- `flake8` is then an importable module inside it,
+# reachable only by an account that could already rewrite the
+# interpreter's own library -- so the interpreter is what gets verified.
+# A candidate that fails is REFUSED AND NAMED rather than silently
+# skipped: an operator who exported an override is told their override
+# was rejected and why, instead of reading a report that quietly linted
+# with something else.
+verify_flake8_candidate() {
+    local path="$1"
+    local label="$2"
+    if playthrough_verify_executable "${path}" "${label}"; then
         return 0
-    elif command -v flake8 >/dev/null 2>&1; then
-        FLAKE8_CMD=("$(command -v flake8)")
-    elif "${PYTHON}" -B -m flake8 --version >/dev/null 2>&1; then
+    fi
+    FLAKE8_REJECTED="${FLAKE8_REJECTED}${FLAKE8_REJECTED:+; }\
+${label} '${path}' failed executable verification (ownership or \
+writability -- see stderr)"
+    return 1
+}
+
+resolve_flake8() {
+    local version="" candidate=""
+    FLAKE8_REJECTED=""
+    # The override is verified BEFORE it is probed, and a probe failure
+    # after a clean verification is reported as a linter that will not
+    # run rather than as a lint finding -- which is what an unvalidated
+    # override was measured to produce (exit 127, "No such file").
+    if [ -n "${PLAYTHROUGH_FLAKE8:-}" ]; then
+        if verify_flake8_candidate "${PLAYTHROUGH_FLAKE8}" \
+                "PLAYTHROUGH_FLAKE8" &&
+                bounded "${BOUND_PROBE_SECONDS}" \
+                "${PLAYTHROUGH_FLAKE8}" --version \
+                >/dev/null 2>&1; then
+            FLAKE8_CMD=("${PLAYTHROUGH_FLAKE8}")
+        else
+            FLAKE8_CMD=()
+            record_info "the linter" \
+                "PLAYTHROUGH_FLAKE8='${PLAYTHROUGH_FLAKE8}' was not \
+accepted (${FLAKE8_REJECTED:-it would not run}), so the lint check in \
+group 9 reports the linter as unresolved. An override is not a way \
+round verification: point it at an executable this account owns, under \
+directories no other account can write"
+            return 0
+        fi
+    elif candidate="$(command -v flake8 2>/dev/null)" &&
+            [ "${candidate#/}" != "${candidate}" ] &&
+            verify_flake8_candidate "${candidate}" "flake8" &&
+            bounded "${BOUND_PROBE_SECONDS}" \
+            "${candidate}" --version >/dev/null 2>&1; then
+        FLAKE8_CMD=("${candidate}")
+    elif verify_flake8_candidate "${PYTHON}" \
+            "the verified interpreter" &&
+            bounded "${BOUND_PROBE_SECONDS}" \
+            "${PYTHON}" -B -m flake8 --version \
+            >/dev/null 2>&1; then
         FLAKE8_CMD=("${PYTHON}" -B -m flake8)
-    elif command -v python3 >/dev/null 2>&1 &&
-            python3 -B -m flake8 --version >/dev/null 2>&1; then
-        FLAKE8_CMD=(python3 -B -m flake8)
+    elif candidate="$(command -v python3 2>/dev/null)" &&
+            [ "${candidate#/}" != "${candidate}" ] &&
+            verify_flake8_candidate "${candidate}" "python3" &&
+            bounded "${BOUND_PROBE_SECONDS}" \
+            "${candidate}" -B -m flake8 --version \
+            >/dev/null 2>&1; then
+        FLAKE8_CMD=("${candidate}" -B -m flake8)
     else
         FLAKE8_CMD=()
         record_info "the linter" \
-            "not resolved -- the lint check in group 9 reports it"
+            "not resolved${FLAKE8_REJECTED:+ (${FLAKE8_REJECTED})} -- \
+the lint check in group 9 reports it"
         return 0
     fi
-    version="$("${FLAKE8_CMD[@]}" --version 2>/dev/null |
-        tr '\n' ' ' || true)"
+    version="$(bounded "${BOUND_PROBE_SECONDS}" "${FLAKE8_CMD[@]}" \
+        --version 2>/dev/null | "${TR}" '\n' ' ' || true)"
     record_info "the linter" \
-        "${FLAKE8_CMD[*]} -- ${version:-version unavailable}"
+        "${FLAKE8_CMD[*]} -- ${version:-version unavailable}\
+${FLAKE8_REJECTED:+ (after refusing: ${FLAKE8_REJECTED})}"
 }
 
 # THE TRUST STATE, SPLIT BY WHAT EACH BYPASS ACTUALLY ENDANGERS.
@@ -1435,10 +2536,11 @@ embed_captions.sh) produce the generated ones"
 }
 
 group_environment() {
-    group "the measuring environment"
-    resolve_tools
+    group 1 "the measuring environment"
+    check_tool_inventory
     check_imagemagick
     check_interpreter
+    check_dependency_closure
     resolve_flake8
     check_trust_state
     check_video_driver
@@ -1515,48 +2617,215 @@ def summarise(items, limit=6):
     return shown
 
 
+# HOW MANY FINDINGS ONE VERDICT COLLECTS.
+#
+# The record is one row per keystroke and the session length is
+# deliberately unbounded, so a record broken at every row -- a schema
+# change, a regenerated file, a whole session re-recorded -- would
+# otherwise put one diagnostic string per keystroke into memory to
+# explain a failure whose first example already explains it.
+PROBLEM_LIMIT = 200
+
+
+def note_problem(problems, text, limit=PROBLEM_LIMIT):
+    """Collect a finding, bounded.
+
+    Past the limit a single line records that collection stopped, so a
+    verdict never claims to be exhaustive when it is not.
+    """
+    if len(problems) < limit:
+        problems.append(text)
+        return
+    if len(problems) == limit:
+        problems.append("... further findings were not collected; the "
+                        "%d above are the ones this verdict carries"
+                        % limit)
+
+
+class RowIndex(object):
+    """The one compact projection of the record this checker keeps.
+
+    THE RECORD IS STREAMED, one line at a time, and no row survives the
+    iteration that read it -- see main() for why.  Two later checks
+    nevertheless ask questions ACROSS rows: the timeline's copy of each
+    row must agree with the row (real_ts and the clock reading), and the
+    capture-digest sidecar's attestation must sit just after its row's
+    instant.  Both are keyed by frame number.
+
+    So exactly three values per row are kept -- the parsed instant, the
+    timestamp as written, and the clock reading -- and nothing else.  A
+    row of the record is about a kilobyte of interpreter objects; an
+    entry here is a tuple of two short strings and a float, which is what
+    makes "one entry per keystroke" affordable at a session length nobody
+    has bounded.  The row's action and commentary, which are the bulk of
+    it, are read, judged and dropped as they stream past.
+    """
+
+    __slots__ = ("moments", "order")
+
+    def __init__(self):
+        self.moments = {}
+        self.order = []
+
+    def add(self, frame, line_number, moment, written, clock):
+        self.moments[frame] = (moment, written, clock)
+        self.order.append((frame, line_number))
+
+    def __len__(self):
+        return len(self.order)
+
+    def instant(self, frame):
+        entry = self.moments.get(frame)
+        return None if entry is None else entry[0]
+
+    def written(self, frame):
+        entry = self.moments.get(frame)
+        return None if entry is None else entry[1]
+
+    def clock(self, frame):
+        entry = self.moments.get(frame)
+        return None if entry is None else entry[2]
+
+    def has(self, frame):
+        return frame in self.moments
+
+
 def main(argv):
     (manifest_path, frames_dir, tooling_dir, facts_path, timeline_path,
-     digests_path) = argv[1:7]
+     digests_path, in_game_path) = argv[1:8]
     sys.path.insert(0, tooling_dir)
     import manifest as mf
 
     facts = open(facts_path, "a", encoding="utf-8")
 
-    # --- the record ---------------------------------------------------
-    with open(manifest_path, "r", encoding="utf-8") as handle:
-        lines = handle.read().splitlines()
-    rows = []
+    # --- the record, STREAMED -----------------------------------------
+    #
+    # It used to be read whole -- read().splitlines() -- and then held
+    # twice over: the raw lines, and a parsed dict per row.  One row per
+    # keystroke at ~1 kB of interpreter objects means a hundred thousand
+    # keystrokes is hundreds of megabytes resident on a host with under
+    # four gigabytes, for a walk that never looks backwards.
+    #
+    # So every property below is decided as its row arrives: the counters
+    # accumulate, the findings are bounded, and the only thing that
+    # outlives a row is the three-value projection in RowIndex that two
+    # cross-artifact checks genuinely need.
+    wanted = tuple(mf.FIELDS)
+    line_count = 0
+    rows = 0
     unparsable = []
-    key_order = []
-    for number, line in enumerate(lines, 1):
-        if not line.strip():
-            unparsable.append("line %d is blank" % number)
-            continue
-        try:
-            pairs = json.loads(line, object_pairs_hook=lambda kv: kv)
-        except ValueError as err:
-            unparsable.append("line %d: %s" % (number, err))
-            continue
-        if not isinstance(pairs, list):
-            unparsable.append("line %d is not a JSON object" % number)
-            continue
-        key_order.append(tuple(k for k, _ in pairs))
-        rows.append((number, dict(pairs)))
+    wrong_keys = []
+    empty = []
+    mislabelled = []
+    numbering = []
+    index = RowIndex()
+    stamps_unparsable = []
+    backwards = []
+    previous_instant = None
+    previous_written = None
+    oldest = None
+    newest = None
+    usable_stamps = 0
+    clock_kinds = {}
+    # WHICH CAPTURES SHOW THE GAME BEING PLAYED, WRITTEN AS A FILE.
+    #
+    # A frame whose sidebar clock was legible is a frame of the play
+    # screen rather than of a menu, a loading screen or the character
+    # creator, and group 9's colour-depth reading needs exactly that
+    # distinction: an ASCII session's menus and a tiles session's menus
+    # look alike, and only the map is drawn from the tileset.
+    #
+    # It used to be published as a fact -- one KEY=value line holding a
+    # comma-separated list of every in-game frame -- which the shell then
+    # read into a variable and piped twice.  One index per keystroke in a
+    # single line is a fact whose length is the session's, and a value of
+    # that shape is one argument away from MAX_ARG_STRLEN.  One index per
+    # LINE in the scratch generation is bounded by the disk and is
+    # sampled by line number without any of it being held.
+    in_game = open(in_game_path, "w", encoding="utf-8")
+    referenced = 0
+    with open(manifest_path, "r", encoding="utf-8") as handle:
+        for number, raw in enumerate(handle, 1):
+            line_count = number
+            line = raw.rstrip("\n")
+            if not line.strip():
+                note_problem(unparsable, "line %d is blank" % number)
+                continue
+            try:
+                pairs = json.loads(line, object_pairs_hook=lambda kv: kv)
+            except ValueError as err:
+                note_problem(unparsable, "line %d: %s" % (number, err))
+                continue
+            if not isinstance(pairs, list):
+                note_problem(unparsable,
+                             "line %d is not a JSON object" % number)
+                continue
+            if tuple(k for k, _ in pairs) != wanted:
+                note_problem(wrong_keys, str(number))
+            row = dict(pairs)
+            rows += 1
+            for field in ("action", "commentary"):
+                value = row.get(field)
+                if not isinstance(value, str) or not value.strip():
+                    note_problem(empty, "row %d %s" % (number, field))
+            frame = row.get("frame")
+            if frame != rows:
+                note_problem(numbering, "position %d carries %r"
+                             % (rows, frame))
+            try:
+                canonical = mf.frame_file(frame)
+            except Exception as err:                 # noqa: BLE001
+                canonical = None
+                note_problem(mislabelled, "frame %r: %s" % (frame, err))
+            if canonical is not None and row.get("file") != canonical:
+                note_problem(mislabelled, "%r != %s"
+                             % (row.get("file"), canonical))
+            if row.get("file"):
+                referenced += 1
+            # --- when it was taken ---------------------------------
+            written = row.get("real_ts")
+            moment = parse_instant(written)
+            if moment is None:
+                note_problem(stamps_unparsable,
+                             "row %d: %r" % (number, written))
+            else:
+                usable_stamps += 1
+                if previous_instant is not None and \
+                        moment < previous_instant:
+                    note_problem(backwards,
+                                 "row %d is %s, after %s"
+                                 % (number, written, previous_written))
+                previous_instant = moment
+                previous_written = written
+                if oldest is None or moment < oldest[0]:
+                    oldest = (moment, number, written)
+                if newest is None or moment > newest[0]:
+                    newest = (moment, number, written)
+            index.add(frame, number, moment, written,
+                      row.get("ingame_clock"))
+            # --- the clock reading, as honesty ----------------------
+            value = row.get("ingame_clock")
+            if value is None:
+                kind = "not readable (null)"
+            elif isinstance(value, str) and CLOCK_RE.match(value):
+                kind = "exact"
+                if isinstance(frame, int):
+                    in_game.write("%d\n" % frame)
+            else:
+                kind = "verbatim coarse phrase"
+            clock_kinds[kind] = clock_kinds.get(kind, 0) + 1
+    in_game.close()
 
     if unparsable:
         bad("the record parses as one JSON object per line",
             summarise(unparsable),
-            "%d lines, each a JSON object" % len(lines))
+            "%d lines, each a JSON object" % line_count)
     else:
         ok("the record parses as one JSON object per line",
-           "%d rows" % len(rows))
+           "%d rows" % rows)
 
     # EXACTLY the six documented keys, IN ORDER, and no extras.  The
     # tuple is manifest.py's own, so this cannot drift from the producer.
-    wanted = tuple(mf.FIELDS)
-    wrong_keys = [rows[i][0] for i, order in enumerate(key_order)
-                  if order != wanted]
     if wrong_keys:
         bad("every row carries exactly the six documented keys, in "
             "order, and no others",
@@ -1567,48 +2836,35 @@ def main(argv):
         ok("every row carries exactly the six documented keys, in "
            "order, and no others", ", ".join(wanted))
 
-    empty = []
-    for number, row in rows:
-        for field in ("action", "commentary"):
-            value = row.get(field)
-            if not isinstance(value, str) or not value.strip():
-                empty.append("row %d %s" % (number, field))
+    # NON-EMPTINESS, NAMED AS NON-EMPTINESS.  This verdict used to be
+    # called "every row records what was pressed and why", which read as
+    # a verdict on the narration -- and it is not one: "Swing." against
+    # the action `press '2' -- swing` is non-empty and explains nothing.
+    # The rationale contract is the check below; this one is the floor
+    # beneath it and now says only what it measures.  The offending rows
+    # are collected by the streaming walk above, one row at a time, so
+    # nothing is held to answer it.
     if empty:
-        bad("every row records what was pressed and why",
+        bad("every row carries an action and a sentence about it",
             summarise(empty),
             "a non-empty action and a non-empty commentary on all "
-            "%d rows" % len(rows))
+            "%d rows" % rows)
     else:
-        ok("every row records what was pressed and why",
-           "%d actions and %d commentaries, none empty"
-           % (len(rows), len(rows)))
+        ok("every row carries an action and a sentence about it",
+           "%d actions and %d commentaries, none empty" % (rows, rows))
 
-    numbers = [row.get("frame") for _, row in rows]
-    expected_numbers = list(range(1, len(rows) + 1))
-    if numbers != expected_numbers:
-        first_bad = next(
-            (i + 1 for i, (a, b) in
-             enumerate(zip(numbers, expected_numbers)) if a != b),
-            min(len(numbers), len(expected_numbers)) + 1)
+    check_rationale(manifest_path, timeline_path)
+
+    if numbering:
         bad("the record's frame numbers are 1-based and contiguous",
-            "first divergence at position %d (%r)"
-            % (first_bad, numbers[first_bad - 1:first_bad]),
-            "1 .. %d with no gap and no repeat" % len(rows))
+            "first divergence at %s" % summarise(numbering),
+            "1 .. %d with no gap and no repeat" % rows)
     else:
         ok("the record's frame numbers are 1-based and contiguous",
-           "1 .. %d" % len(rows) if rows else "no rows")
+           "1 .. %d" % rows if rows else "no rows")
 
     # Each row must name ITS OWN frame, formatted from its own index by
     # the producer's own formatter.
-    mislabelled = []
-    for _, row in rows:
-        try:
-            canonical = mf.frame_file(row.get("frame"))
-        except Exception as err:                     # noqa: BLE001
-            mislabelled.append("frame %r: %s" % (row.get("frame"), err))
-            continue
-        if row.get("file") != canonical:
-            mislabelled.append("%r != %s" % (row.get("file"), canonical))
     if mislabelled:
         bad("every row names its own capture canonically",
             summarise(mislabelled),
@@ -1616,14 +2872,270 @@ def main(argv):
             "own frame number")
     else:
         ok("every row names its own capture canonically",
-           "%d rows match %s" % (len(rows), mf.FRAME_FILE_FORMAT))
+           "%d rows match %s" % (rows, mf.FRAME_FILE_FORMAT))
 
-    check_timestamps(rows, timeline_path, digests_path)
+    check_timestamps(index, rows, stamps_unparsable, backwards,
+                     usable_stamps, oldest, newest, timeline_path,
+                     digests_path)
 
-    return finish(rows, len(lines), frames_dir, facts)
+    return finish(index, rows, line_count, referenced, clock_kinds,
+                  frames_dir, facts)
 
 
-def check_timestamps(rows, timeline_path, digests_path):
+# ---------------------------------------------------------------------
+# THE RATIONALE CONTRACT
+#
+# The requirement is that every entry says WHY the survivor pressed the
+# key, and "why" is not a property a program can read out of a sentence.
+# What a program CAN do is falsify the ways a sentence fails to be one,
+# and the review that raised this found the exact failures by hand:
+# "Swing." beside `press '2' -- swing`, and "Again." repeated down a run
+# of eleven keystrokes.  Both were reported as satisfying the
+# requirement, because the only thing measured was that the string was
+# not empty.
+#
+# THE SUBJECT IS THE ENTRY'S WHOLE NARRATION -- the action's own note AND
+# the commentary -- and that is a correction made by measurement rather
+# than a relaxation.  The contract was first written against a record
+# whose action notes were mechanical (`press '2' -- swing`), so
+# "commentary that adds no word its action does not carry" was a fair
+# proxy for "commentary that explains nothing".  Measured against a
+# record whose notes are themselves written in the survivor's voice --
+# `press 'Up' -- north one step, there is a back door in this wall`
+# beside "North one step.  There is a back door in this wall." -- the
+# same proxy reports 37 entries that plainly do give a reason, because
+# the reason is in both fields rather than split across them.  A gate
+# that manufactures findings against a correct record is the one thing an
+# acceptance gate must never do, so the properties are asserted over the
+# union of the two fields, which is what the reader of the record gets.
+#
+# WHAT IS A FAILURE, and what is REPORTED for a human to judge:
+#
+#   FAIL  the narration carries no word beyond the key that was pressed
+#         -- an entry that names the keystroke and nothing else accounts
+#         for nothing, whichever field it is written in;
+#   FAIL  the narration does not close as a sentence.
+#
+#   WARN  the narration is a single word ("Swing.", "West.", "Again."),
+#   WARN  or it repeats the previous three entries' sentence verbatim.
+#
+# The last two are the class the review demonstrated, and they are
+# REPORTED WITH EVERY FRAME NUMBER rather than failed, for the reason
+# this file's own PASS text has always given: whether a short sentence is
+# a REASON is not machine-decidable, and three words can be a complete
+# reason where thirty are padding.  "West." on the eighth step west is
+# the survivor's whole thought; the same word standing in for a reason
+# nobody wrote is a shortfall against R7.  A program cannot separate
+# those two, so it counts them, names them, and leaves the judgement to
+# the reader -- and the count is published in the acceptance report and
+# stated in playthrough/REPORT.md and TECHNICAL_NOTES.md, which is what
+# makes the shortfall disclosed rather than hidden.  A record made
+# entirely of labels would therefore not fail here; it would arrive with
+# every one of its entries named, which no reader could miss.
+#
+# THE SUBJECT IS THE EFFECTIVE NARRATION.  The record is append-only, so
+# a sentence corrected after the fact is corrected in
+# playthrough/amendments.jsonl and applied by manifest.resolve_rows();
+# the timeline carries the result.  Judging the raw rows would report a
+# ledger-corrected entry as still broken, so the timeline's narration is
+# used when it is readable and the raw record only when it is not.
+#
+# IT IS STREAMED, like every other population this checker walks.  The
+# narration arrives one entry at a time -- from the timeline through its
+# producer's own event reader, or from the record line by line -- and the
+# only things that outlive an entry are the three-sentence window the
+# repeat property needs and the five thinnest entries the closing note
+# names.
+RATIONALE_WORD_RE = re.compile(r"[0-9a-z']+")
+RATIONALE_SENTENCE_END = (".", "!", "?", "\u2026", '"', ")")
+RATIONALE_WINDOW = 3
+RATIONALE_THINNEST = 5
+RATIONALE_KEY_RE = re.compile(r"^press '([^']+)'")
+
+
+def rationale_words(text):
+    """The comparable words of one sentence, lowercased."""
+    return RATIONALE_WORD_RE.findall(text.lower())
+
+
+def action_note(action):
+    """The survivor's own note out of the action, without the key."""
+    return action.split(" -- ", 1)[1] if " -- " in action else ""
+
+
+def pressed_key(action):
+    """The key the action names, or "" when it names none."""
+    match = RATIONALE_KEY_RE.match(action)
+    return match.group(1) if match else ""
+
+
+def is_key_transcription(action, commentary):
+    """The commentary is the pressed character, written down.
+
+    A run of keystrokes that spells a word into a search filter is
+    recorded one character per frame, and the entry's commentary is that
+    character.  It is a TRANSCRIPTION of the keystroke rather than a
+    claim about motive, so it is counted as its own class instead of
+    being reported as a one-word reason: the reason for the run belongs
+    to the entry that opens it.
+    """
+    key = pressed_key(action)
+    if len(key) != 1:
+        return False
+    return commentary.strip().rstrip(".").lower() == key.lower()
+
+
+def timeline_narration(timeline_path):
+    """A streaming iterator over the timeline's narration, or None.
+
+    None means the effective narration could not be read at all -- an
+    unimportable producer, an unreadable document, an empty one -- and
+    the caller then judges the raw record and says so.  The first entry
+    is pulled here so that "unreadable" is decided before any verdict is
+    formed from a half-walk.
+    """
+    try:
+        import timeline as tl
+        iterator = tl.iter_timeline_frames(timeline_path)
+        first = next(iterator, None)
+    except Exception:                                 # noqa: BLE001
+        return None
+    if first is None:
+        return None
+
+    def walk(entry=first):
+        while entry is not None:
+            if isinstance(entry, dict):
+                yield (entry.get("frame"),
+                       entry.get("action") or "",
+                       entry.get("commentary") or "")
+            try:
+                entry = next(iterator)
+            except StopIteration:
+                entry = None
+            except Exception:                         # noqa: BLE001
+                entry = None
+    return walk()
+
+
+def record_narration(manifest_path):
+    """A streaming iterator over the record's own narration."""
+    with open(manifest_path, "r", encoding="utf-8") as handle:
+        for raw in handle:
+            line = raw.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(row, dict):
+                continue
+            yield (row.get("frame"), row.get("action") or "",
+                   row.get("commentary") or "")
+
+
+def check_rationale(manifest_path, timeline_path):
+    """Every entry is a sentence of its own about its own keystroke."""
+    narration = timeline_narration(timeline_path)
+    if narration is None:
+        narration = record_narration(manifest_path)
+        subject = ("the record as written -- the timeline was not "
+                   "readable, so no ledger correction could be applied")
+    else:
+        subject = ("the effective narration: the record with "
+                   "playthrough/amendments.jsonl applied")
+
+    offences = []
+    thin = []
+    repeats = []
+    recent = []
+    thinnest = []
+    measured = 0
+    transcriptions = 0
+    for index, action, commentary in narration:
+        if not isinstance(action, str) or not isinstance(commentary, str):
+            continue
+        if not commentary.strip():
+            continue
+        measured += 1
+        note = action_note(action)
+        key = pressed_key(action)
+        # The union of the two fields, which is what a reader gets.
+        words = rationale_words(commentary) + rationale_words(note)
+        distinct = set(words)
+        beyond_key = distinct - set(rationale_words(key))
+        normalised = " ".join(rationale_words(commentary))
+        # BOUNDED: the five thinnest entries are kept, not all of them.
+        thinnest.append((len(distinct), index, commentary))
+        thinnest.sort()
+        del thinnest[RATIONALE_THINNEST:]
+        if not beyond_key:
+            note_problem(
+                offences,
+                "frame %s says %r against the note %r, which is the key "
+                "and nothing else" % (index, commentary, note))
+        elif not commentary.rstrip().endswith(RATIONALE_SENTENCE_END):
+            note_problem(
+                offences,
+                "frame %s says %r, which does not close as a sentence"
+                % (index, commentary))
+        elif is_key_transcription(action, commentary):
+            transcriptions += 1
+        elif len(distinct) < 2:
+            note_problem(thin, "frame %s: %r" % (index, commentary))
+        elif normalised and normalised in recent:
+            note_problem(repeats, "frame %s: %r" % (index, commentary))
+        recent.append(normalised)
+        if len(recent) > RATIONALE_WINDOW:
+            recent.pop(0)
+
+    if offences:
+        bad("no entry is only the key that produced it",
+            summarise(offences),
+            "every entry a closed sentence carrying at least one word "
+            "beyond the key pressed, in its note or its commentary -- "
+            "correct an entry through playthrough/amendments.jsonl, "
+            "which is appended to rather than editing the record")
+    else:
+        ok("no entry is only the key that produced it",
+           "%d entr(ies) measured against %s: each closes as a sentence "
+           "and each carries at least one word beyond its own keystroke, "
+           "%d of them a single character transcribed from a spelling "
+           "run.  This is the falsifiable half of the requirement; that "
+           "what the entry adds is a REASON is not machine-decidable and "
+           "is not claimed here"
+           % (measured, subject, transcriptions))
+
+    # THE SHORTFALL, COUNTED AND NAMED RATHER THAN FAILED.  See the
+    # header above for why this is a WARN: a program cannot tell a
+    # one-word reason from a one-word placeholder, so both are published.
+    if thin or repeats:
+        verdict("WARN",
+                "entries whose narration is a single word or repeats the "
+                "one before it",
+                "%d single-word entr(ies)%s; %d entr(ies) repeating a "
+                "sentence used within the previous %d%s -- R7 asks for "
+                "commentary explaining WHY, and these are the entries a "
+                "reader has to judge for themselves.  The shortfall is "
+                "stated in playthrough/REPORT.md and "
+                "playthrough/TECHNICAL_NOTES.md rather than left here"
+                % (len(thin),
+                   (": " + summarise(thin)) if thin else "",
+                   len(repeats), RATIONALE_WINDOW,
+                   (": " + summarise(repeats)) if repeats else ""))
+
+    # The thinnest entries, named so a reader can judge the half no
+    # program can.  Reported without a verdict attached on purpose: three
+    # words can be a complete reason and thirty can be padding.
+    info("the thinnest entries in the record, for a reader to judge",
+         "; ".join("frame %s %r" % (index, text)
+                   for _, index, text in thinnest)
+         if thinnest else "no entries")
+
+
+def check_timestamps(index, rows, unparsable, backwards, usable,
+                     oldest, newest, timeline_path, digests_path):
     """When each capture was taken, asserted rather than assumed.
 
     real_ts is one of the six mandated fields and it exists for exactly
@@ -1656,55 +3168,42 @@ def check_timestamps(rows, timeline_path, digests_path):
          after the keystroke that produced it, so this is a second,
          independently produced witness to the same instant.
     """
-    stamps = []
-    unparsable = []
-    for number, row in rows:
-        value = row.get("real_ts")
-        moment = parse_instant(value)
-        if moment is None:
-            unparsable.append("row %d: %r" % (number, value))
-            continue
-        stamps.append((row.get("frame"), number, moment, value))
-
-    backwards = []
-    for (_, number, moment, value), (_, _, previous, before) in zip(
-            stamps[1:], stamps[:-1]):
-        if moment < previous:
-            backwards.append("row %d is %s, after %s" % (number, value,
-                                                         before))
+    # THE VALUES WERE JUDGED AS THEY STREAMED PAST.  main() parsed each
+    # instant once, compared it with its predecessor, and kept the
+    # extremes; what arrives here are the findings and the four numbers
+    # those comparisons produced.  Nothing is re-derived, and no list of
+    # one entry per keystroke is held to derive it from.
     if unparsable or backwards:
         bad("every row records when its capture was taken, and the "
             "record never goes backwards",
             summarise(unparsable + backwards),
             "%d ISO-8601 instants in non-decreasing order -- real_ts is "
             "what makes a frame traceable to the moment it was taken"
-            % len(rows))
+            % rows)
     else:
         ok("every row records when its capture was taken, and the "
            "record never goes backwards",
            "%d instants from %s to %s, none out of order"
-           % (len(stamps), stamps[0][3] if stamps else "-",
-              stamps[-1][3] if stamps else "-"))
+           % (usable, oldest[2] if oldest else "-",
+              newest[2] if newest else "-"))
 
-    if len(stamps) >= 2:
+    if usable >= 2 and oldest is not None and newest is not None:
         # MIN AND MAX, not first and last.  The ordering check above
         # already reads them in sequence; measuring the WIDTH from the
         # extremes means a single out-of-window value is caught here on
         # its own terms even when it sits in the middle of the record.
-        oldest = min(stamps, key=lambda item: item[2])
-        newest = max(stamps, key=lambda item: item[2])
-        span = newest[2] - oldest[2]
+        span = newest[0] - oldest[0]
         problems = []
         if span <= 0:
             problems.append("the span is %.3f s" % span)
         if span > MAX_SESSION_SECONDS:
             problems.append("the widest span is %.1f days, between row "
                             "%d (%s) and row %d (%s)"
-                            % (span / 86400.0, oldest[1], oldest[3],
-                               newest[1], newest[3]))
-        if oldest[2] < EARLIEST_PLAUSIBLE:
+                            % (span / 86400.0, oldest[1], oldest[2],
+                               newest[1], newest[2]))
+        if oldest[0] < EARLIEST_PLAUSIBLE:
             problems.append("row %d claims %s, which predates this "
-                            "pipeline" % (oldest[1], oldest[3]))
+                            "pipeline" % (oldest[1], oldest[2]))
         if problems:
             bad("the record's real-time span is one plausible session",
                 ", ".join(problems),
@@ -1719,11 +3218,11 @@ def check_timestamps(rows, timeline_path, digests_path):
                % (span / 3600.0))
     else:
         bad("the record's real-time span is one plausible session",
-            "%d usable timestamp(s)" % len(stamps),
+            "%d usable timestamp(s)" % usable,
             "at least two, so a span exists to judge")
 
-    check_timeline_timestamps(rows, timeline_path)
-    check_attestations(stamps, digests_path)
+    check_timeline_timestamps(index, timeline_path)
+    check_attestations(index, digests_path)
 
 
 def parse_instant(value):
@@ -1749,73 +3248,106 @@ def parse_instant(value):
     return moment.timestamp()
 
 
-def check_timeline_timestamps(rows, timeline_path):
-    """The timeline's copy of each row, against the row itself."""
+def check_timeline_timestamps(index, timeline_path):
+    """The timeline's copy of each row, against the row itself.
+
+    STREAMED, AND COMPARED INCREMENTALLY.  The timeline document used to
+    be loaded whole here -- a second complete population beside the
+    record's own -- and the "in the record and not in the timeline" list
+    was then built with a set comprehension INSIDE the loop condition, so
+    the set of every timeline frame was rebuilt once per record row: an
+    O(N**2) walk that at a hundred thousand keystrokes is ten billion
+    comparisons for a diagnosis nobody had asked for yet.
+
+    Now the entries arrive one at a time from the producer's own event
+    reader, each is compared against its row as it arrives, and the
+    frames seen are counted into ONE set built once -- so the missing
+    side is a single set difference rather than a nested scan.
+    """
     try:
-        with open(timeline_path, "r", encoding="utf-8") as handle:
-            document = json.load(handle)
-    except (OSError, ValueError) as err:
+        import timeline as tl
+    except Exception as err:                          # noqa: BLE001
+        bad("the timeline's per-frame timestamps are the record's own",
+            "timeline.py could not be imported: %s" % err,
+            "the producer's own reader, so the reader of these bytes "
+            "cannot drift from the writer of them")
+        return
+    problems = []
+    compared = 0
+    entries = 0
+    seen = set()
+    try:
+        for entry in tl.iter_timeline_frames(timeline_path):
+            entries += 1
+            if not isinstance(entry, dict):
+                note_problem(problems, "an entry that is not an object")
+                continue
+            frame = entry.get("frame")
+            seen.add(frame)
+            if not index.has(frame):
+                note_problem(problems,
+                             "frame %r is in the timeline and not in "
+                             "the record" % frame)
+                continue
+            compared += 1
+            if entry.get("real_ts") != index.written(frame):
+                note_problem(problems,
+                             "frame %r real_ts: the timeline says %r, "
+                             "the record says %r"
+                             % (frame, entry.get("real_ts"),
+                                index.written(frame)))
+            if entry.get("ingame_clock") != index.clock(frame):
+                note_problem(problems,
+                             "frame %r ingame_clock: the timeline says "
+                             "%r, the record says %r"
+                             % (frame, entry.get("ingame_clock"),
+                                index.clock(frame)))
+    except Exception as err:                          # noqa: BLE001
         bad("the timeline's per-frame timestamps are the record's own",
             str(err), "a readable timeline to compare against")
         return
-    entries = document.get("frames") if isinstance(document, dict) \
-        else document
-    if not isinstance(entries, list) or not entries:
+    if not entries:
         bad("the timeline's per-frame timestamps are the record's own",
             "the timeline carries no frames array",
             "one entry per row, each naming the same instant")
         return
-    by_frame = {}
-    for _, row in rows:
-        by_frame[row.get("frame")] = row
-    problems = []
-    compared = 0
-    for entry in entries:
-        if not isinstance(entry, dict):
-            problems.append("an entry that is not an object")
-            continue
-        frame = entry.get("frame")
-        row = by_frame.get(frame)
-        if row is None:
-            problems.append("frame %r is in the timeline and not in the "
-                            "record" % frame)
-            continue
-        compared += 1
-        for field in ("real_ts", "ingame_clock"):
-            if entry.get(field) != row.get(field):
-                problems.append(
-                    "frame %r %s: the timeline says %r, the record says "
-                    "%r" % (frame, field, entry.get(field),
-                            row.get(field)))
-    missing = [frame for frame in by_frame
-               if frame not in {e.get("frame") for e in entries
-                                if isinstance(e, dict)}]
-    for frame in sorted(missing, key=lambda f: (f is None, f)):
-        problems.append("frame %r is in the record and not in the "
-                        "timeline" % frame)
+    for frame in sorted(index.moments.keys() - seen,
+                        key=lambda f: (f is None, f)):
+        note_problem(problems, "frame %r is in the record and not in "
+                               "the timeline" % frame)
     if problems:
         bad("the timeline's per-frame timestamps are the record's own",
             summarise(problems),
             "%d entries agreeing with their rows on real_ts and on the "
             "clock reading -- action and commentary may differ, because "
             "the amendment ledger corrects those in the timeline while "
-            "the record stays immutable" % len(entries))
+            "the record stays immutable" % entries)
         return
     ok("the timeline's per-frame timestamps are the record's own",
        "%d entries agree with their rows on real_ts and on the clock "
        "reading" % compared)
 
 
-def check_attestations(stamps, digests_path):
-    """The digest sidecar's own attestation, against the record."""
+def check_attestations(index, digests_path):
+    """The digest sidecar's own attestation, against the record.
+
+    STREAMED AND COMPARED IN ONE PASS.  The sidecar used to be parsed
+    into a dict of every attestation first, and the record's own list of
+    every instant was then walked against it -- two complete populations
+    resident to compare them pairwise.  Each row is judged as it arrives
+    against the projection the record walk kept, and the frames attested
+    are counted into one set so the unattested side is a set difference.
+    """
     if not os.path.exists(digests_path):
         bad("each capture was hashed just after the row that recorded "
             "it", "%s is not there" % digests_path,
             "the capture-digest sidecar, whose attested_ts is the second "
             "witness to when each frame was taken")
         return
-    attested = {}
-    malformed = []
+    problems = []
+    attested = set()
+    compared = 0
+    widest = 0.0
     try:
         with open(digests_path, "r", encoding="utf-8") as handle:
             for number, line in enumerate(handle, 1):
@@ -1824,37 +3356,45 @@ def check_attestations(stamps, digests_path):
                 try:
                     row = json.loads(line)
                 except ValueError as err:
-                    malformed.append("line %d: %s" % (number, err))
+                    note_problem(problems, "line %d: %s" % (number, err))
                     continue
-                moment = parse_instant(row.get("attested_ts"))
+                written = row.get("attested_ts")
+                moment = parse_instant(written)
                 if moment is None:
-                    malformed.append("line %d attests %r"
-                                     % (number, row.get("attested_ts")))
+                    note_problem(problems, "line %d attests %r"
+                                 % (number, written))
                     continue
-                attested[row.get("frame")] = (moment,
-                                              row.get("attested_ts"))
+                frame = row.get("frame")
+                attested.add(frame)
+                recorded = index.instant(frame)
+                if recorded is None:
+                    # An attestation for a frame the record does not
+                    # carry a usable instant for is not a comparison this
+                    # check can make; the record's own verdict above
+                    # reports the unparsable value.
+                    continue
+                compared += 1
+                delta = moment - recorded
+                if delta < 0:
+                    note_problem(problems,
+                                 "frame %r was attested %s, BEFORE its "
+                                 "row's %s"
+                                 % (frame, written, index.written(frame)))
+                elif delta > ATTESTATION_WINDOW_SECONDS:
+                    note_problem(problems,
+                                 "frame %r was attested %.1f s after "
+                                 "its row" % (frame, delta))
+                elif delta > widest:
+                    widest = delta
     except OSError as err:
         bad("each capture was hashed just after the row that recorded "
             "it", str(err), "a readable capture-digest sidecar")
         return
-    problems = list(malformed)
-    compared = 0
-    widest = 0.0
-    for frame, number, moment, value in stamps:
-        entry = attested.get(frame)
-        if entry is None:
-            problems.append("frame %r has no attestation" % frame)
+    for frame in sorted(index.moments.keys() - attested,
+                        key=lambda f: (f is None, f)):
+        if index.instant(frame) is None:
             continue
-        compared += 1
-        delta = entry[0] - moment
-        if delta < 0:
-            problems.append("frame %r was attested %s, BEFORE its row's "
-                            "%s" % (frame, entry[1], value))
-        elif delta > ATTESTATION_WINDOW_SECONDS:
-            problems.append("frame %r was attested %.1f s after its row"
-                            % (frame, delta))
-        elif delta > widest:
-            widest = delta
+        note_problem(problems, "frame %r has no attestation" % frame)
     if problems:
         bad("each capture was hashed just after the row that recorded "
             "it", summarise(problems),
@@ -1863,24 +3403,42 @@ def check_attestations(stamps, digests_path):
             "row, or hours after it, means one of the two was written "
             "from something other than the session"
             % (ATTESTATION_WINDOW_SECONDS,
-               stamps[0][1] if stamps else 0))
+               index.order[0][1] if index.order else 0))
         return
     ok("each capture was hashed just after the row that recorded it",
        "%d attestations, every one at or after its row and within "
        "%.1f s of it" % (compared, widest))
 
 
-def finish(rows, line_count, frames_dir, facts):
-    """The disk half: what is in frames/, and does it pair with rows."""
+def finish(index, rows, line_count, referenced, clock_kinds, frames_dir,
+           facts):
+    """The disk half: what is in frames/, and does it pair with rows.
+
+    The directory is walked ONCE, with os.scandir, and nothing
+    proportional to the session survives that walk except the set of
+    indices the contiguity and orphan checks are made of -- integers
+    rather than the names they came from, which is a fraction of the
+    footprint and exactly what those two questions need.
+    """
+    strays = []
+    indices = set()
+    captures = 0
+    highest = 0
     try:
-        entries = sorted(os.listdir(frames_dir))
+        with os.scandir(frames_dir) as listing:
+            for item in listing:
+                match = FRAME_RE.match(item.name)
+                if match is None:
+                    note_problem(strays, item.name)
+                    continue
+                captures += 1
+                number = int(match.group(1))
+                indices.add(number)
+                if number > highest:
+                    highest = number
     except OSError as err:
         bad("the captures directory is readable", str(err),
             "a readable directory of captures")
-        entries = []
-
-    captures = [e for e in entries if FRAME_RE.match(e)]
-    strays = [e for e in entries if not FRAME_RE.match(e)]
 
     if strays:
         bad("the captures directory holds captures and nothing else",
@@ -1889,53 +3447,68 @@ def finish(rows, line_count, frames_dir, facts):
             "in playthrough/build/transitions/, never here")
     else:
         ok("the captures directory holds captures and nothing else",
-           "%d files, every one a frame_NNNNN.png" % len(captures))
+           "%d files, every one a frame_NNNNN.png" % captures)
 
     # THE IDENTITY.  Two counts produced by different code paths at
     # different times; they must agree exactly.
     #
     # It is asserted against the RAW LINE COUNT as well as against the
-    # parsed row count, because `wc -l < manifest.jsonl` is the number
+    # parsed row count, because `"${WC}" -l < manifest.jsonl` is the number
     # the requirement names and an unparsable line would otherwise be
     # excluded from the comparison it is most likely to have broken.
-    if len(captures) == len(rows) == line_count:
+    if captures == rows == line_count:
         ok("the capture count equals the record's row count -- one "
            "frame per keystroke",
            "%d captures == %d rows == %d lines"
-           % (len(captures), len(rows), line_count))
+           % (captures, rows, line_count))
     else:
         bad("the capture count equals the record's row count -- one "
             "frame per keystroke",
             "%d captures, %d parsed rows, %d lines in the record"
-            % (len(captures), len(rows), line_count),
+            % (captures, rows, line_count),
             "all three equal; a capture without a row, or a row "
             "without a capture, means a keystroke was not recorded or "
             "a frame was not taken")
 
-    indices = sorted(int(FRAME_RE.match(e).group(1)) for e in captures)
-    if indices == list(range(1, len(indices) + 1)):
+    if captures == highest and len(indices) == captures:
         ok("capture indices are contiguous from 00001",
-           "00001 .. %05d" % len(indices) if indices else "none")
+           "00001 .. %05d" % captures if captures else "none")
     else:
-        gaps = [n for n in range(1, (max(indices) if indices else 0) + 1)
-                if n not in set(indices)]
+        # ONE SET, ONE LINEAR SCAN, AND A BOUNDED LIST.  The gap
+        # diagnosis used to rebuild the set of every present index for
+        # EVERY candidate index -- `if n not in set(indices)` inside the
+        # comprehension -- which is O(N**2): at a hundred thousand
+        # captures, five billion membership tests to describe a failure
+        # the first missing index already describes.  The set is the one
+        # built by the walk above, and the scan stops collecting once the
+        # verdict has enough to be useful.
+        gaps = []
+        for number in range(1, highest + 1):
+            if number not in indices:
+                note_problem(gaps, number)
         bad("capture indices are contiguous from 00001",
-            "highest %s, count %d, missing %s"
-            % (max(indices) if indices else 0, len(indices),
-               summarise(gaps)),
+            "highest %d, count %d, missing %s"
+            % (highest, captures, summarise(gaps)),
             "1 .. N with no gaps, so no capture was withdrawn after "
             "its row was written")
 
-    present = set(captures)
-    orphans = [row.get("file") for _, row in rows
-               if os.path.basename(str(row.get("file"))) not in present]
+    # EVERY CAPTURE THE RECORD NAMES, AGAINST THE INDICES ON DISK.  The
+    # record's own canonical-name check above has already established
+    # that a row names frame_%05d.png formatted from its own number, so
+    # the pairing question here is whether that number is on disk -- an
+    # integer comparison against the set the walk produced, rather than a
+    # second list of every basename the record mentions.
+    orphans = []
+    for frame, _ in index.order:
+        if isinstance(frame, int) and frame not in indices:
+            note_problem(orphans, "frame_%05d.png" % frame)
     if orphans:
         bad("every capture the record names exists on disk",
             summarise(orphans),
-            "all %d referenced files present" % len(rows))
+            "all %d referenced files present" % referenced)
     else:
         ok("every capture the record names exists on disk",
-           "%d referenced files, all present" % len(rows))
+           "%d referenced files, all present" % referenced)
 
     # --- HONESTY, REPORTED AS INFORMATION ----------------------------
     # A null clock or a coarse phrase is what the survivor could ACTUALLY
@@ -1943,37 +3516,18 @@ def finish(rows, line_count, frames_dir, facts):
     # being met rather than broken.  Counting it as an error here would
     # create pressure to guess, which is the one thing forbidden
     # outright.  So it is reported, with the count, and never failed.
-    kinds = {}
-    in_game = []
-    for _, row in rows:
-        value = row.get("ingame_clock")
-        if value is None:
-            kinds["not readable (null)"] = \
-                kinds.get("not readable (null)", 0) + 1
-        elif isinstance(value, str) and CLOCK_RE.match(value):
-            kinds["exact"] = kinds.get("exact", 0) + 1
-            if isinstance(row.get("frame"), int):
-                in_game.append(row["frame"])
-        else:
-            kinds["verbatim coarse phrase"] = \
-                kinds.get("verbatim coarse phrase", 0) + 1
-    tally = ", ".join("%s: %d" % (k, kinds[k]) for k in sorted(kinds))
+    #
+    # The tally was accumulated as the record streamed past; the frames
+    # whose clock was legible were written straight to the in-game list
+    # file at the same time.
+    tally = ", ".join("%s: %d" % (k, clock_kinds[k])
+                      for k in sorted(clock_kinds))
     info("clock readings in the record, by kind (an unreadable clock is "
          "honesty, not a fault)", tally or "no rows")
 
-    facts.write("manifest_rows=%d\n" % len(rows))
+    facts.write("manifest_rows=%d\n" % rows)
     facts.write("manifest_lines=%d\n" % line_count)
-    facts.write("capture_count=%d\n" % len(captures))
-    # WHICH CAPTURES SHOW THE GAME BEING PLAYED.  A frame whose sidebar
-    # clock was legible is a frame of the play screen rather than of a
-    # menu, a loading screen or the character creator, and group 9's
-    # colour-depth reading needs exactly that distinction: an ASCII
-    # session's menus and a tiles session's menus look alike, and only
-    # the map is drawn from the tileset.  Published as a fact so the
-    # selection is made from the record that was already parsed here
-    # rather than by a second, possibly divergent, reading of it.
-    facts.write("in_game_frames=%s\n"
-                % ",".join(str(n) for n in in_game))
+    facts.write("capture_count=%d\n" % captures)
     facts.close()
     return 0
 
@@ -1986,14 +3540,15 @@ PY
 }
 
 group_record() {
-    group "one frame per keystroke"
+    group 2 "one frame per keystroke"
     run_checker record \
         "${PLAYTHROUGH_MANIFEST}" \
         "${PLAYTHROUGH_FRAMES_DIR}" \
         "${PLAYTHROUGH_TOOLING_DIR}" \
         "${SCRATCH}/facts" \
         "$(rel "${PLAYTHROUGH_TIMELINE}")" \
-        "$(rel "${PLAYTHROUGH_FRAME_DIGESTS}")"
+        "$(rel "${PLAYTHROUGH_FRAME_DIGESTS}")" \
+        "$(in_game_file)"
 }
 
 
@@ -2060,6 +3615,27 @@ def summarise(items, limit=6):
     return shown
 
 
+# HOW MANY FINDINGS ONE VERDICT COLLECTS.
+#
+# One entry per keystroke and one transition group per night slept
+# through, so a document broken throughout -- a regenerated timeline, a
+# clamp changed under it -- would otherwise put one diagnostic string per
+# entry into memory to explain a failure whose first example already
+# explains it.
+PROBLEM_LIMIT = 200
+
+
+def note_problem(problems, text, limit=PROBLEM_LIMIT):
+    """Collect a finding, bounded; past the limit, say so once."""
+    if len(problems) < limit:
+        problems.append(text)
+        return
+    if len(problems) == limit:
+        problems.append("... further findings were not collected; the "
+                        "%d above are the ones this verdict carries"
+                        % limit)
+
+
 def near(a, b, eps):
     return abs(float(a) - float(b)) <= eps
 
@@ -2068,22 +3644,196 @@ def clamp(value, low, high):
     return min(max(value, low), high)
 
 
-def load_entries(document):
-    """The object form, with the bare-array form accepted defensively.
+def illustrate(items, total, limit=6):
+    """A few examples out of an exactly known total.
 
-    timeline.py writes an object carrying the declared totals alongside
-    its `frames` array.  A bare array is still understood -- it is what a
-    hand-reduced or older document looks like -- so that this gate can
-    report on one rather than refuse to read it.
+    summarise() derives "and N more" from the length of the list it is
+    given, which is right for a list that holds everything and WRONG for a
+    bounded one: six examples out of a thousand flags would read as "and
+    two more".  Where the count is known exactly and the examples are
+    deliberately few, the count comes from the counter and the examples
+    are named as examples.
     """
-    if isinstance(document, dict):
-        entries = document.get("frames")
-        if isinstance(entries, list):
-            return entries, document, "object with a frames array"
-        return [], document, "object with no frames array"
-    if isinstance(document, list):
-        return document, {}, "bare array (no declared totals)"
-    return [], {}, "neither an object nor an array"
+    shown = ", ".join(str(i) for i in items[:limit])
+    if total > len(items[:limit]):
+        shown += ", ... (%d more)" % (total - len(items[:limit]))
+    return shown
+
+
+def entries_and_shape(header, path, tl):
+    """The entry SOURCE and a description of the document's shape.
+
+    timeline.py writes an object carrying its declared totals alongside a
+    `frames` array, and that shape is STREAMED: the array is walked one
+    entry at a time by the producer's own event reader, so a walk costs
+    one entry rather than the session.  json.load() of a document with one
+    entry per keystroke is roughly a kilobyte of interpreter objects per
+    entry -- hundreds of megabytes at the session lengths this pipeline
+    is built for, on a host with under four gigabytes and an encoder to
+    run.
+
+    A bare array is still understood -- it is what a hand-reduced or an
+    older document looks like -- and it is the one shape that is held
+    whole, because the header reader returns it whole.  That is
+    acceptable precisely because this pipeline never writes one: the
+    document whose length is unbounded is the object form, and the object
+    form is the one that streams.
+    """
+    if isinstance(header, dict):
+        if isinstance(header.get("frames"), list):
+            return (tl.iter_timeline_frames(path), header,
+                    "object with a frames array")
+        return iter(()), header, "object with no frames array"
+    if isinstance(header, list):
+        return iter(header), {}, "bare array (no declared totals)"
+    return iter(()), {}, "neither an object nor an array"
+
+
+class Walk:
+    """Everything ONE pass over the entries produces.
+
+    The entries are walked once, and what survives the walk is counters,
+    two running sums, the flagged frame numbers -- one per FLAG, which is
+    what the exact set comparison against the materialised transition
+    groups needs -- and bounded lists of examples.  Nothing here is
+    proportional to the number of entries.
+    """
+
+    __slots__ = ("count", "flag_count", "reconciled", "sum_durations",
+                 "cursor", "last_cue_end", "flagged", "out_of_range",
+                 "not_clamped", "negative", "window_problems",
+                 "walk_problems", "flagged_without", "over_without_flag",
+                 "at_ceiling", "ceiling_detail")
+
+    def __init__(self):
+        self.count = 0
+        self.flag_count = 0
+        self.reconciled = 0
+        self.sum_durations = 0.0
+        self.cursor = 0.0
+        self.last_cue_end = 0.0
+        self.flagged = []
+        self.out_of_range = []
+        self.not_clamped = []
+        self.negative = []
+        self.window_problems = []
+        self.walk_problems = []
+        self.flagged_without = []
+        self.over_without_flag = []
+        self.at_ceiling = []
+        self.ceiling_detail = []
+
+
+def walk_entries(entries, floor, ceil, trans, eps, windows_path):
+    """Judge every arithmetic property of every entry in one pass.
+
+    The clamp, the flags, the cue windows, the cursor walk and the
+    duration sum were five separate walks over a list held in memory.
+    They are one walk over a stream here, and the transition windows the
+    pixel probes need are written out as they are met rather than
+    collected and joined afterwards.
+
+    WHERE THE CARDS ARE, IN VIDEO TIME.  A transition occupies the second
+    immediately after the flagged frame's cue window, and the probes in
+    groups 4, 5 and 6 need to know: a frame extracted from inside a fade
+    or a title card is a legitimate near-black image, so an offset that
+    lands there tells the luminance gate nothing about the session.  One
+    window per LINE, never one fact -- a fact becomes an `awk -v`
+    argument, and an argument is bounded by MAX_ARG_STRLEN (131,072 bytes
+    on Linux) however much room argv has, which is about ten thousand
+    windows.  A session long enough to sleep through ten thousand nights
+    is the session this pipeline is built for, and past that ceiling the
+    gate died with E2BIG instead of reporting anything at all.
+    """
+    walk = Walk()
+    with open(windows_path, "w", encoding="utf-8") as windows:
+        for entry in entries:
+            walk.count += 1
+            number = entry.get("frame")
+            duration = entry.get("duration")
+            raw = entry.get("raw_delta")
+            flag = bool(entry.get("transition_after"))
+            if entry.get("reconciled"):
+                walk.reconciled += 1
+
+            # --- the clamp, the ceiling and the direction of time ----
+            if not isinstance(duration, (int, float)):
+                note_problem(walk.out_of_range,
+                             "frame %s duration=%r" % (number, duration))
+            else:
+                # Summed here, over NUMERIC durations only: the invariant
+                # used to sum `float(e.get("duration") or 0.0)` over every
+                # entry, which raises on a non-numeric one and loses every
+                # verdict this checker had left to emit.
+                walk.sum_durations += float(duration)
+                if duration < floor - eps or duration > ceil + eps:
+                    note_problem(walk.out_of_range,
+                                 "frame %s duration=%s"
+                                 % (number, duration))
+                if isinstance(raw, (int, float)):
+                    if raw < -eps:
+                        note_problem(walk.negative,
+                                     "frame %s raw_delta=%s"
+                                     % (number, raw))
+                    wanted = round(clamp(float(raw), floor, ceil), 3)
+                    if not near(duration, wanted, eps):
+                        note_problem(
+                            walk.not_clamped,
+                            "frame %s duration=%s but clamp(%s)=%s"
+                            % (number, duration, raw, wanted))
+                else:
+                    note_problem(walk.not_clamped,
+                                 "frame %s raw_delta=%r" % (number, raw))
+
+            # --- the flag, in both directions -----------------------
+            if flag:
+                walk.flag_count += 1
+                if number is not None:
+                    walk.flagged.append(number)
+                # A handful of examples, and no cap message: the exact
+                # count is reported from the counter, so illustrate()
+                # names how many were not shown.
+                if len(walk.ceiling_detail) < 6:
+                    walk.ceiling_detail.append(
+                        "frame %s raw_delta=%ss held at %ss"
+                        % (number, raw, duration))
+            if isinstance(raw, (int, float)):
+                if flag and not float(raw) > ceil:
+                    note_problem(walk.flagged_without,
+                                 "frame %s raw_delta=%s" % (number, raw))
+                    if float(raw) == ceil:
+                        note_problem(walk.at_ceiling,
+                                     "frame %s" % number)
+                if float(raw) > ceil and not flag:
+                    note_problem(walk.over_without_flag,
+                                 "frame %s raw_delta=%s" % (number, raw))
+
+            # --- the cue window, and the cursor it must sit on ------
+            start = entry.get("cue_start")
+            end = entry.get("cue_end")
+            if not all(isinstance(v, (int, float))
+                       for v in (duration, start, end)):
+                note_problem(walk.window_problems,
+                             "frame %s has a non-numeric window" % number)
+                continue
+            walk.last_cue_end = float(end)
+            if not near(end - start, duration, eps):
+                note_problem(
+                    walk.window_problems,
+                    "frame %s window %s..%s spans %s but duration is %s"
+                    % (number, start, end, round(end - start, 3),
+                       duration))
+            if not near(start, walk.cursor, eps):
+                note_problem(walk.walk_problems,
+                             "frame %s starts at %s, the walk reached %s"
+                             % (number, start, round(walk.cursor, 3)))
+            walk.cursor = start + duration
+            if flag:
+                walk.cursor += trans
+                windows.write("%.3f-%.3f\n" % (float(end),
+                                               float(end) + trans))
+    walk.sum_durations = round(walk.sum_durations, 3)
+    return walk
 
 
 def check_constants(tooling_dir, floor, ceil, trans, per_group, tol,
@@ -2146,7 +3896,7 @@ def file_digest(path):
     return digest.hexdigest()
 
 
-def check_capture_digests(document):
+def check_capture_digests(document, inventory_path):
     """Every committed capture, against the digest taken when it was
     captured.
 
@@ -2154,6 +3904,14 @@ def check_capture_digests(document):
     document itself, which is the artifact that declares having verified
     it.  So this check follows the timeline's own pointer rather than
     assuming a layout.
+
+    IT IS STREAMED, AND IT PUBLISHES WHAT IT HASHED.  The sidecar is read
+    one row at a time and each capture is verified as its row arrives, so
+    nothing proportional to the session is held: the whole sidecar used to
+    be parsed into a dict of digests first, and every capture was then
+    hashed a SECOND time by group 4 for its own question.  Each digest
+    taken here is appended to the shared inventory (see digest_inventory
+    in the gate), which is what makes group 4's sweep free.
     """
     block = document.get("captures")
     if not isinstance(block, dict) or not block.get("path"):
@@ -2179,46 +3937,54 @@ def check_capture_digests(document):
             "when it was captured", "%s is not there" % path,
             "the sidecar the timeline says it verified")
         return
-    recorded = {}
-    malformed = []
-    with open(path, "r", encoding="utf-8") as handle:
+    problems = []
+    recorded_rows = 0
+    checked = 0
+    with open(path, "r", encoding="utf-8") as handle, \
+            open(inventory_path, "a", encoding="utf-8") as inventory:
         for number, line in enumerate(handle, 1):
             if not line.strip():
                 continue
             try:
                 row = json.loads(line)
             except ValueError as err:
-                malformed.append("line %d: %s" % (number, err))
+                note_problem(problems, "line %d: %s" % (number, err))
                 continue
             name = row.get("file")
             digest = row.get("sha256")
             if not name or not digest:
-                malformed.append("line %d names %r with digest %r"
-                                 % (number, name, digest))
+                note_problem(problems,
+                             "line %d names %r with digest %r"
+                             % (number, name, digest))
                 continue
-            recorded[name] = (digest, row.get("bytes"))
-    problems = list(malformed)
-    checked = 0
-    for name in sorted(recorded):
-        digest, size = recorded[name]
-        if not os.path.exists(name):
-            problems.append("%s is recorded but absent" % name)
-            continue
-        actual = file_digest(name)
-        checked += 1
-        if actual != digest:
-            problems.append("%s hashes to %s, recorded as %s"
-                            % (name, actual[:16], str(digest)[:16]))
-            continue
-        if size is not None and os.path.getsize(name) != int(size):
-            problems.append("%s is %d bytes, recorded as %s"
-                            % (name, os.path.getsize(name), size))
+            recorded_rows += 1
+            if not os.path.exists(name):
+                note_problem(problems, "%s is recorded but absent"
+                             % name)
+                continue
+            actual = file_digest(name)
+            size_now = os.path.getsize(name)
+            checked += 1
+            if actual != digest:
+                note_problem(problems, "%s hashes to %s, recorded as %s"
+                             % (name, actual[:16], str(digest)[:16]))
+                continue
+            size = row.get("bytes")
+            if size is not None and size_now != int(size):
+                note_problem(problems, "%s is %d bytes, recorded as %s"
+                             % (name, size_now, size))
+                continue
+            # ONLY A CAPTURE THAT PASSED is published to the inventory:
+            # group 4 reads it as "this image was held to its recorded
+            # digest and matched", so an entry for a frame that failed
+            # here would let that check credit a mismatch.
+            inventory.write("%s\t%d\t%s\n" % (actual, size_now, name))
     if problems:
         bad("every committed capture still hashes to the digest taken "
             "when it was captured", summarise(problems),
             "%d captures unchanged since capture -- a substituted, "
             "blanked or re-encoded frame fails here whatever its index"
-            % len(recorded))
+            % recorded_rows)
     else:
         ok("every committed capture still hashes to the digest taken "
            "when it was captured",
@@ -2226,7 +3992,7 @@ def check_capture_digests(document):
            % checked)
 
 
-def check_provenance(document, entries):
+def check_provenance(document, count, inventory_path):
     """The timeline was computed from the artifacts it names.
 
     A timeline is only a claim about a capture set, and the claim is
@@ -2243,25 +4009,30 @@ def check_provenance(document, entries):
     frame substituted at any index breaks a hash the timeline declares,
     whether or not that index happened to be sampled.
     """
-    sidecars = [key for key in ("manifest", "amendments", "captures")
-                if isinstance(document.get(key), dict)]
-    # THE THREE VERDICTS BELOW ARE EMITTED ON EVERY INPUT, including a
-    # document that declares nothing at all.  An early return here is
-    # what let a shrinking report read as a passing one.
+    # EVERY EXPECTED BLOCK, NOT WHICHEVER ONES ARE THERE.  This used to
+    # build the list of keys the document happened to carry and then
+    # report success naming all three, so a timeline that declared one
+    # sidecar -- or a regenerated one that quietly dropped the amendment
+    # ledger it applied -- passed a check whose own message said the
+    # ledger had been verified.  A missing block is now the strongest
+    # problem of the three, because the others are at least falsifiable.
+    expected_sidecars = ("manifest", "amendments", "captures")
+    # THE VERDICT BELOW IS EMITTED ON EVERY INPUT, including a document
+    # that declares nothing at all.  An early return here is what let a
+    # shrinking report read as a passing one.
     problems = []
     observed = []
-    if not sidecars:
-        # A failure rather than a note: a timeline that names nothing it
-        # was computed from is a document whose provenance is
-        # unfalsifiable, and unfalsifiable is the one state this gate
-        # must never report as satisfactory.
-        problems.append(
-            "this document declares no sidecars at all, so its "
-            "provenance cannot be checked")
-    for key in sidecars:
-        block = document[key]
+    for key in expected_sidecars:
+        block = document.get(key)
+        if not isinstance(block, dict):
+            problems.append(
+                "%s declares no attestation block at all (it is %s), so "
+                "there is nothing to recompute"
+                % (key, type(block).__name__))
+            continue
         path = block.get("path")
         declared = block.get("sha256")
+        rows = block.get("rows")
         if not path or not declared:
             problems.append("%s declares path=%r sha256=%r"
                             % (key, path, declared))
@@ -2271,6 +4042,7 @@ def check_provenance(document, entries):
                             % (key, path))
             continue
         digest = hashlib.sha256()
+        counted = 0
         with open(path, "rb") as handle:
             for chunk in iter(lambda: handle.read(65536), b""):
                 digest.update(chunk)
@@ -2280,25 +4052,50 @@ def check_provenance(document, entries):
                 "%s: %s hashes to %s, the timeline declares %s"
                 % (key, path, actual[:16], str(declared)[:16]))
             continue
-        observed.append("%s %s (%s)" % (key, actual[:12], path))
+        # THE ROW COUNT IS PART OF THE CLAIM.  Each block states how many
+        # rows the stage read out of that file, and a digest alone cannot
+        # tell a reader whether the count beside it is the file's own: a
+        # transposed or stale `rows` would sail past a digest check while
+        # every downstream total was computed from a different number.
+        # The file has just been proven byte-for-byte, so counting its
+        # rows here is a measurement of the very bytes that were hashed.
+        with open(path, "rb") as handle:
+            for line in handle:
+                if line.strip():
+                    counted += 1
+        if isinstance(rows, bool) or not isinstance(rows, int):
+            problems.append("%s declares rows=%r, which is not a count"
+                            % (key, rows))
+            continue
+        if rows != counted:
+            problems.append(
+                "%s: %s holds %d row(s), the timeline declares %d"
+                % (key, path, counted, rows))
+            continue
+        observed.append("%s %s, %d row(s) (%s)"
+                        % (key, actual[:12], counted, path))
     if problems:
         bad("the timeline names the artifacts it was computed from, and "
             "they still hash to what it recorded", summarise(problems),
-            "the `manifest`, `amendments` and `captures` blocks "
-            "timeline.py writes, each declared sha256 reproduced from "
-            "the file on disk")
+            "all three of the `manifest`, `amendments` and `captures` "
+            "blocks timeline.py writes, each present, each declared "
+            "sha256 reproduced from the file on disk, and each declared "
+            "row count equal to that file's own")
     else:
         ok("the timeline names the artifacts it was computed from, and "
            "they still hash to what it recorded", "; ".join(observed))
 
-    # THE WHOLE-SET CHECK, AND IT IS FREE.  Re-hashing all 326 committed
-    # captures takes about fifty milliseconds, so every one of them is
-    # compared against the digest recorded at the moment it was captured.
-    # This is what makes the sampled luminance reading in group 6
-    # sufficient rather than merely indicative: a frame replaced at any
-    # index -- blank, duplicated, re-encoded, cropped -- fails here even
-    # when that index was not among the sampled ones.
-    check_capture_digests(document)
+    # THE WHOLE-SET CHECK, AND IT IS TAKEN ONCE.  Every committed capture
+    # is compared against the digest recorded at the moment it was
+    # captured, which is what makes the sampled luminance reading in
+    # group 6 sufficient rather than merely indicative: a frame replaced
+    # at any index -- blank, duplicated, re-encoded, cropped -- fails here
+    # even when that index was not among the sampled ones.
+    #
+    # The digests it takes are published to the shared inventory, so the
+    # group 4 sweep that used to hash the same population a second time
+    # reads them instead.  One pass over the pixel evidence per run.
+    check_capture_digests(document, inventory_path)
 
     # The digest sidecar's own arithmetic: one verified digest per
     # capture, and as many as there are entries.
@@ -2315,7 +4112,7 @@ def check_provenance(document, entries):
     verified = captures.get("verified") \
         if isinstance(captures, dict) else None
     counted = (rows is not None and verified is not None and
-               int(rows) == int(verified) == len(entries))
+               int(rows) == int(verified) == count)
     if counted:
         ok("every capture's digest was verified when the timeline "
            "was computed",
@@ -2325,12 +4122,12 @@ def check_provenance(document, entries):
         bad("every capture's digest was verified when the timeline "
             "was computed",
             "rows=%r verified=%r against %d entries"
-            % (rows, verified, len(entries)),
+            % (rows, verified, count),
             "all three equal -- an unverified capture is a frame "
             "whose provenance was never established")
 
 
-def check_declared(document, entries, floor, ceil, trans, rows, eps):
+def check_declared(document, count, floor, ceil, trans, rows, eps):
     """The document's own declared numbers, against its own entries."""
     declared_floor = document.get("floor")
     declared_ceil = document.get("ceil")
@@ -2355,117 +4152,75 @@ def check_declared(document, entries, floor, ceil, trans, rows, eps):
            % (declared_floor, declared_ceil, declared_trans))
 
     declared_count = document.get("frame_count")
-    if declared_count is not None and int(declared_count) != len(
-            entries):
+    if declared_count is not None and int(declared_count) != count:
         bad("the timeline's declared entry count matches its entries",
             "frame_count=%s against %d entries"
-            % (declared_count, len(entries)),
+            % (declared_count, count),
             "equal -- a declared total that outran its own array is a "
             "hand-edited document")
     else:
         ok("the timeline's declared entry count matches its entries",
-           "%d entries" % len(entries))
+           "%d entries" % count)
 
     if rows is None:
         return
-    if len(entries) == rows:
+    if count == rows:
         ok("the timeline has one entry per recorded keystroke -- no "
            "zero-delta frame was dropped or merged",
-           "%d entries == %d record rows" % (len(entries), rows))
+           "%d entries == %d record rows" % (count, rows))
     else:
         bad("the timeline has one entry per recorded keystroke -- no "
             "zero-delta frame was dropped or merged",
-            "%d entries against %d record rows" % (len(entries), rows),
+            "%d entries against %d record rows" % (count, rows),
             "equal counts; a frame that consumed no game time is held "
             "at the floor, never optimised away")
 
 
-def check_clamp(entries, floor, ceil, eps):
-    """The floor, the ceiling, and that each duration IS the clamp."""
-    out_of_range = []
-    not_clamped = []
-    negative = []
-    for entry in entries:
-        number = entry.get("frame")
-        duration = entry.get("duration")
-        raw = entry.get("raw_delta")
-        if not isinstance(duration, (int, float)):
-            out_of_range.append("frame %s duration=%r"
-                                % (number, duration))
-            continue
-        if duration < floor - eps or duration > ceil + eps:
-            out_of_range.append("frame %s duration=%s"
-                                % (number, duration))
-        if isinstance(raw, (int, float)):
-            if raw < -eps:
-                negative.append("frame %s raw_delta=%s" % (number, raw))
-            wanted = round(clamp(float(raw), floor, ceil), 3)
-            if not near(duration, wanted, eps):
-                not_clamped.append(
-                    "frame %s duration=%s but clamp(%s)=%s"
-                    % (number, duration, raw, wanted))
-        else:
-            not_clamped.append("frame %s raw_delta=%r" % (number, raw))
+def check_clamp(walk, floor, ceil):
+    """The floor, the ceiling, and that each duration IS the clamp.
 
-    if out_of_range:
+    Reported from the single walk above, which judged each entry as it
+    arrived; the three lists are bounded examples, and the counts are
+    exact.
+    """
+    if walk.out_of_range:
         bad("every on-screen duration is inside the floor and the "
-            "ceiling", summarise(out_of_range),
+            "ceiling", summarise(walk.out_of_range),
             "%s <= duration <= %s on all %d entries"
-            % (floor, ceil, len(entries)))
+            % (floor, ceil, walk.count))
     else:
         ok("every on-screen duration is inside the floor and the "
            "ceiling",
            "%d entries, all within %s .. %s s"
-           % (len(entries), floor, ceil))
+           % (walk.count, floor, ceil))
 
-    if not_clamped:
+    if walk.not_clamped:
         bad("every duration is exactly the clamped clock delta",
-            summarise(not_clamped),
+            summarise(walk.not_clamped),
             "duration == min(max(raw_delta, %s), %s) rounded to 3 dp"
             % (floor, ceil))
     else:
         ok("every duration is exactly the clamped clock delta",
            "%d entries; the sidebar clock is the only source of pacing"
-           % len(entries))
+           % walk.count)
 
-    if negative:
-        bad("no clock delta runs backwards", summarise(negative),
+    if walk.negative:
+        bad("no clock delta runs backwards", summarise(walk.negative),
             "raw_delta >= 0 everywhere -- the midnight rollover guard "
             "turns 23:59:58 -> 00:00:04 into +6 s, not -86394 s")
     else:
         ok("no clock delta runs backwards",
-           "%d deltas, none negative" % len(entries))
+           "%d deltas, none negative" % walk.count)
 
 
-def check_flags(entries, ceil, document):
+def check_flags(walk, ceil, document):
     """transition_after <=> raw_delta > ceiling, in both directions."""
-    flagged_without = []
-    over_without_flag = []
-    at_ceiling_flagged = []
-    flagged = []
-    for entry in entries:
-        number = entry.get("frame")
-        raw = entry.get("raw_delta")
-        flag = bool(entry.get("transition_after"))
-        if flag:
-            flagged.append(number)
-        if not isinstance(raw, (int, float)):
-            continue
-        if flag and not float(raw) > ceil:
-            flagged_without.append("frame %s raw_delta=%s"
-                                   % (number, raw))
-            if float(raw) == ceil:
-                at_ceiling_flagged.append("frame %s" % number)
-        if float(raw) > ceil and not flag:
-            over_without_flag.append("frame %s raw_delta=%s"
-                                     % (number, raw))
-
-    problems = flagged_without + over_without_flag
+    problems = walk.flagged_without + walk.over_without_flag
     if problems:
         detail = summarise(problems)
-        if at_ceiling_flagged:
+        if walk.at_ceiling:
             detail += " (exactly at the ceiling: %s)" % summarise(
-                at_ceiling_flagged)
+                walk.at_ceiling)
         bad("a transition is flagged exactly where the clock delta "
             "exceeded the ceiling", detail,
             "transition_after is true if and only if raw_delta > %s "
@@ -2475,22 +4230,22 @@ def check_flags(entries, ceil, document):
         ok("a transition is flagged exactly where the clock delta "
            "exceeded the ceiling",
            "%d flagged of %d entries%s"
-           % (len(flagged), len(entries),
-              ": frame(s) " + summarise(flagged) if flagged else ""))
+           % (walk.flag_count, walk.count,
+              ": frame(s) " + summarise(walk.flagged)
+              if walk.flagged else ""))
 
     declared = document.get("transition_count")
-    if declared is not None and int(declared) != len(flagged):
+    if declared is not None and int(declared) != walk.flag_count:
         bad("the timeline's declared transition count matches its flags",
             "transition_count=%s against %d flags"
-            % (declared, len(flagged)),
+            % (declared, walk.flag_count),
             "equal counts")
     elif declared is not None:
         ok("the timeline's declared transition count matches its flags",
            "transition_count=%s" % declared)
-    return flagged
 
 
-def check_cues(entries, trans, eps):
+def check_cues(walk, trans):
     """Every cue window, walked as the film will actually play.
 
     A cue occupies [cue_start, cue_end) with cue_end - cue_start equal to
@@ -2499,67 +4254,46 @@ def check_cues(entries, trans, eps):
     That last clause is the whole of silent failure mode 3: a generator
     that walks durations without charging the insertion produces cues
     that are right at the start and increasingly wrong by the end.
+
+    The cursor was walked in the single pass above -- the same pass that
+    read the durations and the flags, because it is the same walk.
     """
-    window_problems = []
-    walk_problems = []
-    cursor = 0.0
-    for entry in entries:
-        number = entry.get("frame")
-        duration = entry.get("duration")
-        start = entry.get("cue_start")
-        end = entry.get("cue_end")
-        if not all(isinstance(v, (int, float))
-                   for v in (duration, start, end)):
-            window_problems.append("frame %s has a non-numeric window"
-                                   % number)
-            continue
-        if not near(end - start, duration, eps):
-            window_problems.append(
-                "frame %s window %s..%s spans %s but duration is %s"
-                % (number, start, end, round(end - start, 3), duration))
-        if not near(start, cursor, eps):
-            walk_problems.append(
-                "frame %s starts at %s, the walk reached %s"
-                % (number, start, round(cursor, 3)))
-        cursor = start + duration
-        if entry.get("transition_after"):
-            cursor += trans
-    if window_problems:
+    if walk.window_problems:
         bad("every cue window is exactly as long as its frame is on "
-            "screen", summarise(window_problems),
+            "screen", summarise(walk.window_problems),
             "cue_end - cue_start == duration on all %d entries"
-            % len(entries))
+            % walk.count)
     else:
         ok("every cue window is exactly as long as its frame is on "
-           "screen", "%d windows" % len(entries))
-    if walk_problems:
+           "screen", "%d windows" % walk.count)
+    if walk.walk_problems:
         bad("the cue cursor is charged for every inserted transition "
-            "second", summarise(walk_problems),
+            "second", summarise(walk.walk_problems),
             "each cue begins where the previous ended, plus %s s "
             "wherever a transition was inserted" % trans)
     else:
         ok("the cue cursor is charged for every inserted transition "
            "second",
            "walked %d cues to %.3f s with no drift"
-           % (len(entries), cursor))
-    return round(cursor, 3)
+           % (walk.count, walk.cursor))
+    return round(walk.cursor, 3)
 
 
-def check_invariant(entries, document, flagged, trans, walked, eps):
-    """sum(durations) + sum(transitions) == total == final cue end."""
-    sum_durations = round(sum(float(e.get("duration") or 0.0)
-                              for e in entries), 3)
-    sum_transitions = round(len(flagged) * float(trans), 3)
+def check_invariant(walk, document, trans, walked, eps):
+    """sum(durations) + sum(transitions) == total == final cue end.
+
+    Both sums were accumulated by the walk: the durations as they were
+    clamped-checked, the transitions as they were flagged.
+    """
+    sum_durations = walk.sum_durations
+    sum_transitions = round(walk.flag_count * float(trans), 3)
     computed = round(sum_durations + sum_transitions, 3)
 
     declared_duration = document.get("total_duration")
     declared_transition = document.get("total_transition")
     declared_total = document.get("total")
     declared_cue_end = document.get("final_cue_end")
-    if entries:
-        last_cue_end = entries[-1].get("cue_end")
-    else:
-        last_cue_end = 0.0
+    last_cue_end = walk.last_cue_end
 
     parts = []
     if declared_duration is not None and not near(declared_duration,
@@ -2569,7 +4303,7 @@ def check_invariant(entries, document, flagged, trans, walked, eps):
     if declared_transition is not None and not near(
             declared_transition, sum_transitions, eps):
         parts.append("total_transition=%s but %d flags x %s = %s"
-                     % (declared_transition, len(flagged), trans,
+                     % (declared_transition, walk.flag_count, trans,
                         sum_transitions))
     if declared_total is not None and not near(declared_total, computed,
                                                eps):
@@ -2667,7 +4401,8 @@ def check_transitions(transitions_dir, flagged, per_group):
 
 def main(argv):
     (timeline_path, transitions_dir, tooling_dir, facts_path,
-     floor, ceil, trans, per_group, tolerance, epsilon) = argv[1:11]
+     windows_path, digests_index, floor, ceil, trans, per_group,
+     tolerance, epsilon) = argv[1:13]
     floor = float(floor)
     ceil = float(ceil)
     trans = float(trans)
@@ -2685,59 +4420,82 @@ def main(argv):
     check_constants(tooling_dir, floor, ceil, trans, per_group,
                     tolerance, epsilon)
 
+    # THE DOCUMENT, READ IN TWO PARTS AND HELD IN NEITHER.  The header is
+    # everything except the entries -- the provenance blocks, the declared
+    # constants, the declared totals -- and the entries are an event
+    # stream from the producer's own reader.  Both come from timeline.py,
+    # so the reader of these bytes cannot drift from the writer of them.
+    sys.path.insert(0, tooling_dir)
+    # EMPTIED FIRST, ON EVERY PATH.  The window list is what the pixel
+    # probes in groups 4, 5 and 6 compute their offsets from, and a list
+    # left over from anything but this walk would send them into a fade.
+    # The scratch generation is per-run so there is nothing to inherit
+    # today, but the guarantee is made here rather than assumed.
+    with open(windows_path, "w", encoding="utf-8"):
+        pass
     try:
-        with open(timeline_path, "r", encoding="utf-8") as handle:
-            document = json.load(handle)
-    except (OSError, ValueError) as err:
+        import timeline as tl
+        header = tl.read_timeline_header(timeline_path)
+    except Exception as err:                              # noqa: BLE001
         bad("the timeline parses as JSON", str(err),
             "a JSON object carrying a frames array")
         return 0
 
-    entries, document, shape = load_entries(document)
-    if not entries:
+    entries, document, shape = entries_and_shape(header, timeline_path,
+                                                 tl)
+    try:
+        walk = walk_entries(entries, floor, ceil, trans, epsilon,
+                            windows_path)
+    except Exception as err:                              # noqa: BLE001
+        # A malformed entry is a document that does not parse, and it is
+        # reported as exactly that.  The window list is emptied again
+        # because a PARTIAL one -- written up to the bad entry -- would
+        # send the pixel probes to offsets computed from half a timeline.
+        with open(windows_path, "w", encoding="utf-8"):
+            pass
+        bad("the timeline parses as JSON", str(err),
+            "a JSON object carrying a frames array")
+        return 0
+
+    if not walk.count:
         bad("the timeline carries per-frame entries", shape,
             "an object with a non-empty frames array, or a bare array")
         return 0
     ok("the timeline parses and carries per-frame entries",
-       "%s, %d entries" % (shape, len(entries)))
+       "%s, %d entries" % (shape, walk.count))
 
-    check_provenance(document, entries)
-    check_declared(document, entries, floor, ceil, trans, rows, epsilon)
-    check_clamp(entries, floor, ceil, epsilon)
-    flagged = check_flags(entries, ceil, document)
-    walked = check_cues(entries, trans, epsilon)
-    total = check_invariant(entries, document, flagged, trans, walked,
-                            epsilon)
-    groups = check_transitions(transitions_dir, flagged, per_group)
+    check_provenance(document, walk.count, digests_index)
+    check_declared(document, walk.count, floor, ceil, trans, rows,
+                   epsilon)
+    check_clamp(walk, floor, ceil)
+    check_flags(walk, ceil, document)
+    walked = check_cues(walk, trans)
+    total = check_invariant(walk, document, trans, walked, epsilon)
+    groups = check_transitions(transitions_dir, walk.flagged, per_group)
 
-    reconciled = sum(1 for e in entries if e.get("reconciled"))
     info("clock readings reconciled against the previous frame rather "
-         "than guessed", "%d of %d entries" % (reconciled, len(entries)))
-    flagged_detail = ", ".join(
-        "frame %s raw_delta=%ss held at %ss"
-        % (e.get("frame"), e.get("raw_delta"), e.get("duration"))
-        for e in entries if e.get("transition_after"))
+         "than guessed",
+         "%d of %d entries" % (walk.reconciled, walk.count))
+    # WHERE THE CEILING ENGAGED, BOUNDED.  Every flagged frame used to be
+    # joined into this one line, so a session that slept through a
+    # thousand nights put a thousand clauses into one verdict -- and into
+    # one shell variable on the way to the report.  The count is the fact;
+    # a handful of examples is the illustration.
     info("where the ceiling engaged",
-         flagged_detail or "nowhere -- no delta exceeded the ceiling")
+         ("%d place(s): %s"
+          % (walk.flag_count,
+             illustrate(walk.ceiling_detail, walk.flag_count)))
+         if walk.flag_count else
+         "nowhere -- no delta exceeded the ceiling")
 
     with open(facts_path, "a", encoding="utf-8") as handle:
-        handle.write("timeline_entries=%d\n" % len(entries))
+        handle.write("timeline_entries=%d\n" % walk.count)
         handle.write("timeline_total=%.3f\n" % total)
-        handle.write("transition_flags=%d\n" % len(flagged))
+        handle.write("transition_flags=%d\n" % walk.flag_count)
         handle.write("transition_groups=%d\n" % groups)
         handle.write("transition_images=%d\n" % (groups * per_group))
         handle.write("expected_images=%d\n"
-                     % (len(entries) + groups * per_group))
-        # WHERE THE CARDS ARE, IN VIDEO TIME.  A transition occupies the
-        # second immediately after the flagged frame's cue window, and
-        # the pixel probes in groups 4, 5 and 6 need to know: a frame
-        # extracted from inside a fade or a title card is a legitimate
-        # near-black image, so an offset that lands there tells the
-        # luminance gate nothing about the session.
-        handle.write("transition_windows=%s\n" % " ".join(
-            "%.3f-%.3f" % (float(entry.get("cue_end", 0.0)),
-                           float(entry.get("cue_end", 0.0)) + trans)
-            for entry in entries if entry.get("transition_after")))
+                     % (walk.count + groups * per_group))
     return 0
 
 
@@ -2747,12 +4505,14 @@ PY
 }
 
 group_timeline() {
-    group "the timeline: the floor, the ceiling and the invariant"
+    group 3 "the timeline: the floor, the ceiling and the invariant"
     run_checker timeline \
         "${PLAYTHROUGH_TIMELINE}" \
         "${PLAYTHROUGH_TRANSITIONS_DIR}" \
         "${PLAYTHROUGH_TOOLING_DIR}" \
         "${SCRATCH}/facts" \
+        "$(windows_file)" \
+        "$(digest_inventory)" \
         "${DURATION_FLOOR}" \
         "${DURATION_CEIL}" \
         "${TRANSITION_SECONDS}" \
@@ -2782,17 +4542,21 @@ check_container_streams() {
     local file="$1"
     local label="$2"
     local codec="" width="" height="" pix=""
+    local codec_said="" size_said="" pix_said=""
     codec="$(probe_value "${file}" v:0 stream=codec_name)"
+    codec_said="$(because ffprobe)"
     width="$(probe_value "${file}" v:0 stream=width)"
     height="$(probe_value "${file}" v:0 stream=height)"
+    size_said="$(because ffprobe)"
     pix="$(probe_value "${file}" v:0 stream=pix_fmt)"
+    pix_said="$(because ffprobe)"
 
     if [ "${codec}" = "${VIDEO_CODEC_EXPECTED}" ]; then
         record_pass "${label} carries a ${VIDEO_CODEC_EXPECTED} video \
 stream" "codec_name=${codec}"
     else
         record_fail "${label} carries a ${VIDEO_CODEC_EXPECTED} video \
-stream" "codec_name=${codec:-<no video stream>}" \
+stream" "codec_name=${codec:-<no video stream>}${codec_said}" \
             "${VIDEO_CODEC_EXPECTED}"
     fi
 
@@ -2802,7 +4566,7 @@ stream" "codec_name=${codec:-<no video stream>}" \
             "${width}x${height}"
     else
         record_fail "${label} is at the X root's own resolution" \
-            "${width:-?}x${height:-?}" \
+            "${width:-?}x${height:-?}${size_said}" \
             "${PLAYTHROUGH_SCREEN_WIDTH}x${PLAYTHROUGH_SCREEN_HEIGHT} \
 -- 1920x1072 would mean the game window was photographed instead of \
 the root"
@@ -2813,16 +4577,17 @@ the root"
             "pix_fmt=${pix}"
     else
         record_fail "${label} uses the broadly playable pixel format" \
-            "pix_fmt=${pix:-<unknown>}" \
+            "pix_fmt=${pix:-<unknown>}${pix_said}" \
             "yuv420p -- anything else is unplayable in a large share \
 of players"
     fi
 }
 
 check_container_duration() {
-    local total="" duration="" delta=""
+    local total="" duration="" delta="" said=""
     total="$(fact timeline_total)"
     duration="$(probe_format "${PLAYTHROUGH_MOVIE}" duration)"
+    said="$(because ffprobe)"
     if ! is_real "${total}"; then
         record_fail "the film is as long as the timeline says" \
             "the timeline total could not be established" \
@@ -2831,7 +4596,7 @@ check_container_duration() {
     fi
     if ! is_real "${duration}"; then
         record_fail "the film is as long as the timeline says" \
-            "ffprobe reported duration=${duration:-<nothing>}" \
+            "ffprobe reported duration=${duration:-<nothing>}${said}" \
             "a numeric container duration"
         return 0
     fi
@@ -2858,14 +4623,15 @@ took effect"
 # exists to prevent -- so an unreadable container fails HERE as well,
 # rather than being silently credited with an absence.
 check_no_audio() {
-    local file="" label="" streams="" video=""
+    local file="" label="" streams="" video="" said=""
     for file in "${PLAYTHROUGH_MOVIE}" "${PLAYTHROUGH_MOVIE_CC}"; do
         label="$(rel "${file}")"
         video="$(probe_value "${file}" v:0 stream=codec_name)"
+        said="$(because ffprobe)"
         if [ -z "${video}" ]; then
             record_fail "${label} carries no audio stream" \
                 "the container has no readable video stream either, so \
-the absence of audio proves nothing about it" \
+the absence of audio proves nothing about it${said}" \
                 "a readable container with a video stream and no audio \
 stream"
             continue
@@ -2893,31 +4659,38 @@ narration"
 # and nothing else.
 # decoded_frames FILE -- how many pictures actually come out of it.
 #
-# A DECODE, not a header read.  `-count_frames` walks the stream and
-# reports what it could decode, which is the only reading that notices a
-# truncated or corrupt film: the header of a file cut to a third of its
-# length still declares the full count.
+# A DECODE, not a header read: the header of a file cut to a third of its
+# length still declares the full count.  The number comes from the ONE
+# end-to-end pass film_decode_pass makes over each film (see ONE DECODE
+# PER FILM above), so asking for it a second or third time costs nothing;
+# it used to be a separate `ffprobe -count_frames` walk per question.
 decoded_frames() {
-    "${FFPROBE}" -v error -select_streams v:0 -count_frames \
-        -show_entries stream=nb_read_frames \
-        -of default=noprint_wrappers=1:nokey=1 -i "$1" 2>/dev/null |
-        head -n 1 || true
+    film_decode_pass "$1"
+    printf '%s' "${FILM_PASS_FRAMES}"
 }
 
 check_frame_count() {
-    local expected="" observed=""
+    local expected="" observed="" said=""
     expected="$(fact expected_images)"
     observed="$(decoded_frames "${PLAYTHROUGH_MOVIE}")"
+    said="$(because ffprobe)"
     if ! is_count "${observed}"; then
-        observed="$("${FFPROBE}" -v error -select_streams v:0 \
+        # THE FALLBACK IS A HEADER-FREE PACKET WALK, and it is reached
+        # only when the decode pass could not report a count at all -- a
+        # wedged decode, a container the decoder refuses.  It is bounded
+        # like every other child here.
+        observed="$(bounded "$(film_bound "${PLAYTHROUGH_MOVIE}")" \
+            "${FFPROBE}" -v error -select_streams v:0 \
             -count_packets -show_entries stream=nb_read_packets \
             -of default=noprint_wrappers=1:nokey=1 \
-            -i "${PLAYTHROUGH_MOVIE}" 2>/dev/null | head -n 1 || true)"
+            -i "${PLAYTHROUGH_MOVIE}" \
+            2>"$(tool_error_file ffprobe)" | "${HEAD}" -n 1 || true)"
+        said="$(because ffprobe)"
     fi
     if ! is_count "${expected}" || ! is_count "${observed}"; then
         record_fail "the film holds one encoded frame per still it was \
 built from" \
-            "expected=${expected:-?} observed=${observed:-?}" \
+            "expected=${expected:-?} observed=${observed:-?}${said}" \
             "both counts readable"
         return 0
     fi
@@ -2948,15 +4721,16 @@ the file is truncated and the pictures past the cut cannot be decoded"
 # frame rate, which is how this film is encoded -- and the honest reading
 # is reported instead.
 check_declared_frames_agree() {
-    local file="" label="" declared="" decoded=""
+    local file="" label="" declared="" decoded="" said=""
     for file in "${PLAYTHROUGH_MOVIE}" "${PLAYTHROUGH_MOVIE_CC}"; do
         label="$(rel "${file}")"
         declared="$(probe_value "${file}" v:0 stream=nb_frames)"
         decoded="$(decoded_frames "${file}")"
+        said="$(because ffprobe)"
         if ! is_count "${decoded}"; then
             record_fail "${label} decodes as many frames as it declares" \
                 "no frame could be decoded out of it (declared \
-${declared:-N/A})" \
+${declared:-N/A})${said}" \
                 "a decodable video stream"
             continue
         fi
@@ -2982,31 +4756,40 @@ that is gone"
 
 # THE WHOLE FILM, DECODED.  Every packet through the decoder with
 # -xerror, so a corrupt NAL unit, a partial final packet or a missing
-# picture is a failure rather than a warning nobody sees.  Measured cost
-# on this session: about four tenths of a second per film.
+# picture is a failure rather than a warning nobody sees.
+#
+# THE PASS ITSELF IS SHARED with the two frame-count checks above: it is
+# made once per film by film_decode_pass and read here from the scratch
+# generation, which is what keeps a gate over an unbounded film to one
+# decode of it rather than three.  Measured cost on this session: 0.9 s
+# for the base film's single pass, against 4.5 s for the three walks it
+# replaces.
 check_film_decodes() {
-    local file="" label="" log="" status=0 detail=""
+    local file="" label="" detail=""
     for file in "${PLAYTHROUGH_MOVIE}" "${PLAYTHROUGH_MOVIE_CC}"; do
         label="$(rel "${file}")"
-        log="${SCRATCH}/decode-$(basename "${file}").log"
-        # `|| status=$?` rather than `if ! cmd; then status=$?; fi`:
-        # inside the then-branch of a negated condition, `$?` is the
-        # status of the NEGATION -- which is 0 exactly when the command
-        # failed -- so the real exit code would be thrown away and every
-        # decode failure would be reported as "exited 0".  It also keeps
-        # errexit and the ERR trap out of a failure this check handles.
-        status=0
-        "${FFMPEG}" -nostdin -v error -xerror -i "${file}" \
-            -f null - >/dev/null 2>"${log}" || status=$?
-        if [ "${status}" -eq 0 ] && [ ! -s "${log}" ]; then
+        film_decode_pass "${file}"
+        if [ "${FILM_PASS_STATUS}" = "0" ] &&
+                [ ! -s "${FILM_PASS_LOG}" ]; then
             record_pass "${label} decodes from end to end" \
-                "every packet through the decoder with -xerror, no \
-diagnostic on stderr"
+                "every packet through the decoder with -xerror, \
+${FILM_PASS_FRAMES:-no} frame(s) decoded, no diagnostic on stderr"
             continue
         fi
-        detail="$(head -n 2 "${log}" 2>/dev/null | tr '\n' ';' || true)"
+        detail="$(excerpt "${FILM_PASS_LOG}" 2)"
+        if bound_expired "${FILM_PASS_STATUS}"; then
+            record_fail "${label} decodes from end to end" \
+                "the decode did not finish within \
+${FILM_PASS_CEILING}s and was stopped (exit ${FILM_PASS_STATUS}): \
+${detail:-<no diagnostic>}" \
+                "a clean decode inside the ceiling derived from this \
+film's own byte count -- the floor throughput that ceiling assumes is \
+far below what any host achieves, so an expiry means the decoder is \
+wedged rather than that the film is long"
+            continue
+        fi
         record_fail "${label} decodes from end to end" \
-            "ffmpeg exited ${status} and reported: \
+            "ffmpeg exited ${FILM_PASS_STATUS} and reported: \
 ${detail:-<no diagnostic>}" \
             "a clean decode -- the container's metadata is read from the \
 moov atom and cannot see missing picture data, so the pictures \
@@ -3050,6 +4833,7 @@ emit_render_checker() {
 """Assert the render inputs and the film's declared identity."""
 
 import hashlib
+import io
 import json
 import os
 import sys
@@ -3078,6 +4862,24 @@ def summarise(items, limit=5):
     return shown
 
 
+# HOW MANY FINDINGS ONE VERDICT COLLECTS.  The concat list is two lines
+# per still and the stills are one per keystroke, so a list that
+# disagrees with the timeline everywhere would otherwise put one
+# diagnostic per keystroke into memory to explain it.
+PROBLEM_LIMIT = 200
+
+
+def note_problem(problems, text, limit=PROBLEM_LIMIT):
+    """Collect a finding, bounded; past the limit, say so once."""
+    if len(problems) < limit:
+        problems.append(text)
+        return
+    if len(problems) == limit:
+        problems.append("... further findings were not collected; the "
+                        "%d above are the ones this verdict carries"
+                        % limit)
+
+
 def digest(path):
     """A streamed sha256, so a film is not held in memory."""
     accumulator = hashlib.sha256()
@@ -3092,53 +4894,70 @@ def read_json(path):
         return json.load(handle)
 
 
-def parse_list(text, prefix, suffix, duration_prefix):
-    """The committed list, as (kind, value) pairs in file order.
+def iter_list_lines(path, prefix, suffix, duration_prefix):
+    """The committed list as (kind, value, line number), STREAMED.
 
     Parsed with the WRITER'S OWN prefixes, imported from render_movie,
     so the reader of these bytes cannot drift from the writer of them.
-    Anything that is neither a file line nor a duration line is returned
+    Anything that is neither a file line nor a duration line is yielded
     as a stray, because a concat list with a comment or a blank line in
     it is not the list the writer produces.
+
+    The list is two lines per still image and the still images are one
+    per keystroke plus one per transition frame, so its length is the
+    session's.  It used to be read into one string and split into a list
+    of every entry; now the file is walked once and nothing but the entry
+    in hand survives.
     """
-    entries = []
-    strays = []
-    for number, line in enumerate(text.splitlines(), 1):
-        if line.startswith(prefix) and line.endswith(suffix):
-            entries.append(("file", line[len(prefix):-len(suffix)]))
-        elif line.startswith(duration_prefix):
-            entries.append(("duration",
-                            line[len(duration_prefix):].strip()))
-        elif line.strip():
-            strays.append("line %d: %r" % (number, line[:60]))
-    return entries, strays
+    with open(path, "r", encoding="utf-8") as handle:
+        for number, raw in enumerate(handle, 1):
+            line = raw.rstrip("\n")
+            if line.startswith(prefix) and line.endswith(suffix):
+                yield ("file", line[len(prefix):-len(suffix)], number)
+            elif line.startswith(duration_prefix):
+                yield ("duration",
+                       line[len(duration_prefix):].strip(), number)
+            elif line.strip():
+                yield ("stray", line[:60], number)
 
 
-def expected_sequence(entries, transitions_dir, seconds, per_group):
-    """The (path, duration) sequence this timeline implies.
+def iter_expected(frames, seconds, per_group):
+    """The (path, duration) sequence this timeline implies, STREAMED.
 
-    Derived from the timeline document and the transitions directory
+    Derived from the timeline entries and the transition arithmetic
     rather than from render_movie's planner, on purpose: the planner's
     own output is compared byte-for-byte in the first check, and a
     SECOND, independent derivation is what makes the structural verdicts
     below meaningful when the planner cannot run at all.
+
+    `frames` is itself an iterator over the timeline's entries, so the
+    implied sequence is produced as it is consumed and neither the
+    entries nor the sequence is ever a resident list.
     """
     share = seconds / float(per_group) if per_group else 0.0
-    wanted = []
-    for entry in entries:
+    for entry in frames:
         index = entry.get("frame")
-        wanted.append(("../frames/%s" % os.path.basename(
-            str(entry.get("file", ""))), entry.get("duration")))
+        yield ("../frames/%s" % os.path.basename(
+            str(entry.get("file", ""))), entry.get("duration"))
         if not entry.get("transition_after"):
             continue
         for ordinal in range(per_group):
-            wanted.append(("transitions/trans_%05d_%02d.png"
-                           % (index, ordinal), share))
-    return wanted
+            yield ("transitions/trans_%05d_%02d.png"
+                   % (index, ordinal), share)
 
 
-def check_planned(rm, document, timeline_path, concat_path, text):
-    """The committed list against the producer's own re-derivation."""
+def check_planned(rm, document, timeline_path, concat_path):
+    """The committed list against the producer's own re-derivation.
+
+    THE COMMITTED BYTES ARE STREAMED past the re-derived text rather than
+    read into a second copy of it.  The list is two lines per still and
+    the stills are one per keystroke, so at the session lengths this
+    pipeline is built for it is tens of megabytes; the comparison used to
+    hold the committed copy, the re-derived copy, and then a split list of
+    each copy's lines to describe a difference.  The re-derived text is
+    the planner's own return value and is unavoidable here -- it is what
+    the committed bytes are being held to -- but nothing else is.
+    """
     try:
         plan = rm.plan_render(document, None, timeline_path)
         rewritten = rm.format_concat_list(plan)
@@ -3150,105 +4969,200 @@ def check_planned(rm, document, timeline_path, concat_path, text):
             "and every transition group before an encode, so a timeline "
             "it refuses could not have produced the committed list")
         return None
-    if rewritten == text:
+    differences, committed_bytes = compare_streamed(
+        concat_path, rewritten)
+    if not differences:
         ok("the concat list is exactly the list this timeline plans",
            "%d bytes reproduced byte-for-byte by "
            "render_movie.plan_render() and format_concat_list() from "
-           "%s" % (len(text.encode("utf-8")), timeline_path))
+           "%s" % (committed_bytes, timeline_path))
         return plan
     bad("the concat list is exactly the list this timeline plans",
         "the committed list differs from the re-derived one: %s"
-        % summarise(first_differences(text, rewritten)),
+        % summarise(differences),
         "identical text -- the list is a pure function of the timeline, "
         "so any difference means the film was encoded from inputs the "
         "timeline does not describe")
     return plan
 
 
-def first_differences(got, want, limit=3):
-    """The first few lines that differ, with their line numbers."""
-    got_lines = got.splitlines()
-    want_lines = want.splitlines()
-    out = []
-    for number, (a, b) in enumerate(zip(got_lines, want_lines), 1):
-        if a != b:
-            out.append("line %d is %r, planned %r" % (number, a, b))
-        if len(out) >= limit:
-            return out
-    if len(got_lines) != len(want_lines):
-        out.append("%d lines committed against %d planned"
-                   % (len(got_lines), len(want_lines)))
-    return out
+def compare_streamed(path, wanted, limit=3):
+    """(bounded differences, committed byte count) for one file.
+
+    The file is read line by line beside the planned text's own lines, so
+    a difference is found where it is rather than by diffing two whole
+    documents, and at most `limit` of them are described.
+    """
+    differences = []
+    committed_bytes = 0
+    planned = io.StringIO(wanted)
+    number = 0
+    with open(path, "r", encoding="utf-8") as handle:
+        for number, raw in enumerate(handle, 1):
+            committed_bytes += len(raw.encode("utf-8"))
+            expected = planned.readline()
+            if raw == expected:
+                continue
+            if not expected:
+                differences.append("line %d is %r, and the plan ends at "
+                                   "line %d" % (number, raw.rstrip("\n"),
+                                                number - 1))
+                break
+            if len(differences) < limit:
+                differences.append("line %d is %r, planned %r"
+                                   % (number, raw.rstrip("\n"),
+                                      expected.rstrip("\n")))
+    remaining = planned.readline()
+    if remaining:
+        differences.append("the committed list ends at line %d and the "
+                           "plan continues with %r"
+                           % (number, remaining.rstrip("\n")))
+    return differences, committed_bytes
 
 
-def check_structure(parsed, wanted, eps):
-    """One image, one duration, in timeline order."""
-    pairs = []
+def walk_list(concat_path, rm, frames, seconds, per_group, eps):
+    """One pass over the committed list beside the sequence it implies.
+
+    EVERYTHING THE THREE STRUCTURAL VERDICTS NEED, MEASURED ONCE.  The
+    list was previously parsed into a list of every entry, the timeline
+    into a list of every implied entry, and those two into a third list of
+    pairs -- three populations of the session's length to answer three
+    questions about their agreement.  Here the two streams are consumed in
+    lockstep, each pair is compared as it arrives, and what survives the
+    walk is a handful of counters plus bounded findings.
+
+    Returns a dict of what the verdicts below report on.
+    """
     problems = []
-    index = 0
-    while index < len(parsed):
-        kind, value = parsed[index]
-        if kind != "file":
-            problems.append("a duration line with no image before it at "
-                            "position %d" % (index + 1))
-            index += 1
-            continue
-        if index + 1 < len(parsed) and parsed[index + 1][0] == "duration":
-            pairs.append((value, parsed[index + 1][1]))
-            index += 2
-            continue
-        pairs.append((value, None))
-        index += 1
-    # The final entry is the repeat and carries no duration of its own;
-    # it is judged by check_repeat, so it is dropped here.
-    if pairs and pairs[-1][1] is None:
-        repeated = pairs.pop()
-    else:
-        repeated = None
-    for position, (got, want) in enumerate(zip(pairs, wanted), 1):
-        if got[0] != want[0]:
-            problems.append("entry %d names %r, the timeline implies %r"
-                            % (position, got[0], want[0]))
-            continue
-        if got[1] is None:
-            problems.append("entry %d (%s) has no duration line"
-                            % (position, got[0]))
-            continue
+    strays = []
+    pairs = 0
+    measured = 0.0
+    timed = 0
+    last_timed = None
+    pending = None
+    files = 0
+    durations = 0
+    wanted = iter_expected(frames, seconds, per_group)
+    expected_count = 0
+
+    def compare(name, duration):
+        """One committed (image, duration) against the implied one."""
+        nonlocal pairs, measured, timed, last_timed, expected_count
+        pairs += 1
         try:
-            if abs(float(got[1]) - float(want[1])) > eps:
-                problems.append("entry %d (%s) is %s s, the timeline "
-                                "says %s s"
-                                % (position, got[0], got[1], want[1]))
+            want_name, want_duration = next(wanted)
+            expected_count += 1
+        except StopIteration:
+            note_problem(problems,
+                         "entry %d names %r and the timeline implies no "
+                         "entry there" % (pairs, name))
+            return
+        if name != want_name:
+            note_problem(problems,
+                         "entry %d names %r, the timeline implies %r"
+                         % (pairs, name, want_name))
+            return
+        if duration is None:
+            note_problem(problems, "entry %d (%s) has no duration line"
+                         % (pairs, name))
+            return
+        try:
+            value = float(duration)
         except (TypeError, ValueError):
-            problems.append("entry %d (%s) has the unreadable duration "
-                            "%r" % (position, got[0], got[1]))
-    if len(pairs) != len(wanted):
-        problems.append("%d image entries against %d the timeline "
-                        "implies" % (len(pairs), len(wanted)))
-    if problems:
+            note_problem(problems,
+                         "entry %d (%s) has the unreadable duration %r"
+                         % (pairs, name, duration))
+            return
+        measured += value
+        timed += 1
+        last_timed = name
+        try:
+            if abs(value - float(want_duration)) > eps:
+                note_problem(problems,
+                             "entry %d (%s) is %s s, the timeline says "
+                             "%s s" % (pairs, name, duration,
+                                       want_duration))
+        except (TypeError, ValueError):
+            note_problem(problems,
+                         "entry %d (%s) is %s s and the timeline implies "
+                         "%r" % (pairs, name, duration, want_duration))
+
+    for kind, value, number in iter_list_lines(
+            concat_path, rm.CONCAT_FILE_PREFIX, rm.CONCAT_FILE_SUFFIX,
+            rm.CONCAT_DURATION_PREFIX):
+        if kind == "stray":
+            note_problem(strays, "line %d: %r" % (number, value))
+            continue
+        if kind == "duration":
+            durations += 1
+            if pending is None:
+                note_problem(problems,
+                             "a duration line with no image before it "
+                             "at line %d" % number)
+                continue
+            compare(pending, value)
+            pending = None
+            continue
+        files += 1
+        if pending is not None:
+            # A file line with no duration after it, and another file
+            # line following: the entry is real and its duration is
+            # missing, which compare() reports.
+            compare(pending, None)
+        pending = value
+    # The final entry is the repeat and carries no duration of its own;
+    # it is judged by check_repeat, so it is not compared here.
+    repeated = pending
+    for _ in wanted:
+        expected_count += 1
+    return {
+        "problems": problems,
+        "strays": strays,
+        "pairs": pairs,
+        "expected": expected_count,
+        "sum": measured,
+        "timed": timed,
+        "last_timed": last_timed,
+        "repeated": repeated,
+        "files": files,
+        "durations": durations,
+    }
+
+
+def check_structure(walk):
+    """One image, one duration, in timeline order."""
+    if walk["problems"] or walk["pairs"] != walk["expected"]:
+        problems = list(walk["problems"])
+        if walk["pairs"] != walk["expected"]:
+            note_problem(problems,
+                         "%d image entries against %d the timeline "
+                         "implies" % (walk["pairs"], walk["expected"]))
         bad("the concat list carries one image and one duration per "
             "capture and per transition image, in timeline order",
             summarise(problems),
             "%d pairs in frame order, each flagged capture followed by "
-            "its transition group" % len(wanted))
+            "its transition group" % walk["expected"])
     else:
         ok("the concat list carries one image and one duration per "
            "capture and per transition image, in timeline order",
            "%d image/duration pairs, every path and every duration the "
-           "timeline's own" % len(pairs))
-    return pairs, repeated
+           "timeline's own" % walk["pairs"])
 
 
-def check_repeat(rm, text, pairs, repeated):
-    """The repeated final entry, without which the film comes up short."""
-    try:
-        files, durations = rm.concat_counts(text)
-    except Exception as err:                          # noqa: BLE001
-        bad("the concat list repeats its final entry, so the last "
-            "duration takes effect", str(err),
-            "one more `file` line than `duration` lines")
-        return
-    if repeated is None or not pairs:
+def check_repeat(walk):
+    """The repeated final entry, without which the film comes up short.
+
+    THE RELATION IS THE PRODUCER'S OWN: exactly one more `file` line than
+    `duration` lines, because every entry contributes both and the final
+    entry contributes one extra file line.  render_movie.concat_counts()
+    asserts it on the text it wrote; this asserts it on the committed
+    bytes from the counts the streaming walk above took with the
+    producer's own prefixes, rather than reading the whole list into a
+    string to hand to that function.
+    """
+    files = walk["files"]
+    durations = walk["durations"]
+    if walk["repeated"] is None or not walk["pairs"]:
         bad("the concat list repeats its final entry, so the last "
             "duration takes effect",
             "the list ends with a duration line rather than a repeated "
@@ -3259,29 +5173,33 @@ def check_repeat(rm, text, pairs, repeated):
             "measured once as a 10.52 s film against an 11.75 s "
             "subtitle stream")
         return
-    if repeated[0] != pairs[-1][0]:
+    if files != durations + 1:
+        bad("the concat list repeats its final entry, so the last "
+            "duration takes effect",
+            "%d file line(s) against %d duration line(s)"
+            % (files, durations),
+            "exactly one more file line than duration lines, which is "
+            "render_movie.concat_counts()'s own relation: every entry "
+            "contributes both and the repeated final entry contributes "
+            "the extra file line")
+        return
+    if walk["repeated"] != walk["last_timed"]:
         bad("the concat list repeats its final entry, so the last "
             "duration takes effect",
             "the list ends by repeating %r, but its last timed entry is "
-            "%r" % (repeated[0], pairs[-1][0]),
+            "%r" % (walk["repeated"], walk["last_timed"]),
             "the same image repeated, so ffmpeg holds the last frame "
             "for the duration written above it")
         return
     ok("the concat list repeats its final entry, so the last duration "
        "takes effect",
        "%d file lines against %d duration lines; the repeat is %s"
-       % (files, durations, repeated[0]))
+       % (files, durations, walk["repeated"]))
 
 
-def check_sum(pairs, total, eps):
+def check_sum(walk, total, eps):
     """The durations the encoder was given, against the timeline."""
-    values = []
-    for _, value in pairs:
-        try:
-            values.append(float(value))
-        except (TypeError, ValueError):
-            continue
-    measured = sum(values)
+    measured = walk["sum"]
     if total is None:
         bad("the concat list's durations sum to the timeline's own "
             "total", "%.6f s in the list, and the timeline declares no "
@@ -3291,19 +5209,88 @@ def check_sum(pairs, total, eps):
     if abs(measured - float(total)) <= eps:
         ok("the concat list's durations sum to the timeline's own total",
            "%.6f s over %d entries against the timeline's %.3f s"
-           % (measured, len(values), float(total)))
+           % (measured, walk["timed"], float(total)))
         return
     bad("the concat list's durations sum to the timeline's own total",
         "%.6f s over %d entries against the timeline's %.3f s (%+.6f s)"
-        % (measured, len(values), float(total), measured - float(total)),
+        % (measured, walk["timed"], float(total), measured - float(total)),
         "equal within %g s -- the list is what paces the film, so a list "
         "that sums to something else produces a film the captions do not "
         "fit" % eps)
 
 
+class Digests(object):
+    """The digests this run has already taken, and the ones it takes.
+
+    GROUP 3 HASHED EVERY CAPTURE ALREADY.  It swept the whole committed
+    capture set against build/frame_digests.jsonl and appended each digest
+    it verified to the shared inventory, so the question this checker asks
+    of a capture -- "is this image the one that was recorded" -- has been
+    answered for every one of them.  Reading that answer instead of
+    hashing the population a second time is the difference between one
+    pass over the pixel evidence per run and two; at the session lengths
+    this pipeline is built for the second pass is tens of gigabytes of
+    reading for a result already on disk.
+
+    The inventory is loaded as a SET OF PATHS rather than a map of
+    digests: what is needed here is membership -- was this image held to
+    its recorded digest and did it match -- and a set of names is a
+    fraction of the footprint of a map of hex strings.
+
+    Anything NOT in it is hashed here, once, and memoised: the
+    materialised transition images are the real case, and they were
+    hashed twice over by the two checks below before this existed.  The
+    memo is bounded by the transition population rather than by the
+    session.  The capture sidecar is read only if a capture turns up
+    outside the inventory at all, which is what keeps this checker
+    correct when it is run without group 3 having run first.
+    """
+
+    def __init__(self, inventory_path, sidecar_path):
+        self.inventory_path = inventory_path
+        self.sidecar_path = sidecar_path
+        self.verified = set()
+        self.taken = {}
+        self.sidecar = None
+        self.reused = 0
+        self.hashed = 0
+        if inventory_path and os.path.exists(inventory_path):
+            with open(inventory_path, "r", encoding="utf-8") as handle:
+                for line in handle:
+                    fields = line.rstrip("\n").split("\t", 2)
+                    if len(fields) == 3:
+                        self.verified.add(os.path.normpath(fields[2]))
+
+    def already_verified(self, path):
+        """Whether group 3 held this exact file to its recorded digest."""
+        if os.path.normpath(path) in self.verified:
+            self.reused += 1
+            return True
+        return False
+
+    def of(self, path):
+        """This file's sha256, computed at most once per run."""
+        key = os.path.normpath(path)
+        if key not in self.taken:
+            self.taken[key] = digest(path)
+            self.hashed += 1
+        return self.taken[key]
+
+    def recorded_for(self, path):
+        """What the capture sidecar recorded for a capture, or None.
+
+        Read lazily, and only when a capture is named that the inventory
+        does not carry -- a checker run on its own, or a list naming a
+        frame the sweep never saw.
+        """
+        if self.sidecar is None:
+            self.sidecar = load_capture_digests(self.sidecar_path)
+        return self.sidecar.get(os.path.normpath(path))
+
+
 def load_capture_digests(path):
     recorded = {}
-    if not os.path.exists(path):
+    if not path or not os.path.exists(path):
         return recorded
     with open(path, "r", encoding="utf-8") as handle:
         for line in handle:
@@ -3332,37 +5319,51 @@ def load_transition_digests(document, directory):
     return recorded
 
 
-def check_named_images(pairs, repeated, base, captures, transitions):
-    """Every image the encoder was pointed at, as it was recorded."""
+def check_named_images(names, base, digests, transitions):
+    """Every image the encoder was pointed at, as it was recorded.
+
+    `names` is an ITERABLE of the list's image names in list order, walked
+    once: the whole (path, duration) population used to be materialised
+    into a second list here on top of the one the caller already held.
+
+    A capture the group 3 sweep already held to its recorded digest is
+    credited from the shared inventory rather than hashed again -- see
+    Digests above for why that halves the reading this gate does over an
+    unbounded capture set. A transition image is hashed here, once,
+    through the same memo the provenance check below uses.
+    """
     problems = []
     checked = 0
     seen = set()
-    listed = list(pairs)
-    if repeated is not None:
-        listed.append(repeated)
-    for name, _ in listed:
+    for name in names:
         path = os.path.normpath(os.path.join(base, name))
         if path in seen:
             continue
         seen.add(path)
         if not os.path.exists(path):
-            problems.append("%s is named by the list and is not there"
-                            % name)
+            note_problem(problems,
+                         "%s is named by the list and is not there"
+                         % name)
             continue
-        recorded = captures.get(path, transitions.get(path))
+        if digests.already_verified(path):
+            checked += 1
+            continue
+        recorded = transitions.get(path)
         if recorded is None:
-            problems.append("%s is named by the list and by no digest "
-                            "sidecar" % name)
+            recorded = digests.recorded_for(path)
+        if recorded is None:
+            note_problem(problems, "%s is named by the list and by no "
+                                   "digest sidecar" % name)
             continue
-        actual = digest(path)
+        actual = digests.of(path)
         checked += 1
         if actual != recorded[0]:
-            problems.append("%s hashes to %s, recorded as %s"
-                            % (name, actual[:16], str(recorded[0])[:16]))
+            note_problem(problems, "%s hashes to %s, recorded as %s"
+                         % (name, actual[:16], str(recorded[0])[:16]))
         elif recorded[1] is not None and \
                 os.path.getsize(path) != int(recorded[1]):
-            problems.append("%s is %d bytes, recorded as %s"
-                            % (name, os.path.getsize(path), recorded[1]))
+            note_problem(problems, "%s is %d bytes, recorded as %s"
+                         % (name, os.path.getsize(path), recorded[1]))
     if problems:
         bad("every image the concat list names is present and still "
             "hashes to its recorded digest", summarise(problems),
@@ -3371,45 +5372,95 @@ def check_named_images(pairs, repeated, base, captures, transitions):
         return
     ok("every image the concat list names is present and still hashes "
        "to its recorded digest",
-       "%d distinct images re-hashed -- captures against "
-       "build/frame_digests.jsonl and transition frames against "
-       "build/transitions.json" % checked)
+       "%d distinct images held to a recorded digest -- %d reused from "
+       "the sweep in group 3 (captures against "
+       "build/frame_digests.jsonl), %d hashed here (transition frames "
+       "against build/transitions.json)"
+       % (checked, digests.reused, digests.hashed))
 
 
 def check_transition_provenance(document, directory, transitions,
-                                flagged, per_group):
-    """The materialised transitions, against their own manifest."""
-    if not isinstance(document, dict) or not document.get("groups"):
+                                flagged, per_group, digests):
+    """The materialised transitions, against their own manifest.
+    The digest of each image comes from the shared memo, so an
+    image the concat-list sweep above already hashed is not hashed
+    a second time here: the two checks ask different questions of
+    the same bytes.
+
+
+    AN EMPTY GROUP LIST IS A VALID READING, NOT A MISSING FILE, and
+    conflating the two failed an honest session.  A session in which no
+    single keystroke moved the clock past the ceiling flags no
+    transition, so make_transitions publishes a manifest whose `groups`
+    is `[]` and composes nothing -- and this check used to read that
+    empty list as "no transition manifest could be read", so the one
+    outcome the ceiling is allowed to have would have failed the gate.
+
+    The two states are now distinguished by the KEY rather than by its
+    truthiness: a document that is not a mapping, or carries no `groups`
+    key at all, is a manifest that could not be read; a document whose
+    `groups` is an empty list is a reading, and it is held to the matching
+    claim -- zero flags and zero images on disk.
+    """
+    if not isinstance(document, dict) or "groups" not in document or \
+            not isinstance(document["groups"], list):
         bad("every materialised transition image is the one "
             "make_transitions composed",
             "no transition manifest could be read beside %s" % directory,
             "build/transitions.json, which records the sha256 and byte "
             "count of every image the transition stage composed")
         return
+    if not document["groups"]:
+        # The empty reading, held to its own claim.  Anything on disk
+        # here is an image nothing composed at this timeline, and any
+        # flag is a transition the film owes the viewer, so both are
+        # failures -- but an empty manifest for an empty flag set with
+        # an empty directory is exactly right and says so.
+        stray = sorted(
+            name for name in (os.listdir(directory)
+                              if os.path.isdir(directory) else [])
+            if not name.startswith("."))
+        if flagged or stray or transitions:
+            bad("every materialised transition image is the one "
+                "make_transitions composed",
+                "the manifest declares no group at all, against %d "
+                "flagged frame(s) %s and %d file(s) in %s"
+                % (len(flagged), sorted(flagged) or "none", len(stray),
+                   directory),
+                "a group for every flagged frame, or -- when nothing "
+                "was flagged -- no group, no recorded image and an "
+                "empty transition directory")
+            return
+        ok("every materialised transition image is the one "
+           "make_transitions composed",
+           "no frame's clock delta passed the ceiling, so the manifest "
+           "declares no group, records no image, and %s holds none"
+           % directory)
+        return
     problems = []
     for path, recorded in sorted(transitions.items()):
         if not os.path.exists(path):
-            problems.append("%s is recorded and absent"
-                            % os.path.basename(path))
+            note_problem(problems, "%s is recorded and absent"
+                         % os.path.basename(path))
             continue
-        if digest(path) != recorded[0]:
-            problems.append("%s is not the image that was composed"
-                            % os.path.basename(path))
+        if digests.of(path) != recorded[0]:
+            note_problem(problems, "%s is not the image that was "
+                                   "composed" % os.path.basename(path))
         elif recorded[1] is not None and \
                 os.path.getsize(path) != int(recorded[1]):
-            problems.append("%s is %d bytes, recorded as %s"
-                            % (os.path.basename(path),
-                               os.path.getsize(path), recorded[1]))
+            note_problem(problems, "%s is %d bytes, recorded as %s"
+                         % (os.path.basename(path),
+                            os.path.getsize(path), recorded[1]))
     declared = [group.get("frame") for group in document["groups"]]
     if sorted(n for n in declared if n is not None) != sorted(flagged):
-        problems.append("the manifest declares groups for %s against "
-                        "flags for %s"
-                        % (sorted(n for n in declared
-                                  if n is not None) or "none",
-                           sorted(flagged) or "none"))
+        note_problem(problems, "the manifest declares groups for %s "
+                               "against flags for %s"
+                     % (summarise(sorted(n for n in declared
+                                         if n is not None)) or "none",
+                        summarise(sorted(flagged)) or "none"))
     if len(transitions) != len(flagged) * per_group:
-        problems.append("%d recorded images against %d flags x %d"
-                        % (len(transitions), len(flagged), per_group))
+        note_problem(problems, "%d recorded images against %d flags x %d"
+                     % (len(transitions), len(flagged), per_group))
     if problems:
         bad("every materialised transition image is the one "
             "make_transitions composed", summarise(problems),
@@ -3461,62 +5512,68 @@ def check_declared_file(label, path, block, what):
 
 
 def check_manifest_describes(manifest, manifest_path, timeline_path,
-                             entries, flagged, width, height, total,
+                             entry_count, flagged, width, height, total,
                              eps):
     """The render manifest, against the timeline it claims to describe."""
     problems = []
     block = manifest.get("timeline")
     if not isinstance(block, dict) or not block.get("sha256"):
-        problems.append("it declares no timeline digest")
+        note_problem(problems, "it declares no timeline digest")
     elif digest(timeline_path) != block["sha256"]:
-        problems.append("it was written for a timeline hashing to %s, "
-                        "and %s hashes to %s"
-                        % (str(block["sha256"])[:16], timeline_path,
-                           digest(timeline_path)[:16]))
-    for key, measured in (("capture_count", len(entries)),
+        note_problem(problems,
+                     "it was written for a timeline hashing to %s, and "
+                     "%s hashes to %s"
+                     % (str(block["sha256"])[:16], timeline_path,
+                        digest(timeline_path)[:16]))
+    for key, measured in (("capture_count", entry_count),
                           ("group_count", len(flagged)),
                           ("width", width), ("height", height)):
         value = manifest.get(key)
         if value is None:
-            problems.append("it declares no %s" % key)
+            note_problem(problems, "it declares no %s" % key)
         elif int(value) != int(measured):
-            problems.append("it declares %s=%s against %s measured"
-                            % (key, value, measured))
+            note_problem(problems, "it declares %s=%s against %s "
+                                   "measured" % (key, value, measured))
     declared_total = manifest.get("expected_total")
     if declared_total is None:
-        problems.append("it declares no expected_total")
+        note_problem(problems, "it declares no expected_total")
     elif total is not None and \
             abs(float(declared_total) - float(total)) > eps:
-        problems.append("it declares expected_total=%s against the "
-                        "timeline's %s" % (declared_total, total))
+        note_problem(problems, "it declares expected_total=%s against "
+                               "the timeline's %s"
+                     % (declared_total, total))
     if problems:
         bad("the render manifest describes this timeline and this "
             "capture set", summarise(problems),
             "%s naming the committed timeline's digest, %d captures, %d "
             "transition group(s) and %dx%d"
-            % (manifest_path, len(entries), len(flagged), width, height))
+            % (manifest_path, entry_count, len(flagged), width, height))
         return
     ok("the render manifest describes this timeline and this capture "
        "set",
        "%s: timeline %s, %d captures, %d group(s), %.3f s, %dx%d"
-       % (manifest_path, digest(timeline_path)[:12], len(entries),
+       % (manifest_path, digest(timeline_path)[:12], entry_count,
           len(flagged), float(declared_total), width, height))
 
 
 def main(argv):
     (tooling_dir, timeline_path, concat_path, movie_path,
-     transitions_dir, digests_path, epsilon) = argv[1:8]
+     transitions_dir, digests_path, inventory_path,
+     epsilon) = argv[1:9]
     eps = float(epsilon)
     sys.path.insert(0, tooling_dir)
     import make_transitions as mt
     import render_movie as rm
+    import timeline as tl
 
-    document = read_json(timeline_path)
-    entries = document.get("frames") if isinstance(document, dict) \
-        else document
-    entries = entries or []
-    flagged = [entry.get("frame") for entry in entries
-               if entry.get("transition_after")]
+    # THE DOCUMENT'S HEADER, WITHOUT ITS ENTRIES.  Everything this checker
+    # needs from the document itself -- the declared total, the provenance
+    # blocks, the transition length -- is in the header; the entries are
+    # walked twice below, each time as an event stream from the producer's
+    # own reader.  Reading the whole document three times over, once per
+    # question, was hundreds of megabytes of dicts at the session lengths
+    # this pipeline is built for.
+    document = tl.read_timeline_header(timeline_path)
     total = document.get("total") if isinstance(document, dict) else None
     per_group = int(mt.FRAMES_PER_GROUP)
     # The transition length is READ FROM THE DOCUMENT through the
@@ -3528,30 +5585,36 @@ def main(argv):
     except Exception:                                 # noqa: BLE001
         seconds = float(mt.EXPECTED_TRANSITION)
 
-    with open(concat_path, "r", encoding="utf-8") as handle:
-        text = handle.read()
+    # THE PLANNER STILL SEES THE WHOLE DOCUMENT, and it has to: it plans
+    # every entry, and the plan is what the committed list is held to.
+    # That copy is render_movie's own, taken and released here.
+    check_planned(rm, tl.read_timeline(timeline_path), timeline_path,
+                  concat_path)
 
-    check_planned(rm, document, timeline_path, concat_path, text)
-
-    parsed, strays = parse_list(text, rm.CONCAT_FILE_PREFIX,
-                                rm.CONCAT_FILE_SUFFIX,
-                                rm.CONCAT_DURATION_PREFIX)
-    wanted = expected_sequence(entries, transitions_dir, seconds,
-                               per_group)
-    pairs, repeated = check_structure(parsed, wanted, eps)
-    if strays:
+    walk = walk_list(concat_path, rm,
+                     tl.iter_timeline_frames(timeline_path), seconds,
+                     per_group, eps)
+    check_structure(walk)
+    if walk["strays"]:
         bad("the concat list repeats its final entry, so the last "
             "duration takes effect",
             "the list carries lines that are neither an image nor a "
-            "duration: %s" % summarise(strays),
+            "duration: %s" % summarise(walk["strays"]),
             "only `file` and `duration` lines, as render_movie writes "
             "them")
     else:
-        check_repeat(rm, text, pairs, repeated)
-    check_sum(pairs, total, eps)
+        check_repeat(walk)
+    check_sum(walk, total, eps)
+
+    entry_count = 0
+    flagged = []
+    for entry in tl.iter_timeline_frames(timeline_path):
+        entry_count += 1
+        if entry.get("transition_after"):
+            flagged.append(entry.get("frame"))
 
     base = os.path.dirname(os.path.normpath(concat_path)) or os.curdir
-    captures = load_capture_digests(digests_path)
+    digests = Digests(inventory_path, digests_path)
     transitions_manifest_path = mt.generation_manifest_path(
         transitions_dir)
     try:
@@ -3560,9 +5623,11 @@ def main(argv):
         transitions_manifest = {}
     transitions = load_transition_digests(transitions_manifest,
                                           transitions_dir)
-    check_named_images(pairs, repeated, base, captures, transitions)
+    check_named_images(iter_list_names(concat_path, rm), base, digests,
+                       transitions)
     check_transition_provenance(transitions_manifest, transitions_dir,
-                                transitions, flagged, per_group)
+                                transitions, flagged, per_group,
+                                digests)
 
     manifest_path = rm.generation_manifest_path(None)
     try:
@@ -3585,11 +5650,25 @@ def main(argv):
     check_declared_file("the film is the one the render stage declared",
                         movie_path, manifest.get("movie"), manifest_rel)
     check_manifest_describes(manifest, manifest_rel, timeline_path,
-                             entries, flagged,
+                             entry_count, flagged,
                              int(manifest.get("width") or 0),
                              int(manifest.get("height") or 0), total,
                              eps)
     return 0
+
+
+def iter_list_names(concat_path, rm):
+    """Every image name the committed list carries, in list order.
+
+    A second walk of the list rather than a retained copy of it: the list
+    is a text file and re-reading it is bounded by the disk, while holding
+    its entries is bounded by the session.
+    """
+    for kind, value, _ in iter_list_lines(
+            concat_path, rm.CONCAT_FILE_PREFIX, rm.CONCAT_FILE_SUFFIX,
+            rm.CONCAT_DURATION_PREFIX):
+        if kind == "file":
+            yield value
 
 
 def relative(path):
@@ -3606,7 +5685,7 @@ PY
 }
 
 group_container() {
-    group "the container and the inputs it was built from"
+    group 4 "the container and the inputs it was built from"
     check_container_streams "${PLAYTHROUGH_MOVIE}" \
         "$(rel "${PLAYTHROUGH_MOVIE}")"
     check_container_duration
@@ -3621,12 +5700,13 @@ group_container() {
         "$(rel "${PLAYTHROUGH_MOVIE}")" \
         "$(rel "${PLAYTHROUGH_TRANSITIONS_DIR}")" \
         "$(rel "${PLAYTHROUGH_FRAME_DIGESTS}")" \
+        "$(digest_inventory)" \
         "${ARITHMETIC_EPSILON}"
     record_info "the films on disk" \
         "$(rel "${PLAYTHROUGH_MOVIE}") \
-$(wc -c <"${PLAYTHROUGH_MOVIE}" 2>/dev/null || echo '?') bytes, \
+$("${WC}" -c <"${PLAYTHROUGH_MOVIE}" 2>/dev/null || echo '?') bytes, \
 $(rel "${PLAYTHROUGH_MOVIE_CC}") \
-$(wc -c <"${PLAYTHROUGH_MOVIE_CC}" 2>/dev/null || echo '?') bytes"
+$("${WC}" -c <"${PLAYTHROUGH_MOVIE_CC}" 2>/dev/null || echo '?') bytes"
 }
 
 
@@ -3641,22 +5721,23 @@ $(wc -c <"${PLAYTHROUGH_MOVIE_CC}" 2>/dev/null || echo '?') bytes"
 # count every glyph.
 # ---------------------------------------------------------------------
 check_subtitle_stream() {
-    local readout="" codec="" language="" streams=""
+    local readout="" codec="" language="" streams="" said=""
     readout="$(probe_field "${PLAYTHROUGH_MOVIE_CC}" s \
         'stream=index,codec_name:stream_tags=language')"
+    said="$(because ffprobe)"
     streams="$(printf '%s\n' "${readout}" |
         "${GREP}" -c '^index=' || true)"
     codec="$(printf '%s\n' "${readout}" |
-        sed -n 's/^codec_name=//p' | head -n 1 || true)"
+        "${SED}" -n 's/^codec_name=//p' | "${HEAD}" -n 1 || true)"
     language="$(printf '%s\n' "${readout}" |
-        sed -n 's/^TAG:language=//p' | head -n 1 || true)"
+        "${SED}" -n 's/^TAG:language=//p' | "${HEAD}" -n 1 || true)"
 
     if [ "${streams}" = "1" ]; then
         record_pass "the captioned film carries exactly one subtitle \
 stream" "${streams} subtitle stream"
     else
         record_fail "the captioned film carries exactly one subtitle \
-stream" "${streams:-0} subtitle stream(s)" \
+stream" "${streams:-0} subtitle stream(s)${said}" \
             "exactly 1 -- one English track for one session"
     fi
 
@@ -3665,7 +5746,7 @@ stream" "${streams:-0} subtitle stream(s)" \
             "codec_name=${codec}"
     else
         record_fail "the captions are a soft, player-selectable track" \
-            "codec_name=${codec:-<no subtitle stream>}" \
+            "codec_name=${codec:-<no subtitle stream>}${said}" \
             "${SUBTITLE_CODEC_EXPECTED} -- the only subtitle codec \
 broadly supported inside MP4"
     fi
@@ -3703,23 +5784,22 @@ check_captions_not_burned_in() {
     while read -r offset; do
         [ -n "${offset}" ] || continue
         offsets+=("${offset}")
-    done < <(extract_offsets)
+    done <"$(offsets_file)"
     for offset in "${offsets[@]}"; do
-        plain="${SCRATCH}/plain-${offset}.png"
-        captioned="${SCRATCH}/captioned-${offset}.png"
-        if ! "${FFMPEG}" -nostdin -y -v error -ss "${offset}" \
-                -i "${PLAYTHROUGH_MOVIE}" -frames:v 1 "${plain}" \
-                >/dev/null 2>&1 || [ ! -s "${plain}" ]; then
+        # ONE EXTRACTION PER (FILM, OFFSET), shared with the luminance
+        # gate: both checks read the same instant out of both films, and
+        # extracting it twice was two seeks and two decodes for one
+        # picture.  See ONE DECODE PER FILM above.
+        if ! plain="$(extracted_frame "${PLAYTHROUGH_MOVIE}" \
+                "${offset}")"; then
             problems+=("no frame could be decoded out of \
-$(rel "${PLAYTHROUGH_MOVIE}") at ${offset}s")
+$(rel "${PLAYTHROUGH_MOVIE}") at ${offset}s$(because ffmpeg)")
             continue
         fi
-        if ! "${FFMPEG}" -nostdin -y -v error -ss "${offset}" \
-                -i "${PLAYTHROUGH_MOVIE_CC}" -frames:v 1 \
-                "${captioned}" >/dev/null 2>&1 ||
-                [ ! -s "${captioned}" ]; then
+        if ! captioned="$(extracted_frame "${PLAYTHROUGH_MOVIE_CC}" \
+                "${offset}")"; then
             problems+=("no frame could be decoded out of \
-$(rel "${PLAYTHROUGH_MOVIE_CC}") at ${offset}s")
+$(rel "${PLAYTHROUGH_MOVIE_CC}") at ${offset}s$(because ffmpeg)")
             continue
         fi
         # `compare` exits non-zero when the images differ, which is a
@@ -3730,7 +5810,8 @@ $(rel "${PLAYTHROUGH_MOVIE_CC}") at ${offset}s")
         # FATAL line naming this file, twice, whenever the tool was
         # absent.
         status=0
-        if metric="$("${COMPARE}" -metric AE "${captioned}" "${plain}" \
+        if metric="$(bounded "${BOUND_PROBE_SECONDS}" \
+                "${COMPARE}" -metric AE "${captioned}" "${plain}" \
                 null: 2>&1)"; then
             status=0
         else
@@ -3781,6 +5862,13 @@ TIMECODE_RE = re.compile(
 STAMP_RE = re.compile(r"[0-9]{2}:[0-9]{2}:[0-9]{2}[,.][0-9]{3}")
 ENTRY_RE = re.compile(
     r"(?m)^\*\*([0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3})\*\*")
+# The same entry, captured WITH its sentence.  Anchored at both ends and
+# non-greedy about nothing: a Markdown entry is one line, because
+# manifest.py refuses a line break inside a commentary, so an entry that
+# spans two lines is itself a finding rather than something to stitch
+# back together.
+ENTRY_BODY_RE = re.compile(
+    r"(?m)^\*\*([0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3})\*\* (.+)$")
 
 # The literal vocabulary the requirement names, applied as an ADVISORY.
 # It is deliberately NOT the failing gate: measured against the committed
@@ -3822,6 +5910,33 @@ def summarise(items, limit=6):
     return shown
 
 
+# HOW MANY FINDINGS ONE VERDICT COLLECTS.
+#
+# A broken artifact set can be broken at every index -- a whole capture
+# set re-encoded, a sidecar regenerated against the wrong tree -- and a
+# collector with no ceiling then holds one string per frame to explain a
+# failure whose FIRST example already explains it.  The verdict shows six
+# and says how many more; this is the bound on how many are kept at all.
+PROBLEM_LIMIT = 200
+
+
+def note_problem(problems, text, limit=PROBLEM_LIMIT):
+    """Collect a finding, bounded.
+
+    Past the limit a single line records that collection stopped, so the
+    verdict never claims to be exhaustive when it is not.  A verdict is
+    reached on the FACT of a failure, which the first finding establishes;
+    what the rest would add is length.
+    """
+    if len(problems) < limit:
+        problems.append(text)
+        return
+    if len(problems) == limit:
+        problems.append("... further findings were not collected; the "
+                        "%d above are the ones this verdict carries"
+                        % limit)
+
+
 def near(a, b, eps):
     return abs(float(a) - float(b)) <= eps
 
@@ -3831,112 +5946,186 @@ def seconds(hours, minutes, secs, millis):
             int(secs) + int(millis) / 1000.0)
 
 
-def parse_cues(text):
-    """Blocks of the cue file, as (number, start, end, lines)."""
-    cues = []
-    problems = []
-    blocks = re.split(r"\n[ \t]*\n", text.strip("\n"))
-    for position, block in enumerate(blocks, 1):
-        lines = block.split("\n")
-        if len(lines) < 3:
-            problems.append("block %d has %d line(s), not a sequence "
-                            "number, a timecode and text"
-                            % (position, len(lines)))
+def iter_cue_blocks(handle):
+    """The cue file's blocks, one at a time, from an open text handle.
+
+    A SubRip block is lines up to a blank line, so the file is walked and
+    each block is yielded as it closes.  The whole file used to be read
+    into one string and split on blank lines into a list of every block:
+    one cue per keystroke, so at the session lengths this pipeline is
+    built for that is the transcript twice over in memory before a single
+    cue has been judged.
+    """
+    lines = []
+    for raw in handle:
+        line = raw.rstrip("\n")
+        if line.strip():
+            lines.append(line)
             continue
-        number, timecode = lines[0].strip(), lines[1]
-        match = TIMECODE_RE.match(timecode)
-        if not match:
-            problems.append("block %d timecode %r" % (position,
-                                                      timecode))
-            continue
-        if not number.isdigit():
-            problems.append("block %d sequence %r" % (position, number))
-            continue
-        start = seconds(*match.groups()[0:4])
-        end = seconds(*match.groups()[4:8])
-        cues.append((int(number), start, end, lines[2:]))
-    return cues, problems
+        if lines:
+            yield lines
+            lines = []
+    if lines:
+        yield lines
 
 
-def check_cue_file(path, entries, eps):
+def parse_cue(lines, position, problems):
+    """One block as (number, start, end, text lines), or None."""
+    if len(lines) < 3:
+        note_problem(problems,
+                     "block %d has %d line(s), not a sequence number, a "
+                     "timecode and text" % (position, len(lines)))
+        return None
+    number, timecode = lines[0].strip(), lines[1]
+    match = TIMECODE_RE.match(timecode)
+    if not match:
+        note_problem(problems, "block %d timecode %r"
+                     % (position, timecode))
+        return None
+    if not number.isdigit():
+        note_problem(problems, "block %d sequence %r"
+                     % (position, number))
+        return None
+    return (int(number), seconds(*match.groups()[0:4]),
+            seconds(*match.groups()[4:8]), lines[2:])
+
+
+def check_cue_file(path, frames, eps, index_path):
+    """The cue file, walked once beside the timeline it came from.
+
+    Five properties are decided in that one walk -- the blocks are well
+    formed, the sequence numbers are contiguous, every cue carries text,
+    the windows advance without overlapping, and each window is the
+    timeline's own -- and the cue starts are written to a scratch index as
+    they are read, so the readable record can be held to them later
+    without either file being resident.
+
+    Returns (cue count, last cue end).
+    """
     with open(path, "rb") as handle:
-        raw = handle.read()
-    if raw.startswith(b"\xef\xbb\xbf"):
+        head = handle.read(3)
+    if head.startswith(b"\xef\xbb\xbf"):
         bad("the cue file carries no byte-order mark",
             "the file begins with a UTF-8 BOM",
             "no BOM -- a leading BOM makes the first sequence number "
             "unparsable to strict players")
     else:
         ok("the cue file carries no byte-order mark", "%d bytes"
-           % len(raw))
-    text = raw.decode("utf-8")
+           % os.path.getsize(path))
 
-    cues, problems = parse_cues(text)
-    arrows = text.count(ARROW)
-    if problems:
+    malformed = []
+    numbering = []
+    empty = []
+    ordering = []
+    drift = []
+    cues = 0
+    arrows = 0
+    frame_count = 0
+    previous_end = None
+    last_end = None
+    exhausted = False
+    with open(path, "r", encoding="utf-8") as handle, \
+            open(index_path, "w", encoding="utf-8") as index:
+        for position, block in enumerate(iter_cue_blocks(handle), 1):
+            arrows += sum(1 for line in block if ARROW in line)
+            cue = parse_cue(block, position, malformed)
+            if cue is None:
+                continue
+            number, start, end, text = cue
+            cues += 1
+            if number != cues:
+                note_problem(numbering, str(number))
+            if not any(line.strip() for line in text):
+                note_problem(empty, str(number))
+            if not end > start:
+                note_problem(ordering,
+                             "cue %d ends at %.3f, at or before its "
+                             "start %.3f" % (number, end, start))
+            if previous_end is not None and start < previous_end - eps:
+                note_problem(ordering,
+                             "cue %d starts at %.3f, before cue %d "
+                             "ended at %.3f"
+                             % (number, start, number - 1, previous_end))
+            previous_end = end
+            last_end = end
+            entry = None
+            if frames is not None and not exhausted:
+                try:
+                    entry = next(frames)
+                except StopIteration:
+                    exhausted = True
+                    entry = None
+            if entry is not None:
+                frame_count += 1
+                if not near(start, entry["cue_start"], eps) or \
+                        not near(end, entry["cue_end"], eps):
+                    note_problem(drift,
+                                 "cue %d is %.3f..%.3f, the timeline "
+                                 "says %.3f..%.3f"
+                                 % (number, start, end,
+                                    entry["cue_start"],
+                                    entry["cue_end"]))
+            # ONE INDEX RECORD PER CUE, WRITTEN AS IT IS READ.  The
+            # readable record is held to three properties of this cue
+            # later -- its start, its text, and the sentence the timeline
+            # says the entry carries -- and all three are known here, in
+            # the one walk that has the cue and its timeline entry in
+            # hand at the same moment.  Writing them down is what lets
+            # check_markdown make the comparison without either file, or
+            # the timeline, being resident: it reads one line back per
+            # entry.  It used to be the start alone, and the sentence
+            # comparison was consequently written against a whole-file
+            # read that no longer exists.
+            index.write(json.dumps(
+                {"start": start,
+                 "text": [line for line in text if line.strip()],
+                 "commentary": (entry.get("commentary")
+                                if entry is not None else None)},
+                ensure_ascii=False) + "\n")
+    if frames is not None:
+        for _ in frames:
+            frame_count += 1
+
+    if malformed:
         bad("every cue is a well formed SubRip block",
-            summarise(problems),
+            summarise(malformed),
             "a sequence number, an HH:MM:SS,mmm --> HH:MM:SS,mmm "
             "timecode with COMMA decimal separators, and text")
     else:
         ok("every cue is a well formed SubRip block",
-           "%d cues, %d arrows" % (len(cues), arrows))
+           "%d cues, %d arrows" % (cues, arrows))
 
-    numbers = [c[0] for c in cues]
-    if numbers == list(range(1, len(cues) + 1)):
-        ok("cue sequence numbers are contiguous from 1",
-           "1 .. %d" % len(cues) if cues else "no cues")
-    else:
+    if numbering:
         bad("cue sequence numbers are contiguous from 1",
-            "first divergence near %s" % summarise(
-                [n for i, n in enumerate(numbers) if n != i + 1]),
-            "1 .. %d" % len(cues))
+            "first divergence near %s" % summarise(numbering),
+            "1 .. %d" % cues)
+    else:
+        ok("cue sequence numbers are contiguous from 1",
+           "1 .. %d" % cues if cues else "no cues")
 
-    empty = [c[0] for c in cues
-             if not any(line.strip() for line in c[3])]
     if empty:
         bad("every cue carries text", summarise(empty),
-            "non-empty text in all %d cues" % len(cues))
+            "non-empty text in all %d cues" % cues)
     else:
-        ok("every cue carries text", "%d cues" % len(cues))
+        ok("every cue carries text", "%d cues" % cues)
 
-    ordering = []
-    previous_end = None
-    for number, start, end, _ in cues:
-        if not end > start:
-            ordering.append("cue %d ends at %.3f, at or before its "
-                            "start %.3f" % (number, end, start))
-        if previous_end is not None and start < previous_end - eps:
-            ordering.append("cue %d starts at %.3f, before cue %d "
-                            "ended at %.3f"
-                            % (number, start, number - 1, previous_end))
-        previous_end = end
     if ordering:
         bad("cue windows advance and never overlap", summarise(ordering),
             "end > start for every cue, and each start at or after the "
             "previous end")
     else:
-        ok("cue windows advance and never overlap", "%d cues" % len(cues))
+        ok("cue windows advance and never overlap", "%d cues" % cues)
 
-    if entries is not None:
-        if len(cues) == len(entries):
+    if frames is not None:
+        if cues == frame_count:
             ok("the cue count equals the capture count -- one caption "
                "per keystroke",
-               "%d cues == %d captures" % (len(cues), len(entries)))
+               "%d cues == %d captures" % (cues, frame_count))
         else:
             bad("the cue count equals the capture count -- one caption "
                 "per keystroke",
-                "%d cues against %d captures"
-                % (len(cues), len(entries)),
+                "%d cues against %d captures" % (cues, frame_count),
                 "equal counts")
-        drift = []
-        for (number, start, end, _), entry in zip(cues, entries):
-            if not near(start, entry["cue_start"], eps) or \
-                    not near(end, entry["cue_end"], eps):
-                drift.append(
-                    "cue %d is %.3f..%.3f, the timeline says %.3f..%.3f"
-                    % (number, start, end, entry["cue_start"],
-                       entry["cue_end"]))
         if drift:
             bad("every cue window is the timeline's own window",
                 summarise(drift),
@@ -3944,82 +6133,88 @@ def check_cue_file(path, entries, eps):
                 "film and the captions were built from")
         else:
             ok("every cue window is the timeline's own window",
-               "%d windows agree to within %s s" % (len(cues), eps))
-    return cues
+               "%d windows agree to within %s s" % (cues, eps))
+    return cues, last_end
 
 
-def check_final_cue(cues, total, eps):
-    if not cues:
+def check_final_cue(cues, last_end, total, eps):
+    if not cues or last_end is None:
         bad("the last cue ends exactly where the timeline ends",
             "there are no cues", "a final cue ending at %s s" % total)
         return
-    end = cues[-1][2]
-    if near(end, total, eps):
+    if near(last_end, total, eps):
         ok("the last cue ends exactly where the timeline ends",
-           "%.3f s" % end)
+           "%.3f s" % last_end)
     else:
         bad("the last cue ends exactly where the timeline ends",
             "the last cue ends at %.3f s, the timeline total is %s s"
-            % (end, total),
+            % (last_end, total),
             "equal -- captions that outrun or fall short of the film "
             "are drifting, and the drift grows through the session")
 
 
-def check_markdown(path, cues, entries, tooling_dir, eps):
-    """The readable record: one stamped entry per capture, in voice."""
+def check_markdown(path, index_path, cues, frame_count, tooling_dir,
+                   eps):
+    """The readable record: one stamped entry per capture, in voice.
+
+    WALKED ONCE, LINE BY LINE, beside the cue-start index the SRT walk
+    wrote.  The file used to be read whole and then split into lines
+    FOUR separate times -- once for the curated vocabulary, once for the
+    advisory list, and twice more for the two stamp counts -- so a
+    transcript of an unbounded session was resident five times over.
+    Every property below is decided as its line arrives, and the stamp
+    comparison reads one line of the index per entry.
+    """
     with open(path, "rb") as raw_handle:
-        raw = raw_handle.read()
-    if raw.startswith(b"\xef\xbb\xbf"):
+        head = raw_handle.read(3)
+    if head.startswith(b"\xef\xbb\xbf"):
         bad("the readable record carries no byte-order mark",
             "the file begins with a UTF-8 BOM", "no BOM")
-    text = raw.decode("utf-8")
 
-    stamps = ENTRY_RE.findall(text)
-    all_stamps = STAMP_RE.findall(text)
-    if entries is not None:
-        if len(stamps) == len(entries):
-            ok("the readable record has one stamped entry per capture",
-               "%d entries == %d captures" % (len(stamps), len(entries)))
-        else:
-            bad("the readable record has one stamped entry per capture",
-                "%d entries against %d captures"
-                % (len(stamps), len(entries)),
-                "equal counts")
-    if len(all_stamps) == len(stamps):
-        ok("every timestamp in the readable record opens an entry",
-           "%d stamps, %d entries" % (len(all_stamps), len(stamps)))
-    else:
-        bad("every timestamp in the readable record opens an entry",
-            "%d timestamps but %d entries" % (len(all_stamps),
-                                              len(stamps)),
-            "one stamp per entry and none anywhere else, so the file "
-            "cannot be read as claiming a time it does not index")
-
-    if cues:
-        drift = []
-        for position, (stamp, cue) in enumerate(zip(stamps, cues), 1):
-            match = STAMP_RE.match(stamp)
-            if not match:
-                drift.append("entry %d stamp %r" % (position, stamp))
-                continue
-            parts = re.split(r"[:,]", stamp)
-            value = seconds(parts[0], parts[1], parts[2], parts[3])
-            if not near(value, cue[1], eps):
-                drift.append("entry %d is stamped %s, cue %d begins at "
-                             "%.3f" % (position, stamp, cue[0], cue[1]))
-        if drift:
-            bad("the readable record's timestamps are the cue starts",
-                summarise(drift),
-                "identical -- both are generated from the one computed "
-                "timeline in a single pass")
-        else:
-            ok("the readable record's timestamps are the cue starts",
-               "%d stamps agree with %d cue starts"
-               % (len(stamps), len(cues)))
+    # THE SENTENCES THEMSELVES, and not only the times in front of them.
+    #
+    # Everything else here measures the readable record's TIMESTAMPS: one
+    # per entry, in the cue starts, none anywhere else.  None of that
+    # reads a single word of what the survivor said, so the two
+    # transcripts could have agreed perfectly about when each entry began
+    # and disagreed completely about what it was -- a Markdown file
+    # regenerated from a different record, or a caption track re-wrapped
+    # from an older one, and the drift would be invisible to a check that
+    # counts stamps.
+    #
+    # The transformation is documented and it is exactly one step: the
+    # Markdown carries the sentence WHOLE, and the cue carries the same
+    # sentence with its whitespace collapsed and wrapped at
+    # make_srt.CUE_LINE_WIDTH.  So the comparison is made in both
+    # directions against the one computed timeline -- the Markdown body
+    # against the timeline's commentary verbatim, the cue text against
+    # that body re-wrapped by the producer's OWN function, imported
+    # rather than reimplemented here so the two cannot drift apart.
+    #
+    # IT IS DECIDED PER ENTRY, as the entry arrives, against the one
+    # index record the cue walk wrote for it.  The comparison was first
+    # written against a whole-file read of both transcripts and a
+    # resident timeline; on an unbounded session that is three complete
+    # populations in memory to answer a question about one sentence at a
+    # time.
+    sentence_problems = []
+    wrapper = None
+    width = None
+    sys.path.insert(0, tooling_dir)
+    try:
+        import make_srt as ms
+        wrapper = ms.wrap_cue_text
+        width = ms.CUE_LINE_WIDTH
+    except Exception as err:                          # noqa: BLE001
+        note_problem(
+            sentence_problems,
+            "make_srt.py could not be imported (%s), so the cue text "
+            "could not be compared through the producer's own wrapper"
+            % err)
 
     # THE IN-CHARACTER GATE.  Engineering and "gamey" language belongs in
     # playthrough/TECHNICAL_NOTES.md; the record the survivor keeps is
-    # his own voice.  The failing gate is manifest.py's curated
+    # their own voice.  The failing gate is manifest.py's curated
     # vocabulary, which is written to tell a door frame from a numbered
     # one; the literal advisory list is reported beside it.
     sys.path.insert(0, tooling_dir)
@@ -4030,11 +6225,135 @@ def check_markdown(path, cues, entries, tooling_dir, eps):
             "language", "manifest.py could not be imported: %s" % err,
             "the curated vocabulary applied to every entry")
         return
+
+    entries = 0
+    all_stamps = 0
+    lines_read = 0
     hits = []
-    for number, line in enumerate(text.splitlines(), 1):
-        found = mf.find_meta_vocabulary(line)
-        if found:
-            hits.append("line %d: %s" % (number, ", ".join(found)))
+    advisory = []
+    drift = []
+    index = None
+    if cues:
+        index = open(index_path, "r", encoding="utf-8")
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            for number, raw in enumerate(handle, 1):
+                line = raw.rstrip("\n")
+                lines_read = number
+                all_stamps += len(STAMP_RE.findall(line))
+                found = mf.find_meta_vocabulary(line)
+                if found:
+                    note_problem(hits, "line %d: %s"
+                                 % (number, ", ".join(found)))
+                for match in ADVISORY_PATTERN.finditer(line):
+                    note_problem(advisory, "line %d %r"
+                                 % (number, match.group(0)))
+                match = ENTRY_RE.match(line)
+                if match is None:
+                    continue
+                entries += 1
+                body = None
+                with_body = ENTRY_BODY_RE.match(line)
+                if with_body is None:
+                    note_problem(
+                        sentence_problems,
+                        "entry %d is a stamp with no sentence after it"
+                        % entries)
+                else:
+                    body = with_body.group(2)
+                if index is None:
+                    continue
+                record = index.readline()
+                if not record.strip():
+                    note_problem(drift,
+                                 "entry %d is stamped %s and the cue "
+                                 "file has no cue there"
+                                 % (entries, match.group(1)))
+                    continue
+                try:
+                    cue_record = json.loads(record)
+                except ValueError as err:
+                    note_problem(sentence_problems,
+                                 "the cue index record for entry %d "
+                                 "could not be read: %s" % (entries, err))
+                    continue
+                start = cue_record.get("start")
+                stamp = match.group(1)
+                parts = re.split(r"[:,]", stamp)
+                value = seconds(parts[0], parts[1], parts[2], parts[3])
+                if start is None or not near(value, float(start), eps):
+                    note_problem(drift,
+                                 "entry %d is stamped %s, cue %d begins "
+                                 "at %s"
+                                 % (entries, stamp, entries, start))
+                if body is None:
+                    continue
+                declared = cue_record.get("commentary")
+                if isinstance(declared, str) and body != declared:
+                    note_problem(sentence_problems,
+                                 "entry %d reads %r, the timeline "
+                                 "records %r" % (entries, body, declared))
+                    continue
+                if wrapper is None:
+                    continue
+                recorded = cue_record.get("text") or []
+                try:
+                    expected = wrapper(body, width)
+                except Exception as err:               # noqa: BLE001
+                    note_problem(sentence_problems,
+                                 "entry %d could not be wrapped: %s"
+                                 % (entries, err))
+                    continue
+                if recorded != expected:
+                    note_problem(sentence_problems,
+                                 "cue %d carries %r, the entry wraps to "
+                                 "%r" % (entries, recorded, expected))
+    finally:
+        if index is not None:
+            index.close()
+
+    if frame_count is not None:
+        if entries == frame_count:
+            ok("the readable record has one stamped entry per capture",
+               "%d entries == %d captures" % (entries, frame_count))
+        else:
+            bad("the readable record has one stamped entry per capture",
+                "%d entries against %d captures"
+                % (entries, frame_count),
+                "equal counts")
+    if all_stamps == entries:
+        ok("every timestamp in the readable record opens an entry",
+           "%d stamps, %d entries" % (all_stamps, entries))
+    else:
+        bad("every timestamp in the readable record opens an entry",
+            "%d timestamps but %d entries" % (all_stamps, entries),
+            "one stamp per entry and none anywhere else, so the file "
+            "cannot be read as claiming a time it does not index")
+
+    if cues:
+        if sentence_problems:
+            bad("the readable record's sentences are the caption track's",
+                summarise(sentence_problems),
+                "every Markdown entry the timeline's own commentary "
+                "verbatim, and every cue that same sentence wrapped by "
+                "make_srt.wrap_cue_text at %s columns -- both files are "
+                "generated from the one timeline in a single pass, so a "
+                "difference means one of them is from another record"
+                % (width if width is not None else "the producer's"))
+        else:
+            ok("the readable record's sentences are the caption track's",
+               "%d entr(ies) equal to the timeline's commentary word for "
+               "word, and %d cue(s) equal to those sentences wrapped at "
+               "%s columns" % (entries, cues, width))
+        if drift:
+            bad("the readable record's timestamps are the cue starts",
+                summarise(drift),
+                "identical -- both are generated from the one computed "
+                "timeline in a single pass")
+        else:
+            ok("the readable record's timestamps are the cue starts",
+               "%d stamps agree with %d cue starts" % (entries, cues))
+
     if hits:
         bad("the readable record is free of meta and engineering "
             "language", summarise(hits),
@@ -4045,12 +6364,8 @@ def check_markdown(path, cues, entries, tooling_dir, eps):
         ok("the readable record is free of meta and engineering "
            "language",
            "%d lines checked against %d curated concepts"
-           % (len(text.splitlines()), len(mf.META_VOCABULARY)))
+           % (lines_read, len(mf.META_VOCABULARY)))
 
-    advisory = []
-    for number, line in enumerate(text.splitlines(), 1):
-        for match in ADVISORY_PATTERN.finditer(line):
-            advisory.append("line %d %r" % (number, match.group(0)))
     # Reported without a verdict attached, deliberately.  Saying these
     # hits ARE ordinary English would be a claim about text this run has
     # not read; the curated check above is the verdict, and this line
@@ -4064,40 +6379,80 @@ def check_markdown(path, cues, entries, tooling_dir, eps):
 
 
 def main(argv):
-    (srt_path, markdown_path, timeline_path, tooling_dir,
-     epsilon) = argv[1:6]
+    (srt_path, markdown_path, timeline_path, tooling_dir, index_path,
+     epsilon) = argv[1:7]
     eps = float(epsilon)
 
-    entries = None
+    # THE TIMELINE IS STREAMED, and only its header is parsed.  This
+    # checker walks the entries in order beside the cue file; it never
+    # looks backwards, so holding one entry per keystroke was a cost with
+    # nothing bought for it.
+    sys.path.insert(0, tooling_dir)
+    frames = None
     total = None
     try:
-        with open(timeline_path, "r", encoding="utf-8") as handle:
-            document = json.load(handle)
+        import timeline as tl
+        document = tl.read_timeline_header(timeline_path)
         if isinstance(document, dict):
-            entries = document.get("frames")
             total = document.get("total")
-        elif isinstance(document, list):
-            entries = document
-        if entries and total is None:
-            total = entries[-1].get("cue_end")
-    except (OSError, ValueError) as err:
+        frames = tl.iter_timeline_frames(timeline_path)
+        if total is None:
+            # A document with no declared total -- the bare-array form.
+            # Its last entry's cue_end is the total, found in a pass that
+            # keeps one entry rather than all of them.
+            for entry in tl.iter_timeline_frames(timeline_path):
+                total = entry.get("cue_end")
+    except Exception as err:                          # noqa: BLE001
         info("the timeline was not available to compare against",
              str(err))
+        frames = None
 
-    cues = []
+    cues = 0
+    frame_count = None
     if os.path.exists(srt_path):
-        cues = check_cue_file(srt_path, entries, eps)
+        if frames is not None:
+            counter = CountingFrames(frames)
+            cues, last_end = check_cue_file(srt_path, counter, eps,
+                                            index_path)
+            frame_count = counter.count
+        else:
+            cues, last_end = check_cue_file(srt_path, None, eps,
+                                            index_path)
         if total is not None:
-            check_final_cue(cues, total, eps)
+            check_final_cue(cues, last_end, total, eps)
     else:
         bad("the cue file exists", srt_path, "playthrough/transcript.srt")
 
     if os.path.exists(markdown_path):
-        check_markdown(markdown_path, cues, entries, tooling_dir, eps)
+        check_markdown(markdown_path, index_path, cues, frame_count,
+                       tooling_dir, eps)
     else:
         bad("the readable record exists", markdown_path,
             "playthrough/transcript.md")
     return 0
+
+
+class CountingFrames(object):
+    """An iterator that remembers how many entries it has yielded.
+
+    The cue walk needs the capture count as well as the entries, and the
+    entries arrive as a stream: counting them where they are consumed is
+    what keeps the count honest without a second pass or a resident list.
+    """
+
+    __slots__ = ("_frames", "count")
+
+    def __init__(self, frames):
+        self._frames = iter(frames)
+        self.count = 0
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        entry = next(self._frames)
+        self.count += 1
+        return entry
 
 
 if __name__ == "__main__":
@@ -4106,7 +6461,7 @@ PY
 }
 
 group_captions() {
-    group "the caption track and the transcripts"
+    group 5 "the caption track and the transcripts"
     check_subtitle_stream
     check_captioned_video_survived
     check_captions_not_burned_in
@@ -4115,6 +6470,7 @@ group_captions() {
         "${PLAYTHROUGH_TRANSCRIPT_MD}" \
         "${PLAYTHROUGH_TIMELINE}" \
         "${PLAYTHROUGH_TOOLING_DIR}" \
+        "${SCRATCH}/cue-starts" \
         "${ARITHMETIC_EPSILON}"
 }
 
@@ -4152,29 +6508,45 @@ sample_indices() {
         for (i = 0; i < s; i++) {
             print 1 + int(i * (n - 1) / (s - 1) + 0.5)
         }
-    }' | sort -n -u
+    }' | "${SORT}" -n -u
 }
 
-# sample_stream HOW_MANY -- an even spread of at most HOW_MANY lines from
-# stdin, always including the first and the last.
+# sample_file HOW_MANY FILE -- an even spread of at most HOW_MANY lines
+# of FILE, always including the first and the last.
 #
 # The companion to sample_indices, for the case where the population is a
 # LIST rather than a range: group 9 measures colour depth on the in-game
-# captures group 2 published, and those are not 1..N.  The lines are held
-# in awk rather than counted first because the caller has a stream, and
-# reading it twice would mean parsing the record twice.
-sample_stream() {
-    "${AWK}" -v s="$1" '
-        NF { line[++seen] = $0 }
-        END {
-            if (seen == 0) { exit }
+# captures group 2 published, and those are not 1..N.
+#
+# TWO PASSES OVER THE FILE, HOLDING NOTHING.  The first counts the lines
+# and the second prints the wanted ones by line number.  It used to read
+# the population from stdin, which meant holding EVERY line in awk's own
+# memory to be able to index it at the end -- one entry per in-game
+# keystroke, for a reading that wants eight of them.  A second pass over
+# a file costs a re-read; holding the population costs the session.
+sample_file() {
+    local how_many="$1"
+    local file="$2"
+    local total=""
+    total="$(count_lines "${file}")"
+    if [ "${total}" -eq 0 ]; then
+        return 0
+    fi
+    "${AWK}" -v s="${how_many}" -v seen="${total}" '
+        BEGIN {
             if (s > seen) { s = seen }
             if (s < 1) { s = 1 }
-            if (seen == 1 || s == 1) { print line[1]; exit }
-            for (i = 0; i < s; i++) {
-                print line[1 + int(i * (seen - 1) / (s - 1) + 0.5)]
+            if (seen == 1 || s == 1) { wanted[1] = 1 }
+            else {
+                for (i = 0; i < s; i++) {
+                    wanted[1 + int(i * (seen - 1) / (s - 1) + 0.5)] = 1
+                }
             }
-        }'
+        }
+        NF {
+            position++
+            if (position in wanted) { print }
+        }' "${file}"
 }
 
 # extract_offsets -- the seconds at which the films are sampled.
@@ -4185,22 +6557,42 @@ sample_stream() {
 # offset is held below the end of the film, and the result is sorted and
 # de-duplicated.  All of it in awk, because it is floating-point
 # arithmetic and the shell cannot do that.
+#
+# THE TRANSITION WINDOWS ARRIVE AS A FILE, NOT AS AN ARGUMENT.  Group 3
+# publishes one window per line in the scratch generation, and this
+# program reads that file.  They used to be joined into a single
+# space-separated `awk -v` value, which is an argument on an exec line and
+# therefore bounded by MAX_ARG_STRLEN -- 131,072 bytes on Linux, however
+# much room the whole argv has.  At about 13 bytes a window that ceiling
+# is roughly ten thousand transitions, and a session long enough to sleep
+# through ten thousand nights is exactly the session this pipeline exists
+# to allow.  Past it the gate would have died with E2BIG rather than
+# reporting anything at all.
 extract_offsets() {
-    local total=""
+    local total="" windows=""
     total="$(fact timeline_total)"
+    windows="$(windows_file)"
     if ! is_real "${total}"; then
         printf '%s\n' "${EXTRACT_OFFSET}"
         return 0
     fi
+    # SC2016 objects to the single quotes around the awk program, which
+    # are deliberate: AWK expands $1 and the array subscripts below, and
+    # the shell must not.  Every shell-side value the program needs is
+    # handed over through the -v assignments on this same command, so
+    # nothing is lost by the quoting -- double-quoting it would let the
+    # shell eat the field references before awk ever saw them.
+    # shellcheck disable=SC2016
     "${AWK}" -v total="${total}" -v first="${EXTRACT_OFFSET}" \
-        -v fractions="${EXTRACT_FRACTIONS}" \
-        -v windows="$(fact transition_windows)" 'BEGIN {
-        n = split(windows, w, " ")
-        for (i = 1; i <= n; i++) {
-            split(w[i], edge, "-")
-            start[i] = edge[1] + 0
-            stop[i] = edge[2] + 0
-        }
+        -v fractions="${EXTRACT_FRACTIONS}" '
+    # One window per line, "<start>-<stop>", read as data.
+    NF {
+        split($1, edge, "-")
+        n++
+        start[n] = edge[1] + 0
+        stop[n] = edge[2] + 0
+    }
+    END {
         limit = total - 0.25
         if (limit < 0) { limit = 0 }
         count = split(fractions, f, " ")
@@ -4226,13 +6618,78 @@ extract_offsets() {
             if (value < 0) { value = 0 }
             printf "%.3f\n", value
         }
-    }' | sort -n -u
+    }' "${windows}" | "${SORT}" -n -u
+}
+
+# windows_file -- the path of the transition-window list group 3 wrote,
+# or of an empty stand-in when group 3 has not run.  Named here so the
+# awk program above always has a file to read: awk with no input file
+# would wait on stdin.
+windows_file() {
+    local path="${SCRATCH}/transition-windows"
+    if [ ! -f "${path}" ]; then
+        : >"${path}"
+    fi
+    printf '%s' "${path}"
+}
+
+# in_game_file -- the path of the in-game capture list group 2 wrote, one
+# index per line.  Group 9's colour-depth reading samples it; see WHICH
+# CAPTURES SHOW THE GAME BEING PLAYED in the record checker for why it is
+# a file rather than a fact.
+in_game_file() {
+    local path="${SCRATCH}/in-game-frames"
+    if [ ! -f "${path}" ]; then
+        : >"${path}"
+    fi
+    printf '%s' "${path}"
+}
+
+# offsets_file -- the sampled offsets, computed once and reused.  Both
+# the burned-in comparison and the film-luminance reading walk them, and
+# a second computation would mean a second reading of the window list for
+# an answer that cannot have changed inside one run.
+offsets_file() {
+    local path="${SCRATCH}/extract-offsets"
+    if [ ! -s "${path}" ]; then
+        extract_offsets >"${path}"
+    fi
+    printf '%s' "${path}"
+}
+
+# ---------------------------------------------------------------------
+# digest_inventory -- the one place a file's sha256 is recorded per run.
+#
+# Two checkers hold committed images to the digests their producers took:
+# group 3 sweeps every capture against build/frame_digests.jsonl, and
+# group 4 holds every image the concat list names, plus every materialised
+# transition, against build/transitions.json.  Between them they used to
+# hash every capture TWICE and every transition image TWICE -- four whole
+# passes over the pixel evidence, at the disk's read rate, on a session
+# whose length is deliberately unbounded.  Measured shape at 100k frames:
+# tens of gigabytes read twice over for one answer.
+#
+# So a digest is taken ONCE and appended here as
+#
+#     <sha256> <TAB> <bytes> <TAB> <path>
+#
+# by whichever checker reaches the file first, and the others read it
+# instead of hashing again.  The file lives in the scratch generation, so
+# it cannot outlive the artifacts it describes and there is no staleness
+# to reason about; the byte count travels with the digest so an entry can
+# be held to the file it claims to be about.
+digest_inventory() {
+    local path="${SCRATCH}/digest-inventory"
+    if [ ! -f "${path}" ]; then
+        : >"${path}"
+    fi
+    printf '%s' "${path}"
 }
 
 check_one_frame_luminance() {
     local path="$1"
     local label="$2"
-    local reading="" mean="" std="" geometry=""
+    local reading="" mean="" std="" geometry_reading=""
     LAST_LUMINANCE=""
     if [ ! -f "${path}" ]; then
         record_fail "${label} is a real, non-blank image" \
@@ -4246,17 +6703,32 @@ check_one_frame_luminance() {
             ! is_real "${std}"; then
         record_fail "${label} is a real, non-blank image" \
             "could not measure grayscale statistics (read \
-'${reading}')" \
+'${reading}')$(because convert)" \
             "a mean and a standard deviation from convert"
         return 1
     fi
     LAST_LUMINANCE="${reading}"
+    # THE GEOMETRY IS MEASURED HERE, on the frame already being read.
+    # check_frame_geometry existed with no caller at all -- ShellCheck
+    # reported it as unreachable and a review asked for it to be
+    # integrated or removed -- and this is the check it belongs to: a
+    # capture that is not the full X root is not the frame the crop
+    # geometry, the clock region and every duration were computed for,
+    # and it is exactly as invisible as a black one.
+    if ! geometry_reading="$(check_frame_geometry "${path}")"; then
+        record_fail "${label} is at the X root's own resolution" \
+            "${geometry_reading}$(because identify)" \
+            "${PLAYTHROUGH_SCREEN_WIDTH}x${PLAYTHROUGH_SCREEN_HEIGHT} \
+-- capture.sh photographs the root with 'import -window root' and the \
+film is encoded at that size, so a frame of any other size was produced \
+some other way and the sidebar crop does not describe it"
+        return 1
+    fi
     if ! "${AWK}" -v m="${mean}" -v s="${std}" \
             'BEGIN { exit !(m > 0 && s > 0) }'; then
-        geometry="$("${IDENTIFY}" -format '%wx%h' "${path}" \
-            2>/dev/null || true)"
+        reading="$(geometry "${path}")"
         record_fail "${label} is a real, non-blank image" \
-            "mean=${mean} std=${std} at ${geometry:-unknown geometry}" \
+            "mean=${mean} std=${std} at ${reading:-unknown geometry}" \
             "mean > 0 AND std > 0 -- mean=0 std=0 is the \
 SDL_VIDEODRIVER=dummy signature, and std=0 alone is a uniform \
 solid-colour frame"
@@ -4265,16 +6737,30 @@ solid-colour frame"
     return 0
 }
 
+# check_frame_geometry PATH -- nothing, and 0, when the capture is at the
+# X root's own resolution; the reading it took, and 1, when it is not.
+#
+# THIS HELPER USED TO BE UNREACHABLE.  It sat here with no caller at all,
+# which shellcheck reported as SC2317, and the answer was to WIRE IT IN
+# rather than delete it: the frame it belongs to is the one
+# check_one_frame_luminance is already reading, and a capture that is not
+# the full X root is not the frame the sidebar crop, the clock region and
+# every duration were computed for -- exactly as invisible as a black
+# one.  The bulk rule still lives in check_sampled_captures, where ONE
+# awk program compares every sampled reading against
+# PLAYTHROUGH_SCREEN_WIDTH x PLAYTHROUGH_SCREEN_HEIGHT; this is the
+# single-frame form of the same question, and it asks it through the
+# shared, time-bounded `geometry` helper so there is one reader of
+# `identify` rather than two.
 check_frame_geometry() {
     local path="$1"
-    local geometry=""
-    geometry="$("${IDENTIFY}" -format '%wx%h' "${path}" \
-        2>/dev/null || true)"
-    if [ "${geometry}" = \
+    local reading=""
+    reading="$(geometry "${path}")"
+    if [ "${reading}" = \
 "${PLAYTHROUGH_SCREEN_WIDTH}x${PLAYTHROUGH_SCREEN_HEIGHT}" ]; then
         return 0
     fi
-    printf '%s' "${geometry:-unreadable}"
+    printf '%s' "${reading:-unreadable}"
     return 1
 }
 
@@ -4332,10 +6818,12 @@ measure_chunk() {
     local output="$1"
     shift
     local -a paths=("$@")
-    local produced="" lines=0 path="" reading=""
-    produced="$("${CONVERT}" "${paths[@]}" -colorspace Gray \
+    local produced="" lines=0 path="" reading="" err=""
+    err="$(tool_error_file convert)"
+    produced="$(bounded "${BOUND_CHUNK_SECONDS}" \
+        "${CONVERT}" "${paths[@]}" -colorspace Gray \
         -format '%d/%f %w %h %[fx:mean] %[fx:standard_deviation]\n' \
-        info: 2>/dev/null || true)"
+        info: 2>"${err}" || true)"
     lines="$(printf '%s\n' "${produced}" | "${GREP}" -c . || true)"
     if [ -n "${produced}" ] && [ "${lines}" -eq "${#paths[@]}" ]; then
         printf '%s\n' "${produced}" >>"${output}"
@@ -4348,8 +6836,9 @@ measure_chunk() {
             continue
         fi
         printf '%s %s %s\n' "${path}" \
-            "$("${IDENTIFY}" -format '%w %h' "${path}" \
-                2>/dev/null || printf '? ?')" \
+            "$(bounded "${BOUND_PROBE_SECONDS}" \
+                "${IDENTIFY}" -format '%w %h' "${path}" \
+                2>"$(tool_error_file identify)" || printf '? ?')" \
             "${reading}" >>"${output}"
     done
 }
@@ -4362,6 +6851,7 @@ check_sampled_captures() {
     local -a blank=()
     local -a unreadable=()
     local -a bad_geometry=()
+    local blank_count=0 unreadable_count=0 geometry_count=0
     count="$(fact capture_count)"
     if ! is_count "${count}" || [ "${count}" -eq 0 ]; then
         record_fail "every capture is a real, non-blank image" \
@@ -4405,6 +6895,13 @@ did not expand" "a printf format containing %05d"
     # comparison is done where both facts are handled natively.  A
     # reading that is not a number at all is reported as unreadable and
     # never silently treated as zero.
+    #
+    # SC2016 is disabled for this one command: every `$1`, `$4` and `$5`
+    # in the single-quoted program is an awk FIELD, and the two shell
+    # values the program needs are passed in properly with -v.  Scoped
+    # here rather than file-wide so a real unexpanded variable elsewhere
+    # still fails the default lint.
+    # shellcheck disable=SC2016
     summary="$("${AWK}" -v expw="${PLAYTHROUGH_SCREEN_WIDTH}" \
         -v exph="${PLAYTHROUGH_SCREEN_HEIGHT}" '
         function numeric(value) {
@@ -4425,12 +6922,35 @@ did not expand" "a printf format containing %05d"
             }
         }
         END { printf "COUNT %d\n", seen }' "${readings}")"
+    # THE DIAGNOSTIC LISTS ARE BOUNDED.  A whole capture set that came
+    # back blank -- the SDL_VIDEODRIVER=dummy signature, which is the
+    # failure this gate exists for -- would otherwise put one entry per
+    # capture into three shell arrays and then into one report line.  The
+    # verdict is reached on the FACT that a frame was blank; the count
+    # says how many, and a handful of indices says where to look.
     while IFS= read -r detail; do
         kind="${detail%% *}"
         case "${kind}" in
-            BLANK) blank+=("${detail#BLANK }") ;;
-            UNREADABLE) unreadable+=("${detail#UNREADABLE }") ;;
-            GEOMETRY) bad_geometry+=("${detail#GEOMETRY }") ;;
+            BLANK)
+                blank_count=$((blank_count + 1))
+                if [ "${#blank[@]}" -lt "${DIAGNOSTIC_LIMIT}" ]; then
+                    blank+=("${detail#BLANK }")
+                fi
+                ;;
+            UNREADABLE)
+                unreadable_count=$((unreadable_count + 1))
+                if [ "${#unreadable[@]}" -lt \
+                        "${DIAGNOSTIC_LIMIT}" ]; then
+                    unreadable+=("${detail#UNREADABLE }")
+                fi
+                ;;
+            GEOMETRY)
+                geometry_count=$((geometry_count + 1))
+                if [ "${#bad_geometry[@]}" -lt \
+                        "${DIAGNOSTIC_LIMIT}" ]; then
+                    bad_geometry+=("${detail#GEOMETRY }")
+                fi
+                ;;
             COUNT) checked="${detail#COUNT }" ;;
         esac
     done <<EOF
@@ -4441,30 +6961,31 @@ EOF
     if [ "${LUMINANCE_SAMPLES}" = "${LUMINANCE_SAMPLES_ALL}" ]; then
         scope="every one of the ${count} committed captures"
     else
-        scope="${checked} of ${count} captures (a spread; the default \
-reads every one)"
+        scope="${checked} of ${count} captures (an even spread \
+including the first and the last; --samples all decodes every one, and \
+the capture stage's own reading below covers all ${count})"
     fi
-    if [ "${#blank[@]}" -eq 0 ] && [ "${#unreadable[@]}" -eq 0 ] &&
-            [ "${checked}" -eq \
-"$("${GREP}" -c . "${list}" || printf 0)" ]; then
+    if [ "${blank_count}" -eq 0 ] && [ "${unreadable_count}" -eq 0 ] &&
+            [ "${checked}" -eq "$(count_lines "${list}")" ]; then
         record_pass "every capture is a real, non-blank image" \
             "${scope} read: each has mean > 0 and std > 0"
     else
         record_fail "every capture is a real, non-blank image" \
-            "${checked} read of $("${GREP}" -c . "${list}" \
-|| printf 0) requested; blank: ${blank[*]:-none}; unreadable: \
-${unreadable[*]:-none}" \
+            "${checked} read of $(count_lines "${list}") \
+requested; blank: ${blank_count} \
+(${blank[*]:-none}); unreadable: ${unreadable_count} \
+(${unreadable[*]:-none})$(because convert)" \
             "mean > 0 AND std > 0 on every capture read -- mean=0 std=0 \
 is the SDL_VIDEODRIVER=dummy signature, and std=0 alone is a uniform \
 solid-colour frame"
     fi
-    if [ "${#bad_geometry[@]}" -eq 0 ]; then
+    if [ "${geometry_count}" -eq 0 ]; then
         record_pass "every capture is at the X root's resolution" \
             "${checked} captures at \
 ${PLAYTHROUGH_SCREEN_WIDTH}x${PLAYTHROUGH_SCREEN_HEIGHT}"
     else
         record_fail "every capture is at the X root's resolution" \
-            "${bad_geometry[*]}" \
+            "${geometry_count} at another size (${bad_geometry[*]})" \
             "${PLAYTHROUGH_SCREEN_WIDTH}x${PLAYTHROUGH_SCREEN_HEIGHT} \
 on every capture -- a smaller frame means the game window was \
 photographed instead of the root"
@@ -4483,7 +7004,7 @@ photographed instead of the root"
 # about some other frame.
 check_recorded_luminance() {
     local path="${PLAYTHROUGH_OBSERVATIONS}"
-    local outcome=""
+    local outcome="" ceiling="" status=0
     if [ ! -f "${path}" ]; then
         record_fail "the capture stage recorded a non-blank reading for \
 every frame as it was taken" \
@@ -4492,14 +7013,35 @@ every frame as it was taken" \
 capture with the mean and standard deviation it measured at the time"
         return 0
     fi
-    outcome="$("${PYTHON}" -B -c '
+    ceiling="$(checker_bound)"
+    # BOUNDED, AND READ A ROW AT A TIME.  The sidecar carries one row per
+    # capture, so this child scales with the session exactly as the
+    # checkers in the groups above do: it streams the file, and the only
+    # thing it accumulates per row is the frame number the distinct-count
+    # is proved from.  The diagnostic list is capped, because "every row
+    # was already blank" is the realistic shape of a failure here and an
+    # unbounded list would hold one string per capture to print five.
+    outcome="$(bounded "${ceiling}" "${PYTHON}" -B -c '
 import json
 import sys
+
+PROBLEM_LIMIT = 200
 
 path, count = sys.argv[1], int(sys.argv[2])
 rows = 0
 problems = []
+suppressed = 0
 frames = set()
+
+
+def note(text):
+    global suppressed
+    if len(problems) < PROBLEM_LIMIT:
+        problems.append(text)
+    else:
+        suppressed += 1
+
+
 with open(path, "r", encoding="utf-8") as handle:
     for number, line in enumerate(handle, 1):
         if not line.strip():
@@ -4508,29 +7050,40 @@ with open(path, "r", encoding="utf-8") as handle:
         try:
             row = json.loads(line)
         except ValueError as err:
-            problems.append("line %d: %s" % (number, err))
+            note("line %d: %s" % (number, err))
             continue
         frames.add(row.get("frame"))
         try:
             mean = float(row.get("luma_mean"))
             std = float(row.get("luma_stddev"))
         except (TypeError, ValueError):
-            problems.append("frame %s recorded %r/%r"
-                            % (row.get("frame"), row.get("luma_mean"),
-                               row.get("luma_stddev")))
+            note("frame %s recorded %r/%r"
+                 % (row.get("frame"), row.get("luma_mean"),
+                    row.get("luma_stddev")))
             continue
         if not (mean > 0 and std > 0):
-            problems.append("frame %s was already mean=%s std=%s when "
-                            "it was captured"
-                            % (row.get("frame"), mean, std))
+            note("frame %s was already mean=%s std=%s when "
+                 "it was captured" % (row.get("frame"), mean, std))
 if rows != count or len(frames) != count:
     problems.append("%d row(s) covering %d frame(s) against %d captures"
                     % (rows, len(frames), count))
 if problems:
-    print("FAIL %s" % "; ".join(problems[:5]))
+    more = ""
+    if suppressed:
+        more = " (+%d more not named)" % suppressed
+    print("FAIL %s%s" % ("; ".join(problems[:5]), more))
 else:
     print("PASS %d rows, every one recording mean > 0 and std > 0" % rows)
-' "${path}" "$(fact capture_count 0)" 2>&1 || true)"
+' "${path}" "$(fact capture_count 0)" 2>&1)" || status=$?
+    if bound_expired "${status}"; then
+        record_fail "the capture stage recorded a non-blank reading for \
+every frame as it was taken" \
+            "the reading of $(rel "${path}") did not finish within \
+${ceiling}s and was stopped" \
+            "a sidecar this gate can read within a ceiling derived from \
+the capture count"
+        return 0
+    fi
     case "${outcome}" in
         PASS*)
             record_pass "the capture stage recorded a non-blank reading \
@@ -4566,21 +7119,23 @@ check_film_luminance() {
     while read -r offset; do
         [ -n "${offset}" ] || continue
         offsets+=("${offset}")
-    done < <(extract_offsets)
+    done <"$(offsets_file)"
     for file in "${PLAYTHROUGH_MOVIE}" "${PLAYTHROUGH_MOVIE_CC}"; do
         label="$(rel "${file}")"
         failures=0
         taken=0
         readings=""
         for offset in "${offsets[@]}"; do
-            extracted="${SCRATCH}/luminance-$(basename \
-"${file}")-${offset}.png"
-            if ! "${FFMPEG}" -nostdin -y -v error -ss "${offset}" \
-                    -i "${file}" -frames:v 1 "${extracted}" \
-                    >/dev/null 2>&1 || [ ! -s "${extracted}" ]; then
+            # THE SAME EXTRACTION THE BURNED-IN COMPARISON USED.  Both
+            # checks read the same instant out of the same two films, and
+            # extracting it twice was two seeks and two decodes for one
+            # picture; see ONE DECODE PER FILM above.
+            if ! extracted="$(extracted_frame "${file}" \
+                    "${offset}")"; then
                 record_fail "frames taken out of ${label} are not \
 blank" \
-                    "no frame could be decoded at ${offset}s" \
+                    "no frame could be decoded at ${offset}s\
+$(because ffmpeg)" \
                     "one decodable frame at each of ${offsets[*]}s -- a \
 film that stops early cannot answer for its later seconds"
                 failures=$((failures + 1))
@@ -4603,7 +7158,7 @@ film that stops early cannot answer for its later seconds"
 }
 
 group_luminance() {
-    group "the luminance gate -- proof the pixels are real"
+    group 6 "the luminance gate -- proof the pixels are real"
     record_info "the calibration reading behind this threshold" \
         "${LUMINANCE_REFERENCE}"
     check_sampled_captures
@@ -4636,6 +7191,43 @@ group_luminance() {
 # `#if defined(__ANDROID__)` (src/game_io.cpp:629-634): it is an Android
 # file and will never appear on a Linux host.  A gate that required it
 # would fail every correct run.
+#
+# AND A DEATH ENDING LEAVES NO LIVE WORLD BEHIND AT ALL, WHICH IS THE
+# ENGINE'S OWN DOING AND NOT A LOST ARTIFACT.  Death is a sanctioned
+# ending, and when the survivor who died was the world's only character
+# `turn_handler::cleanup_at_end()` (src/do_turn.cpp:111-207) does two
+# things that this group has to know about:
+#
+#   1. `move_save_to_graveyard()` (src/game_io.cpp:247-275) RENAMES every
+#      `save/<World>/#<b64>.*` file into
+#      `<userdir>/graveyard/<timestamp>/`.  The survivor's save is
+#      relocated, not deleted -- and the leading '#' moves with it, so
+#      the graveyard copy is subject to .gitignore's `\#*` rule exactly
+#      as the live one was.  Tracking it proves the same property.
+#   2. `characters.empty()` is then true, and WORLD_END decides what
+#      happens to the world.  Its engine DEFAULT is "reset"
+#      (src/options.cpp:2836-2841), which calls
+#      `delete_world(name, false)` (src/worldfactory.cpp:2458-2496) --
+#      documented there as "Clear out everything except options and mods
+#      and compression dictionaries".  `isForbidden()`
+#      (src/worldfactory.cpp:2449-2456) spares only worldoptions.json,
+#      mods.json and *.dict, so master.gsav, the maps, the overmaps and
+#      the live character files are all removed.
+#
+# So on a death-ended world, `master.gsav` is ABSENT BY DESIGN and a gate
+# that demanded one in the index would fail every correct death ending.
+# The proof that R1 was honoured is then in HISTORY, which is what R1
+# asks for anyway -- a commit after character creation and another after
+# the ending.  This group therefore accepts the death shape only when all
+# three of its parts are present: a commit reachable from HEAD that
+# carries a master.gsav, a tracked relocated save in the graveyard, and a
+# WORLD_END of "reset" or "delete" in the tracked worldoptions.json.
+#
+# THAT THIRD REQUIREMENT IS WHAT KEEPS THE CHECK STRONG.  The failure
+# this whole group exists to catch is the silent one: `git add` skipping
+# an ignored save and exiting 0.  In that failure NO commit carries a
+# master.gsav and NO graveyard save is tracked, so the death shape is not
+# available to it and the verdict is still FAIL.
 # ---------------------------------------------------------------------
 git_tracked() {
     "${GIT}" ls-files -- "$@" 2>/dev/null || true
@@ -4679,35 +7271,148 @@ character_save_paths() {
 # then an argument rather than something the shell has to be trusted not
 # to split, and the depth bounds keep the search to save/<World>/<file>.
 saves_on_disk() {
-    find "${PLAYTHROUGH_SAVE_DIR}" -mindepth 2 -maxdepth 2 -type f \
+    "${FIND}" "${PLAYTHROUGH_SAVE_DIR}" -mindepth 2 -maxdepth 2 -type f \
         -name "$1" -print 2>/dev/null || true
+}
+
+# Where a death puts the survivor's save.  graveyarddir_path() is
+# `user_dir / "graveyard"` (src/path_info.cpp:300-302) and
+# move_save_to_graveyard writes one `<timestamp>` directory beneath it
+# per death (src/game_io.cpp:247-275), so the saves sit exactly two
+# levels down -- the same depth the live ones sit at under save/.
+readonly PLAYTHROUGH_GRAVEYARD_DIR="${PLAYTHROUGH_USERDIR}/graveyard"
+
+# graveyard_save_paths -- the TRACKED character save files a death
+# relocated, in either accepted shape.  One per line; empty when none.
+graveyard_save_paths() {
+    git_tracked "${PLAYTHROUGH_GRAVEYARD_DIR}" |
+        "${GREP}" -E '/#[^/]*\.sav(\.zzip)?$' || true
+}
+
+# graveyard_saves_on_disk -- the same files as they EXIST, whatever git
+# thinks of them, for the same reason saves_on_disk is measured off the
+# filesystem: a list built from the index is empty precisely when the
+# save was never added, and a check over an empty list reports success.
+graveyard_saves_on_disk() {
+    "${FIND}" "${PLAYTHROUGH_GRAVEYARD_DIR}" -mindepth 2 -maxdepth 2 \
+        -type f -name '#*.sav' -print 2>/dev/null || true
+}
+
+# world_end_value -- the WORLD_END this world was played under, read out
+# of the COMMITTED worldoptions.json.  Committed rather than on-disk
+# because it is being used as evidence: the file a stranger can read is
+# the one in the commit.  Nothing is printed when it cannot be read, and
+# the caller treats that as "no death shape available".
+world_end_value() {
+    local path=""
+    path="$(git_tracked "${PLAYTHROUGH_SAVE_DIR}" |
+        "${GREP}" -m 1 '/worldoptions\.json$' || true)"
+    if [ -z "${path}" ]; then
+        return 1
+    fi
+    "${GIT}" show "HEAD:${path}" 2>/dev/null |
+        bounded "${BOUND_PROBE_SECONDS}" \
+            "${PYTHON}" -B -c "${WORLDOPTIONS_STDIN_READER}" \
+            2>/dev/null || return 1
+}
+
+# history_master_commit -- the newest commit reachable from HEAD whose
+# tree carries a master.gsav under the save directory, or nothing.
+#
+# `rev-list HEAD -- <dir>` lists only the commits where that directory
+# CHANGED, so this walks the checkpoints rather than the whole history,
+# and the tree is then read directly instead of being inferred from the
+# diff: a commit that DELETED the file also "touches" it, and only the
+# tree can tell the two apart.
+history_master_commit() {
+    local rel_dir="" commit=""
+    rel_dir="$(rel "${PLAYTHROUGH_SAVE_DIR}")"
+    while IFS= read -r commit; do
+        [ -n "${commit}" ] || continue
+        if "${GIT}" ls-tree -r --name-only "${commit}" -- "${rel_dir}" \
+                2>/dev/null | "${GREP}" -q '/master\.gsav$'; then
+            printf '%s\n' "${commit}"
+            return 0
+        fi
+    done < <("${GIT}" rev-list HEAD -- "${rel_dir}" 2>/dev/null || true)
+    return 0
 }
 
 check_save_tracked() {
     local masters="" saves="" worldoptions=""
+    local buried="" world_end="" carrier=""
     masters="$(git_tracked "${PLAYTHROUGH_SAVE_DIR}" |
         "${GREP}" -c '/master\.gsav$' || true)"
+    buried="$(graveyard_save_paths | "${GREP}" -c . || true)"
     if [ "${masters:-0}" -ge 1 ]; then
         record_pass "the world's own save file is tracked by git" \
             "${masters} master.gsav (SAVE_MASTER, src/path_info.h:11)"
     else
-        record_fail "the world's own save file is tracked by git" \
-            "no master.gsav under $(rel "${PLAYTHROUGH_SAVE_DIR}") is \
-tracked" \
-            "at least one -- without it there is no world to resume"
+        world_end="$(world_end_value || true)"
+        carrier="$(history_master_commit)"
+        if [ -n "${carrier}" ] && [ "${buried:-0}" -ge 1 ] &&
+                { [ "${world_end}" = "reset" ] ||
+                    [ "${world_end}" = "delete" ]; }; then
+            record_pass "the world's own save file is tracked by git" \
+                "no LIVE master.gsav, and correctly so: this survivor \
+died, and the committed worldoptions.json records \
+WORLD_END='${world_end}' -- the engine's own default \
+(src/options.cpp:2836-2841) -- so cleanup_at_end cleared the world \
+(src/do_turn.cpp:190-196, src/worldfactory.cpp:2458-2496).  It WAS \
+committed: commit ${carrier} carries a master.gsav under \
+$(rel "${PLAYTHROUGH_SAVE_DIR}").  And the survivor's save was \
+relocated rather than lost -- ${buried} tracked file(s) under \
+$(rel "${PLAYTHROUGH_GRAVEYARD_DIR}")"
+        else
+            local unaccounted=""
+            if [ -z "${carrier}" ]; then
+                unaccounted="no commit reachable from HEAD carries one \
+either, which is exactly what a save git never added looks like"
+            fi
+            if [ "${buried:-0}" -lt 1 ]; then
+                unaccounted="${unaccounted}${unaccounted:+; }no \
+relocated survivor save is tracked under \
+$(rel "${PLAYTHROUGH_GRAVEYARD_DIR}"), so no death cleanup accounts \
+for the absence"
+            fi
+            if [ "${world_end}" != "reset" ] &&
+                    [ "${world_end}" != "delete" ]; then
+                unaccounted="${unaccounted}${unaccounted:+; }the \
+committed worldoptions.json records WORLD_END=\
+'"'"'${world_end:-unreadable}'"'"', which does not clear a world"
+            fi
+            record_fail "the world's own save file is tracked by git" \
+                "no master.gsav under $(rel "${PLAYTHROUGH_SAVE_DIR}") \
+is tracked, and nothing accounts for it: ${unaccounted}" \
+                "either a tracked master.gsav, or -- for a world the \
+engine cleared after a death -- all three of a commit that carries one, \
+a tracked relocated save in the graveyard, and WORLD_END=reset or \
+delete in the committed worldoptions.json"
+        fi
     fi
 
     saves="$(character_save_paths | "${GREP}" -c . || true)"
     if [ "${saves:-0}" -ge 1 ]; then
         record_pass "the survivor's own save file is tracked by git" \
             "${saves} file(s) matching #<base64>.sav or \
-#<base64>.sav.zzip -- both shapes are correct, the compressed one being \
-the default"
+#<base64>.sav.zzip under $(rel "${PLAYTHROUGH_SAVE_DIR}") -- both \
+shapes are correct, the compressed one being the default"
+    elif [ "${buried:-0}" -ge 1 ]; then
+        record_pass "the survivor's own save file is tracked by git" \
+            "${buried} file(s) matching #<base64>.sav or \
+#<base64>.sav.zzip under $(rel "${PLAYTHROUGH_GRAVEYARD_DIR}"), where \
+move_save_to_graveyard RENAMED them when this survivor died \
+(src/game_io.cpp:247-275).  The leading '#' moved with the file, so the \
+graveyard path is subject to .gitignore's \\#* rule (line 131) exactly \
+as the live one was, and tracking it proves the same property"
     else
         record_fail "the survivor's own save file is tracked by git" \
-            "no #<base64>.sav or #<base64>.sav.zzip is tracked" \
-            "at least one; if none is tracked, .gitignore's \\#* rule \
-(line 131) swallowed it and 'git add' said nothing"
+            "no #<base64>.sav or #<base64>.sav.zzip is tracked under \
+either $(rel "${PLAYTHROUGH_SAVE_DIR}") or \
+$(rel "${PLAYTHROUGH_GRAVEYARD_DIR}")" \
+            "at least one, in either place; if none is tracked, \
+.gitignore's \\#* rule (line 131) swallowed it and 'git add' said \
+nothing"
     fi
 
     worldoptions="$(git_tracked "${PLAYTHROUGH_SAVE_DIR}" |
@@ -4749,8 +7454,8 @@ the default"
 # ---------------------------------------------------------------------
 deciding_ignore_pattern() {
     "${GIT}" check-ignore -v --no-index -- "$1" 2>/dev/null |
-        head -n 1 |
-        sed -e 's/\t.*$//' -e 's/^[^:]*:[0-9]*://' || true
+        "${HEAD}" -n 1 |
+        "${SED}" -e 's/\t.*$//' -e 's/^[^:]*:[0-9]*://' || true
 }
 
 check_nothing_ignored() {
@@ -4775,6 +7480,14 @@ check_nothing_ignored() {
             paths+=("${path}")
         done < <(saves_on_disk "${pattern}")
     done
+    # A death moves the character save into the graveyard, where its
+    # name still begins with '#'.  It is the file `\#*` would swallow on
+    # a death-ended session, so it belongs in this sample whenever it
+    # exists.
+    while IFS= read -r path; do
+        [ -n "${path}" ] || continue
+        paths+=("${path}")
+    done < <(graveyard_saves_on_disk)
     for path in "${PLAYTHROUGH_CONFIG_DIR}/debug.log" \
             "${PLAYTHROUGH_USERDIR}/debug.log"; do
         if [ -f "${path}" ]; then
@@ -4797,11 +7510,12 @@ check_nothing_ignored() {
     if [ "${#ignored[@]}" -eq 0 ]; then
         record_pass "git's ignore rules exclude none of the artifact \
 classes" \
-            "${#paths[@]} representative paths -- a character save, \
-master.gsav, worldoptions.json, an engine log, a capture, both films, \
-the cue file, the readable record, the record, the timeline, the concat \
-list, the dossier and the requirements -- of which ${negations} are \
-re-included by a negation and ${unmatched} match no rule at all"
+            "${#paths[@]} representative paths -- a character save \
+live or buried, master.gsav, worldoptions.json, an engine log, a \
+capture, both films, the cue file, the readable record, the record, the \
+timeline, the concat list, the dossier and the requirements -- of which \
+${negations} are re-included by a negation and ${unmatched} match no \
+rule at all"
         return 0
     fi
     record_fail "git's ignore rules exclude none of the artifact \
@@ -4857,11 +7571,22 @@ film, transcripts and the requirements are all committed"
 check_tracked_frame_count() {
     local tracked="" ondisk=""
     tracked="$(git_tracked_count "${PLAYTHROUGH_FRAMES_DIR}")"
+    # GROUP 2'S COUNT WHEN THERE IS ONE, AND THIS GROUP'S OWN OTHERWISE.
+    # The post-commit phase measures the history without re-measuring the
+    # artifacts, so group 2 has not run and no fact has been published --
+    # and this check must not fail for the absence of a number it can
+    # take for itself.  Counting the record's lines is one process and no
+    # resident list, and group 2 asserts elsewhere that that number is
+    # the capture count.
     ondisk="$(fact capture_count)"
     if ! is_count "${ondisk}"; then
+        ondisk="$(count_lines "${PLAYTHROUGH_MANIFEST}")"
+    fi
+    if ! is_count "${ondisk}" || [ "${ondisk}" -eq 0 ]; then
         record_fail "every capture on disk is tracked by git" \
-            "the on-disk capture count was not established" \
-            "a count from group 2"
+            "the on-disk capture count could not be established, from \
+group 2 or from $(rel "${PLAYTHROUGH_MANIFEST}")" \
+            "a capture count to compare the tracked count against"
         return 0
     fi
     if [ "${tracked:-0}" -eq "${ondisk}" ]; then
@@ -4886,8 +7611,8 @@ check_nothing_uncommitted() {
         return 0
     fi
     record_fail "nothing under playthrough/ is left uncommitted" \
-        "${count} path(s): $(printf '%s' "${dirty}" | head -n 6 |
-            tr '\n' ';')" \
+        "${count} path(s): $(printf '%s' "${dirty}" | "${HEAD}" -n 6 |
+            "${TR}" '\n' ';')" \
         "an empty porcelain -- every artifact staged and committed"
 }
 
@@ -4899,12 +7624,12 @@ playthrough/}"
     while IFS= read -r path; do
         [ -n "${path}" ] || continue
         found+=("$(rel "${path}")")
-    done < <(find "${PLAYTHROUGH_DIR}" \
+    done < <("${FIND}" "${PLAYTHROUGH_DIR}" \
         \( -name '__pycache__' -o -name '*.pyc' -o -name '*.pyo' \) \
         -print 2>/dev/null || true)
     local tracked=""
     tracked="$(git_tracked "${PLAYTHROUGH_DIR}" |
-        "${GREP}" -E '(__pycache__|\.pyc$|\.pyo$)' | head -n 3 || true)"
+        "${GREP}" -E '(__pycache__|\.pyc$|\.pyo$)' | "${HEAD}" -n 3 || true)"
     if [ "${#found[@]}" -eq 0 ] && [ -z "${tracked}" ]; then
         record_pass "${name}" \
             "no __pycache__, .pyc or .pyo on disk or in the index"
@@ -4933,7 +7658,7 @@ no re-exclusion, so a stray file here WOULD become trackable"
 # dossier's prose; what it reads is the first commit that introduced each
 # path and the ancestry between them, so that is what it reports.
 first_commit_for() {
-    "${GIT}" log --format='%H' -- "$1" 2>/dev/null | tail -n 1 || true
+    "${GIT}" log --format='%H' -- "$1" 2>/dev/null | "${TAIL}" -n 1 || true
 }
 
 check_commit_order() {
@@ -5006,19 +7731,98 @@ capture's -- on separate branches neither precedes the other, and the \
 requirement is an order rather than a coexistence"
 }
 
+# THE IDENTITY IS READ FROM THIS REPOSITORY, NOT FROM THE ACCOUNT.
+#
+# A review found this reading a plain `git config user.name`, which walks
+# the whole cascade -- repository, then ~/.gitconfig, then
+# /etc/gitconfig, then the GIT_AUTHOR_* environment.  So a host whose
+# global configuration happened to carry an identity passed the check
+# while the REPOSITORY carried none, and the plan's requirement is
+# specifically a repository-local one: section 0.3.1 has
+# commit_artifacts.sh "set the repository-local git identity", and
+# section 0.10.2 lists "the git identity is set repository-locally" under
+# least privilege over the repository, because an identity that lives in
+# the account is an identity a different account, a container, or a fresh
+# checkout of this branch does not have.  A gate that reads the cascade
+# cannot tell the two apart, and reports the account's settings as though
+# they were the repository's.
+#
+# So `--local` is used, and WHERE THE VALUE CAME FROM IS REPORTED
+# alongside it: the check is about a property of this checkout, and a
+# reader needs to see that it was read from this checkout.  The
+# inherited values are read too, and reported when they differ, because
+# "the repository has none but the account does" is the exact confusion
+# this fix exists to end and naming it is more use than hiding it.
+#
+# BEING SET IS ALSO NOT THE WHOLE REQUIREMENT.  A local identity that
+# disagrees with the identity the evidence was actually committed under
+# describes a machine rather than this history, so the configured pair is
+# compared against the author of the newest commit that touched
+# playthrough/.  Before the first such commit there is nothing to compare
+# with, and that is stated rather than silently skipped.
 check_git_identity() {
-    local name="" email=""
-    name="$("${GIT}" config user.name 2>/dev/null || true)"
-    email="$("${GIT}" config user.email 2>/dev/null || true)"
-    if [ -n "${name}" ] && [ -n "${email}" ]; then
-        record_pass "git has an identity to commit these artifacts \
-under" "${name} <${email}>"
+    local name="" email="" inherited_name="" inherited_email=""
+    local configured="" committed=""
+    local -a missing=()
+    local detail=""
+    name="$("${GIT}" config --local --get user.name 2>/dev/null || true)"
+    email="$("${GIT}" config --local --get user.email 2>/dev/null ||
+        true)"
+    inherited_name="$("${GIT}" config --get user.name 2>/dev/null ||
+        true)"
+    inherited_email="$("${GIT}" config --get user.email 2>/dev/null ||
+        true)"
+    [ -n "${name}" ] || missing+=("user.name")
+    [ -n "${email}" ] || missing+=("user.email")
+    if [ "${#missing[@]}" -eq 0 ]; then
+        configured="${name} <${email}>"
+        committed="$("${GIT}" log --max-count=1 --format='%an <%ae>' \
+            HEAD -- "${PLAYTHROUGH_DIR}" 2>/dev/null || true)"
+        if [ -z "${committed}" ]; then
+            record_pass "git has a REPOSITORY-LOCAL identity to commit \
+these artifacts under" \
+                "${configured}, read with 'git config --local --get' \
+from this checkout's own .git/config; no commit has touched \
+$(rel "${PLAYTHROUGH_DIR}") yet, so there is no committed identity to \
+compare it against"
+            return 0
+        fi
+        if [ "${configured}" = "${committed}" ]; then
+            record_pass "git has a REPOSITORY-LOCAL identity to commit \
+these artifacts under" \
+                "${configured}, read with 'git config --local --get' \
+from this checkout's own .git/config, and the newest commit touching \
+$(rel "${PLAYTHROUGH_DIR}") is authored by the same identity"
+            return 0
+        fi
+        record_fail "git has a REPOSITORY-LOCAL identity to commit these \
+artifacts under" \
+            "this repository's own config records ${configured} while \
+the newest commit touching $(rel "${PLAYTHROUGH_DIR}") is authored by \
+${committed}" \
+            "the same identity in both -- the evidence and the \
+configuration have to agree about who committed it, or the \
+configuration is describing a different machine than the history does"
         return 0
     fi
-    record_fail "git has an identity to commit these artifacts under" \
-        "user.name='${name}' user.email='${email}'" \
-        "both set -- without them every commit of the evidence fails \
-outright"
+    # What the cascade WOULD have answered, so an operator can see
+    # whether the check failed because no identity exists anywhere or
+    # because the one that exists is not this repository's.
+    if [ -n "${inherited_name}" ] || [ -n "${inherited_email}" ]; then
+        detail=" -- the cascade does resolve \
+'${inherited_name:-<unset>} <${inherited_email:-<unset>}>' from a \
+broader scope, which is NOT this repository's and does not travel with \
+this branch"
+    else
+        detail=" -- no identity resolves at any scope"
+    fi
+    record_fail "git has a REPOSITORY-LOCAL identity to commit these \
+artifacts under" \
+        "${#missing[@]} unset locally: ${missing[*]}${detail}" \
+        "both user.name and user.email set in this repository's own \
+config -- commit_artifacts.sh persists them with 'git config --local', \
+because an identity held in the account is one a container, a different \
+account or a fresh checkout of this branch does not have"
 }
 
 # ---------------------------------------------------------------------
@@ -5035,7 +7839,7 @@ committed_file() {
 # matches, so they cannot be the deciding rule and are stripped.
 last_effective_rule() {
     "${GREP}" -v -e '^[[:space:]]*$' -e '^[[:space:]]*#' |
-        tail -n 1 || true
+        "${TAIL}" -n 1 || true
 }
 
 check_committed_ignore_negation() {
@@ -5128,17 +7932,37 @@ check_committed_vcs_rules() {
 # whose two lifecycle commits describe somebody whose files are no
 # longer in the tree.
 #
-# So the property asserted here is INTERNAL CONSISTENCY: for every
-# `final` checkpoint, the survivor its own tree names must be the
-# survivor its anchoring `creation` names.  That is exactly false in the
-# cross-survivor case and exactly true of an honest lifecycle, and it is
-# a property of the graph rather than of a count.
+# INTERNAL CONSISTENCY IS NECESSARY AND IS NOT SUFFICIENT, and a review
+# found exactly that gap here.  For every `final` checkpoint, the
+# survivor its own tree names must be the survivor its anchoring
+# `creation` names -- true of an honest lifecycle, false in the
+# cross-survivor case, and a property of the graph rather than of a
+# count.  But it says nothing about WHICH recording the pair is about.  A
+# history holding one internally consistent pair for a survivor who has
+# since been superseded satisfied it completely, and the divergence
+# between that pair and the evidence actually in the tree was reported as
+# a WARNING -- which does not affect the exit status.  So the gate passed
+# on a tree whose committed frames, manifest, film and save belonged to
+# somebody with no checkpoint pair at all, and R1's "committed at both
+# mandated points" was reported as satisfied by two commits about
+# somebody else's session.
 #
-# Which survivor HEAD carries is reported alongside, and a divergence
-# between HEAD and the newest checkpoint is stated in full rather than
-# left for a reader to infer -- a checkpoint pair describing a
-# superseded recording is a real fact about the history and this report
-# is where it belongs.
+# So there are TWO checks here, and both of them FAIL rather than warn:
+#
+#   1. EVERY `final` is internally consistent with its anchor -- the same
+#      survivor, and the anchor a strict ancestor of it.  Ancestry is
+#      asserted explicitly rather than inferred from `git log`'s
+#      reachability, and `anchor != final` with it, because a creation
+#      checkpoint that IS its own final is not a lifecycle: the two
+#      commits exist to bracket a session, and one commit brackets
+#      nothing.
+#
+#   2. THE NEWEST PAIR IS ABOUT THE SURVIVOR IN THE TREE.  HEAD's own
+#      lastworld.json names the world and character whose evidence is
+#      committed; the newest `final` and the newest `creation` must both
+#      name that same world and character.  This is the check that makes
+#      "the save was committed at both mandated points" a statement about
+#      THIS session, and it is the one a superseded pair now fails.
 # ---------------------------------------------------------------------
 
 # checkpoint_commits NAME -- every commit carrying the trailer, newest
@@ -5169,9 +7993,20 @@ survivor_at() {
         return 1
     fi
     printf '%s\n' "${content}" |
-        "${PYTHON}" -B -c "${LASTWORLD_STDIN_READER}" 2>/dev/null ||
+        bounded "${BOUND_PROBE_SECONDS}" \
+            "${PYTHON}" -B -c "${LASTWORLD_STDIN_READER}" 2>/dev/null ||
         return 1
 }
+
+# The facts BOTH checkpoint checks are about, read once.  They are state
+# rather than arguments because each check is called directly from
+# group_version_control under the phase predicate: a check that another
+# check calls is a check whose gating is invisible at the call site, and
+# this file's rule is that the classification stays visible beside the
+# group it belongs to.
+LIFECYCLE_HEAD_SURVIVOR=""
+LIFECYCLE_NEWEST_FINAL=""
+LIFECYCLE_NEWEST_CREATION=""
 
 check_lifecycle_checkpoints() {
     local -a finals=() creations=() mismatched=()
@@ -5183,6 +8018,9 @@ check_lifecycle_checkpoints() {
     if ! head_survivor="$(survivor_at HEAD)"; then
         head_survivor=""
     fi
+    LIFECYCLE_HEAD_SURVIVOR="${head_survivor}"
+    LIFECYCLE_NEWEST_FINAL="${finals[0]-}"
+    LIFECYCLE_NEWEST_CREATION="${creations[0]-}"
 
     if [ "${#creations[@]}" -eq 0 ] || [ "${#finals[@]}" -eq 0 ]; then
         record_fail "each checkpoint anchors to its own survivor's \
@@ -5202,6 +8040,25 @@ session was saved and closed"
         if [ -z "${anchor}" ]; then
             mismatched+=("${commit:0:10} has no \
 '${CHECKPOINT_CREATION_NAME}' checkpoint among its ancestors")
+            continue
+        fi
+        # A LIFECYCLE IS TWO COMMITS, AND THE FIRST STRICTLY PRECEDES THE
+        # SECOND.  `git log --grep <commit>` already walks only ancestors,
+        # so reachability is implied -- but implied is not asserted, and
+        # the one case reachability does NOT exclude is the anchor being
+        # the final itself, which would mean a session bracketed by a
+        # single commit taken before it started.
+        if [ "${anchor}" = "${commit}" ]; then
+            mismatched+=("${commit:0:10} is its own \
+'${CHECKPOINT_CREATION_NAME}' anchor, so one commit stands for both \
+ends of the session")
+            continue
+        fi
+        if ! "${GIT}" merge-base --is-ancestor "${anchor}" "${commit}" \
+                2>/dev/null; then
+            mismatched+=("${anchor:0:10} is not an ancestor of \
+${commit:0:10}, so the creation it claims to anchor to is not in its \
+history")
             continue
         fi
         if ! mine="$(survivor_at "${commit}")"; then
@@ -5240,29 +8097,195 @@ scratch has 'grown' by row count too, so the row count cannot tell the \
 two apart"
     fi
 
-    # THE DIVERGENCE IS STATED, NOT INFERRED.  A checkpoint pair that
-    # describes a superseded recording is consistent with itself and
-    # still leaves the survivor in the tree without a checkpoint of her
-    # own, so the report says which survivor each side is about.
-    if [ -n "${head_survivor}" ]; then
-        record_info "the survivor whose evidence HEAD carries" \
-            "${head_survivor}"
-        local newest="${finals[0]}"
-        if theirs="$(survivor_at "${newest}")"; then
-            if [ "${theirs}" != "${head_survivor}" ]; then
-                record_warn "the lifecycle checkpoints describe \
-another recording" \
-                    "the newest '${CHECKPOINT_FINAL_NAME}' checkpoint \
-${newest:0:10} records ${theirs} while HEAD carries ${head_survivor}, \
-so the evidence in the tree has no checkpoint pair of its own and its \
-own commits carry no trailer"
-            fi
+}
+
+# check_checkpoints_are_this_session
+#   The check that binds the history to the tree.  A divergence here used
+#   to be a WARNING, which does not affect the exit status -- so a gate
+#   reporting "the save was committed at both mandated points" could be
+#   describing a session whose files are no longer in the checkout.  R1
+#   asks for the save of THIS survivor to be committed after creation and
+#   again after Save & Quit; a pair about somebody else does not satisfy
+#   it, however self-consistent it is, and the answer to that is a
+#   failure.
+check_checkpoints_are_this_session() {
+    local head_survivor="${LIFECYCLE_HEAD_SURVIVOR}"
+    local newest_final="${LIFECYCLE_NEWEST_FINAL}"
+    local newest_creation="${LIFECYCLE_NEWEST_CREATION}"
+    local name="the lifecycle checkpoints are about the survivor in the \
+tree"
+    local final_survivor="" creation_survivor=""
+    local -a wrong=()
+
+    # NO PAIR IS ITS OWN ANSWER, and it is answered here rather than by
+    # the sibling check reporting on this one's behalf.  Each check
+    # answers for itself, so each can be called from the group under the
+    # phase predicate and neither depends on the other having run.
+    if [ -z "${newest_final}" ] || [ -z "${newest_creation}" ]; then
+        record_fail "${name}" \
+            "there is no checkpoint pair to be about anybody -- the \
+newest '${CHECKPOINT_CREATION_NAME}' is \
+'${newest_creation:-<none>}' and the newest \
+'${CHECKPOINT_FINAL_NAME}' is '${newest_final:-<none>}'" \
+            "one '${CHECKPOINT_CREATION_NAME}' and one \
+'${CHECKPOINT_FINAL_NAME}' checkpoint, both recording the survivor HEAD \
+carries"
+        return 0
+    fi
+
+    # AN UNREADABLE HEAD IS A FAILURE, not a reason to skip.  Without
+    # knowing which survivor the tree is about, the whole property is
+    # unmeasurable -- and an unmeasurable property reported as a pass is
+    # the vacuous verdict this gate exists to prevent.
+    if [ -z "${head_survivor}" ]; then
+        record_fail "${name}" \
+            "HEAD carries no readable \
+playthrough/userdir/config/lastworld.json, so which survivor the \
+committed evidence is about cannot be established" \
+            "a committed lastworld.json naming the world and character \
+-- the engine writes it on load and on quit, and it is what binds the \
+frames, the film and the save to one session"
+        return 0
+    fi
+    record_info "the survivor whose evidence HEAD carries" \
+        "${head_survivor}"
+
+    if ! final_survivor="$(survivor_at "${newest_final}")"; then
+        wrong+=("the newest '${CHECKPOINT_FINAL_NAME}' checkpoint \
+${newest_final:0:10} names no survivor its own tree can be read for")
+    elif [ "${final_survivor}" != "${head_survivor}" ]; then
+        wrong+=("the newest '${CHECKPOINT_FINAL_NAME}' checkpoint \
+${newest_final:0:10} records '${final_survivor}'")
+    fi
+    if ! creation_survivor="$(survivor_at "${newest_creation}")"; then
+        wrong+=("the newest '${CHECKPOINT_CREATION_NAME}' checkpoint \
+${newest_creation:0:10} names no survivor its own tree can be read for")
+    elif [ "${creation_survivor}" != "${head_survivor}" ]; then
+        wrong+=("the newest '${CHECKPOINT_CREATION_NAME}' checkpoint \
+${newest_creation:0:10} records '${creation_survivor}'")
+    fi
+    # THE PAIR MUST BE A PAIR.  Both being about the right survivor is
+    # still not a lifecycle unless the creation precedes the final, so the
+    # same ancestry the loop above asserts per final is asserted for the
+    # two commits this session is actually judged on.
+    if [ "${#wrong[@]}" -eq 0 ]; then
+        if [ "${newest_creation}" = "${newest_final}" ]; then
+            wrong+=("${newest_final:0:10} carries both trailers, so one \
+commit stands for both ends of the session")
+        elif ! "${GIT}" merge-base --is-ancestor "${newest_creation}" \
+                "${newest_final}" 2>/dev/null; then
+            wrong+=("${newest_creation:0:10} is not an ancestor of \
+${newest_final:0:10}, so the two are not the two ends of one session")
         fi
     fi
+
+    if [ "${#wrong[@]}" -eq 0 ]; then
+        record_pass "${name}" \
+            "both newest checkpoints record ${head_survivor}, the \
+survivor HEAD carries: '${CHECKPOINT_CREATION_NAME}' \
+${newest_creation:0:10} then '${CHECKPOINT_FINAL_NAME}' \
+${newest_final:0:10}"
+        return 0
+    fi
+    record_fail "${name}" \
+        "HEAD carries ${head_survivor}, but ${wrong[*]}" \
+        "the newest '${CHECKPOINT_CREATION_NAME}' and \
+'${CHECKPOINT_FINAL_NAME}' checkpoints both recording \
+${head_survivor}, creation first -- a self-consistent pair about a \
+SUPERSEDED recording leaves the evidence in the tree with no checkpoint \
+of its own, and R1 asks for THIS survivor's save to be committed after \
+creation and again after Save & Quit"
+}
+
+# The second half of the lifecycle, and the one a superseded pair used to
+# satisfy: the recording IN THE TREE must have been checkpointed itself.
+#
+# Both halves are required and neither implies the other.  A history can
+# carry a self-consistent pair for a retired survivor (which is what
+# HEAD's history carries today) and a history could carry a `final`
+# checkpoint for the current survivor anchored to somebody else's
+# `creation`.  The first is caught here, the second above.
+check_head_generation_checkpoints() {
+    local -a finals=()
+    local commit="" anchor="" mine="" theirs=""
+    local head_survivor="" matched="" anchored="" other=""
+    if ! head_survivor="$(survivor_at HEAD)"; then
+        record_fail "the recording in the tree has a checkpoint pair \
+of its own" \
+            "HEAD carries no readable \
+playthrough/userdir/config/lastworld.json, so the survivor whose \
+evidence is in the tree cannot be named at all" \
+            "the engine's own record of the world and character the \
+committed save belongs to, so that the checkpoints can be matched \
+against it"
+        return 0
+    fi
+    mapfile -t finals < <(checkpoint_commits \
+        "${CHECKPOINT_FINAL_NAME}")
+    for commit in "${finals[@]}"; do
+        [ -n "${commit}" ] || continue
+        if ! mine="$(survivor_at "${commit}")"; then
+            continue
+        fi
+        if [ "${mine}" != "${head_survivor}" ]; then
+            other="${other}${other:+, }${commit:0:10} (${mine})"
+            continue
+        fi
+        matched="${commit}"
+        anchor="$(checkpoint_anchor "${commit}")"
+        [ -n "${anchor}" ] || continue
+        if ! theirs="$(survivor_at "${anchor}")"; then
+            continue
+        fi
+        if [ "${theirs}" = "${head_survivor}" ]; then
+            anchored="${anchor}"
+            break
+        fi
+    done
+
+    if [ -n "${matched}" ] && [ -n "${anchored}" ]; then
+        record_pass "the recording in the tree has a checkpoint pair \
+of its own" \
+            "${head_survivor}: '${CHECKPOINT_FINAL_NAME}' \
+${matched:0:10} anchored to '${CHECKPOINT_CREATION_NAME}' \
+${anchored:0:10}, both recording that survivor"
+        return 0
+    fi
+    if [ -n "${matched}" ]; then
+        record_fail "the recording in the tree has a checkpoint pair \
+of its own" \
+            "HEAD carries ${head_survivor} and \
+'${CHECKPOINT_FINAL_NAME}' ${matched:0:10} records that survivor, but \
+no '${CHECKPOINT_CREATION_NAME}' checkpoint among its ancestors records \
+that survivor" \
+            "a '${CHECKPOINT_CREATION_NAME}' checkpoint for the same \
+survivor before the '${CHECKPOINT_FINAL_NAME}' one -- without it the \
+save was published once and 'committed after creation and again after \
+the session closed' is not what the history says"
+        return 0
+    fi
+    local observed=""
+    observed="HEAD carries ${head_survivor} and no \
+'${CHECKPOINT_FINAL_NAME}' checkpoint records that survivor"
+    if [ -n "${other}" ]; then
+        observed="${observed}; the '${CHECKPOINT_FINAL_NAME}' \
+checkpoint(s) in this history are ${other}"
+    fi
+    record_fail "the recording in the tree has a checkpoint pair of \
+its own" \
+        "${observed}" \
+        "a '${CHECKPOINT_CREATION_NAME}' and a \
+'${CHECKPOINT_FINAL_NAME}' checkpoint for the survivor whose evidence \
+is in the tree.  A pair belonging to a superseded recording is not \
+evidence about this one: re-record the session through \
+commit_artifacts.sh's ${CHECKPOINT_CREATION_NAME}-then-\
+${CHECKPOINT_FINAL_NAME} sequence, or publish the retirement of this \
+evidence, because a bundled single commit cannot prove the order the \
+requirement is about"
 }
 
 group_version_control() {
-    group "version control -- the save is really committed"
+    group 7 "version control -- the save is really committed"
     check_git_worktree
     check_git_identity
     check_nothing_ignored
@@ -5275,12 +8298,20 @@ group_version_control() {
         check_commit_order
         check_committed_vcs_rules
         check_lifecycle_checkpoints
+        check_checkpoints_are_this_session
+        check_head_generation_checkpoints
     else
-        record_info "eleven properties of the COMMIT are deferred to \
+        # The number is DERIVED from the declared table rather than
+        # spelled out in prose, because a spelled-out one is a second
+        # place for the truth to live and it went stale the moment a
+        # twelfth deferred check was added.
+        record_info "$((GROUP_CHECKS_ALL[7] - \
+GROUP_CHECKS_PRE_COMMIT[7])) properties of the COMMIT are deferred to \
 the ${PHASE_POST_COMMIT} phase" \
             "the save, the artifact classes and the captures being \
 tracked; nothing being left uncommitted; the commit order; the \
-committed ignore rules; and the checkpoint anchors -- none of them can \
+committed ignore rules; the checkpoint anchors; and whether the \
+checkpoints are about the survivor in the tree -- none of them can \
 hold before the checkpoint that makes them true, and this phase runs \
 ahead of it"
     fi
@@ -5326,8 +8357,8 @@ debug_mode or debug_hour_timer"
         return 0
     fi
     record_fail "no keybinding exists for any debug action" \
-        "$(rel "${path}"): $(printf '%s' "${hits}" | head -n 4 |
-            tr '\n' ';')" \
+        "$(rel "${path}"): $(printf '%s' "${hits}" | "${HEAD}" -n 4 |
+            "${TR}" '\n' ';')" \
         "no mention of \"debug\", \"debug_mode\" or \
 \"debug_hour_timer\" -- binding one is the only way to reach the debug \
 menu, and this file is committed precisely so that can be checked"
@@ -5344,7 +8375,7 @@ check_no_debug_activation() {
             2>/dev/null || true)"
         if [ -n "${hits}" ]; then
             findings+=("$(rel "${path}"): $(printf '%s' "${hits}" |
-                head -n 2 | tr '\n' ';')")
+                "${HEAD}" -n 2 | "${TR}" '\n' ';')")
         fi
     done
     if [ "${inspected}" -eq 0 ]; then
@@ -5389,10 +8420,10 @@ check_no_cheat_vocabulary() {
         inspected=$((inspected + 1))
         scanned+=("$(rel "${path}")")
         hits="$("${GREP}" -inE "${CHEAT_VOCABULARY_PATTERN}" \
-            "${path}" 2>/dev/null | cut -c 1-120 || true)"
+            "${path}" 2>/dev/null | "${CUT}" -c 1-120 || true)"
         if [ -n "${hits}" ]; then
             findings+=("$(rel "${path}"): $(printf '%s' "${hits}" |
-                head -n 3 | tr '\n' ';')")
+                "${HEAD}" -n 3 | "${TR}" '\n' ';')")
         fi
     done
     if [ "${inspected}" -eq 0 ]; then
@@ -5419,7 +8450,7 @@ being broken rather than merely risked"
 }
 
 group_no_cheating() {
-    group "no cheating, as a checkable property"
+    group 8 "no cheating, as a checkable property"
     check_no_debug_binding
     check_no_debug_activation
     check_no_cheat_vocabulary
@@ -5469,7 +8500,7 @@ playthrough/tooling/launch_game.sh, which owns the build"
         return 0
     fi
     banner="$("${PLAYTHROUGH_GAME_BIN}" --version 2>&1 |
-        tr '\n' ' ' || true)"
+        "${TR}" '\n' ' ' || true)"
     case "${banner}" in
         *"+tiles"*)
             record_pass "the binary that was played is the SDL tiles \
@@ -5799,8 +8830,12 @@ check_tiles_are_visible() {
     local list="" count=0 index="" path="" colours=""
     local best=0 best_frame="" measured=0
     local -a unreadable=()
-    list="$(fact in_game_frames)"
-    if [ -z "${list}" ]; then
+    # THE POPULATION IS A FILE, one in-game capture index per line, and it
+    # is sampled by line number rather than read into a shell variable:
+    # see WHICH CAPTURES SHOW THE GAME BEING PLAYED in the record checker.
+    list="$(in_game_file)"
+    count="$(count_lines "${list}")"
+    if [ "${count}" -eq 0 ]; then
         record_fail "the captures were rendered from sprite artwork and \
 not from glyphs" \
             "group 2 published no in-game captures, so there is no \
@@ -5810,15 +8845,14 @@ those are the frames on which the map, and therefore the tileset, is \
 drawn"
         return 0
     fi
-    count="$(printf '%s' "${list}" | tr ',' '\n' | "${GREP}" -c . \
-        || true)"
     while read -r index; do
         [ -n "${index}" ] || continue
         if ! path="$(capture_path "${index}")"; then
             continue
         fi
-        colours="$("${IDENTIFY}" -format '%k' "${path}" 2>/dev/null \
-            || true)"
+        colours="$(bounded "${BOUND_PROBE_SECONDS}" \
+            "${IDENTIFY}" -format '%k' "${path}" \
+            2>"$(tool_error_file identify)" || true)"
         if ! is_count "${colours}"; then
             unreadable+=("$(printf '%05d' "${index}")")
             continue
@@ -5828,13 +8862,12 @@ drawn"
             best="${colours}"
             best_frame="$(printf '%05d' "${index}")"
         fi
-    done < <(printf '%s' "${list}" | tr ',' '\n' |
-        sample_stream "${TILE_COLOUR_SAMPLES}")
+    done < <(sample_file "${TILE_COLOUR_SAMPLES}" "${list}")
     if [ "${measured}" -eq 0 ]; then
         record_fail "the captures were rendered from sprite artwork and \
 not from glyphs" \
             "no colour reading could be taken (unreadable: \
-${unreadable[*]:-none})" \
+${unreadable[*]:-none})$(because identify)" \
             "at least one readable capture -- 'identify -format %k' \
 counts the distinct colours in a frame"
         return 0
@@ -5871,11 +8904,19 @@ trust-bypass names and nothing else, so a host-side PLAYTHROUGH_FLAKE8 \
 never arrives and the linter must be installed in the image"
         return 0
     fi
+    # THE OUTPUT GOES TO A FILE, and the ceiling is real.  A linter is
+    # not session-length work -- it reads the tooling directory -- but it
+    # is a child of this gate, and a child with no bound can hold the
+    # pipeline's lock for ever.  Its findings are counted from the file
+    # and quoted from it in bounded form rather than captured whole into
+    # a shell variable.
+    local log="${SCRATCH}/flake8.log"
     set +e
-    output="$("${FLAKE8_CMD[@]}" playthrough/ 2>&1)"
+    bounded "${BOUND_LINT_SECONDS}" "${FLAKE8_CMD[@]}" playthrough/ \
+        >"${log}" 2>&1
     status=$?
     set -e
-    count="$(printf '%s' "${output}" | "${GREP}" -c . || true)"
+    count="$(count_lines "${log}")"
     if [ "${status}" -eq 0 ] && [ "${count:-0}" -eq 0 ]; then
         record_pass "the new Python satisfies the repository's own \
 lint contract" \
@@ -5883,10 +8924,20 @@ lint contract" \
 configuration and its default 79-column limit"
         return 0
     fi
+    if bound_expired "${status}"; then
+        record_fail "the new Python satisfies the repository's own \
+lint contract" \
+            "flake8 did not finish within ${BOUND_LINT_SECONDS}s and \
+was stopped (exit ${status})" \
+            "a completed lint run -- the linter reads the tooling \
+directory, which does not grow with the session, so an expiry here \
+means it is wedged"
+        return 0
+    fi
+    output="$(excerpt "${log}" 4)"
     record_fail "the new Python satisfies the repository's own lint \
 contract" \
-        "${count:-0} finding(s), exit ${status}: $(printf '%s' \
-"${output}" | head -n 4 | tr '\n' ';')" \
+        "${count:-0} finding(s), exit ${status}: ${output}" \
         "zero findings under playthrough/ -- scoped deliberately, \
 because HEAD already carries pre-existing F824 findings under tools/ \
 that are not this feature's"
@@ -5923,20 +8974,46 @@ check_timeline_tests() {
 guard, the cue arithmetic and the timecode formatter"
         return 0
     fi
+    # AS WITH THE LINTER: bounded, and read back from a file.  A suite
+    # that hangs -- a test waiting on a lock, a fixture waiting on a
+    # descriptor -- would otherwise hold this gate open indefinitely.
+    local log="${SCRATCH}/test_timeline.log"
     set +e
-    output="$("${PYTHON}" -B "${suite}" 2>&1)"
+    bounded "${BOUND_SUITE_SECONDS}" "${PYTHON}" -B "${suite}" \
+        >"${log}" 2>&1
     status=$?
     set -e
-    summary="$(printf '%s' "${output}" |
-        "${GREP}" -E '^(Ran |OK|FAILED)' | tr '\n' ' ' || true)"
+    # THE ELAPSED TIME IS STRIPPED, and that is about the durable report
+    # rather than about tidiness.  unittest prints "Ran 361 tests in
+    # 2.675s", and that number changes on every run -- so leaving it in
+    # would make a committed acceptance report differ from one run to the
+    # next while measuring an identical tree, which is churn in the
+    # history carrying no information, and would make a second verify
+    # before a commit fail its own "nothing left uncommitted" check on a
+    # file this gate had just rewritten.  How many tests ran and whether
+    # they passed is the evidence; how many seconds they took is not.
+    # Read from the LOG FILE rather than from a captured variable, so a
+    # suite that prints a line per test cannot put its whole output into
+    # this shell's memory to produce one summary line.
+    summary="$("${GREP}" -E '^(Ran |OK|FAILED)' "${log}" 2>/dev/null |
+        "${SED}" -E 's/ in [0-9]+\.[0-9]+s$//' |
+        "${TR}" '\n' ' ' || true)"
     if [ "${status}" -eq 0 ]; then
         record_pass "the timeline's own test suite passes" \
             "${summary:-exit 0}"
         return 0
     fi
+    if bound_expired "${status}"; then
+        record_fail "the timeline's own test suite passes" \
+            "the suite did not finish within ${BOUND_SUITE_SECONDS}s \
+and was stopped (exit ${status}): ${summary:-<no summary line>}" \
+            "exit 0 inside the ceiling -- the suite is arithmetic over \
+fixtures it writes itself and does not grow with the session, so an \
+expiry means it is wedged"
+        return 0
+    fi
     record_fail "the timeline's own test suite passes" \
-        "exit ${status}: ${summary:-$(printf '%s' "${output}" |
-            tail -n 3 | tr '\n' ';')}" \
+        "exit ${status}: ${summary:-$(excerpt "${log}" 3)}" \
         "exit 0 -- the deterministic half of this feature is the half \
 that can be unit tested, so it is"
 }
@@ -6006,23 +9083,30 @@ only for this feature"
 }
 
 group_hygiene() {
-    group "the binary, the required artwork and repository hygiene"
-    check_binary_is_tiles
-    # The options file is handed over in its REPOSITORY-RELATIVE
-    # spelling: the gate has already chdir'd to the repository root, so
-    # it opens identically, and every path this report prints stays
-    # relative to the checkout rather than naming somebody's home
-    # directory.
-    run_checker tileset \
-        "${PLAYTHROUGH_TOOLING_DIR}" \
-        "$(rel "${PLAYTHROUGH_OPTIONS_JSON}")" \
-        "${PLAYTHROUGH_TILESET}" \
-        "${PLAYTHROUGH_TILESET_ALIASES}"
-    check_tileset_in_engine_log
-    check_tiles_are_visible
-    check_lint_scoped
-    check_flake8_not_weakened
-    check_timeline_tests
+    group 9 "the binary, the required artwork and repository hygiene"
+    # THE ARTIFACT-SHAPED HALF OF THIS GROUP.  The binary, the artwork,
+    # the pixels of the captures, the linter and the timeline suite are
+    # all properties of the tree as it stands, answered by the
+    # pre-commit phase; the commit does not touch any of them, so the
+    # post-commit phase does not re-run them.  `all` does.
+    if artifact_phase; then
+        check_binary_is_tiles
+        # The options file is handed over in its REPOSITORY-RELATIVE
+        # spelling: the gate has already chdir'd to the repository root,
+        # so it opens identically, and every path this report prints
+        # stays relative to the checkout rather than naming somebody's
+        # home directory.
+        run_checker tileset \
+            "${PLAYTHROUGH_TOOLING_DIR}" \
+            "$(rel "${PLAYTHROUGH_OPTIONS_JSON}")" \
+            "${PLAYTHROUGH_TILESET}" \
+            "${PLAYTHROUGH_TILESET_ALIASES}"
+        check_tileset_in_engine_log
+        check_tiles_are_visible
+        check_lint_scoped
+        check_flake8_not_weakened
+        check_timeline_tests
+    fi
     # The change surface is measured from a base commit to HEAD, so it
     # is a property of the COMMIT: before the checkpoint, the artifacts
     # this feature added are not in HEAD to be measured, and on a tree
@@ -6048,30 +9132,110 @@ behind"
 # returned early, or an assertion an edited artifact managed to remove
 # leaves a report that is shorter and just as green.
 # ---------------------------------------------------------------------
+# distinct_checks_in GROUP -- how many different check names that group
+# reported.  Distinct, not total, so a check that legitimately reports
+# once per offending item counts once.
+distinct_checks_in() {
+    local file="${SCRATCH}/checks-$1.seen"
+    [ -f "${file}" ] || { printf '0'; return 0; }
+    "${SORT}" -u -- "${file}" | "${GREP}" -c . || printf '0'
+}
+
+# repeated_checks_in GROUP -- the names that reported more than once,
+# with their counts, so per-item repetition is visible in the report
+# instead of merely tolerated by it.
+repeated_checks_in() {
+    local file="${SCRATCH}/checks-$1.seen"
+    [ -f "${file}" ] || return 0
+    # SC2016: `$0` is awk's whole-line variable and must NOT be expanded
+    # by the shell, which is exactly why the program is single-quoted.
+    # shellcheck disable=SC2016
+    "${SORT}" -- "${file}" | "${AWK}" '
+        { count[$0]++ }
+        END {
+            for (name in count) {
+                if (count[name] > 1) {
+                    printf "%s (x%d)\n", name, count[name]
+                }
+            }
+        }' | "${SORT}" | "${TR}" '\n' ';' || true
+}
+
 check_check_inventory() {
-    # This verdict is itself one of the checks, so it counts itself in.
-    local total=$((PASSES + FAILURES + 1))
-    if [ "${total}" -ge "${EXPECTED_CHECKS}" ]; then
-        record_pass "this report contains every check this gate \
-declares" \
-            "${total} verdicts against the ${EXPECTED_CHECKS} declared \
--- a broken set legitimately yields more, because several checks report \
-one verdict per offending item"
+    local name="this report contains every check this gate declares"
+    local index=0 declared=0 seen_count=0 repeats=""
+    local total=0 expected=0
+    local -a short=()
+    local -a over=()
+    local -a repeated=()
+    # THIS VERDICT COUNTS ITSELF IN.  It is group 10's only check and it
+    # has not registered yet, so group 10's declared 1 is compared
+    # against a seen count of 0 + this one.
+    for ((index = 1; index <= GROUP_COUNT; index++)); do
+        # THREE PHASES, THREE TABLES, CHOSEN BY THE PHASE ITSELF.  This
+        # used to select on tracking_phase(), which is true for `all` AND
+        # for `post-commit` because it means "this phase measures the
+        # history" -- so the post-commit phase compared its own 31
+        # verdicts against the whole audit's 120 and reported every
+        # artifact group as SHORT while performing exactly what it
+        # declared.  The counts are per phase, so the choice is too.
+        case "${PHASE}" in
+            "${PHASE_PRE_COMMIT}")
+                declared="${GROUP_CHECKS_PRE_COMMIT[index]}" ;;
+            "${PHASE_POST_COMMIT}")
+                declared="${GROUP_CHECKS_POST_COMMIT[index]}" ;;
+            *)
+                declared="${GROUP_CHECKS_ALL[index]}" ;;
+        esac
+        seen_count="$(distinct_checks_in "${index}")"
+        if [ "${index}" -eq "${GROUP_COUNT}" ]; then
+            seen_count=$((seen_count + 1))
+        fi
+        total=$((total + seen_count))
+        expected=$((expected + declared))
+        if [ "${seen_count}" -lt "${declared}" ]; then
+            short+=("${index} ${GROUP_NAMES[index]}: \
+${seen_count} of \
+${declared}")
+        elif [ "${seen_count}" -gt "${declared}" ]; then
+            over+=("${index} ${GROUP_NAMES[index]}: ${seen_count} against \
+${declared} declared")
+        fi
+        repeats="$(repeated_checks_in "${index}")"
+        if [ -n "${repeats}" ]; then
+            repeated+=("group ${index}: ${repeats}")
+        fi
+    done
+    # Per-item repetition is REPORTED, not counted as drift: it is the
+    # legitimate shape of a broken artifact set, and a reader is better
+    # off seeing which check spoke more than once than not.
+    if [ "${#repeated[@]}" -ne 0 ]; then
+        record_info "checks that reported more than once" \
+            "${repeated[*]}"
+    fi
+    if [ "${#short[@]}" -eq 0 ] && [ "${#over[@]}" -eq 0 ]; then
+        record_pass "${name}" \
+            "${total} distinct checks against ${expected} declared for \
+the '${PHASE}' phase, group by group -- every group exactly its declared \
+count"
         return 0
     fi
-    record_fail "this report contains every check this gate declares" \
-        "${total} verdicts, ${EXPECTED_CHECKS} declared for the \
-'${PHASE}' phase -- $((EXPECTED_CHECKS - total)) check(s) did not \
-report" \
-        "at least ${EXPECTED_CHECKS} -- a shorter report means a check \
-could not be performed, and a check that silently does not run is worse \
-than no check; compare this report against the group-by-group \
-derivation beside EXPECTED_CHECKS_ALL in this file to find the one that \
-is missing"
+    record_fail "${name}" \
+        "${total} distinct of ${expected} declared\
+${short[*]:+; SHORT -- group ${short[*]}}\
+${over[*]:+; UNDECLARED -- group ${over[*]}}" \
+        "each of the ${GROUP_COUNT} groups reporting exactly its \
+declared number of DISTINCT checks for the '${PHASE}' phase. A short \
+group means a check could not be performed, and a check that silently \
+does not run is worse than no check. A long group means this gate \
+performed a check its own declaration does not list, so the table beside \
+GROUP_CHECKS_ALL in this file is out of date -- and the reason the \
+comparison is per group and exact is that one global 'at least' let \
+extra verdicts in one group pay for missing checks in another"
 }
 
 group_inventory() {
-    group "the inventory of this report"
+    group 10 "the inventory of this report"
     check_check_inventory
 }
 
@@ -6092,7 +9256,7 @@ group_inventory() {
 summarise_run() {
     local total=$((PASSES + FAILURES))
     local message=""
-    printf '\n'
+    say '\n'
     # The declared inventory is printed on the summary line as well as
     # asserted above, because "93 of 93" tells a reader nothing about
     # whether 93 was the number to expect.
@@ -6113,7 +9277,7 @@ summarise_run() {
         message="${message}prints what was observed next to what was "
         message="${message}required."
     fi
-    printf '%s\n' "${message}"
+    say '%s\n' "${message}"
     note VERIFY_PHASE "${PHASE}"
     note VERIFY_CHECKS "${total}"
     note VERIFY_EXPECTED_CHECKS "${EXPECTED_CHECKS}"
@@ -6124,6 +9288,13 @@ summarise_run() {
     note VERIFY_ROWS "$(fact manifest_rows '?')"
     note VERIFY_TIMELINE_TOTAL "$(fact timeline_total '?')"
     note VERIFY_TRANSITIONS "$(fact transition_groups '?')"
+    local report_target=""
+    report_target="$(report_publication_target || true)"
+    if [ -n "${report_target}" ]; then
+        note VERIFY_REPORT "$(rel "${report_target}")"
+    else
+        note VERIFY_REPORT none
+    fi
     if [ "${FAILURES}" -eq 0 ]; then
         note VERIFY pass
     else
@@ -6133,6 +9304,11 @@ summarise_run() {
 
 main() {
     parse_arguments "$@"
+    # EVERY EXTERNAL COMMAND FIRST.  open_scratch is made of mktemp and
+    # chmod, so resolving after it would leave the gate's own tools
+    # unverified; the verdict on this is reported by check_tool_inventory
+    # in group 1, where the report has begun.
+    resolve_tools
     open_scratch
     : >"${SCRATCH}/facts"
     emit_record_checker
@@ -6141,36 +9317,53 @@ main() {
     emit_render_checker
     emit_tileset_checker
 
-    printf '%s\n' "verify_artifacts.sh -- the acceptance gate for the \
+    say '%s\n' "verify_artifacts.sh -- the acceptance gate for the \
 playthrough capture subsystem"
-    printf '%s\n' "reading the committed artifacts under \
+    say '%s\n' "reading the committed artifacts under \
 $(rel "${PLAYTHROUGH_DIR}")/ at the repository root"
+    say '%s\n' "measuring the tree at $(measured_commit)"
     # THE PHASE IS THE FIRST THING THE REPORT SAYS.  A pre-commit report
     # is legitimately shorter than a post-commit one, and a reader who
     # was not told which phase produced it cannot tell a deferred check
     # from a missing one.
-    if tracking_phase; then
-        printf '%s\n' "phase '${PHASE}': every property, the \
-properties of the commit included (${EXPECTED_CHECKS} checks declared)"
-    else
+    if ! tracking_phase; then
         printf '%s\n' "phase '${PHASE}': every property of the \
 ARTIFACTS; the properties of the COMMIT are deferred to the \
 '${PHASE_POST_COMMIT}' phase, which runs after the checkpoint \
 (${EXPECTED_CHECKS} checks declared)"
+    elif ! artifact_phase; then
+        printf '%s\n' "phase '${PHASE}': the properties of the \
+HISTORY, and the environment they are measured with; the properties of \
+the ARTIFACTS were answered by the '${PHASE_PRE_COMMIT}' phase before \
+the checkpoint and the commit did not touch them -- run '${PHASE_ALL}' \
+to measure everything (${EXPECTED_CHECKS} checks declared)"
+    else
+        printf '%s\n' "phase '${PHASE}': every property, the \
+artifacts and the history alike (${EXPECTED_CHECKS} checks declared)"
     fi
 
     group_environment
-    group_record
-    group_timeline
-    group_container
-    group_captions
-    group_luminance
+    if artifact_phase; then
+        group_record
+        group_timeline
+        group_container
+        group_captions
+        group_luminance
+    fi
     group_version_control
-    group_no_cheating
+    if artifact_phase; then
+        group_no_cheating
+    fi
     group_hygiene
     group_inventory
 
     summarise_run
+    # LAST, so the durable copy carries the summary and the machine
+    # block it is summarised by.  publish_report reports its own outcome
+    # to stdout WITHOUT counting a verdict: the totals have already been
+    # printed, and a note that increments them after the fact would make
+    # the report disagree with its own arithmetic.
+    publish_report
     return "${EX_OK}"
 }
 
@@ -6186,4 +9379,3 @@ if [ "${FAILURES}" -ne 0 ]; then
     exit "${EX_FAILED}"
 fi
 exit "${EX_OK}"
-

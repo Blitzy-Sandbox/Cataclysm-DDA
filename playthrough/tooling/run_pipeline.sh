@@ -19,6 +19,7 @@
 #     playthrough/tooling/run_pipeline.sh --only verify
 #     playthrough/tooling/run_pipeline.sh --from verify
 #     playthrough/tooling/run_pipeline.sh --no-commit
+#     playthrough/tooling/run_pipeline.sh --rebuild
 #     playthrough/tooling/run_pipeline.sh --help
 #
 # ---------------------------------------------------------------------
@@ -71,18 +72,27 @@
 # because the commit is what makes them true.
 #
 # Sequencing the whole gate once, ahead of the commit, therefore could
-# not succeed.  Measured on a genuine post-session tree: the gate
-# reported "9 of 108 checks FAILED", every one of them a tracking or
-# clean-tree question, the sequence stopped at that stage, and the run
-# ended with the commit stage UNATTEMPTED.  The default plan -- the one
-# an operator reaches for -- could not reach the checkpoint at all, and
-# the failure looked like a broken artifact rather than a stage in the
-# wrong place.
+# not succeed.  Measured on a genuine post-session tree, against the
+# gate as it stood then: it reported "9 of 108 checks FAILED", every one
+# of them a tracking or clean-tree question, the sequence stopped at that
+# stage, and the run ended with the commit stage UNATTEMPTED.  The
+# default plan -- the one an operator reaches for -- could not reach the
+# checkpoint at all, and the failure looked like a broken artifact rather
+# than a stage in the wrong place.
 #
 # So the gate is split by phase and appears twice: `verify` runs
 # --phase pre-commit and guards the commit, `attest` runs
-# --phase post-commit and reports what the commit published.  Neither
-# repeats the other's checks; together they are the whole gate.
+# --phase post-commit and reports what the commit published.
+#
+# THE SECOND RUN IS THE SHORT ONE.  The gate declares its own counts, and
+# the arithmetic is worth stating rather than glossing: 111 checks in
+# all, 99 of them before the commit and 24 after it, which means 87 are
+# asked only before, 12 only after, and 12 by both.  The dozen asked
+# twice are the cheap ones it would be wrong to answer once -- the
+# measuring environment, and the version-control facts that have to hold
+# at both moments -- and no artifact is re-measured after a commit that
+# did not touch it.  `--phase all` is how the whole audit is asked for
+# deliberately.
 #
 # ---------------------------------------------------------------------
 # THE GATE PRECEDES THE COMMIT, AND THAT IS NOT A DEFAULT
@@ -98,6 +108,55 @@
 # checkpoint; the opposite of --no-commit does not exist.  Asking for the
 # commit stage alone is refused, and so is asking for the attestation
 # alone, both with the message naming --from verify.
+#
+# ---------------------------------------------------------------------
+# THREE THINGS ARE SETTLED BEFORE THE FIRST STAGE RUNS
+#
+# Every stage below is expensive and several are irreversible in the only
+# sense that matters here -- an hour of encoding cannot be given back.
+# So three questions whose answers already exist are asked FIRST, and
+# each of them was previously discovered too late:
+#
+#   1 WOULD THE CHECKPOINT BE TAKEN AT ALL?  `final` anchors to the
+#     `creation` checkpoint OF THE SURVIVOR IT IS ABOUT and requires the
+#     record to have grown since it.  Both are facts about the history
+#     before anything is rendered, and when either fails the checkpoint
+#     refuses at stage 7 -- after the timeline, the transitions, the
+#     encode, the transcripts, the caption mux and the whole functional
+#     gate have run.  commit_artifacts.sh answers it read-only through
+#     its own `status` subcommand, this file reads that answer, and a
+#     plan that cannot reach its checkpoint is refused now with
+#     --no-commit named as the way to run the render half deliberately.
+#     The lifecycle logic stays where it belongs: this file reads one
+#     KEY=value line and holds no copy of the rule.
+#
+#   2 IS THERE ROOM?  The artifacts are full-resolution and nothing is
+#     ever decimated to make them fit, so running out of space part way
+#     through is a torn generation rather than a smaller one.  The
+#     reserve is MEASURED from what is on disk -- the artifacts a
+#     producing stage will rewrite, the staging copy the caption mux
+#     needs, and the objects the checkpoint will write -- and checked
+#     before the first stage and again immediately before the
+#     checkpoint, because the producing stages consume space in between.
+#     A measurement that cannot be taken is reported and does not block
+#     the run: each stage re-checks on its own account with its own
+#     exact figures, and this one exists only to fail early.
+#
+#   3 IS ANY OF IT ALREADY DONE?  A run receipt records, per producing
+#     stage, the identity of the INPUTS it was produced from and the
+#     digest of the OUTPUTS it produced.  A stage is skipped only when
+#     both still hold, so a retry after a late failure does not
+#     re-encode a film that nothing has invalidated.  The receipt is
+#     CONTENT-ADDRESSED -- the record, the amendment ledger, the capture
+#     ledger, the capture count, HEAD, the state of the input paths in
+#     git, the pinned closure, the interpreter and every stage script's
+#     own digest -- and never a modification time or a size, either of
+#     which can move without the content moving and can stay still while
+#     it does.  It lives in the runtime directory, never in the working
+#     tree, so it is not an artifact and cannot be committed.  The gate,
+#     the checkpoint and the attestation are NEVER skipped, --only never
+#     skips the stage it names, --rebuild ignores the receipt entirely,
+#     and once any stage has run every later one runs too.
 #
 # ---------------------------------------------------------------------
 # WHAT THIS FILE DELIBERATELY DOES NOT DO
@@ -170,15 +229,29 @@
 # THE CHECKPOINT THIS FILE TAKES
 #
 # commit_artifacts.sh requires a checkpoint and deliberately has no
-# default: `creation` and `final` mean different things and taking the
-# wrong one is not something a default can be right about.  This
-# sequencer is post-session by definition, so the checkpoint it takes is
-# `final`, spelled once as a constant below.  The `creation` checkpoint
-# belongs BEFORE the session -- it commits the survivor and the save she
-# starts from, at a point where no frame exists yet -- so it is taken by
-# hand, by running commit_artifacts.sh directly.  That is also why no
-# flag here selects a checkpoint: the argument surface stays small, and
-# this file keeps no copy of a list that belongs to the module it calls.
+# default: its checkpoints mean different things and taking the wrong one
+# is not something a default can be right about.  This sequencer is
+# post-session by definition, so the checkpoint it takes is `final`,
+# spelled once as a constant below.
+#
+# The other three belong BEFORE the session, and none of them is reachable
+# from here, because a post-session sequencer cannot honestly take a
+# checkpoint whose whole claim is that play had not started yet:
+#
+#     integration  commits .gitignore and .gitattributes -- the rules
+#                  that decide whether the save data and the binaries
+#                  survive `git add` at all.  It runs FIRST, before any
+#                  artifact exists, and it is the one checkpoint that
+#                  stages a path outside playthrough/.
+#     dossier      commits the survivor's own words, and refuses outright
+#                  once any capture or manifest row exists.
+#     creation     commits the survivor and the save they start from,
+#                  at a point where no frame exists yet.
+#
+# All three are taken by hand, by running commit_artifacts.sh directly.
+# That is also why no flag here selects a checkpoint: the argument surface
+# stays small, and this file keeps no copy of a list that belongs to the
+# module it calls -- run `commit_artifacts.sh help` for the current one.
 #
 # ---------------------------------------------------------------------
 # OUTPUT CONTRACT
@@ -191,7 +264,17 @@
 #     PIPELINE_PLAN          the stages this run intends, in order
 #     PIPELINE_SKIPPED       the stages it was told to leave out
 #     PIPELINE_CHECKPOINT    the checkpoint the commit stage takes
-#     PIPELINE_STAGE_<NAME>  pass | fail, one per stage attempted
+#     PIPELINE_LIFECYCLE     eligible | <the refusal token> | unread
+#     PIPELINE_CAPACITY      bytes free : bytes reserved before the
+#                            first stage, or unmeasured
+#     PIPELINE_CAPACITY_CHECKPOINT
+#                            the same, measured again immediately before
+#                            the checkpoint.  Absent when no checkpoint
+#                            was reached.
+#     PIPELINE_RECEIPT       the receipt file's own name, or none
+#     PIPELINE_FRESH         the stages the receipt proved already done
+#     PIPELINE_STAGE_<NAME>  pass | fail | fresh, one per stage in the
+#                            plan
 #     PIPELINE_FAILED_STAGE  the stage that stopped the run
 #     PIPELINE_STATUS        the exit status this run ends with
 #     PIPELINE_ELAPSED       whole seconds from first stage to last
@@ -211,6 +294,12 @@
 #        checkout it belongs to, a stage is missing, or env.sh refused
 #        to load
 #     3  another run of this sequencer holds the lock over this checkout
+#     4  the planned checkpoint cannot be taken: the survivor this
+#        session is about has no `creation` checkpoint to anchor to, or
+#        the record has not grown since it.  Nothing was run.
+#     5  not enough room to run this plan without risking a torn
+#        generation.  Refused before the first stage, or before the
+#        checkpoint if the producing stages consumed the margin.
 #     *  otherwise THE FAILING STAGE'S OWN EXIT STATUS, passed through
 #        unchanged, because those codes carry diagnosis that a code of
 #        this file's own would throw away (embed_captions.sh 8 is a
@@ -255,6 +344,23 @@ readonly EX_OK=0
 readonly EX_USAGE=1
 readonly EX_LAYOUT=2
 readonly EX_BUSY=3
+# THE THREE REFUSALS THAT ARE NEITHER A USAGE MISTAKE NOR A BROKEN
+# LAYOUT.  Each gets its own code because an operator has to be able to
+# tell them apart without reading the message: nothing was wrong with
+# the artifacts or the plan in any of the three cases.
+#
+#   EX_INELIGIBLE  the plan's checkpoint cannot be taken, for a reason
+#                  that already exists before the first stage.
+#   EX_CAPACITY    there is not room to run the plan.
+#   EX_TRUST       this host was not in a state in which producing
+#                  evidence is honest.  See THE TRUST GATE below.
+#
+# The first two are settled facts BEFORE the first stage and both used
+# to be discovered afterwards; the third is recomputed at the same
+# point, for the same reason.
+readonly EX_INELIGIBLE=4
+readonly EX_CAPACITY=5
+readonly EX_TRUST=6
 
 # ---------------------------------------------------------------------
 # Locate this file, then load the one definition of the environment and
@@ -386,6 +492,9 @@ readonly PIPELINE_CHECKPOINT_NAME="final"
 # so the rule below reads as the rule it is.
 readonly GATE_STAGE="verify"
 readonly COMMIT_STAGE="commit"
+# The mux stage, named because the capacity model has to know that this
+# is the one stage that needs room for a second copy of the film.
+readonly CAPTION_STAGE="captions"
 # The second gate run, after the checkpoint.  See WHY THE GATE RUNS TWICE
 # in the header.
 readonly ATTEST_STAGE="attest"
@@ -403,13 +512,19 @@ readonly ATTEST_STAGE="attest"
 #
 # Running the whole gate once, ahead of the commit, therefore FAILED BY
 # CONSTRUCTION: measured as "9 of 108 checks FAILED" on a genuine
-# post-session tree, which stopped the sequence and left the commit stage
-# unattempted -- so the one plan an operator would reach for could never
-# reach the checkpoint at all.
+# post-session tree -- the gate's own count as it stood then -- which
+# stopped the sequence and left the commit stage unattempted, so the one
+# plan an operator would reach for could never reach the checkpoint at
+# all.
 #
 # So the functional half runs first and guards the commit, and the
 # history half runs after it and attests to what was published.  Both are
-# the same script with a --phase argument; neither duplicates the other.
+# the same script with a --phase argument, and the second run is the
+# short one: of the gate's 111 checks, 99 are asked before the commit and
+# 24 after it, which is 87 asked only before, 12 only after, and 12 --
+# the measuring environment and the version-control facts that must hold
+# at both moments -- asked at both.  No artifact is re-measured after a
+# commit that did not touch it.
 readonly GATE_PHASE_ARGUMENT="--phase"
 readonly GATE_PRE_COMMIT_PHASE="pre-commit"
 readonly GATE_POST_COMMIT_PHASE="post-commit"
@@ -431,6 +546,72 @@ readonly PIPELINE_LOCK_BASENAME="pipeline"
 readonly PIPELINE_LOCK_TIMEOUT_DEFAULT=60
 # Resolved from the basename at lock time by playthrough_checkout_lock_name.
 PIPELINE_LOCK_NAME=""
+# The validated lock timeout, filled by assert_lock_timeout during the
+# preflight and read by acquire_pipeline_lock.  Held in its own variable
+# rather than in PLAYTHROUGH_INT because the validator's output slot is
+# reused by every other caller of it, and several run in between.
+PIPELINE_LOCK_TIMEOUT="${PIPELINE_LOCK_TIMEOUT_DEFAULT}"
+
+# The field separator the shared dependency-closure checker joins its
+# verdicts with.  US (0x1f) for the same reason verify_artifacts.sh:519
+# picks it: it is the one byte that cannot occur in a package name, a
+# version, a path or a diagnostic sentence, so a verdict can never be
+# split in the wrong place by text it happens to contain.  Both consumers
+# pass it in, so the checker itself carries no knowledge of either one's
+# protocol.
+readonly CLOSURE_SEPARATOR=$'\037'
+
+# This run's private scratch directory, opened on demand and removed by
+# the exit trap.  It is under the runtime root rather than in the
+# checkout, because everything in it is diagnostic and the terminal
+# `!/playthrough/**` negation in .gitignore would otherwise make it
+# stageable.  The `pipeline-` prefix is one env.sh's pruner knows, so a
+# run killed outright still gets tidied eventually.
+PIPELINE_SCRATCH=""
+
+# ---------------------------------------------------------------------
+# THE LIFECYCLE PROBE
+#
+# The subcommand of commit_artifacts.sh that answers "would `final` be
+# taken?" without taking it, and the three keys it answers with.  Named
+# here so the parse below reads as the contract it is; the rule those
+# keys express lives in that script and is not restated in this one.
+# ---------------------------------------------------------------------
+readonly LIFECYCLE_PROBE_SUBCOMMAND="status"
+readonly LIFECYCLE_KEY_ELIGIBLE="FINAL_ELIGIBLE"
+readonly LIFECYCLE_KEY_REASON="FINAL_REASON"
+readonly LIFECYCLE_KEY_ANCHOR="FINAL_ANCHOR"
+readonly LIFECYCLE_ELIGIBLE_VALUE="yes"
+
+# ---------------------------------------------------------------------
+# THE CAPACITY RESERVE
+#
+# A margin over and above every measured term, so a plan is not accepted
+# with nothing but the exact bytes it needs: the engine's own userdir,
+# git's index and pack writes and the encoder's temporary state all move
+# during a run.  Two hundred and fifty-six mebibytes, in bytes, because
+# every figure this file reports is in bytes and converting once at the
+# point of display beats carrying a unit around.
+# ---------------------------------------------------------------------
+readonly CAPACITY_MARGIN_BYTES=268435456
+readonly BYTES_PER_MIB=1048576
+
+# ---------------------------------------------------------------------
+# THE RUN RECEIPT
+#
+# One line per producing stage, in the runtime directory and never in
+# the working tree.  The format number is part of the fingerprint, so a
+# change to what a fingerprint is made of invalidates every entry
+# written under the old rule rather than being silently compared against
+# it.
+# ---------------------------------------------------------------------
+readonly RECEIPT_FORMAT=1
+readonly RECEIPT_BASENAME="receipt"
+readonly RECEIPT_HEADER="# playthrough pipeline receipt"
+# The field separator, spelled once and never written as a literal tab:
+# a tab inside a parameter expansion is invisible in a diff and in a
+# review, and no other file in this folder contains one.
+readonly RECEIPT_SEPARATOR=$'\t'
 
 # ---------------------------------------------------------------------
 # THE STAGE REGISTRY
@@ -450,7 +631,7 @@ readonly STAGE_ORDER=(
     transitions
     render
     srt
-    captions
+    "${CAPTION_STAGE}"
     "${GATE_STAGE}"
     "${COMMIT_STAGE}"
     "${ATTEST_STAGE}"
@@ -466,6 +647,53 @@ declare -rA STAGE_SCRIPT=(
     [commit]="commit_artifacts.sh"
     [attest]="verify_artifacts.sh"
 )
+
+# ---------------------------------------------------------------------
+# WHICH STAGES DERIVE EVIDENCE, AND WHY THE ANSWER IS DECLARED HERE
+#
+# Five of the eight stages WRITE a delivered artifact: the timeline, the
+# transition frames, the film, the transcript pair and the captioned
+# film.  Three do not -- the two gate runs read evidence and write
+# nothing, and the checkpoint publishes what already exists.
+#
+# That distinction used to live nowhere, and a review found the cost: the
+# trust state was logged and then acted on only INSIDE the render and the
+# caption mux, which are stages four and five.  So a run on a host whose
+# trust state was diagnostic executed `timeline`, `transitions` and `srt`
+# first -- rewriting timeline.json, every transition PNG and both
+# transcripts -- and only then met a refusal.  The refusal worked, and it
+# arrived after the artifact set had already been rewritten under exactly
+# the relaxed conditions it exists to reject, leaving a tree the gate
+# would go on to measure.  A control that fires after the damage is a
+# report, not a control.
+#
+# So the whole plan is now gated BEFORE the first stage runs, and the
+# classification is a declaration rather than a guess at each call site.
+# A stage added to STAGE_ORDER without an entry here is a bash error at
+# the point of use, which is the same protection STAGE_SCRIPT gives.
+declare -rA STAGE_DERIVES_EVIDENCE=(
+    [timeline]=1
+    [transitions]=1
+    [render]=1
+    [srt]=1
+    [captions]=1
+    [verify]=0
+    [commit]=0
+    [attest]=0
+)
+
+# THE CHECKPOINT IS DELIBERATELY NOT GATED, and this is a decision the
+# environment contract already made rather than a gap in this one.
+# env.sh, beside playthrough_check_platform, states it directly:
+# publishing artifacts that already exist neither captures nor encodes
+# anything, and gating the commit would leave a host under a waiver
+# unable to commit the very disclosure that records the residual -- "a
+# rule that destroys the evidence trail it was meant to protect".  The
+# two gate runs are read-only for the same reason: refusing to MEASURE a
+# tree because the measuring host is imperfect withholds the one thing
+# that would have exposed the problem.  verify_artifacts.sh says so in
+# its own words, reporting a capture-time bypass as a WARN and failing
+# only on one that could have touched the artifacts.
 
 # What each stage is for, in one clause, so the banner tells an operator
 # what is happening rather than only which file is running.
@@ -489,11 +717,38 @@ the history now proves"
 # ---------------------------------------------------------------------
 PLAN=()
 SKIPPED=()
+FRESH=()
 FROM_STAGE=""
 ONLY_STAGE=""
 NO_COMMIT=0
+REBUILD=0
 LOCK_HELD=0
 FAILED_STAGE=""
+
+# The measurement toolchain, resolved once in the preflight.  Absent
+# tools are a REPORT rather than a refusal -- a render must not be
+# stopped because the thing that would have measured the disk is not
+# installed -- so each of these may legitimately stay empty and
+# MEASURED_READY says which case holds.
+MEASURED_READY=0
+GIT=""
+FIND=""
+WC=""
+SORT=""
+MV=""
+DF=""
+DU=""
+SHA256SUM=""
+
+# The receipt: its path, the fingerprint this run computed, and whether
+# it can be used at all.
+RECEIPT_FILE=""
+RECEIPT_FINGERPRINT=""
+RECEIPT_READY=0
+# Whether every stage so far was proved already done.  The moment one
+# does work, no later stage may be called fresh: its inputs have just
+# changed underneath it.
+FRESH_PREFIX=1
 
 # ---------------------------------------------------------------------
 # Reporting.
@@ -566,7 +821,9 @@ artifacts exist.  Twelve are about the history: is the save tracked, is
 every class committed, is the tree clean.  Those cannot pass BEFORE the
 commit, because the commit is what makes them true.  So `verify` runs the
 functional half and guards the commit, and `attest` runs the history half
-afterwards and reports what was published.
+afterwards and reports what was published.  The second run is the short
+one: 99 checks before the commit and 24 after it, out of 111 in all, so
+no artifact is re-measured after a commit that did not touch it.
 
 Options:
   --from NAME   start at that stage and run every later one, so a
@@ -579,6 +836,9 @@ Options:
                 both dropped, because with no commit there is nothing for
                 the attestation to read.  Committing is a deliberate act,
                 and this is how an operator takes it by hand afterwards.
+  --rebuild     ignore the run receipt and run every planned stage, even
+                one this run could prove was already done.  The receipt
+                is still written, so the run after this one is fast again.
   --            end of options.  Nothing may follow it: this sequencer
                 takes no positional arguments, so a `--` is only ever the
                 end of the line.
@@ -603,6 +863,30 @@ that produced it, so they keep holding if a flag is ever added:
     check it adds asks whether the history records something, so on its
     own it fails for reasons this run did not cause.
 Asking for either of them alone is therefore refused.
+
+THREE THINGS ARE SETTLED BEFORE THE FIRST STAGE RUNS, because each of
+them was previously discovered after the expensive work:
+  * WOULD THE CHECKPOINT BE TAKEN?  `final` anchors to the `creation`
+    checkpoint of the survivor this session is about and needs the record
+    to have grown since it.  commit_artifacts.sh answers that read-only
+    through its own `status` subcommand; a plan that cannot reach its
+    checkpoint is refused here with exit 4, naming --no-commit as the way
+    to run the render half deliberately.
+  * IS THERE ROOM?  The reserve is measured from what is on disk -- the
+    artifacts a producing stage rewrites, the staging copy the caption
+    mux needs, the objects the checkpoint writes -- plus a fixed margin,
+    and it is checked before the first stage and again before the
+    checkpoint.  Too little room is exit 5, refused before anything is
+    written; nothing is ever decimated to make a generation fit.  A
+    measurement that cannot be taken is reported and does not block the
+    run.
+  * IS ANY OF IT ALREADY DONE?  A content-addressed receipt in the
+    runtime directory -- never in the working tree -- records what each
+    producing stage was made from and what it produced.  A stage is
+    skipped only when both still hold and no earlier stage in this run
+    did any work.  The gate, the checkpoint and the attestation are never
+    skipped; --only never skips the stage it names; --rebuild ignores the
+    receipt.
 
 The game is neither launched nor keyed here: this file is post-session
 and reads only what the session already recorded.  Capturing is
@@ -748,6 +1032,10 @@ parse_arguments() {
                 NO_COMMIT=1
                 shift
                 ;;
+            --rebuild)
+                REBUILD=1
+                shift
+                ;;
             -h|--help)
                 usage
                 exit "${EX_OK}"
@@ -876,9 +1164,9 @@ resolve_plan() {
 
     # SECOND, and the mirror of it: the attestation reads what the
     # checkpoint published, so on its own it is a report about somebody
-    # else's commit.  Its twelve checks are exactly the ones that cannot
-    # pass before a commit, which is why asking for it alone would fail
-    # for a reason that has nothing to do with this run.
+    # else's commit.  Twelve of the checks it runs are exactly the ones
+    # that cannot pass before a commit, which is why asking for it alone
+    # would fail for a reason that has nothing to do with this run.
     if plan_contains "${ATTEST_STAGE}" &&
        ! plan_contains "${COMMIT_STAGE}"; then
         die "${EX_USAGE}" "the ${ATTEST_STAGE} stage attests to what" \
@@ -905,6 +1193,42 @@ resolve_plan() {
 # ---------------------------------------------------------------------
 stage_script_path() {
     printf '%s/%s' "${SCRIPT_DIR}" "${STAGE_SCRIPT[$1]}"
+}
+
+# open_pipeline_scratch
+#   Create this run's private scratch directory and leave it in
+#   PIPELINE_SCRATCH.  Returns non-zero if it cannot.
+#
+#   Created with mktemp -d under the runtime root that env.sh has already
+#   proved is a real, non-symlink, owner-only 0700 directory owned by this
+#   user, then held to playthrough_secure_dir as well -- mktemp's own
+#   0700 is about the mode, and the check is about the owner and the type.
+#   Idempotent: a second call keeps the first call's directory.
+#
+#   IT ASSIGNS AND DOES NOT PRINT, and that signature is load-bearing
+#   rather than a matter of taste.  Written the obvious way -- printing
+#   the path, so a caller could say `dir="$(open_pipeline_scratch)"` --
+#   the assignment to PIPELINE_SCRATCH happened inside the command
+#   substitution's SUBSHELL and was discarded the instant it closed.  The
+#   directory was still created, so every caller worked; only the exit
+#   trap, running in the parent with PIPELINE_SCRATCH still empty, silently
+#   cleaned nothing up.  Measured: a refused run left
+#   <runtime>/pipeline-XXXXXX behind, which is the unbounded accumulation
+#   env.sh's pruner exists to end, reappearing under a new prefix.  This is
+#   the same subshell trap that made an earlier attempt at the gate's
+#   tool-error reporting discard every reason it recorded; a function whose
+#   job is to change the caller's state must not be invoked through $( ).
+open_pipeline_scratch() {
+    if [ -n "${PIPELINE_SCRATCH}" ] && [ -d "${PIPELINE_SCRATCH}" ]; then
+        return 0
+    fi
+    local dir=""
+    dir="$(mktemp -d "${PLAYTHROUGH_RUNTIME_DIR}/pipeline-XXXXXX" \
+        2>/dev/null)" || return 1
+    playthrough_secure_dir "${dir}" 700 \
+        "the sequencer's scratch directory" || return 1
+    PIPELINE_SCRATCH="${dir}"
+    return 0
 }
 
 assert_stage_scripts() {
@@ -948,6 +1272,882 @@ assert_interpreter() {
 }
 
 # ---------------------------------------------------------------------
+# THE MEASUREMENT TOOLCHAIN
+#
+# The capacity model and the run receipt both need external tools, and
+# NEITHER OF THEM IS ALLOWED TO STOP A RENDER.  A host without `du` can
+# still encode a film; refusing to sequence one because the thing that
+# would have measured the disk is absent would be a check that costs
+# more than it saves.  So the tools are resolved once, the outcome is
+# reported, and both facilities degrade to "not measured" together --
+# which also means every later helper can assume they are present.
+#
+# playthrough_require_tools verifies ownership and writability of each
+# tool and of every directory above it, so these are checked paths
+# rather than another PATH search.  Its own diagnosis names the package
+# that ships anything missing.
+# ---------------------------------------------------------------------
+resolve_measurement_tools() {
+    if ! playthrough_require_tools git find wc sort mv df du \
+            sha256sum 2>/dev/null; then
+        MEASURED_READY=0
+        playthrough_warn "the tools that measure free space and" \
+            "fingerprint this run are incomplete, so this run will" \
+            "neither check capacity beforehand nor skip a stage it" \
+            "could have proved was already done.  Every stage still" \
+            "runs and every stage still checks its own preconditions;" \
+            "install git, findutils and coreutils to get the early" \
+            "refusals back."
+        return 1
+    fi
+    GIT="${PLAYTHROUGH_BIN_GIT}"
+    FIND="${PLAYTHROUGH_BIN_FIND}"
+    WC="${PLAYTHROUGH_BIN_WC}"
+    SORT="${PLAYTHROUGH_BIN_SORT}"
+    MV="${PLAYTHROUGH_BIN_MV}"
+    DF="${PLAYTHROUGH_BIN_DF}"
+    DU="${PLAYTHROUGH_BIN_DU}"
+    SHA256SUM="${PLAYTHROUGH_BIN_SHA256SUM}"
+    MEASURED_READY=1
+    return 0
+}
+
+# ---------------------------------------------------------------------
+# THE DEPENDENCY CLOSURE
+#
+# assert_interpreter above establishes that a Python EXISTS and can be
+# executed.  That was the whole of this preflight, and a review named the
+# gap exactly: between it and the acceptance gate's own reading of a
+# version string, nothing established that ANY of the six declared
+# libraries was installed, let alone at the declared version.  So a
+# sequencer would start `timeline`, reach `transitions`, and fail inside
+# MoviePy on an import -- after two stages had already rewritten
+# artifacts -- or worse, succeed against a MoviePy release that was not
+# the reviewed one and silently change the rendered film.  The AAP's own
+# reproducibility practice (§0.10.2) is exact `==` pins precisely so that
+# "a future MoviePy release cannot silently change the rendered movie
+# while every gate still reported green"; an unmeasured closure is what
+# makes that pin decorative.
+#
+# THE PROGRAM IS env.sh's, NOT THIS FILE'S.  Two stages need this one
+# answer -- the gate reports it as verdicts, this sequencer must refuse on
+# it -- and two implementations of one assertion is how they come to
+# disagree.  env.sh defines it once and each caller materialises it into
+# its own private scratch, which is also why nothing is written into the
+# working tree: a stage that added an untracked file to the evidence is a
+# stage the acceptance gate would, correctly, report.
+#
+# WHAT IS DONE WITH THE OUTPUT.  The checker exits non-zero when any
+# verdict failed, and prints one separator-joined line per verdict.  This
+# refuses on that status, and reports the failing verdicts rather than
+# only the status, because "the closure is wrong" is not actionable and
+# "moviepy is 2.1.0, declared ==2.2.1" is.  A checker that could not run
+# at all -- a traceback, or no verdicts -- is a DIFFERENT fault and is
+# reported as one: an unperformed check cannot report success.
+assert_dependency_closure() {
+    plan_needs_interpreter || return 0
+    # NOT `$(open_pipeline_scratch)`: it assigns PIPELINE_SCRATCH in this
+    # shell, and a command substitution would put that assignment in a
+    # subshell where the exit trap can never see it.  See the note on the
+    # function itself.
+    open_pipeline_scratch ||
+        die "${EX_LAYOUT}" "cannot open a private scratch directory" \
+            "under '$(playthrough_rel "${PLAYTHROUGH_RUNTIME_DIR}")'" \
+            "to measure the dependency closure in."
+    local program="${PIPELINE_SCRATCH}/closure.py"
+    local out="${PIPELINE_SCRATCH}/closure.out"
+    local err="${PIPELINE_SCRATCH}/closure.err"
+    if ! playthrough_write_closure_checker "${program}"; then
+        die "${EX_LAYOUT}" "the shared dependency-closure checker" \
+            "could not be written, so the closure cannot be" \
+            "measured.  It is defined in" \
+            "playthrough/tooling/env.sh and materialised here; a" \
+            "closure that was not measured is not a closure that" \
+            "passed, so this run stops rather than assuming it."
+    fi
+    local status=0
+    "${PLAYTHROUGH_PYTHON}" -B "${program}" \
+        "${CLOSURE_SEPARATOR}" \
+        "${PLAYTHROUGH_REQUIREMENTS}" \
+        "${PLAYTHROUGH_REQUIREMENTS_LOCK}" \
+        >"${out}" 2>"${err}" || status=$?
+    # A CRASH IS NOT A FAILING VERDICT.  Distinguished by its own
+    # evidence -- anything on stderr, or no verdicts at all -- because
+    # the two need different remedies and reporting one as the other
+    # sends an operator to the wrong file.
+    if [ -s "${err}" ] || [ ! -s "${out}" ]; then
+        local detail=""
+        detail="$(tail -n 3 "${err}" 2>/dev/null | tr '\n' ' ' ||
+            true)"
+        die "${EX_LAYOUT}" "the dependency closure could not be" \
+            "measured: ${detail:-<no diagnostic and no verdicts>}." \
+            "This is the checker failing to run rather than the" \
+            "closure being wrong, so the fault is in the interpreter" \
+            "or the declaration files rather than in the installed" \
+            "libraries."
+    fi
+    local failed=()
+    local kind="" name="" observed="" expected=""
+    while IFS="${CLOSURE_SEPARATOR}" \
+            read -r kind name observed expected; do
+        case "${kind}" in
+            FAIL)
+                failed+=("${name}: ${observed} (needed: ${expected})")
+                ;;
+            INFO)
+                note PIPELINE_CLOSURE "${observed}"
+                ;;
+        esac
+    done <"${out}"
+    if [ "${#failed[@]}" -ne 0 ] || [ "${status}" -ne 0 ]; then
+        local why=""
+        if [ "${#failed[@]}" -ne 0 ]; then
+            why="$(printf '%s; ' "${failed[@]}")"
+            why="${why%; }"
+        else
+            why="the checker exited ${status} without naming a \
+failing property"
+        fi
+        note PIPELINE_CLOSURE_FAILED "${#failed[@]}"
+        die "${EX_LAYOUT}" "the Python dependency closure is not the" \
+            "one this pipeline was reviewed against, so no stage" \
+            "runs: ${why}.  Install" \
+            "playthrough/tooling/requirements.lock into the" \
+            "interpreter env.sh resolved" \
+            "('${PLAYTHROUGH_PYTHON}') with --require-hashes, rather" \
+            "than installing something that merely imports: the" \
+            "exact pins are what keep a later release from changing" \
+            "the rendered film while every other gate still passes."
+    fi
+    return 0
+}
+
+# ---------------------------------------------------------------------
+# WHAT EACH PRODUCING STAGE LEAVES BEHIND
+#
+# stage_outputs NAME
+#   One path per line, from env.sh's exported layout and from nowhere
+#   else -- so this is the artifact LAYOUT, which env.sh owns and every
+#   stage shares, not a copy of any stage's logic.  A directory stands
+#   for its contents.
+#
+#   RETURNS 1 FOR THE THREE STAGES THAT PRODUCE NO ARTIFACT.  The gate,
+#   the checkpoint and the attestation answer questions about a moment
+#   in time; there is nothing they could be proved to have already done,
+#   and this is the single place that fact is expressed.  Everything
+#   downstream reads a non-zero status here as "never fresh".
+# ---------------------------------------------------------------------
+stage_outputs() {
+    case "$1" in
+        timeline)
+            printf '%s\n' "${PLAYTHROUGH_TIMELINE}"
+            ;;
+        transitions)
+            printf '%s\n' "${PLAYTHROUGH_TRANSITIONS_DIR}"
+            ;;
+        render)
+            printf '%s\n' "${PLAYTHROUGH_MOVIE}" \
+                "${PLAYTHROUGH_CONCAT_LIST}"
+            ;;
+        srt)
+            printf '%s\n' "${PLAYTHROUGH_TRANSCRIPT_SRT}" \
+                "${PLAYTHROUGH_TRANSCRIPT_MD}"
+            ;;
+        captions)
+            printf '%s\n' "${PLAYTHROUGH_MOVIE_CC}"
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+    return 0
+}
+
+# ---------------------------------------------------------------------
+# MEASURING
+#
+# Every number these three return comes from a tool and is therefore
+# CHECKED BEFORE IT REACHES ARITHMETIC: bash resolves a command
+# substitution inside $(( )), so an unchecked value there is an
+# instruction rather than a number.  The same rule the lock timeout
+# goes through, applied to a figure read from df and du.
+# ---------------------------------------------------------------------
+
+# disk_free_kib PATH -- kibibytes available on the filesystem holding
+# PATH, or nothing.
+#
+# `df -Pk` is the POSIX form: one line per filesystem, so the LAST line
+# is the answer for a single target however long the device name is.
+# The fields are read with the shell rather than with awk because the
+# mount point is the last field and may contain spaces, which is
+# exactly where an awk column count stops being right.
+disk_free_kib() {
+    local line="" last=""
+    local -a fields=()
+    while IFS= read -r line; do
+        [ -n "${line}" ] || continue
+        last="${line}"
+    done < <("${DF}" -Pk -- "$1" 2>/dev/null)
+    if [ -z "${last}" ]; then
+        return 1
+    fi
+    read -r -a fields <<<"${last}"
+    if [ "${#fields[@]}" -lt 4 ]; then
+        return 1
+    fi
+    case "${fields[3]}" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    printf '%s' "${fields[3]}"
+}
+
+# tree_kib PATH -- kibibytes PATH occupies, 0 when it does not exist,
+# nothing when the measurement failed.  A file and a directory are both
+# answered, which is why the callers do not have to know which they hold.
+tree_kib() {
+    local out="" leading=""
+    if [ ! -e "$1" ]; then
+        printf '0'
+        return 0
+    fi
+    out="$("${DU}" -sk -- "$1" 2>/dev/null || printf '')"
+    if [ -z "${out}" ]; then
+        return 1
+    fi
+    leading="${out%%[!0-9]*}"
+    case "${leading}" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    printf '%s' "${leading}"
+}
+
+# mebibytes BYTES -- whole mebibytes, for a figure a human reads.  The
+# byte count is reported alongside it every time, so nothing depends on
+# this rounding.
+#
+# The argument is CHECKED even though every caller passes an integer it
+# just computed: this is the file's one other piece of arithmetic on a
+# value that did not come from bash's own SECONDS, and a division is
+# exactly where an unchecked value would become an instruction.
+mebibytes() {
+    case "${1-}" in
+        ''|*[!0-9]*)
+            printf 'an unmeasured number of'
+            return 0
+            ;;
+    esac
+    printf '%s' "$(( $1 / BYTES_PER_MIB ))"
+}
+
+# ---------------------------------------------------------------------
+# THE CAPACITY MODEL
+#
+# THE ARTIFACTS ARE FULL-RESOLUTION AND NOTHING IS EVER DROPPED TO MAKE
+# THEM FIT, so running out of room part way through a stage does not
+# produce a smaller generation -- it produces a torn one, and the
+# operator finds out from a truncated film or a half-written cue file.
+# The reserve is therefore checked BEFORE the first stage and again
+# immediately before the checkpoint, and it is MEASURED rather than
+# predicted:
+#
+#   REWRITE  what the planned producing stages will write over.  A
+#            rewrite needs room for the new copy while the old one is
+#            still there, so the bytes those artifacts occupy now are
+#            the bytes to have spare.  Measured per planned stage from
+#            stage_outputs, so a plan that only writes the cue file
+#            reserves the cue file.
+#   STAGING  the caption mux writes its output beside the film and then
+#            relocates within it, so one more copy of the film has to
+#            fit.  Only when that stage is planned.  It re-checks this
+#            itself with its own exact figures; this term exists so the
+#            refusal comes before the encode rather than after it.
+#   HISTORY  the objects the checkpoint writes.  AN UPPER BOUND, and
+#            deliberately so: git writes an object only for what
+#            changed, and these artifacts are already-compressed
+#            formats that do not shrink further, so the whole tree's
+#            size is a figure that cannot be exceeded.
+#   MARGIN   a fixed reserve on top of all of it, because the engine's
+#            userdir, git's index and the encoder's temporary state all
+#            move during a run.
+#
+# A TERM THAT CANNOT BE MEASURED IS REPORTED AND THE RUN PROCEEDS.  An
+# unreadable df is a fact about the host, not evidence that the disk is
+# full, and every stage checks its own preconditions anyway.
+# ---------------------------------------------------------------------
+
+# capacity_ok WHEN
+#   WHEN is `plan` (before the first stage, every term) or `checkpoint`
+#   (immediately before the commit, when the producing stages are done
+#   and only the history term is still ahead).  Reports its own refusal
+#   in full and returns 1; the caller decides what to do about it.
+capacity_ok() {
+    local when="$1"
+    local free_kib="" term="" path=""
+    local reserve=0 rewrite=0 staging=0 history=0 free=0
+    local name="" key="PIPELINE_CAPACITY"
+    # Neither of the two moments is a value from anywhere but this file,
+    # so a third one is a fault here rather than a term to leave out
+    # quietly -- which is what an unrecognised word would otherwise do.
+    case "${when}" in
+        plan) ;;
+        # The two moments report under two keys, so a caller building a
+        # dictionary from this channel does not have one overwrite the
+        # other: the first says whether the plan fits, the second whether
+        # the checkpoint still does once the films are on the disk.
+        checkpoint) key="PIPELINE_CAPACITY_CHECKPOINT" ;;
+        *)
+            die "${EX_LAYOUT}" "'${when}' is not a moment this file" \
+                "measures capacity at, which is a fault in this file" \
+                "rather than in the plan"
+            ;;
+    esac
+    if [ "${MEASURED_READY}" -ne 1 ]; then
+        note "${key}" "unmeasured"
+        return 0
+    fi
+    if ! free_kib="$(disk_free_kib "${REPO_ROOT}")"; then
+        note "${key}" "unmeasured"
+        playthrough_warn "the free space on the filesystem holding" \
+            "this checkout could not be read, so this run does not" \
+            "know whether there is room for it.  Every stage still" \
+            "checks its own preconditions."
+        return 0
+    fi
+    free=$(( free_kib * 1024 ))
+
+    if [ "${when}" = "plan" ]; then
+        for name in "${PLAN[@]}"; do
+            while IFS= read -r path; do
+                if ! term="$(tree_kib "${path}")"; then
+                    continue
+                fi
+                rewrite=$(( rewrite + term * 1024 ))
+            done < <(stage_outputs "${name}" || printf '')
+        done
+        if plan_contains "${CAPTION_STAGE}"; then
+            if term="$(tree_kib "${PLAYTHROUGH_MOVIE}")"; then
+                staging=$(( term * 1024 ))
+            fi
+        fi
+    fi
+    if plan_contains "${COMMIT_STAGE}"; then
+        if term="$(tree_kib "${PLAYTHROUGH_DIR}")"; then
+            history=$(( term * 1024 ))
+        fi
+    fi
+    reserve=$(( rewrite + staging + history + CAPACITY_MARGIN_BYTES ))
+    note "${key}" "${free}:${reserve}"
+    if [ "${free}" -ge "${reserve}" ]; then
+        playthrough_log "room to work: ${free} byte(s) free" \
+            "($(mebibytes "${free}") MiB) against a ${reserve}-byte" \
+            "reserve ($(mebibytes "${reserve}") MiB: ${rewrite}" \
+            "rewrite + ${staging} staging + ${history} history +" \
+            "${CAPACITY_MARGIN_BYTES} margin)"
+        return 0
+    fi
+    playthrough_die "there is not room to run this plan: ${free}" \
+        "byte(s) free ($(mebibytes "${free}") MiB) against a reserve" \
+        "of ${reserve} ($(mebibytes "${reserve}") MiB) --" \
+        "${rewrite} for the artifacts these stages rewrite," \
+        "${staging} for the staging copy the caption mux needs," \
+        "${history} for the objects the checkpoint writes, and" \
+        "${CAPACITY_MARGIN_BYTES} of margin.  Free" \
+        "$(( reserve - free )) more byte(s)" \
+        "($(mebibytes "$(( reserve - free ))" ) MiB) and run this" \
+        "again.  NOTHING IS DROPPED TO MAKE A GENERATION FIT, so this" \
+        "is refused now rather than torn later." || true
+    return 1
+}
+
+# assert_capacity WHEN -- the same check, taken as a refusal.
+assert_capacity() {
+    capacity_ok "$1" || exit "${EX_CAPACITY}"
+}
+
+# ---------------------------------------------------------------------
+# THE LIFECYCLE PREFLIGHT
+#
+# `final` anchors to the `creation` checkpoint OF THE SURVIVOR THIS
+# SESSION IS ABOUT and requires the record to have grown since it.
+# Both are facts about the history and the record that are true or false
+# before anything is rendered -- and when either fails, the checkpoint
+# refuses at stage 7, with the timeline, the transitions, the encode,
+# the transcripts, the caption mux and the whole functional gate already
+# spent.  Measured on this very checkout: the newest `creation` records
+# one survivor and the userdir holds another, so the default plan is
+# GUARANTEED to reach stage 7 and be refused.
+#
+# THE ANSWER IS ASKED OF THE MODULE THAT OWNS THE RULE.
+# commit_artifacts.sh has a read-only `status` subcommand that emits it
+# as KEY=value, computed with the same two predicates its refusal uses.
+# This file reads three keys and holds no copy of the rule, so the two
+# cannot drift.
+#
+# ITS STDOUT IS CONSUMED AND ITS STDERR IS NOT.  The KEY=value block
+# belongs to that script's own contract and would read here as though a
+# checkpoint had been taken, so it is parsed rather than passed through;
+# the prose explaining WHY the checkpoint would refuse is exactly what
+# the operator needs and goes straight to the terminal.
+#
+# AN UNREADABLE ANSWER IS NOT A REFUSAL.  A probe that could not run
+# says nothing about eligibility, and the checkpoint stage remains the
+# authority either way; turning silence into a refusal would make this
+# file the second place a lifecycle decision is taken.
+# ---------------------------------------------------------------------
+LIFECYCLE_ELIGIBLE=""
+LIFECYCLE_REASON=""
+LIFECYCLE_ANCHOR=""
+
+probe_lifecycle() {
+    local script="" line="" key="" value=""
+    local -a probe=()
+    script="$(stage_script_path "${COMMIT_STAGE}")"
+    if [ -x "${script}" ]; then
+        probe=( "${script}" )
+    else
+        probe=( "${BASH}" "${script}" )
+    fi
+    probe+=( "${LIFECYCLE_PROBE_SUBCOMMAND}" )
+    LIFECYCLE_ELIGIBLE=""
+    LIFECYCLE_REASON=""
+    LIFECYCLE_ANCHOR=""
+    while IFS= read -r line; do
+        key="${line%%=*}"
+        value="${line#*=}"
+        case "${key}" in
+            "${LIFECYCLE_KEY_ELIGIBLE}")
+                LIFECYCLE_ELIGIBLE="${value}" ;;
+            "${LIFECYCLE_KEY_REASON}")
+                LIFECYCLE_REASON="${value}" ;;
+            "${LIFECYCLE_KEY_ANCHOR}")
+                LIFECYCLE_ANCHOR="${value}" ;;
+        esac
+    done < <("${probe[@]}")
+    if [ -z "${LIFECYCLE_ELIGIBLE}" ]; then
+        return 1
+    fi
+    return 0
+}
+
+assert_lifecycle_eligible() {
+    plan_contains "${COMMIT_STAGE}" || return 0
+    playthrough_log "asking $(playthrough_rel \
+        "$(stage_script_path "${COMMIT_STAGE}")")" \
+        "${LIFECYCLE_PROBE_SUBCOMMAND}, which changes nothing," \
+        "whether the '${PIPELINE_CHECKPOINT_NAME}' checkpoint could be" \
+        "taken at all; its own report follows"
+    if ! probe_lifecycle; then
+        note PIPELINE_LIFECYCLE "unread"
+        playthrough_warn "that answer could not be read, so this run" \
+            "does not know in advance whether the checkpoint can be" \
+            "taken.  It proceeds: the checkpoint stage is the" \
+            "authority on its own lifecycle either way."
+        return 0
+    fi
+    if [ "${LIFECYCLE_ELIGIBLE}" = "${LIFECYCLE_ELIGIBLE_VALUE}" ]; then
+        note PIPELINE_LIFECYCLE "eligible"
+        playthrough_log "the '${PIPELINE_CHECKPOINT_NAME}'" \
+            "checkpoint would anchor to" \
+            "${LIFECYCLE_ANCHOR:0:10}, so this plan can reach it"
+        return 0
+    fi
+    note PIPELINE_LIFECYCLE "${LIFECYCLE_REASON:-ineligible}"
+    die "${EX_INELIGIBLE}" "the '${PIPELINE_CHECKPOINT_NAME}'" \
+        "checkpoint CANNOT be taken over this tree" \
+        "(${LIFECYCLE_REASON:-no reason given}), and its reason is" \
+        "above.  That is settled before anything is rendered, so no" \
+        "stage is run: this plan would otherwise spend the timeline," \
+        "the transitions, the encode, the transcripts, the caption mux" \
+        "and the whole functional gate to be refused at the" \
+        "checkpoint.  Fix the lifecycle -- take the anchoring" \
+        "checkpoint for THIS survivor, which the report above names --" \
+        "or pass --no-commit to run the render half deliberately and" \
+        "take the checkpoint by hand afterwards."
+}
+
+# ---------------------------------------------------------------------
+# THE RUN RECEIPT
+#
+# WHAT PROBLEM IT SOLVES.  Every invocation used to run every planned
+# stage unconditionally, so a run stopped by a late failure -- the
+# caption mux, the gate, the checkpoint -- had to re-time every capture,
+# re-compose every transition and re-encode the whole film before it
+# could try the failing stage again, over inputs that had not changed by
+# so much as a byte.  On an unbounded session that is hours of identical
+# work to reach the same stage twice.
+#
+# WHAT IT IS.  One line per producing stage in the runtime directory:
+#
+#     <stage>  <input fingerprint>  <output digest>
+#
+# and a stage is skipped only when BOTH still hold.  The input
+# fingerprint says nothing has changed that the stage would read; the
+# output digest says what it produced is still there, byte for byte.
+# Either alone would be wrong: matching inputs with a deleted film would
+# skip the encode and leave no film, and an intact film with a rewritten
+# record would keep a film that no longer matches the record.
+#
+# IT IS CONTENT-ADDRESSED, NEVER TIME-STAMPED.  A modification time can
+# move without the content moving and can stay still while the content
+# changes -- touch and a same-length overwrite do exactly those two
+# things -- so no mtime and no bare size appears in a fingerprint here.
+# What does: the record itself, the amendment ledger, the capture ledger,
+# the capture count, HEAD, git's own view of the input paths (which
+# covers the index and the working tree together), the pinned closure,
+# the interpreter, and every stage script's own digest.
+#
+# IT LIVES OUTSIDE THE WORKING TREE, in the mode-0700 runtime directory
+# env.sh secures, under a name carrying a digest of this checkout -- the
+# same scoping the lock uses, for the same reason.  It is therefore not
+# an artifact, cannot be committed, and cannot make two clones read each
+# other's receipt.  The directory is the confinement: nothing in it is
+# reachable by another user, so these files need no mode of their own.
+#
+# WHAT IS NEVER SKIPPED.  The gate, the checkpoint and the attestation,
+# because each asks about a moment rather than producing a thing --
+# stage_outputs is where that is expressed.  The stage --only names,
+# because an operator asking for one stage means it.  Anything, under
+# --rebuild.  And every stage after the first one that does work, since
+# its inputs have just moved.
+# ---------------------------------------------------------------------
+
+# file_digest PATH -- the sha256 of a file, or the word `absent` when
+# there is none and `unreadable` when there is one that cannot be read.
+# Both words are values in their own right: an input that disappears
+# changes the fingerprint, which is what should happen.
+file_digest() {
+    local out=""
+    if [ ! -f "$1" ]; then
+        printf 'absent'
+        return 0
+    fi
+    out="$("${SHA256SUM}" -- "$1" 2>/dev/null || printf '')"
+    if [ -z "${out}" ]; then
+        printf 'unreadable'
+        return 0
+    fi
+    printf '%s' "${out%% *}"
+}
+
+# input_paths -- the paths whose git state the fingerprint covers, one
+# per line.  THE INPUTS ONLY, deliberately: the outputs' identity is the
+# receipt's other half, and folding them in here would mean the
+# fingerprint changed the moment a stage wrote its output, so nothing
+# could ever be found fresh afterwards.
+input_paths() {
+    printf '%s\n' \
+        "${PLAYTHROUGH_FRAMES_DIR}" \
+        "${PLAYTHROUGH_MANIFEST}" \
+        "${PLAYTHROUGH_AMENDMENTS}" \
+        "${PLAYTHROUGH_USERDIR}"
+}
+
+# input_git_state -- a digest of git's own answer about those paths.
+# One streamed pass, nothing held: on an unbounded session this is one
+# line per capture and the digest is taken as they go past.
+input_git_state() {
+    local -a paths=()
+    local path=""
+    while IFS= read -r path; do
+        paths+=("${path}")
+    done < <(input_paths)
+    local out=""
+    out="$("${GIT}" status --porcelain --untracked-files=all -- \
+        "${paths[@]}" 2>/dev/null | "${SHA256SUM}" || printf '')"
+    if [ -z "${out}" ]; then
+        printf 'unreadable'
+        return 0
+    fi
+    printf '%s' "${out%% *}"
+}
+
+# capture_count -- how many captures are on disk.  A count rather than a
+# digest of them: the capture ledger already binds their CONTENT, and
+# this is the cheap half that notices a frame arriving or leaving.  The
+# glob is '*.png' rather than the frame format, so this file keeps no
+# copy of a naming rule that belongs to capture.sh.
+capture_count() {
+    local total=""
+    total="$("${FIND}" "${PLAYTHROUGH_FRAMES_DIR}" -maxdepth 1 \
+        -type f -name '*.png' 2>/dev/null | "${WC}" -l || printf '')"
+    total="${total// /}"
+    case "${total}" in
+        ''|*[!0-9]*) printf 'unreadable' ;;
+        *) printf '%s' "${total}" ;;
+    esac
+}
+
+# input_fingerprint -- the identity of everything a producing stage
+# reads, as one digest.  Every component is named in the text that is
+# hashed, so a receipt written under one rule cannot be compared against
+# a fingerprint computed under another: the format number is in there
+# too.
+input_fingerprint() {
+    local out="" name=""
+    out="$(
+        {
+            printf 'format\t%s\n' "${RECEIPT_FORMAT}"
+            printf 'head\t%s\n' "$("${GIT}" rev-parse HEAD \
+                2>/dev/null || printf 'none')"
+            printf 'inputs\t%s\n' "$(input_git_state)"
+            printf 'captures\t%s\n' "$(capture_count)"
+            printf 'record\t%s\n' \
+                "$(file_digest "${PLAYTHROUGH_MANIFEST}")"
+            printf 'amendments\t%s\n' \
+                "$(file_digest "${PLAYTHROUGH_AMENDMENTS}")"
+            printf 'ledger\t%s\n' \
+                "$(file_digest "${PLAYTHROUGH_FRAME_DIGESTS}")"
+            printf 'closure\t%s\n' \
+                "$(file_digest "${PLAYTHROUGH_REQUIREMENTS}")"
+            printf 'interpreter\t%s\n' "${PLAYTHROUGH_PYTHON}"
+            printf 'trust\t%s\n' \
+                "${PLAYTHROUGH_TRUST_STATE:-unknown}"
+            for name in "${STAGE_ORDER[@]}"; do
+                printf 'stage:%s\t%s\n' "${name}" \
+                    "$(file_digest "$(stage_script_path "${name}")")"
+            done
+        } | "${SHA256SUM}" || printf ''
+    )"
+    if [ -z "${out}" ]; then
+        return 1
+    fi
+    printf '%s' "${out%% *}"
+}
+
+# outputs_digest NAME -- one digest over everything that stage produced,
+# or nothing at all when any declared output is missing (which is itself
+# the answer: a stage whose output has gone has not been done).
+#
+# A directory is answered by its files, hashed in one batched pass --
+# `find -exec ... +` fills each argument list to the system's limit
+# itself, so a session with thousands of transition images cannot
+# overflow one -- and the lines are SORTED before being hashed, so the
+# digest does not depend on the order the filesystem happened to return.
+outputs_digest() {
+    local name="$1" path="" out=""
+    stage_outputs "${name}" >/dev/null || return 1
+    while IFS= read -r path; do
+        if [ ! -e "${path}" ]; then
+            return 1
+        fi
+    done < <(stage_outputs "${name}")
+    out="$(
+        {
+            while IFS= read -r path; do
+                if [ -d "${path}" ]; then
+                    "${FIND}" "${path}" -type f \
+                        -exec "${SHA256SUM}" -- {} +
+                else
+                    "${SHA256SUM}" -- "${path}"
+                fi
+            done < <(stage_outputs "${name}")
+        } | "${SORT}" | "${SHA256SUM}" || printf ''
+    )"
+    if [ -z "${out}" ]; then
+        return 1
+    fi
+    printf '%s' "${out%% *}"
+}
+
+# open_receipt -- resolve the receipt for this checkout and compute this
+# run's fingerprint.  Sets RECEIPT_READY, which every other receipt
+# helper reads, so a host that cannot support one simply runs every
+# stage.
+open_receipt() {
+    local name=""
+    RECEIPT_READY=0
+    if [ "${MEASURED_READY}" -ne 1 ]; then
+        note PIPELINE_RECEIPT "none"
+        return 1
+    fi
+    if ! name="$(playthrough_checkout_lock_name \
+            "${RECEIPT_BASENAME}")"; then
+        note PIPELINE_RECEIPT "none"
+        playthrough_warn "the receipt name for this checkout could" \
+            "not be derived, so no stage will be skipped."
+        return 1
+    fi
+    RECEIPT_FILE="${PLAYTHROUGH_RUN_DIR}/${name}"
+    if [ ! -d "${PLAYTHROUGH_RUN_DIR}" ] ||
+       [ ! -w "${PLAYTHROUGH_RUN_DIR}" ]; then
+        note PIPELINE_RECEIPT "none"
+        playthrough_warn "${PLAYTHROUGH_RUN_DIR} is not a writable" \
+            "directory, so this run cannot record what it did and no" \
+            "stage will be skipped."
+        return 1
+    fi
+    if ! RECEIPT_FINGERPRINT="$(input_fingerprint)"; then
+        note PIPELINE_RECEIPT "none"
+        playthrough_warn "this run's inputs could not be" \
+            "fingerprinted, so no stage will be skipped."
+        return 1
+    fi
+    RECEIPT_READY=1
+    note PIPELINE_RECEIPT "${name}"
+    # The path is passed WHOLE rather than through playthrough_rel:
+    # env.sh's redaction rewrites the runtime directory to <runtime>,
+    # which locates the file, where playthrough_rel would reduce an
+    # outside path to its basename and say only that it is outside.
+    playthrough_log "run receipt ${RECEIPT_FILE}, inputs" \
+        "${RECEIPT_FINGERPRINT:0:12}"
+    return 0
+}
+
+# receipt_entry NAME -- the recorded output digest for that stage IF the
+# recorded input fingerprint is this run's, else nothing.
+receipt_entry() {
+    local name="$1" line="" field_stage="" field_inputs="" rest=""
+    if [ "${RECEIPT_READY}" -ne 1 ] || [ ! -f "${RECEIPT_FILE}" ]; then
+        return 1
+    fi
+    while IFS= read -r line; do
+        case "${line}" in
+            '#'*|'') continue ;;
+        esac
+        field_stage="${line%%"${RECEIPT_SEPARATOR}"*}"
+        [ "${field_stage}" = "${name}" ] || continue
+        rest="${line#*"${RECEIPT_SEPARATOR}"}"
+        field_inputs="${rest%%"${RECEIPT_SEPARATOR}"*}"
+        [ "${field_inputs}" = "${RECEIPT_FINGERPRINT}" ] || return 1
+        printf '%s' "${rest#*"${RECEIPT_SEPARATOR}"}"
+        return 0
+    done <"${RECEIPT_FILE}"
+    return 1
+}
+
+# record_receipt NAME -- write down what this stage was made from and
+# what it produced.  Rewritten whole, through a temporary beside it, so
+# an interrupted write cannot leave a half line that a later run would
+# try to read as a digest.  A stage with no outputs records nothing.
+record_receipt() {
+    local name="$1" digest="" line="" field_stage=""
+    local temporary=""
+    if [ "${RECEIPT_READY}" -ne 1 ]; then
+        return 0
+    fi
+    if ! digest="$(outputs_digest "${name}")"; then
+        return 0
+    fi
+    temporary="${RECEIPT_FILE}.new"
+    {
+        printf '%s %s\n' "${RECEIPT_HEADER}" "${RECEIPT_FORMAT}"
+        if [ -f "${RECEIPT_FILE}" ]; then
+            while IFS= read -r line; do
+                case "${line}" in
+                    '#'*|'') continue ;;
+                esac
+                field_stage="${line%%"${RECEIPT_SEPARATOR}"*}"
+                [ "${field_stage}" != "${name}" ] || continue
+                printf '%s\n' "${line}"
+            done <"${RECEIPT_FILE}"
+        fi
+        printf '%s\t%s\t%s\n' "${name}" "${RECEIPT_FINGERPRINT}" \
+            "${digest}"
+    } >"${temporary}" || {
+        playthrough_warn "this run could not record what the" \
+            "'${name}' stage produced, so the next one will repeat it."
+        return 0
+    }
+    "${MV}" -f -- "${temporary}" "${RECEIPT_FILE}" || {
+        playthrough_warn "the receipt could not be replaced, so the" \
+            "next run will repeat this one's work."
+        return 0
+    }
+    return 0
+}
+
+# stage_is_fresh NAME -- whether this run may skip that stage.  Every
+# reason NOT to is checked before the expensive half: the output digest
+# is only computed once the recorded input fingerprint has matched, so
+# the film is hashed only when the answer is about to be "skip it" --
+# and hashing a film to avoid re-encoding it is a trade worth making in
+# only that direction.
+#
+# WHY THE INTERMEDIATE ARTIFACTS ARE NOT IN THE FINGERPRINT, and why
+# that is safe rather than an omission.  The encoder reads the timeline
+# and the transition images, neither of which is an input to the
+# pipeline -- they are outputs of earlier stages.  Adding them would
+# make the fingerprint change the moment stage 1 ran, so nothing after
+# it could ever be found fresh.  What makes it sound to leave them out
+# is FRESH_PREFIX: freshness collapses at the first stage that does any
+# work, so the only way the encode is skipped is that the timeline stage
+# was skipped too -- which means its output is the same bytes the encode
+# was built from.  A chain of skips is therefore a chain in which
+# nothing in the middle moved.
+stage_is_fresh() {
+    local name="$1" recorded="" current=""
+    if [ "${RECEIPT_READY}" -ne 1 ] || [ "${REBUILD}" -eq 1 ]; then
+        return 1
+    fi
+    if [ "${FRESH_PREFIX}" -ne 1 ]; then
+        return 1
+    fi
+    if [ -n "${ONLY_STAGE}" ]; then
+        return 1
+    fi
+    recorded="$(receipt_entry "${name}")" || return 1
+    [ -n "${recorded}" ] || return 1
+    current="$(outputs_digest "${name}")" || return 1
+    [ "${current}" = "${recorded}" ] || return 1
+    return 0
+}
+
+# ---------------------------------------------------------------------
+# THE TRUST GATE
+#
+# The whole plan is judged here, before the first stage, and the refusal
+# is what the classification beside STAGE_DERIVES_EVIDENCE exists for.
+#
+# THE ONE PLAN THAT IS EXEMPT is a plan that derives nothing -- `--only
+# verify`, `--only attest`, `--only commit`, or any combination of the
+# three.  That exemption is deliberate and it is the more important half
+# of this gate: measuring a tree and publishing what is already in it are
+# exactly the operations an operator needs MOST when the host is
+# imperfect, and refusing them would withhold the diagnosis and strand
+# the disclosure.  Read-only means read-only, though: the exemption is
+# computed from the declaration, not from a flag an operator can pass, so
+# it cannot be claimed for a plan that would write.
+assert_trusted_plan() {
+    local name=""
+    local -a deriving=()
+    for name in "${PLAN[@]}"; do
+        if [ "${STAGE_DERIVES_EVIDENCE[${name}]}" = "1" ]; then
+            deriving+=("${name}")
+        fi
+    done
+    if [ "${#deriving[@]}" -eq 0 ]; then
+        note PIPELINE_TRUST_GATE "exempt"
+        playthrough_log "this plan derives no artifact (${PLAN[*]})," \
+            "so the trust state is reported rather than enforced:" \
+            "reading a tree and publishing what is already in it are" \
+            "what an operator needs most when a host is imperfect"
+        return 0
+    fi
+    # Recomputed here rather than read from the environment, because a
+    # caller can export a bypass after env.sh was sourced -- and because
+    # a memoised trust verdict is a statement about the past.
+    if playthrough_trust_refresh; then
+        note PIPELINE_TRUST_GATE "trusted"
+        return 0
+    fi
+    note PIPELINE_TRUST_GATE "refused"
+    note PIPELINE_TRUST_STATE "${PLAYTHROUGH_TRUST_STATE:-unknown}"
+    playthrough_trust_explain || true
+    die "${EX_TRUST}" "refusing to run this plan: ${#deriving[@]} of" \
+        "its ${#PLAN[@]} stage(s) DERIVE a delivered artifact" \
+        "(${deriving[*]}) and the trust state is" \
+        "'${PLAYTHROUGH_TRUST_STATE:-unknown}'.  Each reason is above." \
+        "The refusal is here, before the first stage, rather than" \
+        "inside the render: the stages ahead of it rewrite the" \
+        "timeline, the transition frames and both transcripts, so a" \
+        "later refusal would leave the artifact set already rewritten" \
+        "under the very conditions being rejected.  Unset the" \
+        "variable(s) named above and fix what each was hiding, or run" \
+        "a plan that only reads and publishes -- '--only verify' and" \
+        "'--only commit' are always permitted."
+}
+
+# ---------------------------------------------------------------------
 # THE LOCK
 #
 # Held for the whole sequence and released however this run ends.  The
@@ -956,7 +2156,24 @@ assert_interpreter() {
 # resolves a command substitution inside $(( )), which makes an
 # unchecked value there an instruction rather than a number.
 # ---------------------------------------------------------------------
-acquire_pipeline_lock() {
+# assert_lock_timeout -- validate the one number this file takes from the
+#   environment, and leave it in PIPELINE_LOCK_TIMEOUT.
+#
+#   SEPARATED FROM THE ACQUISITION SO THAT A USAGE ERROR IS REPORTED AS
+#   ONE.  It used to be validated inside acquire_pipeline_lock, which was
+#   fine while that was the first thing main did after the preflight --
+#   and stopped being fine the moment the closure and trust gates were
+#   added ahead of it, because on a host whose trust state is diagnostic a
+#   typo'd timeout was then answered with the TRUST refusal (exit 4)
+#   instead of the usage refusal (exit 1).  The operator was told to fix
+#   their platform when what they had actually done was mistype a number.
+#   Measured: the suite's own hostile-timeout cases went from exit 1 to
+#   exit 4 the moment the gates moved.
+#
+#   So the order is: usage, then environment, then policy, then resources.
+#   A malformed argument is the operator's own mistake and is decidable
+#   without reference to anything else, so it goes first.
+assert_lock_timeout() {
     local timeout="${PLAYTHROUGH_PIPELINE_LOCK_TIMEOUT:-\
 ${PIPELINE_LOCK_TIMEOUT_DEFAULT}}"
     # playthrough_validate_int reports its own refusal in full, so this
@@ -967,6 +2184,11 @@ ${PIPELINE_LOCK_TIMEOUT_DEFAULT}}"
             "PLAYTHROUGH_PIPELINE_LOCK_TIMEOUT to a whole number of" \
             "seconds, or leave it unset for" \
             "${PIPELINE_LOCK_TIMEOUT_DEFAULT}."
+    PIPELINE_LOCK_TIMEOUT="${PLAYTHROUGH_INT}"
+    return 0
+}
+
+acquire_pipeline_lock() {
     # The name is derived from the repository root, so it identifies THIS
     # working tree rather than this clone index.  Derived here rather than
     # at file scope because it needs a tool, and a tool that is missing
@@ -979,7 +2201,7 @@ ${PIPELINE_LOCK_TIMEOUT_DEFAULT}}"
     fi
     readonly PIPELINE_LOCK_NAME
     if ! playthrough_acquire_lock \
-            "${PIPELINE_LOCK_NAME}" "${PLAYTHROUGH_INT}"; then
+            "${PIPELINE_LOCK_NAME}" "${PIPELINE_LOCK_TIMEOUT}"; then
         # THE DIGEST IS THE SCOPE, and it is quoted instead of the path
         # because every message here goes through env.sh's redaction,
         # which rewrites the repository root to '.' to keep host paths out
@@ -1010,6 +2232,17 @@ _rp_on_exit() {
         # ending with -- the reason for it has already been reported.
         playthrough_release_lock "${PLAYTHROUGH_LOCK_FD:-}" || true
     fi
+    # The scratch directory goes whatever way this run ended, including a
+    # refusal from the closure gate, which is the one path that creates it
+    # and then dies.  Guarded on the prefix as well as on emptiness: this
+    # is an `rm -rf`, and it will only ever remove something this function
+    # can prove the sequencer made.
+    case "${PIPELINE_SCRATCH}" in
+        "${PLAYTHROUGH_RUNTIME_DIR}"/pipeline-*)
+            rm -rf -- "${PIPELINE_SCRATCH}" 2>/dev/null || true
+            PIPELINE_SCRATCH=""
+            ;;
+    esac
 }
 
 
@@ -1173,12 +2406,39 @@ main() {
     resolve_plan
     assert_stage_scripts
     assert_interpreter
+    # USAGE FIRST.  A mistyped lock timeout is the operator's own mistake
+    # and is decidable without reference to the environment or to policy,
+    # so it is answered as a usage error rather than being overtaken by
+    # the refusals below.  See assert_lock_timeout.
+    assert_lock_timeout
 
     # The trap is registered before the lock is taken, so the lock is
-    # released however this run ends -- including a refusal from a stage
-    # and an interrupt from the terminal.
+    # released however this run ends -- including a refusal from a gate or
+    # a stage, and an interrupt from the terminal.  It also removes the
+    # scratch directory the closure gate opens, which is why it has to be
+    # in place before that gate runs.
     trap '_rp_on_exit' EXIT
     acquire_pipeline_lock
+
+    # BOTH GATES RUN AFTER THE LOCK AND BEFORE THE FIRST STAGE.
+    #
+    # THE POSITION IS EXACT AND IT WAS ARRIVED AT BY GETTING IT WRONG.
+    # What M-06 requires is that the plan be judged before the first
+    # ARTIFACT-PRODUCING stage; taking a lock produces nothing, so either
+    # side of it satisfies that.  Putting them before the lock, however,
+    # silently changed two exit codes this file already contracted for: on
+    # a host whose trust state is diagnostic, a busy checkout answered
+    # EX_TRUST instead of EX_BUSY, so an operator whose colleague was
+    # mid-render was told to fix their platform.  Measured in the suite.
+    #
+    # So the order is usage, then resources, then environment, then
+    # policy: each refusal is the most specific one available at that
+    # point, and the two gates sit as late as they can while still coming
+    # before anything writes.  Holding the lock across them is a small
+    # bonus rather than the reason -- it means no other sequencer can
+    # start mutating the tree between the measurement and the first stage.
+    assert_dependency_closure
+    assert_trusted_plan
 
     total="${#PLAN[@]}"
     note PIPELINE_PLAN "$(join_words "${PLAN[@]}")"
@@ -1191,30 +2451,77 @@ main() {
         fi
     )"
     playthrough_log "${total} stage(s) to run: ${PLAN[*]}"
-    # The trust state is REPORTED, never acted on.  Each stage that
-    # produces evidence recomputes it and refuses on its own account --
-    # the render and the caption mux both do -- and a sequencer that
-    # second-guessed them would be a second, drifting copy of a control
-    # that belongs to them.  It is logged because a refusal several
-    # minutes into a run is much easier to understand when the state
-    # that caused it was printed at the start.
+    # THE TRUST STATE HAS ALREADY BEEN ENFORCED BY THE TIME THIS PRINTS,
+    # by assert_trusted_plan above.  It used to be logged here and acted
+    # on nowhere in this file, on the reasoning that each stage which
+    # produces evidence refuses on its own account and a sequencer that
+    # second-guessed them would be a second, drifting copy of their
+    # control.  Two things were wrong with that.  Only the render and the
+    # caption mux -- stages three and five -- actually carry the refusal,
+    # so `timeline`, `transitions` and `srt` rewrote artifacts first; and
+    # a refusal is not duplicated by being made earlier about a WHOLE
+    # PLAN, which is a question no individual stage is in a position to
+    # ask.  The stages keep their own checks, which is correct: they are
+    # runnable directly, without this sequencer.
     playthrough_log "interpreter" \
         "${PLAYTHROUGH_PYTHON}; trust state" \
         "${PLAYTHROUGH_TRUST_STATE:-<unknown>}"
+
+    # THE THREE QUESTIONS THAT ARE ALREADY ANSWERABLE, in the order that
+    # costs least to be refused by.  The lifecycle probe reads the
+    # history; the capacity model measures the disk; the receipt
+    # fingerprints the inputs.  All three run under the lock, because
+    # each reads state a second sequencer could otherwise be changing
+    # underneath it -- and none of them writes anything into the
+    # working tree.
+    resolve_measurement_tools || true
+    assert_lifecycle_eligible
+    assert_capacity "plan"
+    open_receipt || true
 
     for index in "${!PLAN[@]}"; do
         name="${PLAN[${index}]}"
         number=$(( index + 1 ))
         status=0
+        if stage_is_fresh "${name}"; then
+            FRESH+=("${name}")
+            note "PIPELINE_STAGE_${name^^}" "fresh"
+            playthrough_log "stage ${number}/${total} ${name}:" \
+                "ALREADY DONE -- this run's inputs are the ones it was" \
+                "produced from and its output is unchanged, so it is" \
+                "skipped.  Pass --rebuild to run it anyway."
+            continue
+        fi
+        # THE SECOND CAPACITY CHECK, taken here rather than in the
+        # preflight because the producing stages have spent the disk in
+        # between: the film that did not exist when this run started is
+        # on it now, and the checkpoint is about to write an object for
+        # every artifact.  Reported as a stopped run rather than as an
+        # abrupt exit, so the summary below still says what happened.
+        if [ "${name}" = "${COMMIT_STAGE}" ] &&
+           ! capacity_ok "checkpoint"; then
+            status="${EX_CAPACITY}"
+            FAILED_STAGE="${name}"
+            report_unattempted "${index}"
+            break
+        fi
         run_stage "${name}" "${number}" "${total}" || status=$?
         if [ "${status}" -ne 0 ]; then
             FAILED_STAGE="${name}"
             report_unattempted "${index}"
             break
         fi
+        # A stage has now done work, so nothing after it can be called
+        # already done: its inputs moved when this one wrote its output.
+        FRESH_PREFIX=0
+        record_receipt "${name}"
     done
 
     printf '\n' >&2
+    # Emitted after the loop, because which stages were already done is
+    # something this run learns as it goes rather than something it
+    # decides up front.
+    note PIPELINE_FRESH "$(join_words "${FRESH[@]}")"
     note PIPELINE_ELAPSED "$(( SECONDS - started_at ))"
     if [ "${status}" -ne 0 ]; then
         note PIPELINE_FAILED_STAGE "${FAILED_STAGE}"
@@ -1230,9 +2537,17 @@ main() {
     fi
     note PIPELINE_STATUS "0"
     note PIPELINE "pass"
-    playthrough_log "every stage in the plan passed" \
-        "(${PLAN[*]}) in" \
-        "$(format_elapsed "$(( SECONDS - started_at ))")"
+    if [ "${#FRESH[@]}" -ne 0 ]; then
+        playthrough_log "every stage in the plan is now done" \
+            "(${PLAN[*]}) in" \
+            "$(format_elapsed "$(( SECONDS - started_at ))")," \
+            "of which ${#FRESH[@]} were already done and were" \
+            "skipped: ${FRESH[*]}"
+    else
+        playthrough_log "every stage in the plan passed" \
+            "(${PLAN[*]}) in" \
+            "$(format_elapsed "$(( SECONDS - started_at ))")"
+    fi
     return "${EX_OK}"
 }
 
@@ -1243,4 +2558,3 @@ main() {
 _rp_status=0
 main "$@" || _rp_status=$?
 exit "${_rp_status}"
-

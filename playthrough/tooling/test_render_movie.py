@@ -60,10 +60,12 @@ import io
 import json
 import os
 import shutil
+import struct
 import sys
 import stat
 import tempfile
 import unittest
+import zlib
 
 from decimal import Decimal
 
@@ -104,6 +106,13 @@ def _read(path, mode="r"):
 
 
 SOURCE = _read(os.path.join(TOOLING, SOURCE_NAME))
+
+# The module's real gateway to another process, captured BEFORE any
+# fixture doubles it.  The real-encode class restores this one; taking
+# `rm._run` at fixture time would re-install whatever double was already
+# in place, and every assertion about a real container would then be an
+# assertion about the double's answer.
+_REAL_RUN = rm._run
 
 
 def _remove_tree(path):
@@ -283,7 +292,18 @@ def default_probe(duration=None, width=1920, height=1080,
 
 
 class RenderFixture(unittest.TestCase):
-    """A temporary artifact tree, a fake toolchain, one plan."""
+    """A temporary artifact tree, a fake toolchain, one plan.
+
+    NOTHING IN THIS FIXTURE MAY SKIP.  It runs in the ordinary system
+    temporary directory and needs no privileged base, because the only
+    part of the production code that a temporary directory offends is the
+    tool-ancestry walk -- and that walk has its own fixture below.
+    """
+
+    # Whether the ancestry walk is stubbed out.  True here, so a pure
+    # test always runs; False in TrustedToolFixture, which is about the
+    # walk itself.
+    NEUTRALISE_TOOL_ANCESTRY = True
 
     def setUp(self):
         self.checkout = os.path.realpath(
@@ -305,15 +325,28 @@ class RenderFixture(unittest.TestCase):
         # is doubled, so it is never started.  It exits non-zero on
         # purpose, so a test that somehow ran it would fail loudly.
         #
-        # NOT UNDER /tmp.  verified_tool() refuses a binary reached
-        # through any group- or world-writable directory, because write
-        # access to a directory is the right to replace what is in it and
-        # every frame of the film passes through this binary.  /tmp is
-        # mode 1777, so a stub there is correctly refused -- which means
-        # the fixture has to put its stubs somewhere with the same
-        # ancestry a real installation has.
-        self.bin = _trusted_tool_dir()
-        self.addCleanup(_remove_tree, self.bin)
+        # THE STUB LIVES IN THIS FIXTURE'S OWN TEMPORARY TREE, and the
+        # ANCESTRY WALK IS NEUTRALISED FOR IT.  That is a deliberate
+        # split rather than a shortcut.  verified_tool() refuses a binary
+        # reached through any group- or world-writable directory, so a
+        # stub under the system temporary directory is correctly refused
+        # -- and this fixture used to answer that by demanding a
+        # root-owned base under /opt, /usr/local/lib or /var/lib and
+        # SkipTest-ing when it could not have one.  On an ordinary
+        # unprivileged host that skipped all of it: the concat
+        # arithmetic, the list text, the argv, the probe parsing, the
+        # staging -- a hundred and nineteen tests that never touch a
+        # binary at all -- reported as skipped, which reads in a summary
+        # exactly like nothing being wrong.
+        #
+        # So the ancestry check is stubbed out HERE, where the subject is
+        # never the trust walk, and TrustedToolFixture below restores the
+        # real one and exercises it against a genuinely trusted stub.
+        # Everything else about the resolution -- the environment
+        # variable, PATH, the executable-bit check, the realpath -- is
+        # the production code either way.
+        self.bin = os.path.join(self.checkout, "bin")
+        os.makedirs(self.bin)
         self.tools = {}
         for name in (rm.FFMPEG, rm.FFPROBE):
             path = os.path.join(self.bin, name)
@@ -321,6 +354,9 @@ class RenderFixture(unittest.TestCase):
                 handle.write("#!/bin/bash\nexit 98\n")
             os.chmod(path, 0o755)
             self.tools[name] = path
+        if self.NEUTRALISE_TOOL_ANCESTRY:
+            self.enter(_patched(
+                rm, _assert_trustworthy_tool=lambda *args, **kwargs: None))
         self.processes = FakeProcesses()
         self.enter(_patched(rm, _run=self.processes))
         # THE FRAMES AND TRANSITIONS DIRECTORIES HAVE TO BE CLEARED
@@ -1249,6 +1285,69 @@ class TestTheEncodeCommand(RenderFixture):
                           self.root)
         self.assertIn("is not there", str(caught.exception))
 
+    def test_a_missing_tool_names_its_package(self):
+        """Absence, which the ancestry walk never reaches."""
+        with _environment(PLAYTHROUGH_BIN_FFMPEG=None, PATH=""):
+            with self.assertRaises(rm.RenderError) as caught:
+                rm.verified_tool(rm.FFMPEG)
+        self.assertIn("requirements.txt", str(caught.exception))
+
+
+class TrustedToolFixture(RenderFixture):
+    """The ancestry walk, with the real one in force.
+
+    THE ONLY FIXTURE HERE THAT MAY SKIP.  It needs a stub whose whole
+    ancestry a real installation's would satisfy -- root-owned, no group
+    or world write bit anywhere above it -- and on a host where no such
+    base is writable there is nothing to put one in.  Everything that
+    does not need that lives in RenderFixture and always runs.
+    """
+
+    NEUTRALISE_TOOL_ANCESTRY = False
+
+    def setUp(self):
+        super(TrustedToolFixture, self).setUp()
+        # Replace the fixture's temporary stubs with ones the real walk
+        # accepts, and point the module at those instead.
+        self.trusted_bin = _trusted_tool_dir()
+        self.addCleanup(_remove_tree, self.trusted_bin)
+        for name in (rm.FFMPEG, rm.FFPROBE):
+            path = os.path.join(self.trusted_bin, name)
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write("#!/bin/bash\nexit 98\n")
+            os.chmod(path, 0o755)
+            self.tools[name] = path
+        self.enter(_environment(
+            PLAYTHROUGH_BIN_FFMPEG=self.tools[rm.FFMPEG],
+            PLAYTHROUGH_BIN_FFPROBE=self.tools[rm.FFPROBE]))
+
+
+class TestTheToolResolution(TrustedToolFixture):
+    """What is resolved, and what is refused, with the walk in force."""
+
+    def test_a_world_writable_shell_is_refused(self):
+        """Ownership and writability, on the shell as on the encoder.
+
+        THE REAL WALK, NOT THE STUBBED ONE.  RenderFixture neutralises
+        the ancestry check so that everything which never touches a
+        binary runs on any host; a refusal is only a refusal with the
+        production walk in force, so the shell's half of it is measured
+        here beside the encoder's.
+        """
+        directory = os.path.join(self.checkout, "shadow")
+        os.makedirs(directory)
+        planted = os.path.join(directory, "bash")
+        with open(planted, "w", encoding="utf-8") as handle:
+            handle.write("#!/bin/sh\nexit 0\n")
+        os.chmod(planted, 0o755)
+        os.chmod(directory, 0o777)
+        self.addCleanup(os.chmod, directory, 0o755)
+        os.environ["PLAYTHROUGH_BIN_BASH"] = planted
+        self.addCleanup(os.environ.pop, "PLAYTHROUGH_BIN_BASH", None)
+        with self.assertRaises(rm.RenderError) as caught:
+            rm.verified_tool(rm.SHELL)
+        self.assertIn("writable", str(caught.exception))
+
     def test_the_tool_comes_from_the_environment_when_named(self):
         self.assertEqual(rm.verified_tool(rm.FFMPEG),
                          self.tools[rm.FFMPEG])
@@ -1259,11 +1358,79 @@ class TestTheEncodeCommand(RenderFixture):
             rm.verified_tool(rm.FFMPEG)
         self.assertIn("not an executable", str(caught.exception))
 
-    def test_a_missing_tool_names_its_package(self):
-        with _environment(PLAYTHROUGH_BIN_FFMPEG=None, PATH=""):
+    def test_a_world_writable_stub_is_refused(self):
+        os.chmod(self.tools[rm.FFMPEG], 0o777)
+        with self.assertRaises(rm.RenderError) as caught:
+            rm.verified_tool(rm.FFMPEG)
+        self.assertIn("group- or world-writable",
+                      str(caught.exception))
+
+    def test_a_tool_reached_through_a_writable_directory_is_refused(self):
+        """The ancestry half, which is the half that matters.
+
+        /usr/bin/ffmpeg owned by root is no protection at all if /usr/bin
+        is world-writable, because write access to a directory is the
+        right to replace what is in it.
+        """
+        nested = os.path.join(self.trusted_bin, "open")
+        os.makedirs(nested)
+        os.chmod(nested, 0o777)
+        moved = os.path.join(nested, rm.FFMPEG)
+        shutil.copyfile(self.tools[rm.FFMPEG], moved)
+        os.chmod(moved, 0o755)
+        with _environment(PLAYTHROUGH_BIN_FFMPEG=moved):
             with self.assertRaises(rm.RenderError) as caught:
                 rm.verified_tool(rm.FFMPEG)
-        self.assertIn("requirements.txt", str(caught.exception))
+        message = str(caught.exception)
+        self.assertIn("is reached through", message)
+        self.assertIn("not sticky", message)
+
+    def test_a_directory_named_as_the_tool_is_refused(self):
+        with _environment(PLAYTHROUGH_BIN_FFMPEG=self.trusted_bin):
+            with self.assertRaises(rm.RenderError) as caught:
+                rm.verified_tool(rm.FFMPEG)
+        self.assertIn("not an executable", str(caught.exception))
+
+
+class TestThePureFixtureNeverNeedsAPrivilegedHost(RenderFixture):
+    """The portability regression, asserted rather than hoped for.
+
+    Every test in this module except the trust ones used to skip on a
+    host with no writable root-owned base under /opt, /usr/local/lib or
+    /var/lib -- and a skipped suite reads in a summary exactly like a
+    passing one.
+    """
+
+    def test_the_stub_lives_inside_this_fixtures_own_tree(self):
+        self.assertTrue(self.bin.startswith(self.checkout))
+
+    def test_the_temporary_base_is_the_ordinary_one(self):
+        """No nomination, no privileged directory, no skip."""
+        self.assertTrue(
+            self.checkout.startswith(
+                os.path.realpath(tempfile.gettempdir())),
+            msg="the fixture moved off the system temporary directory")
+
+    def test_the_resolution_still_runs_through_production_code(self):
+        """Only the ANCESTRY WALK is stubbed; the rest is real.
+
+        So a regression that stopped honouring $PLAYTHROUGH_BIN_FFMPEG,
+        or stopped checking the executable bit, still fails here.
+        """
+        self.assertEqual(rm.verified_tool(rm.FFMPEG),
+                         self.tools[rm.FFMPEG])
+        os.chmod(self.tools[rm.FFPROBE], 0o644)
+        with self.assertRaises(rm.RenderError) as caught:
+            rm.verified_tool(rm.FFPROBE)
+        self.assertIn("not an executable", str(caught.exception))
+
+    def test_the_walk_itself_is_covered_by_its_own_fixture(self):
+        """A stub is only acceptable while something else asserts the
+        real thing, so the pairing is asserted too."""
+        self.assertTrue(self.NEUTRALISE_TOOL_ANCESTRY)
+        self.assertFalse(TrustedToolFixture.NEUTRALISE_TOOL_ANCESTRY)
+        self.assertTrue(
+            issubclass(TestTheToolResolution, TrustedToolFixture))
 
 
 class TestMeasuringTheContainer(RenderFixture):
@@ -1631,6 +1798,38 @@ class TestTheTrustGate(RenderFixture):
                             "        with ArtifactLock")
         self.assertGreater(gate, 0)
 
+    def test_the_shell_the_gate_is_asked_through_is_verified(self):
+        """M-24: a PATH-shadowed shell could return 'trusted' for free.
+
+        The verdict is read from the shell's EXIT STATUS, so a `bash`
+        earlier on PATH that does nothing but `exit 0` reports trusted
+        without sourcing env.sh or evaluating one check -- and this was
+        the only tool in the module resolved without verification, while
+        ffmpeg and ffprobe, which merely move pixels, were both checked.
+        """
+        with open(os.path.abspath(rm.__file__), encoding="utf-8") as fh:
+            source = fh.read()
+        start = source.index("def assert_trusted_render(")
+        end = source.index("def render_root(", start)
+        body = source[start:end]
+        # The shell is resolved through the verifier, and the resolved
+        # path is what is executed -- twice, since argv[0] is passed too.
+        self.assertIn("verified_tool(SHELL)", body)
+        self.assertIn("[shell,", body)
+        self.assertIn("shell, script, TRUST_CONTEXT", body)
+        # And no bare shell name survives anywhere in the invocation.
+        self.assertNotIn('"bash"', body)
+
+    def test_the_missing_tool_message_names_the_right_package(self):
+        """bash does not come from the ffmpeg package.
+
+        The message used to say both tools came from ffmpeg, which was
+        true while there were only two and misleading the moment the
+        shell joined them.
+        """
+        self.assertEqual(rm.TOOL_PACKAGE[rm.SHELL], "bash")
+        self.assertEqual(rm.TOOL_PACKAGE[rm.FFPROBE], "ffmpeg")
+
 
 class TestTheCommandLine(RenderFixture):
     """The status run_pipeline.sh reads, and what it leaves behind."""
@@ -1874,6 +2073,210 @@ class TestTheCommandLine(RenderFixture):
              "--concat-list", self.concat, "--output", self.movie])
         self.assertEqual(status, rm.EXIT_FAILED)
         self.assertIn("render_movie.py:", err)
+
+
+class TestARealEncodeOfTwoRealImages(RenderFixture):
+    """The one thing a double cannot answer for: does ffmpeg accept this?
+
+    Everything above proves the plan, the list text and the argv are what
+    they should be, with the process seam doubled -- which is the right
+    way to assert arithmetic and text, and is silent about whether the
+    concat demuxer accepts the file at all.  Three things could be
+    perfectly asserted here and still fail on a real encoder:
+
+      * A LIST THE DEMUXER WILL NOT READ.  The `file '...'` quoting, the
+        `duration` unit, the -safe setting and the relative spelling are
+        all conventions of a format this module writes and never parses.
+      * AN ARGUMENT COMBINATION FFMPEG REFUSES.  `-fps_mode vfr` and an
+        output frame rate abort outright; a filter would burn the
+        captions in; this argv is asserted textually everywhere else.
+      * A DURATION THAT DOES NOT COME OUT.  The repeated final `file`
+        entry is the whole reason the container's length matches the
+        timeline's, and it was measured once as 10.52 s against an
+        11.75 s subtitle stream when it was missing.
+
+    So this runs the REAL ffmpeg over two REAL PNGs and measures the
+    result with the REAL ffprobe, through the module's own encode() and
+    probe_output().  It is small on purpose -- two images, half a second
+    of film -- because its subject is acceptance, not throughput.
+
+    It SKIPS only when ffmpeg or ffprobe is absent, which is a host
+    without the render toolchain rather than a defect in this module.
+    """
+
+    # The two frame durations, and the length they must add up to.  Short
+    # enough to encode in well under a second; long enough that a dropped
+    # terminal repeat shows up as a measurable shortfall.
+    DURATIONS = (0.5, 0.25)
+    EXPECTED_DURATION = 0.75
+    # THE MODULE'S OWN TOLERANCE, not a looser one invented here: a real
+    # encode lands on a frame boundary rather than on the exact sum (the
+    # demuxer's default input rate is 25 fps, so 0.75 s comes out at
+    # 0.80 s), and the bound the pipeline gates on is the bound worth
+    # asserting.
+    DURATION_TOLERANCE = rm.DURATION_TOLERANCE
+
+    def setUp(self):
+        for tool in (rm.FFMPEG, rm.FFPROBE):
+            if shutil.which(tool) is None:
+                raise unittest.SkipTest(
+                    "%s is not installed, so a real encode cannot be "
+                    "attempted; every other test in this module runs "
+                    "without it" % tool)
+        super(TestARealEncodeOfTwoRealImages, self).setUp()
+        # The real tools, resolved from PATH by production code: the
+        # fixture's stubs and its doubled process seam are both undone
+        # for this class.
+        self.enter(_environment(PLAYTHROUGH_BIN_FFMPEG=None,
+                                PLAYTHROUGH_BIN_FFPROBE=None))
+        self.enter(_patched(rm, _run=_REAL_RUN))
+
+    # -- a real image, written with the standard library ---------------
+
+    # The block size the pattern below is drawn at.  Eight pixels is the
+    # game's own cell width, which is fitting, and it is coarse enough to
+    # build a frame in a tenth of a second and fine enough that x264
+    # cannot compress it away.
+    BLOCK = 8
+
+    def real_png(self, width, height, seed):
+        """Return the bytes of a genuine, decodable, DETAILED PNG.
+
+        Written with zlib and struct rather than Pillow, so the smoke
+        adds no dependency; drawn as deterministic eight-pixel blocks of
+        varying colour rather than as flat bands, and that is a
+        requirement rather than decoration.  A flat image encodes to
+        about two kilobytes, which probe_output() correctly refuses as "a
+        container header and not a film" -- so a smoke built on flat
+        frames would exercise that refusal instead of a real render.  This
+        pattern measures about 180 kB encoded, in the same order as a real
+        capture of a screen full of text.
+        """
+        rows = []
+        for top in range(0, height, self.BLOCK):
+            blocks = []
+            for left in range(0, width, self.BLOCK):
+                mixed = left * 73 + top * 151 + seed * 97
+                value = (mixed * 2654435761) % 251
+                blocks.append(
+                    bytes((value, (value * 7) % 251,
+                           (value * 13) % 251)) * self.BLOCK)
+            row = b"".join(blocks)[:width * 3]
+            for _ in range(min(self.BLOCK, height - top)):
+                rows.append(b"\x00" + row)     # filter type 0: None
+        raw = b"".join(rows)
+        header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+        chunks = [b"\x89PNG\r\n\x1a\n"]
+        for kind, payload in ((b"IHDR", header),
+                              (b"IDAT", zlib.compress(raw, 6)),
+                              (b"IEND", b"")):
+            chunks.append(struct.pack(">I", len(payload)))
+            chunks.append(kind)
+            chunks.append(payload)
+            chunks.append(struct.pack(
+                ">I", zlib.crc32(kind + payload) & 0xFFFFFFFF))
+        return b"".join(chunks)
+
+    def real_capture(self, index, seed):
+        """Write one decodable capture and seal it, as capture() does."""
+        width, height = mt.expected_size()
+        payload = self.real_png(width, height, seed)
+        path = os.path.join(self.frames, "frame_%05d.png" % index)
+        with open(path, "wb") as handle:
+            handle.write(payload)
+        manifest.append_frame_digest(
+            os.path.join(self.root, *manifest.DIGESTS_REL_PARTS),
+            index, "playthrough/frames/frame_%05d.png" % index,
+            hashlib.sha256(payload).hexdigest(), len(payload),
+            manifest.DIGEST_AT_CAPTURE,
+            "2026-08-03T17:56:%02d.400Z" % index,
+            root=self.root)
+        return path
+
+    def encoded(self, durations=None):
+        """Plan, write the list, encode for real, and measure it."""
+        durations = self.DURATIONS if durations is None else durations
+        for index in range(1, len(durations) + 1):
+            self.real_capture(index, index)
+        plan = self.plan(self.document(list(durations)))
+        text = rm.format_concat_list(plan)
+        with open(self.concat, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        output = rm.encode(plan, text, self.movie, self.root,
+                           list_path=self.concat)
+        return plan, text, rm.probe_output(output, self.root)
+
+    # -- what a real encode has to produce -----------------------------
+
+    def test_the_list_this_module_writes_is_one_ffmpeg_accepts(self):
+        """No RenderError, and a file with bytes in it."""
+        _, _, probe = self.encoded()
+        self.assertTrue(os.path.isfile(self.movie))
+        self.assertGreater(probe.size, rm.MIN_OUTPUT_BYTES)
+
+    def test_the_container_is_one_h264_video_stream_and_no_audio(self):
+        _, _, probe = self.encoded()
+        self.assertEqual(probe.video_streams, 1)
+        self.assertEqual(probe.audio_streams, 0)
+        self.assertEqual(probe.codec_name, rm.CODEC_NAME_H264)
+
+    def test_the_film_is_cut_at_the_planned_geometry(self):
+        width, height = mt.expected_size()
+        _, _, probe = self.encoded()
+        self.assertEqual((probe.width, probe.height), (width, height))
+
+    def test_the_length_is_the_timeline_s_and_the_repeat_earns_it(self):
+        """The measurement the terminal repeat exists for.
+
+        Encoded a second time from a list with that repeat removed, the
+        container comes up short by the final frame's window -- which is
+        the defect this idiom prevents, measured rather than described.
+        """
+        _, text, probe = self.encoded()
+        self.assertIsNotNone(probe.duration)
+        self.assertAlmostEqual(probe.duration, self.EXPECTED_DURATION,
+                               delta=self.DURATION_TOLERANCE)
+        lines = text.rstrip("\n").split("\n")
+        self.assertTrue(lines[-1].startswith(rm.CONCAT_FILE_PREFIX))
+        truncated = os.path.join(self.root, "build", "no-repeat.txt")
+        with open(truncated, "w", encoding="utf-8") as handle:
+            handle.write("\n".join(lines[:-1]) + "\n")
+        short_movie = os.path.join(self.root, "short.mp4")
+        ffmpeg = rm.verified_tool(rm.FFMPEG)
+        rm._run(rm.encode_command(ffmpeg, truncated, short_movie,
+                                  1920, 1080),
+                rm.render_root(self.root), "the shortened encode")
+        shortened = rm.probe_output(short_movie, self.root)
+        self.assertLess(shortened.duration, probe.duration)
+
+    def test_every_planned_still_reaches_the_container(self):
+        plan, _, probe = self.encoded()
+        self.assertIsNotNone(probe.frames)
+        self.assertIn(probe.frames,
+                      (len(plan.entries), len(plan.entries) + 1))
+
+    def test_the_module_s_own_verification_accepts_the_real_render(self):
+        """The check the pipeline actually gates on, on real bytes."""
+        plan, _, probe = self.encoded()
+        self.assertEqual(rm.verify_problems(plan, probe), [])
+
+    def test_the_encoder_is_given_no_filter_and_no_frame_rate(self):
+        """Asserted against the argv a REAL run was made with.
+
+        A filter would burn the captions into the picture, which is
+        forbidden; an output frame rate alongside -fps_mode vfr makes
+        ffmpeg abort, so a run that succeeded is itself evidence -- and
+        the argv is checked anyway, because a future addition would fail
+        here before it failed a whole render.
+        """
+        ffmpeg = rm.verified_tool(rm.FFMPEG)
+        argv = rm.encode_command(ffmpeg, self.concat, self.movie,
+                                 1920, 1080)
+        self.assertNotIn("-vf", argv)
+        self.assertNotIn("-filter:v", argv)
+        self.assertNotIn("-r", argv)
+        self.assertIn("-fps_mode", argv)
+        self.assertEqual(argv[argv.index("-fps_mode") + 1], rm.FPS_MODE)
 
 
 if __name__ == "__main__":

@@ -153,6 +153,11 @@ HELPERS = (
     "playthrough_assert_display",
     "playthrough_headless_up",
     "playthrough_mkdirs",
+    # The lock name a checkout takes.  In the inventory because two
+    # sibling scripts CALL it by name -- run_pipeline.sh and
+    # commit_artifacts.sh both derive their lock from it -- so losing it
+    # is a broken contract even though nothing runs at source time.
+    "playthrough_checkout_lock_name",
     "playthrough_python",
     "playthrough_env_summary",
     "playthrough_trust_reason",
@@ -673,12 +678,28 @@ class TestTheRuntimeDirectory(EnvFixture):
         A child created inside it inherits setgid, which is the whole
         point: this reproduces the real host condition rather than
         describing it.
+
+        IT LIVES BENEATH THE SPARE CLONE'S XDG RUNTIME ROOT, and it has
+        to.  A nominated PLAYTHROUGH_RUNTIME_DIR is now refused outright
+        unless it lies beneath the verified XDG runtime root, so a parent
+        in this test's own temporary directory would be rejected for THAT
+        reason and the mode logic under test would never be reached.  The
+        callers therefore pass CLONE_INDEX with the nomination, which is
+        what makes /tmp/xdg<SPARE_INDEX> the verified root for the run.
         """
-        path = os.path.join(self.root, name)
+        base = self.spare_runtime_dir()
+        os.makedirs(base, exist_ok=True)
+        os.chmod(base, 0o700)
+        path = os.path.join(base, name)
         os.makedirs(path, exist_ok=True)
         os.chmod(path, 0o2777)
         self.assertTrue(os.stat(path).st_mode & stat.S_ISGID)
         return path
+
+    def nominate(self, nominated):
+        """The preset that nominates ``nominated`` as the runtime root."""
+        return {"PLAYTHROUGH_RUNTIME_DIR": nominated,
+                "CLONE_INDEX": str(SPARE_INDEX)}
 
     def test_an_inherited_setgid_bit_is_not_a_refusal(self):
         # THE REPORTED DEFECT.  /tmp is mode 2777 on this class of host;
@@ -688,10 +709,9 @@ class TestTheRuntimeDirectory(EnvFixture):
         # exactly the 0700 it asked for -- killing the source, and with
         # it every stage that sources this file.
         nominated = os.path.join(self.setgid_parent(), "runtime")
-        os.makedirs(nominated, mode=0o700)
+        os.makedirs(nominated, mode=0o700, exist_ok=True)
         self.assertTrue(os.stat(nominated).st_mode & stat.S_ISGID)
-        result = self.source(
-            preset={"PLAYTHROUGH_RUNTIME_DIR": nominated})
+        result = self.source(preset=self.nominate(nominated))
         self.assertEqual(
             result.status, 0,
             msg="sourcing must survive a setgid temporary directory: %s"
@@ -710,9 +730,8 @@ class TestTheRuntimeDirectory(EnvFixture):
         # alarm about somebody having opened the runtime state to other
         # accounts is the worst kind.
         nominated = os.path.join(self.setgid_parent(), "quiet")
-        os.makedirs(nominated, mode=0o700)
-        result = self.source(
-            preset={"PLAYTHROUGH_RUNTIME_DIR": nominated})
+        os.makedirs(nominated, mode=0o700, exist_ok=True)
+        result = self.source(preset=self.nominate(nominated))
         self.assertEqual(result.status, 0, msg=result.stderr)
         self.assertNotIn("was mode", result.stderr)
 
@@ -720,10 +739,9 @@ class TestTheRuntimeDirectory(EnvFixture):
         # The control itself is unchanged: what is tolerated is the
         # special-bits digit, never a group or other permission.
         nominated = os.path.join(self.setgid_parent(), "open")
-        os.makedirs(nominated, mode=0o700)
+        os.makedirs(nominated, mode=0o700, exist_ok=True)
         os.chmod(nominated, 0o2755)
-        result = self.source(
-            preset={"PLAYTHROUGH_RUNTIME_DIR": nominated})
+        result = self.source(preset=self.nominate(nominated))
         self.assertEqual(result.status, 0, msg=result.stderr)
         self.assertEqual(os.stat(nominated).st_mode & 0o077, 0)
         self.assertIn("was mode", result.stderr)
@@ -783,8 +801,7 @@ class TestTheRuntimeDirectory(EnvFixture):
             completed.returncode, 0,
             msg=completed.stderr.decode("utf-8", "replace"))
         self.assertTrue(os.stat(nominated).st_mode & stat.S_ISGID)
-        result = self.source(
-            preset={"PLAYTHROUGH_RUNTIME_DIR": nominated})
+        result = self.source(preset=self.nominate(nominated))
         self.assertEqual(
             result.status, 0,
             msg=("what session.py creates and accepts, env.sh must "
@@ -835,6 +852,12 @@ class TestTheArtifactLayout(EnvFixture):
             "PLAYTHROUGH_TRANSCRIPT_MD": "playthrough/transcript.md",
             "PLAYTHROUGH_TRANSCRIPT_SRT": "playthrough/transcript.srt",
             "PLAYTHROUGH_DOSSIER": "playthrough/dossier.md",
+            # The mandated final report.  It was exported here and
+            # staged by the committer, and named in neither this map nor
+            # any gate -- so a checkpoint could publish a recording with
+            # no report at all.  The committer now requires it at its
+            # final checkpoint; this is the path half of that contract.
+            "PLAYTHROUGH_REPORT": "playthrough/REPORT.md",
             "PLAYTHROUGH_TECH_NOTES":
                 "playthrough/TECHNICAL_NOTES.md",
             "PLAYTHROUGH_REQUIREMENTS":
@@ -897,6 +920,124 @@ class TestTheArtifactLayout(EnvFixture):
         result = self.source(script=copy, cwd=root)
         self.assertNotEqual(result.status, 0)
         self.assertIn("is not a", result.stderr)
+
+
+class TestTheCheckoutLockName(EnvFixture):
+    """A lock name that identifies the working tree, not the clone index.
+
+    PLAYTHROUGH_LOCK_DIR hangs off the runtime root, which is derived
+    from CLONE_INDEX rather than from the tree -- so two clones started
+    without CLONE_INDEX share one lock directory, and a bare name like
+    `pipeline` or `checkpoint` serialises two runs that share NOTHING.
+    That was measured: a second checkout's run was refused with a message
+    about "this checkout" while the holder was a different checkout
+    entirely, which sends an operator to look in the wrong place.
+
+    Two siblings call this helper by name -- run_pipeline.sh for its
+    `pipeline` lock and commit_artifacts.sh for its `checkpoint` one --
+    so the properties below are a contract rather than an internal
+    detail.
+    """
+
+    def lock_name(self, basename, script=ENV_SH, cwd=REPO_ROOT,
+                  path=None):
+        """Ask env.sh for a lock name.  Returns (status, name, stderr).
+
+        `path` narrows PATH for the CALL only and restores it
+        afterwards: the harness dumps the environment through `env -0`,
+        so a PATH left broken would lose the answer rather than report
+        it.
+        """
+        narrow = ""
+        widen = ""
+        if path is not None:
+            narrow = 'SAVED_PATH="${PATH}"\nPATH="%s"\n' % path
+            widen = 'PATH="${SAVED_PATH}"\n'
+        result = self.source(
+            script=script, cwd=cwd,
+            after='%sNAME="$(playthrough_checkout_lock_name "%s")"\n'
+                  'LOCK_STATUS=$?\n'
+                  '%sexport NAME LOCK_STATUS'
+                  % (narrow, basename, widen))
+        return (result.get("LOCK_STATUS"), result.get("NAME"),
+                result.stderr)
+
+    def test_the_name_is_the_basename_and_a_short_digest(self):
+        status, name, err = self.lock_name("pipeline")
+        self.assertEqual(status, "0", msg=err)
+        self.assertRegex(name, r"^pipeline-[0-9a-f]{8}$")
+
+    def test_the_digest_satisfies_the_lock_name_character_class(self):
+        """playthrough_acquire_lock refuses anything else, so a name it
+        would reject is a name no lock can be taken under."""
+        _, name, _ = self.lock_name("checkpoint")
+        self.assertRegex(name, r"^[a-z0-9_-]+$")
+
+    def test_the_same_checkout_always_takes_the_same_name(self):
+        """Stable across runs, or a second invocation would not contend
+        with the first and the whole lock would be decorative."""
+        first = self.lock_name("pipeline")[1]
+        second = self.lock_name("pipeline")[1]
+        self.assertEqual(first, second)
+        self.assertTrue(first)
+
+    def test_the_name_does_not_depend_on_the_working_directory(self):
+        """It is derived from the root env.sh resolved from its own
+        location, not from where a caller happened to stand."""
+        expected = self.lock_name("pipeline")[1]
+        for cwd in ("/tmp", "/", TOOLING):
+            with self.subTest(cwd=cwd):
+                self.assertEqual(self.lock_name("pipeline", cwd=cwd)[1],
+                                 expected)
+
+    def test_two_different_checkouts_take_two_different_names(self):
+        """The whole point: unrelated trees must not serialise."""
+        root, copy = self.sandbox_checkout("other-tree")
+        mine = self.lock_name("pipeline")[1]
+        theirs = self.lock_name("pipeline", script=copy, cwd=root)[1]
+        self.assertTrue(theirs)
+        self.assertNotEqual(mine, theirs)
+        self.assertRegex(theirs, r"^pipeline-[0-9a-f]{8}$")
+
+    def test_the_two_basenames_differ_within_one_checkout(self):
+        """One tree, two locks: the sequencer's and the committer's.
+
+        A shared name would make a checkpoint wait for a render that has
+        nothing to do with it.
+        """
+        self.assertNotEqual(self.lock_name("pipeline")[1],
+                            self.lock_name("checkpoint")[1])
+
+    def test_an_unusable_basename_is_refused(self):
+        for basename in ("", "Pipeline", "pipe line", "pipe/line",
+                         "pipe.line", "pipe;line", "../escape",
+                         "pipe$(id)"):
+            with self.subTest(basename=basename):
+                status, name, err = self.lock_name(basename)
+                self.assertNotEqual(
+                    status, "0",
+                    msg="%r was accepted as %r" % (basename, name))
+                self.assertIn("not a usable lock basename", err)
+                self.assertEqual(name, "")
+
+    def test_a_basename_it_refuses_yields_no_name_to_fall_back_on(self):
+        """A refusal that still printed something would be a lock taken
+        under a name nobody validated."""
+        status, name, _ = self.lock_name("NOPE")
+        self.assertNotEqual(status, "0")
+        self.assertEqual(name, "")
+
+    def test_the_digest_tool_being_unreachable_is_a_refusal(self):
+        """No sha256sum, no name -- and no bare fallback.
+
+        Falling back to the basename here would put the clone-index lock
+        back, silently, on exactly the hosts least able to notice.
+        """
+        status, name, err = self.lock_name("pipeline",
+                                           path="/nonexistent")
+        self.assertNotEqual(status, "0", msg=name)
+        self.assertEqual(name, "")
+        self.assertIn("sha256sum", err)
 
 
 class TestTheTunables(EnvFixture):
@@ -1630,7 +1771,15 @@ class TestTheToolPackageTable(EnvFixture):
                  ("tesseract", "tesseract-ocr"),
                  ("scrot", "scrot"), ("make", "make"),
                  ("ccache", "ccache"), ("grep", "grep"),
-                 ("sed", "sed"), ("supervisorctl", "supervisor"))
+                 ("sed", "sed"), ("supervisorctl", "supervisor"),
+                 # The sequencer's capacity model measures with df and
+                 # du and fingerprints with find and sha256sum; each of
+                 # the four is named in a require call, so each has to
+                 # name a package rather than falling through to
+                 # "unknown".
+                 ("df", "coreutils"), ("du", "coreutils"),
+                 ("mv", "coreutils"), ("sha256sum", "coreutils"),
+                 ("find", "findutils"))
         after = "\n".join(
             'PKG_%d="$(playthrough_tool_package %s)"\nexport PKG_%d'
             % (index, tool, index)
@@ -2313,6 +2462,319 @@ class TestTheHelpersDoNotSilenceTheirCaller(EnvFixture):
                    'printf "%s\\n" "' + self.ALIVE + '" >&2\n'))
         self.assertIn(self.ALIVE, result.stderr)
         self.assertNotIn("Bad file descriptor", result.stderr)
+
+
+class TestTheRuntimeRootIsContained(EnvFixture):
+    """Where the runtime root may and may not be.
+
+    Both refusals answer a security finding rather than a preference: a
+    runtime root inside the checkout is re-included by the terminal
+    ``!/playthrough/**`` negation, so the X cookie and the pid files
+    become committable; and a root outside the verified XDG runtime root
+    has no verified ancestor at all, which is the redirect the private
+    root exists to prevent.
+    """
+
+    def test_a_runtime_root_inside_the_checkout_is_refused(self):
+        nominated = os.path.join(REPO_ROOT, "playthrough", "runtime")
+        result = self.source(
+            preset={"PLAYTHROUGH_RUNTIME_DIR": nominated})
+        self.assertNotEqual(result.status, 0)
+        self.assertIn("inside the checkout", result.stderr)
+        self.assertFalse(
+            os.path.exists(nominated),
+            msg="a refused root must not be created on the way to the "
+                "refusal")
+
+    def test_the_repository_root_itself_is_refused(self):
+        result = self.source(
+            preset={"PLAYTHROUGH_RUNTIME_DIR": REPO_ROOT})
+        self.assertNotEqual(result.status, 0)
+        self.assertIn("inside the checkout", result.stderr)
+
+    def test_a_root_that_contains_the_checkout_is_refused(self):
+        result = self.source(
+            preset={"PLAYTHROUGH_RUNTIME_DIR":
+                    os.path.dirname(REPO_ROOT)})
+        self.assertNotEqual(result.status, 0)
+        self.assertIn("inside the checkout", result.stderr)
+
+    def test_a_root_outside_the_verified_xdg_root_is_refused(self):
+        nominated = os.path.join(self.root, "elsewhere")
+        result = self.source(
+            preset={"PLAYTHROUGH_RUNTIME_DIR": nominated})
+        self.assertNotEqual(result.status, 0)
+        self.assertIn("not beneath the verified XDG runtime root",
+                      result.stderr)
+
+    def test_a_traversal_cannot_smuggle_a_root_into_the_checkout(self):
+        nominated = os.path.join(
+            "/tmp/xdg%d" % SPARE_INDEX, "..", "..",
+            os.path.relpath(REPO_ROOT, "/"), "playthrough", "sneaky")
+        result = self.source(
+            preset={"PLAYTHROUGH_RUNTIME_DIR": nominated,
+                    "CLONE_INDEX": str(SPARE_INDEX)})
+        self.assertNotEqual(
+            result.status, 0,
+            msg="the path is canonicalised before it is compared")
+        self.assertIn("inside the checkout", result.stderr)
+
+    def test_the_default_root_is_beneath_the_verified_xdg_root(self):
+        result = self.sourced()
+        self.assertEqual(
+            result["PLAYTHROUGH_RUNTIME_DIR"],
+            os.path.join(result["XDG_RUNTIME_DIR"], "playthrough"))
+
+
+class TestTheInheritedAuthority(EnvFixture):
+    """An XAUTHORITY is a credential, so inheriting one is verified.
+
+    `-f` -- the whole of the old test -- says only that a path exists. A
+    symlink makes ``xauth add`` write wherever it points, another
+    account's file hands that account the display, and group or world
+    access on the file does the same more slowly.
+    """
+
+    def authority(self, name, mode=0o600):
+        """A file beneath the verified runtime root, at ``mode``."""
+        base = os.path.join("/tmp/xdg%d" % SPARE_INDEX, "auth")
+        if not os.path.exists("/tmp/xdg%d" % SPARE_INDEX):
+            self.addCleanup(shutil.rmtree, "/tmp/xdg%d" % SPARE_INDEX,
+                            True)
+        os.makedirs(base, mode=0o700, exist_ok=True)
+        os.chmod(base, 0o700)
+        path = os.path.join(base, name)
+        with open(path, "wb") as handle:
+            handle.write(b"")
+        os.chmod(path, mode)
+        return path
+
+    def inherit(self, path):
+        return self.source(preset={"XAUTHORITY": path,
+                                   "CLONE_INDEX": str(SPARE_INDEX)})
+
+    def test_a_private_file_under_the_verified_root_is_inherited(self):
+        result = self.inherit(self.authority("good"))
+        self.assertEqual(result.status, 0, msg=result.stderr)
+        self.assertEqual(result["PLAYTHROUGH_XAUTHORITY_ORIGIN"],
+                         "inherited")
+
+    def test_a_group_readable_authority_is_not_inherited(self):
+        path = self.authority("loose", mode=0o640)
+        result = self.inherit(path)
+        self.assertEqual(result.status, 0, msg=result.stderr)
+        self.assertEqual(result["PLAYTHROUGH_XAUTHORITY_ORIGIN"],
+                         "pipeline")
+        self.assertEqual(
+            result["PLAYTHROUGH_XAUTHORITY_INHERITED_REJECTED"], path)
+        self.assertIn("group or world access", result.stderr)
+
+    def test_a_symlinked_authority_is_not_inherited(self):
+        target = self.authority("target")
+        link = os.path.join(os.path.dirname(target), "link")
+        if os.path.lexists(link):
+            os.unlink(link)
+        os.symlink(target, link)
+        result = self.inherit(link)
+        self.assertEqual(result.status, 0, msg=result.stderr)
+        self.assertEqual(result["PLAYTHROUGH_XAUTHORITY_ORIGIN"],
+                         "pipeline")
+        self.assertIn("symbolic link", result.stderr)
+
+    def test_a_rejected_authority_leaves_the_pipeline_cookie_in_place(self):
+        result = self.inherit(self.authority("loose2", mode=0o644))
+        self.assertEqual(result["XAUTHORITY"],
+                         result["PLAYTHROUGH_XAUTHORITY"])
+
+    def test_a_missing_authority_is_simply_not_inherited(self):
+        result = self.inherit(
+            os.path.join("/tmp/xdg%d" % SPARE_INDEX, "auth", "absent"))
+        self.assertEqual(result.status, 0, msg=result.stderr)
+        self.assertEqual(result["PLAYTHROUGH_XAUTHORITY_ORIGIN"],
+                         "pipeline")
+
+    def test_an_inherited_authority_is_not_written_without_consent(self):
+        # The write path, exercised without an X server: the refusal has
+        # to come from the consent check rather than from xauth failing.
+        path = self.authority("nocookie")
+        result = self.source(
+            preset={"XAUTHORITY": path, "CLONE_INDEX": str(SPARE_INDEX)},
+            after="playthrough_ensure_xauth || true\n")
+        self.assertIn("does not write into an authority file it did "
+                      "not create", result.stderr)
+
+
+class TestThePlatformWaiverText(EnvFixture):
+    """The reason is untrusted text, and it is published evidence."""
+
+    def waiver(self, value):
+        return self.source(
+            preset={"PLAYTHROUGH_ALLOW_EOL_PLATFORM": value},
+            after=('printf "WAIVER[%s]\\n" '
+                   '"$(playthrough_platform_waiver)" >&2\n'))
+
+    def test_a_newline_cannot_forge_a_log_line(self):
+        result = self.waiver("first line\nplaythrough: FATAL: forged")
+        self.assertIn("WAIVER[first line playthrough: FATAL: forged]",
+                      result.stderr)
+
+    def test_a_control_character_is_removed(self):
+        result = self.waiver("red \x1b[31mnot really\x1b[0m")
+        self.assertNotIn("\x1b", result.stderr)
+
+    def test_a_long_reason_is_bounded_and_marked(self):
+        result = self.waiver("x" * 400)
+        self.assertIn("x" * 160 + "...]", result.stderr)
+        self.assertIn("published evidence", result.stderr)
+
+    def test_a_short_clean_reason_is_untouched_and_quiet(self):
+        result = self.waiver("no supported release is available here")
+        self.assertIn("WAIVER[no supported release is available here]",
+                      result.stderr)
+        self.assertNotIn("reduced one-line form", result.stderr)
+
+    def test_an_unset_waiver_is_empty(self):
+        result = self.source(
+            after=('printf "WAIVER[%s]\\n" '
+                   '"$(playthrough_platform_waiver)" >&2\n'))
+        self.assertIn("WAIVER[]", result.stderr)
+
+
+class TestDisplayOwnership(EnvFixture):
+    """"A server is answering" and "we started it" are two facts."""
+
+    def probe(self, after):
+        return self.source(preset={"CLONE_INDEX": str(SPARE_INDEX)},
+                           after=after)
+
+    def test_an_unserved_display_reports_absent(self):
+        result = self.probe(
+            'printf "STATE[%s]\\n" "$(playthrough_x_ownership_state)" '
+            '>&2\n')
+        self.assertIn("STATE[absent]", result.stderr)
+
+    def test_the_record_names_the_display_and_the_checkout(self):
+        result = self.probe(
+            'playthrough_record_x_ownership pipeline 1 || exit 1\n'
+            'cat "$(playthrough_x_ownership_record)" >&2\n')
+        self.assertEqual(result.status, 0, msg=result.stderr)
+        self.assertIn("display=:%d" % (99 + SPARE_INDEX), result.stderr)
+        self.assertIn("repo=%s" % REPO_ROOT, result.stderr)
+        self.assertIn("kind=pipeline", result.stderr)
+
+    def test_the_record_is_private(self):
+        result = self.probe(
+            'playthrough_record_x_ownership pipeline 1 || exit 1\n'
+            'printf "RECORD[%s]\\n" '
+            '"$(playthrough_x_ownership_record)" >&2\n')
+        marker = "RECORD["
+        line = [item for item in result.stderr.splitlines()
+                if item.startswith(marker)]
+        self.assertTrue(line, msg=result.stderr)
+        path = line[0][len(marker):-1]
+        self.addCleanup(lambda: os.path.exists(path) and os.unlink(path))
+        self.assertEqual(os.stat(path).st_mode & 0o077, 0)
+
+    def test_a_foreign_display_holds_the_trust_state_at_diagnostic(self):
+        # No server is started here, so the classification is driven
+        # entirely by the record's absence: the assertion registers an
+        # unverifiable check, which is what moves the state.
+        result = self.probe(
+            'playthrough_display_probe() { return 0; }\n'
+            'playthrough_display_ready() { return 0; }\n'
+            'playthrough_assert_x_ownership || true\n'
+            'printf "TRUST[%s]\\n" "${PLAYTHROUGH_TRUST_STATE}" >&2\n')
+        self.assertIn("TRUST[diagnostic]", result.stderr)
+        self.assertIn("not started by this checkout", result.stderr)
+
+    def test_a_dead_recorded_pid_is_stale_rather_than_owned(self):
+        result = self.probe(
+            'playthrough_display_probe() { return 0; }\n'
+            'playthrough_display_ready() { return 0; }\n'
+            'playthrough_record_x_ownership pipeline 999999999\n'
+            'printf "STATE[%s]\\n" "$(playthrough_x_ownership_state)" '
+            '>&2\n')
+        self.assertIn("STATE[stale]", result.stderr)
+
+
+class TestRuntimeRetention(EnvFixture):
+    """The runtime root is a cache, and a cache needs a retention rule."""
+
+    def prune(self, after):
+        return self.source(
+            preset={"CLONE_INDEX": str(SPARE_INDEX),
+                    "PLAYTHROUGH_RUNTIME_RETENTION_MINUTES": "1"},
+            after=after)
+
+    def aged_lock(self, name):
+        base = "/tmp/xdg%d/playthrough/lock" % SPARE_INDEX
+        os.makedirs(base, mode=0o700, exist_ok=True)
+        path = os.path.join(base, name)
+        with open(path, "wb"):
+            pass
+        os.chmod(path, 0o600)
+        os.utime(path, (0, 0))
+        self.addCleanup(
+            lambda: os.path.exists(path) and os.unlink(path))
+        return path
+
+    def test_a_closed_and_aged_lock_is_pruned(self):
+        path = self.aged_lock("aged.lock")
+        result = self.prune("playthrough_prune_runtime\n")
+        self.assertEqual(result.status, 0, msg=result.stderr)
+        self.assertFalse(os.path.exists(path))
+        self.assertIn("pruned", result.stderr)
+
+    def test_a_held_lock_is_never_pruned(self):
+        path = self.aged_lock("held.lock")
+        result = self.prune(
+            'playthrough_acquire_lock held 5 || exit 1\n'
+            'playthrough_prune_runtime\n')
+        self.assertEqual(result.status, 0, msg=result.stderr)
+        self.assertTrue(
+            os.path.exists(path),
+            msg="the lock this very shell holds must survive the "
+                "pruner")
+
+    def test_a_fresh_lock_is_not_pruned(self):
+        base = "/tmp/xdg%d/playthrough/lock" % SPARE_INDEX
+        os.makedirs(base, mode=0o700, exist_ok=True)
+        path = os.path.join(base, "fresh.lock")
+        with open(path, "wb"):
+            pass
+        self.addCleanup(
+            lambda: os.path.exists(path) and os.unlink(path))
+        self.prune("playthrough_prune_runtime\n")
+        self.assertTrue(os.path.exists(path))
+
+    def test_an_aged_stage_error_file_is_pruned(self):
+        base = "/tmp/xdg%d/playthrough" % SPARE_INDEX
+        os.makedirs(base, mode=0o700, exist_ok=True)
+        path = os.path.join(base, "capture-stage-424242.err")
+        with open(path, "wb"):
+            pass
+        os.utime(path, (0, 0))
+        self.addCleanup(
+            lambda: os.path.exists(path) and os.unlink(path))
+        self.prune("playthrough_prune_runtime\n")
+        self.assertFalse(os.path.exists(path))
+
+    def test_the_cookie_and_the_pid_files_are_left_alone(self):
+        base = "/tmp/xdg%d/playthrough" % SPARE_INDEX
+        os.makedirs(os.path.join(base, "run"), mode=0o700,
+                    exist_ok=True)
+        keepers = [os.path.join(base, "Xauthority"),
+                   os.path.join(base, "run", "xvfb.pid")]
+        for path in keepers:
+            with open(path, "wb"):
+                pass
+            os.utime(path, (0, 0))
+            self.addCleanup(
+                lambda p=path: os.path.exists(p) and os.unlink(p))
+        self.prune("playthrough_prune_runtime\n")
+        for path in keepers:
+            with self.subTest(path=path):
+                self.assertTrue(os.path.exists(path))
 
 
 if __name__ == "__main__":

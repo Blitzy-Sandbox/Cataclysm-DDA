@@ -90,6 +90,22 @@ WANTED = {
     "TERMINAL_Y": "67",
     "CHARACTER_POINT_POOLS": "any",
     "WORLD_COMPRESSION2": "false",
+    # The rest of the capture geometry.  The window is TERMINAL_*
+    # multiplied by the FONT_* dimensions [src/sdltiles.cpp:595-596],
+    # placed by FULLSCREEN [src/options.cpp:2715-2724], scaled by
+    # SCALING_FACTOR/SCALING_MODE [src/options.cpp:2806-2825] and read
+    # on the side SIDEBAR_POSITION chooses [src/options.cpp:2132-2136].
+    # Each of these values is also the engine's own default, so seeding
+    # them is an assertion rather than a change on a fresh file -- which
+    # is the point: an operator or a later engine run can move any of
+    # them, and the crop would then be computed for a window that is not
+    # the one on screen.
+    "FONT_WIDTH": "8",
+    "FONT_HEIGHT": "16",
+    "SIDEBAR_POSITION": "right",
+    "FULLSCREEN": "windowedbl",
+    "SCALING_MODE": "none",
+    "SCALING_FACTOR": "1",
 }
 
 # The installed packs the fixture pretends to have.  Both ids come from
@@ -230,29 +246,52 @@ class SeedFixture(unittest.TestCase):
         return entry
 
     def engine_entries(self, overrides=None, extra=()):
-        """The eight seeded options plus some the pipeline ignores."""
+        """Every seeded option plus some the pipeline ignores.
+
+        THE SEEDED SET IS FOURTEEN, not the eight it once was.  The
+        window a session is captured from is TERMINAL_* multiplied by
+        the FONT_* dimensions [src/sdltiles.cpp:595-596], placed
+        according to FULLSCREEN, scaled by SCALING_FACTOR/SCALING_MODE
+        and read on the side SIDEBAR_POSITION chooses -- so all six of
+        those decide the crop the clock comes out of, and a review found
+        them seeded nowhere and verified nowhere.  The original eight
+        start from the WRONG value here, which keeps the change count
+        unambiguous; the six new ones start from the engine's own
+        default, which is what a genuine first-launch file holds.
+        """
         values = {
             "24_HOUR": "12h",
             "SOUND_ENABLED": "true",
             # A user who ran the curses build, or turned tiles off,
             # leaves this false -- and TILES is gated on it, so the
             # seeded tileset would be inert.  Starting from the wrong
-            # value on all eight keeps the change count unambiguous.
+            # value on all of them keeps the change count unambiguous.
             "USE_TILES": "false",
             "TILES": "UltimateCataclysm",
             "TERMINAL_X": "80",
             "TERMINAL_Y": "24",
             "CHARACTER_POINT_POOLS": "story_teller",
             "WORLD_COMPRESSION2": "true",
+            # These six start at the ENGINE'S OWN DEFAULTS, which are
+            # also the values the pipeline wants: that is what a real
+            # first-launch options file holds, and the crop-seam tests
+            # below derive the first-launch window from exactly these
+            # numbers.  Their seeding and verification is proved from a
+            # deliberately wrong file in TestTheRenderGeometryOptions.
+            "FONT_WIDTH": "8",
+            "FONT_HEIGHT": "16",
+            "SIDEBAR_POSITION": "right",
+            "FULLSCREEN": "windowedbl",
+            "SCALING_MODE": "none",
+            "SCALING_FACTOR": "1",
         }
         if overrides:
             values.update(overrides)
         entries = [self.entry(name, value)
                    for name, value in values.items()]
         # Options this module must leave completely alone.
-        entries.insert(1, self.entry("FONT_WIDTH", "8"))
-        entries.insert(2, self.entry("FONT_HEIGHT", "16"))
-        entries.append(self.entry("SIDEBAR_POSITION", "right"))
+        entries.insert(1, self.entry("FONT_SIZE", "16"))
+        entries.append(self.entry("PIXEL_MINIMAP", "true"))
         entries.append(self.entry("AUTOSAVE", "true"))
         entries.extend(extra)
         return entries
@@ -865,8 +904,7 @@ class TestPatchingTheFile(SeedFixture):
         before = self.values()
         self.patch()
         after = self.values()
-        for name in ("FONT_WIDTH", "FONT_HEIGHT", "SIDEBAR_POSITION",
-                     "AUTOSAVE"):
+        for name in ("FONT_SIZE", "PIXEL_MINIMAP", "AUTOSAVE"):
             with self.subTest(option=name):
                 self.assertEqual(after[name], before[name])
 
@@ -1289,6 +1327,98 @@ class TestReadingTheStoredValues(SeedFixture):
             "military",
             msg=("the engine applies the array in order, so the last "
                  "occurrence is the one it runs with"))
+
+
+class TestTheRenderGeometryOptions(SeedFixture):
+    """The six values that decide the window, not just the grid.
+
+    A review found the seeded set covering TERMINAL_X and TERMINAL_Y --
+    the GRID -- while the WINDOW that grid becomes, and therefore the
+    rectangle the sidebar clock is cropped out of, also depends on the
+    font cell size, the fullscreen mode, the scaling pair and which side
+    the sidebar is on.  Every one of them could be wrong with all eight
+    original values right, and nothing would have said so.
+    """
+
+    GEOMETRY = ("FONT_WIDTH", "FONT_HEIGHT", "SIDEBAR_POSITION",
+                "FULLSCREEN", "SCALING_MODE", "SCALING_FACTOR")
+    WRONG = {
+        "FONT_WIDTH": "12",
+        "FONT_HEIGHT": "24",
+        "SIDEBAR_POSITION": "left",
+        "FULLSCREEN": "maximized",
+        "SCALING_MODE": "linear",
+        "SCALING_FACTOR": "2",
+    }
+
+    def setUp(self):
+        super().setUp()
+        self.write_both_tilesets()
+
+    def test_every_geometry_option_is_in_the_seeded_set(self):
+        for name in self.GEOMETRY:
+            with self.subTest(option=name):
+                self.assertIn(name, seed_options.SEEDED_OPTIONS)
+
+    def test_a_wrong_geometry_file_is_corrected_in_one_pass(self):
+        self.write_options(self.WRONG)
+        report = self.patch()
+        changed = {change.name for change in report.changes}
+        for name in self.GEOMETRY:
+            with self.subTest(option=name):
+                self.assertIn(name, changed)
+        stored = self.values()
+        for name in self.GEOMETRY:
+            with self.subTest(option=name):
+                self.assertEqual(stored[name], WANTED[name])
+
+    def test_every_wrong_geometry_value_is_reported_together(self):
+        values = dict(WANTED)
+        values["TILES"] = MSX_IDENT
+        values.update(self.WRONG)
+        self.write_options(values)
+        with self.assertRaises(seed_options.SeedError) as bad:
+            self.verify()
+        message = str(bad.exception)
+        for name in self.GEOMETRY:
+            with self.subTest(option=name):
+                self.assertIn(name, message)
+
+    def test_each_geometry_reason_cites_the_engine(self):
+        for name in self.GEOMETRY:
+            with self.subTest(option=name):
+                self.assertIn("src/", seed_options.REASONS[name])
+
+    def test_the_default_sidebar_layout_verifies(self):
+        values = dict(WANTED)
+        values["TILES"] = MSX_IDENT
+        self.write_options(values)
+        observed = self.verify()
+        self.assertEqual(observed["SIDEBAR_POSITION"], "right")
+
+    def test_another_sidebar_layout_is_refused(self):
+        values = dict(WANTED)
+        values["TILES"] = MSX_IDENT
+        self.write_options(values)
+        panels = os.path.join(self.config, "panel_options.json")
+        with open(panels, "w", encoding="utf-8") as handle:
+            json.dump([{"current_layout_id": "labels_narrow",
+                        "layouts": []}], handle)
+        with self.assertRaises(seed_options.SeedError) as bad:
+            self.verify()
+        self.assertIn("active sidebar layout", str(bad.exception))
+        self.assertIn("labels_narrow", str(bad.exception))
+
+    def test_an_unreadable_layout_file_is_a_failure_not_a_default(self):
+        values = dict(WANTED)
+        values["TILES"] = MSX_IDENT
+        self.write_options(values)
+        panels = os.path.join(self.config, "panel_options.json")
+        with open(panels, "w", encoding="utf-8") as handle:
+            handle.write("{ not json at all\n")
+        with self.assertRaises(seed_options.SeedError) as bad:
+            self.verify()
+        self.assertIn("sidebar layout", str(bad.exception))
 
 
 class TestVerifying(SeedFixture):

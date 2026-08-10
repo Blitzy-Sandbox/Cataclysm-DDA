@@ -91,16 +91,17 @@ quietly recording one as the other is fabricated evidence.
 
 THE COMMAND LINE IS READ-ONLY on purpose -- appending is available to
 importers only, so session.py keeps sole ownership of the frame counter
-and no shell caller can slip a row in beside it:
+and no shell caller can slip a row in beside it.  Source
+``playthrough/tooling/env.sh`` first: it exports ``PLAYTHROUGH_PYTHON``,
+the pinned CPython 3.12 this tooling is installed against, and ``-B``
+keeps a re-included ``__pycache__`` out of the tree::
 
-    python3 playthrough/tooling/manifest.py verify --require-frames
-    python3 playthrough/tooling/manifest.py count
-    python3 playthrough/tooling/manifest.py amendments
-    python3 playthrough/tooling/manifest.py digests --require-frames
-
-The command line is read-only on purpose: appending is available to
-importers only, so that session.py keeps sole ownership of the frame
-counter and no shell caller can slip a row in beside it.
+    . playthrough/tooling/env.sh
+    MF='playthrough/tooling/manifest.py'
+    "$PLAYTHROUGH_PYTHON" -B "$MF" verify --require-frames
+    "$PLAYTHROUGH_PYTHON" -B "$MF" count
+    "$PLAYTHROUGH_PYTHON" -B "$MF" amendments
+    "$PLAYTHROUGH_PYTHON" -B "$MF" digests --require-frames
 
 Where the record may live is not negotiable.  Every path this module
 opens -- for reading as well as for appending -- must resolve inside
@@ -390,12 +391,15 @@ CLOCK_UNRECOGNISED = "unrecognised"
 #
 #   * The coverage was short.  It named neither "game", nor "engine",
 #     nor a source file, nor pathfinding, nor a move counter, nor
-#     cheating -- and every one of those reached the committed record.
-#     One row explains that "the game itself is talking to me now",
-#     names a C++ source file and a line number, and calls it "the
-#     engine's own complaint about its own pathfinding"; another reports
-#     that "my move counter went to zero"; two report what "the sidebar"
-#     said; the last states "I did not cheat".
+#     cheating -- and every one of those had reached the record as it
+#     stood when the review was taken.  In THAT recording, since
+#     superseded, one row explained that "the game itself is talking to
+#     me now", named a C++ source file and a line number, and called it
+#     "the engine's own complaint about its own pathfinding"; another
+#     reported that "my move counter went to zero"; two reported what
+#     "the sidebar" said; the last stated "I did not cheat".  None of
+#     them is in the record shipped here, which is what a blocking gate
+#     is for.
 #   * Advisory was the wrong strength.  A warning on stderr during a
 #     session that produces four hundred rows is a warning nobody reads,
 #     and by the time anybody does the row is already evidence -- and
@@ -411,12 +415,13 @@ CLOCK_UNRECOGNISED = "unrecognised"
 # they are handled:
 #
 #   * `engine` matches `\bengines?\b` and `\bengine's\b`, which does NOT
-#     match "engineer" or "engineering" -- Delphine is a mechanical
-#     engineer and says so in three rows.  The bluntness that remains is
-#     deliberate: she has no reason to name a motor in this session, and
-#     "the engine" is how the software gets talked about.
+#     match "engineer" or "engineering" -- the survivor of the recording
+#     these patterns were derived from was a mechanical engineer and said
+#     so in three rows.  The bluntness that remains is deliberate: a
+#     survivor on foot has no reason to name a motor, and "the engine" is
+#     how the software gets talked about.
 #   * `frame` matches only a frame with a NUMBER or a frame that is
-#     counted or indexed.  A door frame is hers.
+#     counted or indexed.  A door frame is the survivor's own.
 #
 # A word that is genuinely ambiguous and cannot be told apart by pattern
 # is BLOCKED rather than allowed, and the note beside it says so, because
@@ -432,7 +437,8 @@ META_PATTERNS = (
     ("pathfinding", r"\bpath[- ]?find(?:ing|er|s)?\b"),
     ("debug", r"\bdebug\w*\b"),
     ("cheat", r"\bcheat(?:s|ed|ing|er)?\b|\bgod mode\b"),
-    # The interface, as an interface rather than as what she can see.
+    # The interface, as an interface rather than as what the survivor
+    # can see.
     ("sidebar", r"\bside[- ]?bars?\b|\bstatus panel\b|\bhud\b"),
     ("move counter", r"\bmoves?[- ]counter\b|\bturns?[- ]counter\b"
                      r"|\bmove points?\b|\bturn counter\b"),
@@ -456,32 +462,34 @@ META_PATTERNS = (
                r"ies)\b"),
     ("requirement", r"\bR1[0-3]\b|\bR[1-9]\b"),
     # THE INTERFACE AS FURNITURE, AND THE CHARACTER SHEET AS ARITHMETIC.
-    # This block is the second thing a review found in the committed
-    # transcript, and it was invisible to every pattern above: the rows
-    # named the input device and the screen furniture she was looking at
-    # ("the first key I tried", the cursor moving down a list, a tab, the
-    # sex field, the trait page), and they accounted for her own body in
-    # the numbers the creator prices it in ("Stat money", "thirty-eight
-    # points", "thirty-five per cent off what I can carry", "three
-    # points back"), and they named two engine modes by their interface
-    # names ("safe mode", "Scores").  None of that is a survivor's
-    # sentence -- she has a body, a trade and a list of things wrong with
-    # her, not statistics -- so the concepts belong here beside the rest.
+    # This block is the second thing a review found in the transcript
+    # committed at the time, and it was invisible to every pattern above:
+    # the rows named the input device and the screen furniture the
+    # survivor was looking at ("the first key I tried", the cursor moving
+    # down a list, a tab, the sex field, the trait page), and they
+    # accounted for the survivor's own body in the numbers the creator
+    # prices it in ("Stat money", "thirty-eight points", "thirty-five per
+    # cent off what I can carry", "three points back"), and they named
+    # two engine modes by their interface names ("safe mode", "Scores").
+    # None of that is a survivor's sentence -- a survivor has a body, a
+    # trade and a list of things wrong with them, not statistics -- so
+    # the concepts belong here beside the rest.
     #
     # The same precision rule applies as above, and two cases are worth
     # calling out because the blunt reading would refuse honest prose:
     #
     #   * `keyboard` matches the DEVICE and named keys, not a key that
     #     opens something: "something with keys in it and a clear road"
-    #     is a set of car keys and is hers.
+    #     is a set of car keys and is the survivor's.
     #   * `character sheet` matches a point that is COUNTED or POOLED,
     #     not the idiom: "no point being coy" and "a nip point on the
-    #     third floor" are both in the record and both stay.
+    #     third floor" were both in the record these patterns were
+    #     measured against, and both had to stay.
     #
     # `tab`, `score` and `per cent` are blocked outright, ambiguity and
-    # all, under the rule stated above: she has no in-world tab, she says
-    # "dozens" rather than "scores", and a percentage is arithmetic
-    # somebody else did about her.
+    # all, under the rule stated above: a survivor has no in-world tab,
+    # says "dozens" rather than "scores", and a percentage is arithmetic
+    # somebody else did about them.
     ("cursor", r"\bcursors?\b|\bhighlight(?:ed)?\s+(?:bar|row|line)\b"),
     ("keyboard", r"\bkey[- ]?boards?\b|\bhot[- ]?keys?\b"
                  r"|\barrow keys?\b|\bkeys?\s+(?:list|bindings?|map)\b"
@@ -1417,7 +1425,7 @@ def meta_vocabulary_problem(text, label="commentary"):
         "and a record that has already been written is not rewritten "
         "afterwards.  Meta and 'gamey' remarks belong in "
         "playthrough/TECHNICAL_NOTES.md; say what the survivor saw and "
-        "why she acted.  The text was: %r"
+        "why the survivor acted.  The text was: %r"
         % (label, ", ".join(hits), text))
 
 
@@ -1869,7 +1877,7 @@ def clock_honesty_problems(commentary, clock, date_text,
                 "%s states a calendar date, but the sidebar's date line "
                 "was not read on that frame, so there is nothing to "
                 "check it against.  A date the survivor could not see "
-                "is not recorded as though she could.  The text was: %r"
+                "is not recorded as though they could.  The text was: %r"
                 % (label, commentary))
             continue
         # Agreeing with EITHER observed line is honest, on the same

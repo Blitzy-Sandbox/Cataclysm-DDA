@@ -582,28 +582,107 @@ readonly PROBE_BARE="default=noprint_wrappers=1:nokey=1"
 readonly PROBE_ABSENT="N/A"
 
 # `timeout` reports this when it fires, which is how an expiry is told
-# apart from the tool's own failure.
+# apart from the tool's own failure; 128+SIGKILL is what it reports when
+# the grace period elapsed too and the child had to be killed.
 readonly TIMEOUT_EXPIRED=124
+readonly TIMEOUT_KILLED=137
+
+# How long a child gets between TERM and KILL.  GNU timeout puts the
+# command in a process group of its own and signals the group, so this is
+# what makes the advertised ceiling hold against a tool that ignores TERM
+# rather than being a request it can decline.
+readonly KILL_GRACE=10
 
 # ---------------------------------------------------------------------
-# STAGE TIMEOUT.  Every external command here gets a ceiling.
+# THE STAGE CEILING IS DERIVED FROM THE FILM, NOT FIXED
 #
-# Three of the calls below read the whole video stream: the mux, the
-# stream hash and the cue extraction.  A wedged ffmpeg would otherwise
-# hang the pipeline sequencer indefinitely with nothing written and
-# nothing reported, which is the one failure mode worse than an error.
-# The default is a generous multiple of what a stream copy of a
-# feature-length capture takes, so an expiry here always means
-# something is wrong rather than slow.
+# Every external command here gets a ceiling, because a wedged ffmpeg
+# would hang the pipeline sequencer indefinitely with nothing written and
+# nothing reported -- the one failure mode worse than an error.
+#
+# IT CANNOT BE ONE NUMBER.  Three of the calls below read the whole video
+# stream -- the mux, the stream hash and the cue extraction -- and the mux
+# additionally RELOCATES the moov atom for `+faststart`, which is a second
+# pass over the output.  Both costs are O(bytes), and the session length
+# this pipeline is built for is deliberately unbounded, so a fixed number
+# is either too small for a long film -- killing a healthy mux and
+# reporting it as wedged, after which the pipeline has no captioned film
+# at all -- or so large it is not a bound.  Measured on the committed
+# 3.7 MB film the mux takes well under a second; a two-hour session at the
+# same bitrate is gigabytes, and the fixed 900 s was chosen against
+# neither.
+#
+# So the ceiling starts at the fixed value for the METADATA reads (a
+# header probe is O(1) in the film's length) and is re-derived from the
+# input film's own byte count and duration before the mux, which is the
+# first call whose cost scales.  An explicit PLAYTHROUGH_CAPTION_TIMEOUT
+# is honoured EXACTLY and never derived over: an operator who names a
+# ceiling has named it.
 # ---------------------------------------------------------------------
 readonly DEFAULT_STAGE_TIMEOUT=900
 
+# The derivation: a base for process start-up and container parsing, one
+# second per this many bytes for each of the two passes a faststart mux
+# makes over the film, and one second per this many seconds of film for
+# the per-packet bookkeeping.  Both divisors are deliberately far below
+# what any host achieves (this one copies at hundreds of MB/s), so an
+# expiry means wedged rather than slow.
+readonly MUX_BASE_SECONDS=300
+readonly MUX_BYTES_PER_SECOND=1048576
+readonly MUX_PASSES=2
+readonly MUX_FILM_SECONDS_PER_SECOND=10
+
+# No ceiling this file derives may exceed a day: a bound that large is
+# already a diagnosis, and it keeps arithmetic on a byte count from
+# producing something absurd.
+readonly MUX_MAX_SECONDS=86400
+
+# THE WATCHDOG.  The derived ceiling is the backstop; this is how a wedge
+# is caught EARLY.  A mux that is working extends its own deadline by
+# making progress -- the staging file grows, and while the moov atom is
+# being relocated it stops growing but keeps being written, so the
+# signature is size AND modification time.  A file that has done neither
+# for this long has stalled, whatever its ceiling says.
+#
+# The stall window is overridable for the same reason the ceiling is: how
+# long a legitimate quiet period can be depends on the host's storage, and
+# a refusal nobody can reach in a test is a refusal nobody has read.
+readonly WATCH_POLL_SECONDS=5
+readonly DEFAULT_WATCH_STALL_SECONDS=120
+
 if ! playthrough_validate_int \
-        "${PLAYTHROUGH_CAPTION_TIMEOUT:-${DEFAULT_STAGE_TIMEOUT}}" \
-        "PLAYTHROUGH_CAPTION_TIMEOUT" 1 86400; then
+        "${PLAYTHROUGH_CAPTION_STALL:-${DEFAULT_WATCH_STALL_SECONDS}}" \
+        "PLAYTHROUGH_CAPTION_STALL" 1 86400; then
     exit "${EX_USAGE}"
 fi
-readonly STAGE_TIMEOUT="${PLAYTHROUGH_INT}"
+readonly WATCH_STALL_SECONDS="${PLAYTHROUGH_INT}"
+
+# What the mux needs on the output filesystem beyond the artifacts
+# themselves: room for the staging container (a stream copy, so about the
+# size of the input), room for the retained copy of any film already
+# published there (which is how a publication that cannot be confirmed is
+# undone), and this margin for the filesystem's own overhead.
+readonly MUX_SPACE_MARGIN=$((64 * 1024 * 1024))
+
+if [ -n "${PLAYTHROUGH_CAPTION_TIMEOUT:-}" ]; then
+    if ! playthrough_validate_int "${PLAYTHROUGH_CAPTION_TIMEOUT}" \
+            "PLAYTHROUGH_CAPTION_TIMEOUT" 1 86400; then
+        exit "${EX_USAGE}"
+    fi
+    CEILING_SOURCE="PLAYTHROUGH_CAPTION_TIMEOUT"
+else
+    if ! playthrough_validate_int "${DEFAULT_STAGE_TIMEOUT}" \
+            "the default stage ceiling" 1 86400; then
+        exit "${EX_USAGE}"
+    fi
+    CEILING_SOURCE="the metadata default, re-derived before the mux"
+fi
+# NEITHER IS readonly YET: the ceiling and the sentence that explains it
+# are both re-derived once the film's size is known, and both are frozen
+# there.  Whether an override was given IS fixed here -- an operator's
+# number is never adjusted.
+STAGE_TIMEOUT="${PLAYTHROUGH_INT}"
+readonly CEILING_OVERRIDDEN="${PLAYTHROUGH_CAPTION_TIMEOUT:+yes}"
 
 # How long to wait for another run of this stage to finish before
 # giving up.  Two muxes writing one output would race over the same
@@ -702,7 +781,15 @@ the full output contract and the exit codes.
 
 environment:
     PLAYTHROUGH_CAPTION_TIMEOUT       seconds allowed per external
-                                      command (default 900)
+                                      command.  Used EXACTLY when set;
+                                      when it is not, the metadata reads
+                                      get 900 and the whole-stream calls
+                                      get a ceiling derived from the
+                                      input film's own size and duration
+    PLAYTHROUGH_CAPTION_STALL         seconds the mux may go without
+                                      writing to its staging file before
+                                      it is stopped early as stalled
+                                      (default 120)
     PLAYTHROUGH_CAPTION_LOCK_TIMEOUT  seconds to wait for a concurrent
                                       run of this stage (default 60)
 USAGE
@@ -857,8 +944,13 @@ assert_path_shape "${OUTPUT_MOVIE}" "output"
 # to be computed to be compared.  cp retains the previous generation
 # beside the target so a publication that cannot be verified can be undone
 # rather than merely reported.
+#
+# df and sleep are the additions the capacity reserve and the stall
+# watchdog need: a mux that runs out of room mid-write leaves a truncated
+# container, and a wedge is only detectable by looking at the staging file
+# repeatedly rather than once.
 if ! playthrough_require_tools ffmpeg ffprobe grep awk wc mv cp rm \
-        sha256sum timeout readlink; then
+        sha256sum timeout readlink df sleep; then
     exit "${EX_PREREQ}"
 fi
 
@@ -896,6 +988,8 @@ readonly RM="${PLAYTHROUGH_BIN_RM}"
 readonly SHA256SUM="${PLAYTHROUGH_BIN_SHA256SUM}"
 readonly TIMEOUT="${PLAYTHROUGH_BIN_TIMEOUT}"
 readonly READLINK="${PLAYTHROUGH_BIN_READLINK}"
+readonly DF="${PLAYTHROUGH_BIN_DF}"
+readonly SLEEP="${PLAYTHROUGH_BIN_SLEEP}"
 
 # file_digest FILE
 #   The sha256 of a file's exact bytes, or empty on failure.  Bare hex,
@@ -982,16 +1076,125 @@ print(found.get("sha256", ""))
 #   silenced anywhere in this file: when ffmpeg refuses something, its
 #   own message is the most useful thing an operator can be shown, and
 #   swallowing it to print a tidier one would cost the diagnosis.
+#
+#   TERM THEN KILL, over the child's own process group.  A plain
+#   `timeout N` sends one TERM and then reports an expiry whether or not
+#   the child acted on it, so a tool wedged inside its own signal
+#   handling kept running while this stage said it had been stopped.
+#   --kill-after is what makes the advertised ceiling a fact.
 run_bounded() {
     local label="$1"
     shift
     local status=0
-    "${TIMEOUT}" "${STAGE_TIMEOUT}" "$@" || status="$?"
-    if [ "${status}" -eq "${TIMEOUT_EXPIRED}" ]; then
+    "${TIMEOUT}" --kill-after="${KILL_GRACE}" --signal=TERM \
+        "${STAGE_TIMEOUT}" "$@" || status="$?"
+    if [ "${status}" -eq "${TIMEOUT_EXPIRED}" ] ||
+            [ "${status}" -eq "${TIMEOUT_KILLED}" ]; then
         playthrough_warn "${label} did not finish within" \
-            "${STAGE_TIMEOUT}s and was stopped.  Raise" \
+            "${STAGE_TIMEOUT}s and was stopped (exit ${status}$(
+                [ "${status}" -eq "${TIMEOUT_KILLED}" ] &&
+                    printf ', after the %ss grace period' \
+                        "${KILL_GRACE}"
+                true
+            )).  That ceiling is ${CEILING_SOURCE}.  Raise" \
             "PLAYTHROUGH_CAPTION_TIMEOUT if this film is genuinely" \
             "that long, and look for a wedged tool if it is not."
+    fi
+    return "${status}"
+}
+
+# progress_signature FILE
+#   A value that changes whenever FILE is being written, and does not
+#   change when it is not.
+#
+#   SIZE ALONE IS NOT ENOUGH, and that is the whole reason this is a
+#   function rather than a `wc -c`.  A `+faststart` mux writes the
+#   container, then RELOCATES the moov atom to the front, and the
+#   relocation rewrites the file in place -- the size does not move while
+#   the largest single piece of work in the stage is happening.  The
+#   modification time does.  So the signature is both, and a mux that is
+#   working cannot be mistaken for one that has stalled.
+progress_signature() {
+    local out=""
+    out="$("${PLAYTHROUGH_UTIL_STAT}" -c '%s %Y' -- "$1" \
+        2>/dev/null || printf 'absent')"
+    printf '%s' "${out}"
+}
+
+# run_watched LABEL WATCH_FILE COMMAND...
+#   Run the one command whose cost is the film, under the derived ceiling
+#   AND under a stall watchdog.
+#
+#   THE CEILING IS THE BACKSTOP, NOT THE DETECTOR.  Derived from the
+#   film's own size, it is necessarily generous: on a multi-gigabyte
+#   session it is hours, and waiting hours to discover that ffmpeg wedged
+#   in its first second is not a diagnosis.  So progress is watched, and a
+#   file that has neither grown nor been touched for
+#   ${WATCH_STALL_SECONDS}s is stopped early with TERM -- which ffmpeg
+#   honours immediately -- while the derived ceiling and its --kill-after
+#   remain in force underneath for the case where it does not.
+#
+#   A child that ignores the early TERM is REPORTED and left to that
+#   ceiling rather than having its wrapper killed: SIGKILL to `timeout`
+#   would orphan the ffmpeg underneath it, and an orphaned encoder still
+#   writing into the staging file is strictly worse than one that is
+#   stopped a few minutes later by its own bound.
+#
+#   Sets LAST_WATCH_OUTCOME to ok, stalled, expired or failed.
+LAST_WATCH_OUTCOME="ok"
+
+run_watched() {
+    local label="$1"
+    local watch="$2"
+    shift 2
+    local pid=0 status=0 previous="" signature="" quiet=0 asked=0
+    LAST_WATCH_OUTCOME="ok"
+    "${TIMEOUT}" --kill-after="${KILL_GRACE}" --signal=TERM \
+        "${STAGE_TIMEOUT}" "$@" &
+    pid=$!
+    previous="$(progress_signature "${watch}")"
+    while kill -0 "${pid}" 2>/dev/null; do
+        "${SLEEP}" "${WATCH_POLL_SECONDS}"
+        signature="$(progress_signature "${watch}")"
+        if [ "${signature}" != "${previous}" ]; then
+            previous="${signature}"
+            quiet=0
+            continue
+        fi
+        quiet=$((quiet + WATCH_POLL_SECONDS))
+        if [ "${quiet}" -lt "${WATCH_STALL_SECONDS}" ]; then
+            continue
+        fi
+        if [ "${asked}" -eq 0 ]; then
+            playthrough_warn "${label} has not written to" \
+                "$(rel "${watch}") for ${quiet}s, so it has stalled" \
+                "rather than being slow.  Asking it to stop now" \
+                "instead of waiting out its ${STAGE_TIMEOUT}s ceiling."
+            kill -TERM "${pid}" 2>/dev/null || true
+            asked=1
+            quiet=0
+            continue
+        fi
+        playthrough_warn "${label} did not stop when asked.  It is" \
+            "left to its ${STAGE_TIMEOUT}s ceiling, which escalates to" \
+            "KILL after ${KILL_GRACE}s; killing the wrapper here would" \
+            "orphan the encoder instead of stopping it."
+        break
+    done
+    wait "${pid}" || status="$?"
+    if [ "${status}" -eq 0 ]; then
+        return 0
+    fi
+    if [ "${asked}" -eq 1 ]; then
+        LAST_WATCH_OUTCOME="stalled"
+    elif [ "${status}" -eq "${TIMEOUT_EXPIRED}" ] ||
+            [ "${status}" -eq "${TIMEOUT_KILLED}" ]; then
+        LAST_WATCH_OUTCOME="expired"
+        playthrough_warn "${label} did not finish within" \
+            "${STAGE_TIMEOUT}s and was stopped (exit ${status}).  That" \
+            "ceiling is ${CEILING_SOURCE}."
+    else
+        LAST_WATCH_OUTCOME="failed"
     fi
     return "${status}"
 }
@@ -1863,14 +2066,149 @@ if [ "${#MUX_ARGS[@]}" -ne "${MUX_ARG_COUNT}" ]; then
         "is anything that touches the picture."
 fi
 
+# ---------------------------------------------------------------------
+# THE CEILING, DERIVED FROM THIS FILM.
+#
+# Everything above this point read headers, whose cost does not scale with
+# the session.  Everything below reads or writes the whole video stream,
+# so the ceiling is re-derived here from the film's own size and duration
+# -- see THE STAGE CEILING IS DERIVED FROM THE FILM above -- unless an
+# operator named one, in which case theirs stands unchanged.
+# ---------------------------------------------------------------------
+INPUT_BYTES="$("${WC}" -c < "${INPUT_MOVIE}")"
+INPUT_BYTES="${INPUT_BYTES//[[:space:]]/}"
+readonly INPUT_BYTES
+
+_ec_in_duration="$(probe_container_duration "${INPUT_MOVIE}")" ||
+    _ec_in_duration=""
+# Integer seconds: the shell has no floating point, and a ceiling does
+# not need the fraction.  An unreadable duration contributes nothing
+# rather than being guessed at.
+_ec_in_seconds="${_ec_in_duration%%.*}"
+case "${_ec_in_seconds}" in
+    ''|*[!0-9]*) _ec_in_seconds=0 ;;
+esac
+
+if [ -z "${CEILING_OVERRIDDEN}" ]; then
+    _ec_derived=$((MUX_BASE_SECONDS +
+        MUX_PASSES * INPUT_BYTES / MUX_BYTES_PER_SECOND +
+        _ec_in_seconds / MUX_FILM_SECONDS_PER_SECOND))
+    if [ "${_ec_derived}" -gt "${MUX_MAX_SECONDS}" ]; then
+        _ec_derived="${MUX_MAX_SECONDS}"
+    fi
+    STAGE_TIMEOUT="${_ec_derived}"
+    CEILING_SOURCE="derived from ${INPUT_BYTES} byte(s) over \
+${MUX_PASSES} pass(es) at ${MUX_BYTES_PER_SECOND} B/s plus \
+${_ec_in_seconds}s of film at 1s per ${MUX_FILM_SECONDS_PER_SECOND}s, \
+on a ${MUX_BASE_SECONDS}s base"
+    unset _ec_derived
+fi
+readonly STAGE_TIMEOUT CEILING_SOURCE
+playthrough_log "the ceiling for every whole-stream call below is" \
+    "${STAGE_TIMEOUT}s -- ${CEILING_SOURCE}"
+unset _ec_in_duration _ec_in_seconds
+
+# ---------------------------------------------------------------------
+# ROOM TO WRITE IT, ESTABLISHED BEFORE ANYTHING IS WRITTEN.
+#
+# A stream copy needs about the input's size for the staging container,
+# and the publication step retains a copy of whatever film is already
+# published there so that a publication which cannot be confirmed can be
+# undone.  Both live on the OUTPUT filesystem, at the same time.
+#
+# A mux that runs out of room does not fail cleanly: ffmpeg writes until
+# the write fails, and what it leaves is a truncated container -- which
+# the verification below would reject, correctly, after having spent the
+# whole cost of the mux to find out.  The arithmetic is available before
+# any of it, so the refusal is available before any of it, and it names
+# the figure that is missing rather than leaving an operator to work out
+# why "No space left on device" appeared in an ffmpeg diagnostic.
+# ---------------------------------------------------------------------
+free_bytes() {
+    local line="" last="" blocks=""
+    local -a fields=()
+    # -P is the POSIX output format, which guarantees ONE line per
+    # filesystem -- without it a long device name wraps and the columns
+    # move -- and -k fixes the block size at 1024 bytes so the arithmetic
+    # does not depend on the host's BLOCKSIZE.  The last line is the data
+    # line; its fourth field is the available space.  Read with the shell
+    # rather than through awk, because the mount point is the LAST field
+    # and may contain spaces while the four before it may not.
+    while IFS= read -r line; do
+        [ -n "${line}" ] || continue
+        last="${line}"
+    done < <("${DF}" -Pk -- "$1" 2>/dev/null)
+    if [ -z "${last}" ]; then
+        return 1
+    fi
+    read -r -a fields <<<"${last}"
+    blocks="${fields[3]-}"
+    case "${blocks}" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    printf '%s' "$((blocks * 1024))"
+}
+
+assert_mux_capacity() {
+    local published=0 needed=0 free=""
+    if [ -f "${OUTPUT_MOVIE}" ]; then
+        published="$("${WC}" -c < "${OUTPUT_MOVIE}")"
+        published="${published//[[:space:]]/}"
+        case "${published}" in
+            ''|*[!0-9]*) published=0 ;;
+        esac
+    fi
+    needed=$((INPUT_BYTES + published + MUX_SPACE_MARGIN))
+    if ! free="$(free_bytes "${OUTPUT_DIR}")"; then
+        playthrough_warn "the free space on" \
+            "$(rel "${OUTPUT_DIR}")'s filesystem could not be read," \
+            "so the ${needed}-byte reserve this mux needs was not" \
+            "checked.  The mux proceeds; a truncated container would" \
+            "be caught by the verification below rather than here."
+        return 0
+    fi
+    if [ "${free}" -lt "${needed}" ]; then
+        die "${EX_MUX}" "there is not enough room to mux:" \
+            "$(rel "${OUTPUT_DIR}") has ${free} byte(s) free and this" \
+            "run needs ${needed} -- ${INPUT_BYTES} for the staging" \
+            "container (a stream copy is about the size of its input)," \
+            "${published} for the retained copy of the film already" \
+            "published there, and ${MUX_SPACE_MARGIN} of margin.  Free" \
+            "that much and run this again; nothing was written."
+    fi
+    playthrough_log "room to work: ${free} byte(s) free against a" \
+        "${needed}-byte reserve (${INPUT_BYTES} staging + ${published}" \
+        "retained + ${MUX_SPACE_MARGIN} margin)"
+    return 0
+}
+
+assert_mux_capacity
+
 playthrough_log "muxing $(rel "${INPUT_SRT}") (${CUES_IN} cues) into" \
     "$(rel "${INPUT_MOVIE}") as a selectable ${SUBTITLE_CODEC} track"
 
 _ec_mux_status=0
-run_bounded "the caption mux" "${FFMPEG}" "${MUX_ARGS[@]}" ||
-    _ec_mux_status="$?"
+# WATCHED, not merely bounded: this is the one call whose cost is the
+# film, so a stall in it is caught by the staging file going quiet rather
+# than by waiting out a ceiling that scales with the session.
+run_watched "the caption mux" "${STAGING_FILE}" \
+    "${FFMPEG}" "${MUX_ARGS[@]}" || _ec_mux_status="$?"
 
 if [ "${_ec_mux_status}" -ne 0 ]; then
+    case "${LAST_WATCH_OUTCOME}" in
+        stalled)
+            die "${EX_MUX}" "the caption mux stalled and was stopped" \
+                "(exit ${_ec_mux_status}): it stopped writing to" \
+                "$(rel "${STAGING_FILE}") for" \
+                "${WATCH_STALL_SECONDS}s.  Nothing was published."
+            ;;
+        expired)
+            die "${EX_MUX}" "the caption mux did not finish within" \
+                "${STAGE_TIMEOUT}s and was stopped (exit" \
+                "${_ec_mux_status}).  That ceiling is" \
+                "${CEILING_SOURCE}.  Nothing was published."
+            ;;
+    esac
     die "${EX_MUX}" "ffmpeg exited ${_ec_mux_status} muxing" \
         "$(rel "${INPUT_SRT}") into $(rel "${INPUT_MOVIE}").  Its own" \
         "message is above.  Nothing was published."

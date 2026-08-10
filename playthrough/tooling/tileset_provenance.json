@@ -13,17 +13,17 @@
     "subject": "[MSX] Highlands (#2910)",
     "path": "gfx/MShockXotto+"
   },
-  "composed_with": "python3 tools/gfx_tools/compose.py --feedback CONCISE --format-json --loglevel INFO <clone>/gfx/MShockXotto+ <dest>/MShockXotto+",
+  "composed_with": "python3 tools/gfx_tools/compose.py --feedback CONCISE --format-json --loglevel INFO <upstream-clone>/gfx/MShockXotto+ <dest>/MShockXotto+ ; then copy fallback.png, layering.json and tileset.txt verbatim from the same upstream directory (compose.py does not emit them) and generate the in-pack SHA256SUMS over the resulting 21 files. Verified reproducible with: CPython 3.12.13, pyvips 3.1.1, libvips 8.16.1, this repository's tools/gfx_tools/compose.py at 6ce851fd71bf0fa456f62f3bf234fae98391bcd9 and tools/format/json_formatter.cgi built from tools/format at f6c71bc5e9a69e20c29a446ff125ad5095538321. --format-json is REQUIRED: without it tile_config.json is 466419 bytes, with it 625336.",
   "in_pack_manifest": "SHA256SUMS",
   "tree_sha256_recipe": "sha256 over the concatenation of '<sha256>  <path>\\n' for every regular file in the tree, ordered by byte-wise ascending path (LC_ALL=C sort), paths relative to the tileset directory with no './' prefix",
-  "tree_sha256": "3d6c2ef4871654fdeeb5ce363b7a5894d76709d173b70c79040966e6561e317e",
+  "tree_sha256": "7d853c21de2e9281258d144409f104f58b14e8ece5dfdf3b724213702e3be3fe",
   "file_count": 22,
-  "byte_count": 5409937,
+  "byte_count": 5260542,
   "files": [
     {
       "path": "SHA256SUMS",
       "bytes": 1690,
-      "sha256": "ac372c1947e7df841b8e7439c3d3144808b4512b02fae79cd68101c627d1714f"
+      "sha256": "9c3d302f4acb153c91cf0040c40fb86159d278b5aeea883cf0ec5c26a33264bc"
     },
     {
       "path": "big.png",
@@ -107,8 +107,8 @@
     },
     {
       "path": "tile_config.json",
-      "bytes": 774731,
-      "sha256": "9725384838a54404bb7524993940aa4c9b3771cb24601bde677e53b0fbd504ec"
+      "bytes": 625336,
+      "sha256": "064f4708e596207dd65eea9abb84d217a20f20465b0a9a8ef16b76915a93548b"
     },
     {
       "path": "tiles.png",

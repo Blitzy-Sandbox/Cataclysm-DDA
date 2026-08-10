@@ -824,11 +824,14 @@ class TestTheNarrativeColumns(ManifestFixture):
     def test_the_interface_and_the_character_sheet_are_refused(self):
         """The second class of meta wording a review found shipped.
 
-        Every string below is the wording of a row that actually reached
-        playthrough/transcript.md and became a caption on the film: the
-        input device and the screen furniture she was looking at, and her
-        own body accounted for in the numbers the creator prices it in.
-        None of it is a survivor's sentence, so the gate names it.
+        Every string below is the wording of a row that actually
+        reached playthrough/transcript.md and became a caption on the
+        film in the recording this class was written against: the input
+        device and the screen furniture the survivor was looking at, and
+        that survivor's own body accounted for in the numbers the creator
+        prices it in.  None of it is a survivor's sentence, so the gate
+        names it -- and none of it is in the record shipped here, which
+        is what the gate being blocking rather than advisory bought.
         """
         for meta, concept in (
                 ("Stat money goes downhill into the other two",
@@ -854,9 +857,11 @@ class TestTheNarrativeColumns(ManifestFixture):
     def test_the_survivors_own_numbers_and_keys_are_not_refused(self):
         """The precision half, held against the record's own prose.
 
-        Each sentence below is in the committed record and is hers: a set
-        of car keys, the idiom "no point", a nip point on a mill floor,
-        and hours of sleep counted in an ordinary way.
+        Each sentence below was in the record these patterns were
+        measured against and belonged to its survivor: a set of car keys,
+        the idiom "no point", a nip point on a mill floor, and hours of
+        sleep counted in an ordinary way.  The precision they establish is
+        what keeps the gate from refusing prose like it.
         """
         for honest in ("Give me something with keys in it and a road.",
                        "No point being coy about my back.",
@@ -1684,7 +1689,7 @@ class TestTheClockHonestyGate(unittest.TestCase):
                      "nearest minute, not for inventing one"))
 
     def test_a_precise_time_on_an_unreadable_clock_is_refused(self):
-        """A number nobody could see is not recorded as though she could.
+        """A number nobody could see is not recorded as though they could.
 
         This is the one case where the gate cannot compare, and it refuses
         rather than passing: an exact time stated over a sidebar that read
@@ -1703,11 +1708,12 @@ class TestTheClockHonestyGate(unittest.TestCase):
         self.assertIn("Around dawn", coarse[0])
 
     def test_a_hedged_time_on_an_unreadable_clock_is_allowed(self):
-        """Without a watch she can still tell roughly where the sun is.
+        """Without a watch a survivor still knows roughly where the sun
+        is.
 
-        display::time_string() falls back to a coarse phrase when she
-        carries no timepiece, and a hedged sentence is exactly the honest
-        thing to write over one.
+        display::time_string() falls back to a coarse phrase when the
+        survivor carries no timepiece, and a hedged sentence is exactly
+        the honest thing to write over one.
         """
         self.assertEqual(
             manifest.clock_honesty_problems(

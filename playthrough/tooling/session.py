@@ -346,6 +346,37 @@ ENV_CAPTURE_TIMEOUT = "PLAYTHROUGH_SESSION_CAPTURE_TIMEOUT"
 MIN_TIMEOUT = 1
 MAX_TIMEOUT = 3600
 
+# ---------------------------------------------------------------------
+# ROOM FOR THE NEXT FRAME, CHECKED BEFORE THE KEY IS SENT.
+#
+# A session is deliberately unbounded and every capture is kept at full
+# resolution, so the frames directory only ever grows.  A disk that
+# fills DURING a step is the worst shape that failure can take: the
+# keystroke has already been delivered and cannot be un-pressed, the
+# capture is truncated or missing, and the one-frame-per-keystroke
+# identity the whole record rests on is broken for a reason no later
+# stage can repair.  Refusing BEFORE the key leaves the session exactly
+# where it was.
+#
+# THE RESERVE IS SELF-CALIBRATING AND COSTS ONE SYSCALL.  It is the size
+# of the PREVIOUS capture -- one stat of one file, never a walk of the
+# directory, because a per-key directory walk is the O(N-per-key)
+# pattern this module already has too much of -- multiplied by a
+# lookahead, plus a fixed floor for the sidecars, the journal and the
+# save the engine rewrites.  Sixty-four keystrokes of headroom is enough
+# to notice and act without being so large that a small disk is refused
+# a session it could have completed.
+#
+# There is no way to switch this off.  PLAYTHROUGH_CAPTURE_RESERVE sets
+# the reserve exactly, for a host whose figures are unusual, and a
+# session on a nearly full disk is a session that should stop.
+CAPTURE_RESERVE_LOOKAHEAD = 64
+CAPTURE_RESERVE_FLOOR = 16777216
+CAPTURE_RESERVE_PER_FRAME_FLOOR = 65536
+ENV_CAPTURE_RESERVE = "PLAYTHROUGH_CAPTURE_RESERVE"
+MIN_CAPTURE_RESERVE = 1
+MAX_CAPTURE_RESERVE = 1099511627776
+
 
 # ---------------------------------------------------------------------
 # The capture delegate.
@@ -1084,6 +1115,18 @@ class CheatGuard(SessionError):
 
     The session refuses to start rather than play on and produce a
     record whose integrity cannot be checked afterwards.
+    """
+
+
+class CapacityError(SessionError):
+    """There is not enough room to record the next frame safely.
+
+    Raised BEFORE the keystroke is sent, which is the whole point: a
+    disk that fills between the key and the capture produces a
+    truncated frame or none at all for a keystroke the game has
+    already acted on, and neither can be undone.  Refusing first
+    leaves the session exactly where it was, so the operator frees
+    space and presses the same key.
     """
 
 
@@ -2430,6 +2473,70 @@ def _timeout(variable: str, fallback: int) -> int:
     return value
 
 
+def _reserve_override() -> Optional[int]:
+    """Return the reserve the environment names, in bytes, or None.
+
+    A value that is SET but unreadable is refused rather than defaulted,
+    for the same reason a timeout is: defaulting it silently would hide
+    an operator's mistake behind a session that then fills the disk.
+    """
+    raw = os.environ.get(ENV_CAPTURE_RESERVE)
+    if raw is None:
+        return None
+    text = raw.strip()
+    if not text.isdigit():
+        raise CapacityError(
+            "$%s is %r, which is not a whole number of bytes from "
+            "%d to %d"
+            % (ENV_CAPTURE_RESERVE, raw, MIN_CAPTURE_RESERVE,
+               MAX_CAPTURE_RESERVE))
+    value = int(text, 10)
+    if value < MIN_CAPTURE_RESERVE or value > MAX_CAPTURE_RESERVE:
+        raise CapacityError(
+            "$%s is %d byte(s), outside %d..%d.  There is deliberately "
+            "no value that switches the reserve off: a session on a "
+            "nearly full disk is one that should stop before the next "
+            "keystroke rather than after it"
+            % (ENV_CAPTURE_RESERVE, value, MIN_CAPTURE_RESERVE,
+               MAX_CAPTURE_RESERVE))
+    return value
+
+
+def free_bytes(path: str) -> int:
+    """Return the bytes available to this user where `path` lives.
+
+    f_bavail rather than f_bfree, which is the difference between what
+    an unprivileged writer may actually use and what exists before the
+    filesystem's own reserved blocks are subtracted.  One syscall.
+    """
+    stats = os.statvfs(path)
+    return int(stats.f_bavail) * int(stats.f_frsize)
+
+
+def capture_reserve(previous_bytes: Optional[int] = None) -> int:
+    """Return the bytes that must be free before the next keystroke.
+
+    The size of the previous capture is the calibration -- the frames of
+    one session are all the same geometry and broadly the same
+    complexity, so the last one is a better predictor than any constant
+    -- multiplied by a lookahead so there is room to notice and act, and
+    floored so an unusually small frame cannot produce a reserve smaller
+    than the sidecars and the save the engine rewrites.
+
+    :param previous_bytes: the size of the last capture, or None when
+        there is not one yet.
+    """
+    override = _reserve_override()
+    if override is not None:
+        return override
+    per_frame = CAPTURE_RESERVE_PER_FRAME_FLOOR
+    measured = (isinstance(previous_bytes, int) and
+                not isinstance(previous_bytes, bool))
+    if measured and previous_bytes > per_frame:
+        per_frame = previous_bytes
+    return per_frame * CAPTURE_RESERVE_LOOKAHEAD + CAPTURE_RESERVE_FLOOR
+
+
 # ---------------------------------------------------------------------
 # The game window.
 #
@@ -2940,9 +3047,33 @@ def send_key(window_id: object, key: str,
     if timeout is None:
         timeout = _timeout(ENV_TOOL_TIMEOUT, DEFAULT_TOOL_TIMEOUT)
     identifier = validate_window_id(window_id)
+    # --clearmodifiers IS LOAD-BEARING, NOT TIDINESS.
+    #
+    # A key like 'Y' is not one X keystroke: xdotool implements it as
+    # shift down, y, shift up.  If that trailing shift-up is lost -- and
+    # it is, through `key --window`, which delivers synthetic events the
+    # server never reconciles against real key state -- the modifier
+    # stays DOWN for the rest of the session, and every plain key after
+    # it arrives as Shift+key.  The game ignores those, xdotool still
+    # exits 0, and this function still reports success.
+    #
+    # Measured: after one 'Y' confirmed a world, every subsequent Up,
+    # Down, Return and Tab was silently discarded.  The engine was alive
+    # and idle the whole time (main thread in hrtimer_nanosleep, 4 open X
+    # connections, focus and active window both correct) and the screen
+    # digest did not move for ninety seconds.  Releasing the stuck
+    # modifiers and re-sending with --clearmodifiers moved it on the
+    # first key.
+    #
+    # This is the worst failure shape this pipeline has: a keystroke
+    # reported as delivered that the game never acted on, and a frame
+    # captured against it.  The row would claim an action that did not
+    # happen.  --clearmodifiers clears whatever is held before sending
+    # and still applies the modifiers the key itself asks for, so
+    # 'shift+Tab' and 'Y' keep working.
     completed = _run(
-        [_verified(XDOTOOL), "key", "--window", str(identifier),
-         validated],
+        [_verified(XDOTOOL), "key", "--clearmodifiers",
+         "--window", str(identifier), validated],
         timeout, "sending one keystroke", env=_child_environment())
     if completed.returncode != 0:
         raise WindowError(
@@ -2980,18 +3111,65 @@ class WorldSave:
     characters: Tuple[str, ...]
     forms: Tuple[str, ...]
     has_world_options: bool
+    #: The frame at which the append-only record shows this world's
+    #: pinned survivor entering the death sequence, or None when the
+    #: record shows no such thing.  Populated by
+    #: :func:`probe_save_resume` from the manifest and lastworld.json,
+    #: never from the save's own contents -- see :attr:`resumable`.
+    death_recorded_at: Optional[int] = None
+    #: Whether the engine's death cleanup left its products behind.
+    #: True only when BOTH the graveyard and the memorial directory
+    #: exist; a signalled process leaves neither.
+    cleanup_complete: bool = False
 
     @property
     def resumable(self) -> bool:
-        """True when this world holds at least one character.
+        """True when this world holds a character who can still be played.
 
         master.gsav proves a WORLD exists, not that anybody lives in
         it: the engine writes the world as soon as it is created, so a
         run interrupted during character creation leaves a world with
         no character at all.  Loading that opens an empty character
         list, which is a dead end, so it is not resumable.
+
+        A CHARACTER SAVE IS NOT ENOUGH, AND SAVE SHAPE CANNOT SETTLE IT.
+        This used to be `bool(self.characters)` alone, and a review found
+        what that admits.  CDDA writes the character file during play and
+        moves it to the graveyard in ``cleanup_at_end()``, which runs
+        AFTER the death screen -- so a process that ends inside the death
+        screen leaves a fully live-shaped save on disk for a survivor the
+        record shows dying.  Measured on this checkout's own tree: the
+        committed save reads as a living character (torso hp_cur 18 of
+        83) because it was written before the killing blow, while the
+        manifest records that survivor beginning their last words and
+        neither graveyard/ nor memorial/ exists.  Nothing in the save
+        distinguishes that from an ordinary mid-session snapshot, so no
+        amount of reading it more carefully could have caught this; the
+        evidence has to come from the append-only record instead.
+
+        Resuming it would load a dead survivor back into play, which is
+        not a continuation of the recorded session but a contradiction of
+        it -- and it would do so silently, since the loaded character
+        looks perfectly ordinary.  So a recorded death disqualifies the
+        world while a live character save is still sitting in it,
+        whichever way cleanup went: if cleanup never ran the save is a
+        pre-death snapshot, and if it ran and a live save is somehow
+        still present the tree is inconsistent.  Both are refusals.
         """
-        return bool(self.characters)
+        return bool(self.characters) and self.death_recorded_at is None
+
+    @property
+    def death_pending(self) -> bool:
+        """True for a recorded death whose cleanup never completed.
+
+        The specific state a signalled process leaves: the record shows
+        the death, the engine's own products do not exist, and the live
+        save was never moved.  Separated from :attr:`resumable` because
+        the two answer different questions -- that one decides whether to
+        load, this one names the fault so the refusal can say what to do.
+        """
+        return (self.death_recorded_at is not None and
+                not self.cleanup_complete)
 
 
 @dataclass(frozen=True)
@@ -3050,6 +3228,13 @@ class SaveProbe:
                     "forms": list(one.forms),
                     "resumable": one.resumable,
                     "worldoptions": one.has_world_options,
+                    # The death evidence travels with the decision it
+                    # changed.  A consumer reading `resumable: false`
+                    # against a world that plainly holds a character save
+                    # would otherwise have no way to see why.
+                    "death_recorded_at": one.death_recorded_at,
+                    "cleanup_complete": one.cleanup_complete,
+                    "death_pending": one.death_pending,
                 }
                 for one in self.worlds
             ],
@@ -3370,12 +3555,118 @@ def _memorial_files(userdir: str, world: str, character: str
     return json_files[0], text_files[0]
 
 
+#: The action-text markers that identify a captured death sequence.
+#: Shared by the raising proof below and the non-raising observation
+#: beside it, so the two cannot come to disagree about what a death
+#: looks like in the record.
+DEATH_LAST_WORDS_MARKER = "last words"
+DEATH_POST_MARKERS = (
+    "post-death",
+    "after death",
+    "deathcam",
+    "scores screen",
+    "follower epilogue",
+)
+
+
+def observed_death_frame(manifest_path: Optional[str] = None,
+                         root: Optional[str] = None) -> Optional[int]:
+    """Return the frame at which the record shows a death beginning.
+
+    A PURE OBSERVATION, and deliberately the opposite shape to
+    :func:`assert_death_cleanup_evidence`.  That function PROVES a
+    vanished save was a legitimate engine death and raises on anything
+    less; this one only reports what the append-only record says, because
+    the resume probe has to ask the question about a tree that may be
+    broken and must not be stopped by an exception in the middle of
+    building its answer.
+
+    An unreadable or absent record answers None -- "the record shows no
+    death" -- which is the safe direction here: it leaves resumability to
+    be decided by the save contents exactly as it was before, rather than
+    refusing a perfectly good tree because a manifest has not been
+    written yet.  A first run has no manifest at all.
+
+    :returns: the frame of the first last-words action, or None.
+    """
+    # THE PATH IS RESOLVED AGAINST `root` BEFORE THE READ, and it has to
+    # be, because neither of the obvious ways works.  manifest.read_rows
+    # handed None defaults to the REAL pipeline's manifest and then
+    # confines it against `root`; session.default_manifest_path does the
+    # same thing one layer up.  So for any root but the live checkout both
+    # of them REFUSE THEIR OWN DEFAULT, and the refusal reads back here as
+    # "no death recorded" -- meaning a probe against any other tree would
+    # always have answered "resumable", the exact wrong direction for a
+    # fail-closed check.  Measured: the first version of this function
+    # passed its own real-tree test and silently did nothing everywhere
+    # else.
+    #
+    # manifest.approved_root is the single implementation of where the
+    # artifact tree is, reused rather than restated so this cannot drift
+    # from the writer's own idea of it.
+    try:
+        if manifest_path is None:
+            manifest_path = os.path.join(
+                manifest.approved_root(root), manifest.MANIFEST_NAME)
+        rows = manifest.read_rows(manifest_path, root)
+    except (OSError, UnicodeError, ValueError,
+            manifest.ManifestError, SessionError):
+        return None
+    for row in rows:
+        frame = row.get("frame")
+        action = str(row.get("action") or "").lower()
+        if DEATH_LAST_WORDS_MARKER in action and isinstance(frame, int):
+            return frame
+    return None
+
+
+def _death_cleanup_present(root: Optional[str] = None) -> bool:
+    """True when both engine death-cleanup directories exist.
+
+    ``cleanup_at_end()`` writes the graveyard generation and the memorial
+    pair; a process signalled inside the death screen writes neither.
+    This is a presence test rather than the full four-artifact proof --
+    that is :func:`assert_death_cleanup_evidence`'s job -- because the
+    probe needs to distinguish "cleanup ran" from "cleanup never ran",
+    not to validate a cleanup that did.
+    """
+    userdir = userdir_path(root)
+    return all(
+        _real_directory(os.path.join(userdir, name))
+        for name in (GRAVEYARD_DIR_NAME, MEMORIAL_DIR_NAME))
+
+
 def _manifest_death_observation(
         manifest_path: Optional[str], root: Optional[str],
         last_words: str) -> int:
-    """Return the first last-words frame in a captured death sequence."""
+    """Return the first last-words frame in a captured death sequence.
+
+    READS THE RESOLVED RECORD, NOT THE RAW ROWS.  The amendment ledger
+    is this pipeline's ONLY sanctioned way to correct a narration that
+    described a capture wrongly, and a row's action is exactly the field
+    these markers are read from.  A proof that consulted the raw rows
+    would therefore reject a record whose death screens had been named
+    correctly through the ledger, while accepting one whose original
+    wording happened to contain a marker -- which is the wrong way
+    round.  manifest.resolve_rows() also FAILS CLOSED on a stale
+    amendment, so routing through it strengthens this proof rather than
+    relaxing it: an amendment whose sha256 no longer matches the line it
+    names raises here instead of being silently ignored.
+    """
+    # The ledger is a SIBLING of the manifest it corrects, so an
+    # explicit manifest path carries its own ledger with it.  Asking for
+    # the default would resolve the pipeline's own playthrough/ directory
+    # and then fail validation against a caller-supplied root -- which is
+    # every caller that works in a scratch tree.
+    amendments_path = None
+    if manifest_path is not None:
+        amendments_path = os.path.join(
+            os.path.dirname(manifest_path), manifest.AMENDMENTS_NAME)
     try:
-        rows = manifest.read_rows(manifest_path, root)
+        rows, _amended = manifest.resolve_rows(
+            manifest.read_rows(manifest_path, root),
+            manifest.read_amendments(amendments_path, root),
+            manifest.row_digests(manifest_path, root))
     except (OSError, UnicodeError, ValueError,
             manifest.ManifestError) as err:
         raise CheatGuard(
@@ -3384,19 +3675,18 @@ def _manifest_death_observation(
     last_words_frame: Optional[int] = None
     post_death_frame: Optional[int] = None
     words_recorded = not last_words
-    post_markers = (
-        "post-death",
-        "after death",
-        "deathcam",
-        "scores screen",
-        "follower epilogue",
-    )
+    # The shared markers, so this proof and observed_death_frame's
+    # observation cannot come to disagree about what a death looks like
+    # in the record -- a divergence there would let one of them see a
+    # death the other did not.
+    post_markers = DEATH_POST_MARKERS
     for row in rows:
         frame = row.get("frame")
         action = str(row.get("action") or "")
         commentary = str(row.get("commentary") or "")
         lowered = action.lower()
-        if last_words_frame is None and "last words" in lowered:
+        if (last_words_frame is None and
+                DEATH_LAST_WORDS_MARKER in lowered):
             if isinstance(frame, int):
                 last_words_frame = frame
         elif (last_words_frame is not None and
@@ -3523,7 +3813,8 @@ def assert_death_cleanup_evidence(
 
 def probe_save_resume(save_dir: Optional[str] = None,
                       requested_world: Optional[str] = None,
-                      root: Optional[str] = None) -> SaveProbe:
+                      root: Optional[str] = None,
+                      refuse_recorded_death: bool = True) -> SaveProbe:
     """Decide whether this session creates a character or resumes one.
 
     Read-only, and it runs BEFORE anything could create a character --
@@ -3545,8 +3836,22 @@ def probe_save_resume(save_dir: Optional[str] = None,
         CALL-SITE argument only -- no environment variable can move it.
     :param requested_world: the world to continue;
         $PLAYTHROUGH_RESUME_WORLD by default.
-    :raises SessionError: on an unreadable tree, or on an ambiguity
-        that must be resolved by a human rather than by this module.
+    :param refuse_recorded_death: whether a live save belonging to a
+        survivor the record shows dying is a refusal.  True for the
+        PRE-FLIGHT, which is the decision this function exists to make.
+        False for the one internal caller that wants the world SCAN and
+        not the decision -- :meth:`Session._save_fingerprint`, which runs
+        on every step of a live session and therefore passes through this
+        exact state legitimately: the last-words keystroke is recorded
+        while the live save is still on disk, because the engine only
+        moves it in ``cleanup_at_end()`` after the death screen.  Raising
+        there would make a death ending impossible to record, which is a
+        permitted ending, so the distinction is a parameter rather than a
+        rule.  It defaults to refusing so that a new caller inherits the
+        strict reading and has to ask for the loose one.
+    :raises SessionError: on an unreadable tree, on an ambiguity that
+        must be resolved by a human rather than by this module, or on a
+        recorded death whose live save is still present.
     """
     if save_dir is None:
         save_dir = save_dir_path(root)
@@ -3556,6 +3861,38 @@ def probe_save_resume(save_dir: Optional[str] = None,
 
     notes: List[str] = []
     worlds: List[WorldSave] = []
+
+    # WHAT THE RECORD SAYS ABOUT A DEATH, read once, before any world is
+    # classified.  Two independent facts, neither of them read out of a
+    # save file: which frame the append-only record shows a survivor
+    # beginning their last words at, and whether the engine's own death
+    # cleanup left its products behind.
+    #
+    # THE ATTRIBUTION comes from lastworld.json, which is the engine's own
+    # statement of which world and survivor were loaded
+    # (src/main_menu.cpp:1080-1083) -- so a recorded death is charged to
+    # that world and to no other.  Without it the death is observed but
+    # unattributable, which is reported as a note rather than used to
+    # disqualify a world that may have nothing to do with it.
+    death_frame = observed_death_frame(root=root)
+    cleanup_done = _death_cleanup_present(root)
+    death_world: Optional[str] = None
+    death_character: Optional[str] = None
+    if death_frame is not None:
+        pinned = read_lastworld(root=root)
+        if pinned is not None:
+            death_world, death_character = pinned
+        else:
+            notes.append(
+                "the append-only record shows a survivor beginning "
+                "their last words at frame %d, but %s does not name "
+                "which world and survivor were loaded, so the death "
+                "cannot be attributed to a world.  Resumability is "
+                "therefore decided on the save files alone for this "
+                "tree -- confirm by hand which survivor died before "
+                "continuing any of them"
+                % (death_frame, LASTWORLD_NAME))
+
     if _real_directory(directory):
         for name in sorted(os.listdir(directory)):
             world_dir = _real_subdirectory(directory, name)
@@ -3577,6 +3914,9 @@ def probe_save_resume(save_dir: Optional[str] = None,
                 has_world_options=_real_regular_file(
                     os.path.join(world_dir, WORLD_OPTIONS_NAME),
                     "the world options"),
+                death_recorded_at=(
+                    death_frame if name == death_world else None),
+                cleanup_complete=cleanup_done,
             ))
     else:
         notes.append(
@@ -3593,6 +3933,68 @@ def probe_save_resume(save_dir: Optional[str] = None,
                 "excluded from the decision"
                 % (world.name, CHARACTER_PREFIX, SAVE_EXTENSION,
                    CHARACTER_PREFIX, COMPRESSED_SAVE_EXTENSION))
+
+    # A RECORDED DEATH IS REFUSED, NEVER SILENTLY TURNED INTO A CREATE.
+    #
+    # This is the second half of the fix beside WorldSave.resumable, and
+    # without it the first half would be worse than the bug.  Making a
+    # dead survivor's world non-resumable removes it from `resumable`, and
+    # the branch below then reports CREATE -- so the probe would answer
+    # "make a new character" on a tree that still holds the dead one's
+    # save, world and config.  A run that acted on it would start a second
+    # survivor beside the first, in the same world directory, and the hard
+    # rule is that an existing save is CONTINUED rather than replaced.
+    #
+    # So the state gets its own refusal, naming the frame, the survivor
+    # and the three ways out.  The operator decides; this module will not
+    # decide for them, because each way out discards or publishes evidence
+    # and that is not a choice an unattended probe should make.
+    dead = [one for one in worlds if one.death_recorded_at is not None]
+    if dead:
+        blocked = [one for one in dead if one.characters]
+        if blocked and refuse_recorded_death:
+            world = blocked[0]
+            raise SessionError(
+                "save/%s holds a live character save (%s) for '%s', but "
+                "the append-only record shows that survivor beginning "
+                "their last words at frame %d, and the engine's death "
+                "cleanup %s.  This tree is NOT resumable: CDDA writes "
+                "the character file during play and only moves it to the "
+                "graveyard in cleanup_at_end(), which runs after the "
+                "death screen -- so a session that ended inside that "
+                "screen leaves a fully live-shaped save for a survivor "
+                "who is dead in the record.  Loading it would put a dead "
+                "survivor back into play, and nothing in the save itself "
+                "would show that.  Three ways forward, and this refuses "
+                "rather than choosing between them because each one "
+                "either discards or publishes evidence: (1) if the "
+                "recorded session is being superseded, retire this "
+                "userdir together with its frames and manifest so "
+                "exactly one session remains in the record, then run a "
+                "fresh session; (2) if the death is to stand as the "
+                "ending, complete the engine's own cleanup by replaying "
+                "the death screen to the end so the graveyard and "
+                "memorial are written, and let the save be moved rather "
+                "than deleting it by hand; (3) if this world genuinely "
+                "holds a DIFFERENT, living survivor, set $%s to that "
+                "world -- the death is attributed from %s, which names "
+                "'%s'"
+                % (world.name,
+                   ", ".join(world.characters),
+                   death_character or "an unnamed survivor",
+                   world.death_recorded_at,
+                   ("left no graveyard or memorial behind, so it never "
+                    "ran" if world.death_pending
+                    else "did run, which makes a surviving live save "
+                         "inconsistent with it"),
+                   ENV_RESUME_WORLD, LASTWORLD_NAME,
+                   death_world or "no world"))
+        for one in dead:
+            notes.append(
+                "save/%s recorded a death at frame %d and holds no live "
+                "character save, so the engine's cleanup moved it as it "
+                "should; the world is not resumable and is excluded from "
+                "the decision" % (one.name, one.death_recorded_at))
 
     resumable = [one.name for one in worlds if one.resumable]
     if not resumable:
@@ -5781,7 +6183,8 @@ class Session:
                 "the fact that an ambiguous record meant 'delivered' is "
                 "how a keystroke that never happened acquires a frame "
                 "and a sentence.  Establish from the game what happened "
-                "and run `session.py reconcile`"
+                "and run `\"$PLAYTHROUGH_PYTHON\" -B "
+                "playthrough/tooling/session.py reconcile`"
                 % (self._journal, version, JOURNAL_VERSION))
         phase = record.get("phase")
         if phase not in JOURNAL_PHASES:
@@ -5951,8 +6354,16 @@ class Session:
                 "  Look at the game and establish which it was (the "
                 "screen itself, and %s, which holds every frame up to "
                 "%d), then say so:\n"
-                "    session.py reconcile --outcome %s   # it DID land\n"
-                "    session.py reconcile --outcome %s   # it did NOT\n"
+                "  (source playthrough/tooling/env.sh first; this file "
+                "is mode 644 and not on PATH, so it is always run "
+                "through the pinned interpreter)\n"
+                "    SS='playthrough/tooling/session.py'\n"
+                "    # it DID land\n"
+                "    \"$PLAYTHROUGH_PYTHON\" -B \"$SS\" reconcile "
+                "--outcome %s\n"
+                "    # it did NOT\n"
+                "    \"$PLAYTHROUGH_PYTHON\" -B \"$SS\" reconcile "
+                "--outcome %s\n"
                 "Nothing else in this session runs until then."
                 % (self._journal, validated_key, frame,
                    manifest.relative_to_repo(self._frames), last,
@@ -6780,8 +7191,30 @@ class Session:
         declared 'create' -- and refusing it would stop a correct run at
         its own halfway point.  An empty record makes it a refusal
         again, because then the save was somebody else's.
+
+        THE RECORDED-DEATH REFUSAL IS SCOPED THE SAME WAY, and for the
+        same reason.  :func:`probe_save_resume` refuses a live save
+        belonging to a survivor the record shows dying, because loading
+        such a tree would put a dead survivor back into play.  That is
+        the right answer for a tree being LOADED and the wrong one for
+        the run that is recording the death itself: the last-words
+        keystrokes are captured while the live save is still on disk,
+        since the engine only moves it in ``cleanup_at_end()`` after the
+        death screen finishes.  A driver that invokes this module once
+        per keystroke re-runs this pre-flight on every one of them, so
+        the strict reading would refuse every frame after the first
+        last-words keystroke and make a death ending -- a PERMITTED
+        ending -- impossible to finish recording.  So the refusal is
+        asked for only when the record is EMPTY, which is the case it
+        exists for: a fresh run pointed at somebody else's dead tree.
+        Once this record holds rows the death in it is this session's
+        own, the save pin below still holds the world and survivor
+        steady, and `session.py probe` keeps the strict reading for the
+        operator-facing "should this tree be loaded" decision.
         """
-        probe = probe_save_resume(None, requested_world, self._root)
+        probe = probe_save_resume(
+            None, requested_world, self._root,
+            refuse_recorded_death=self._frame == 0)
         declared = os.environ.get(ENV_SESSION_MODE, "").strip()
         if declared and declared != probe.mode:
             continuing = bool(
@@ -6896,9 +7329,23 @@ class Session:
         return declared
 
     def _save_fingerprint(self) -> Dict[str, Tuple[str, ...]]:
-        """Return each world's character set.  The pin's comparand."""
+        """Return each world's character set.  The pin's comparand.
+
+        THE WORLD SCAN, NOT THE CREATE-VERSUS-RESUME DECISION, which is
+        why the death refusal is switched off for this one call.  This
+        runs on every step, and a session recording a legitimate death
+        passes through precisely the state that refusal describes: the
+        last-words keystroke is captured while the live save is still on
+        disk, because the engine only moves it in ``cleanup_at_end()``
+        after the death screen finishes.  Refusing here would make death
+        -- a permitted ending -- impossible to record, and it would do so
+        several hundred keystrokes into a session.  The pre-flight keeps
+        the strict reading, which is where it belongs: it decides whether
+        to LOAD such a tree, and this only counts what is in it.
+        """
         probe = probe_save_resume(
-            self._pin.save_dir, self._pin.world, self._root)
+            self._pin.save_dir, self._pin.world, self._root,
+            refuse_recorded_death=False)
         return {world.name: world.characters for world in probe.worlds}
 
     # -- the resume lifecycle ---------------------------------------
@@ -7546,6 +7993,78 @@ class Session:
                 "'%s' was NOT sent: %s"
                 % (index, key, err)) from err
 
+    def _previous_capture_bytes(self, index: int) -> Optional[int]:
+        """Return the size of the capture before this one, or None.
+
+        ONE stat OF ONE FILE.  The directory is never listed: a listing
+        here would be O(captures) on every keystroke, which is the shape
+        of per-key cost this module already carries too much of, and the
+        only frame this needs is the one whose name it can derive.
+        """
+        if index <= 1:
+            return None
+        path = os.path.join(self._frames, manifest.frame_file(index - 1))
+        try:
+            return int(os.stat(path).st_size)
+        except OSError:
+            return None
+
+    def _assert_capture_room(self, index: int) -> None:
+        """Refuse the step when there is not room to record it.
+
+        BEFORE THE KEY IS SENT, and on EVERY key rather than
+        periodically, because the whole check is two syscalls: one stat
+        of the previous capture and one statvfs of the filesystem it
+        lives on.  There is nothing here proportional to the length of
+        the session.
+
+        A disk that fills between the keystroke and the capture is the
+        one failure mode that cannot be repaired afterwards -- the key
+        has been acted on, the frame is truncated or absent, and a
+        keystroke without its frame breaks the identity the record rests
+        on.  So this is a refusal that leaves the session exactly where
+        it was: free space and press the same key again.
+
+        A measurement that cannot be TAKEN is reported once and the step
+        proceeds.  An unreadable statvfs is a fact about the host, not
+        evidence that the disk is full, and the capturer refuses a
+        truncated frame on its own account.
+        """
+        where = manifest.relative_to_repo(self._frames)
+        previous = self._previous_capture_bytes(index)
+        reserve = capture_reserve(previous)
+        try:
+            available = free_bytes(self._frames)
+        except OSError as err:
+            _warn_once(
+                "capture-room",
+                "the free space where %s lives could not be read (%s), "
+                "so this session cannot tell in advance whether there "
+                "is room for the next frame.  It continues: the "
+                "capturer refuses a frame it could not write"
+                % (where, err))
+            return
+        if available >= reserve:
+            return
+        raise CapacityError(
+            "there is not room to record frame %d: %d byte(s) free "
+            "where %s lives, against a reserve of %d and therefore "
+            "%d byte(s) short.  The reserve is %d keystroke(s) of "
+            "headroom over %s, plus %d for the sidecars, the journal "
+            "and the save the engine rewrites.  THE KEY HAS NOT BEEN "
+            "SENT, so nothing is lost: free space and press it again.  "
+            "Refusing here is deliberate -- a disk that fills between "
+            "the keystroke and the photograph leaves a delivered key "
+            "with no frame, and no later stage can repair that.  Set "
+            "$%s to name a different reserve if this host's figures "
+            "are unusual; there is no value that switches the check off"
+            % (index, available, where, reserve, reserve - available,
+               CAPTURE_RESERVE_LOOKAHEAD,
+               ("the previous capture's %d byte(s)" % previous
+                if isinstance(previous, int)
+                else "a %d-byte floor" % CAPTURE_RESERVE_PER_FRAME_FLOOR),
+               CAPTURE_RESERVE_FLOOR, ENV_CAPTURE_RESERVE))
+
     def _capture_frame(self, index: int) -> Dict[str, str]:
         """Run the capturer for exactly one index and parse its report.
 
@@ -7877,8 +8396,9 @@ class Session:
              the engine outside the game's own Save & Quit;
           2. derive this row's `action` from that validated key, so the
              record cannot name a key other than the one sent;
-          3. prove no debug action is bound, and that the save tree
-             still matches the pinned create-versus-resume decision;
+          3. prove no debug action is bound, that the save tree still
+             matches the pinned create-versus-resume decision, and that
+             there is room on the disk to record this frame;
           4. authenticate the game window against the process behind it;
           5. write the pre-send journal and force it to the device;
           6. send EXACTLY ONE keystroke;
@@ -7923,6 +8443,9 @@ class Session:
             one this module refuses to send.
         :raises CheatGuard: when a debug action is bound or the save
             tree moved.
+        :raises CapacityError: when there is not room to record this
+            frame.  Nothing was sent, so the step is retried once space
+            has been freed.
         :raises WindowError: when the window could not be resolved,
             authenticated or focused.  Nothing was sent and nothing was
             journalled.
@@ -7974,6 +8497,14 @@ class Session:
         index = validated_frame(self._frame + 1)
         attempts = 1
 
+        # THE ROOM TO RECORD THIS STEP, still before anything is sent: a
+        # disk that fills between the keystroke and the photograph
+        # leaves a delivered key with no frame, which is the one failure
+        # nothing downstream can repair.  Two syscalls, so it is taken
+        # on every key rather than occasionally, and it takes the index
+        # this step already owns rather than deriving it again.
+        self._assert_capture_room(index)
+
         # THE MODE-AWARE REFUSAL, before the window is even prepared: a
         # resumed session may not press a key that opens the character
         # creator while the engine is still on a menu -- neither one of
@@ -8022,7 +8553,8 @@ class Session:
                 "failing says nothing about whether the X server acted "
                 "-- so the journal at %s is left ambiguous and the next "
                 "session will halt on it.  Establish what happened from "
-                "the game and run `session.py reconcile`"
+                "the game and run `\"$PLAYTHROUGH_PYTHON\" -B "
+                "playthrough/tooling/session.py reconcile`"
                 % (validated, index, err, self._journal))
             raise
 
@@ -8368,6 +8900,11 @@ EXIT_RECORD = 2
 EXIT_CAPTURE = 3
 EXIT_WINDOW = 4
 EXIT_CHEAT = 5
+# A status of its own, because "there is no room" is answered by freeing
+# space and pressing the same key again, which is a different action
+# from anything the five above ask for -- and because a driver looping
+# over keystrokes needs to tell it apart from a failed capture.
+EXIT_CAPACITY = 6
 
 _EPILOG = """\
 the permitted door, and the four that are shut
@@ -8420,9 +8957,13 @@ an interrupted send
   `step` journals `sending` before the key leaves and `delivered` once
   xdotool returns 0.  A run that dies in between leaves the delivery
   UNKNOWN, and the next session halts rather than guessing.  Establish
-  from the game which way it went and then:
-    session.py reconcile --outcome delivered      # capture that index
-    session.py reconcile --outcome not-delivered  # record nothing
+  from the game which way it went and then, having sourced
+  playthrough/tooling/env.sh for PLAYTHROUGH_PYTHON:
+    SS='playthrough/tooling/session.py'
+    # it DID land -- capture that index
+    "$PLAYTHROUGH_PYTHON" -B "$SS" reconcile --outcome delivered
+    # it did NOT -- record nothing
+    "$PLAYTHROUGH_PYTHON" -B "$SS" reconcile --outcome not-delivered
 
 how the session ends
   Only by realistic sleep or by death, with no in-game time cap, and
@@ -8785,6 +9326,7 @@ _COMMANDS = {
 
 _EXIT_FOR = (
     (CheatGuard, EXIT_CHEAT),
+    (CapacityError, EXIT_CAPACITY),
     (KeyRejected, EXIT_USAGE),
     (WindowError, EXIT_WINDOW),
     (CaptureError, EXIT_CAPTURE),
@@ -8806,9 +9348,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     Every failure is reported on stderr with the cause named, and the
     status distinguishes a refused keystroke from a lost window, a
-    failed capture, an unbelievable record and a cheat guard tripping,
-    so a driver can tell "you asked for the wrong thing" apart from
-    "the session is over".
+    failed capture, an unbelievable record, a cheat guard tripping and a
+    disk with no room left for the next frame, so a driver can tell "you
+    asked for the wrong thing" apart from "free some space and press it
+    again" apart from "the session is over".
     """
     parser = build_parser()
     args = parser.parse_args(argv)

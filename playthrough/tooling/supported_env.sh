@@ -193,6 +193,26 @@ do_inventory() {
 # is the same file on both sides of this boundary and the commit carries
 # the same author either way.  Nothing needs forwarding, and adding a
 # --env for it here would reintroduce the variability the absence prevents.
+# THE ONE CONTRACT every way into the image uses.  `run`, `shell`,
+# `preflight` and a hosted session all take these arguments from here, so
+# none of them can quietly differ from the environment the others proved.
+# BUILT ON DEMAND, never at file scope.  `id` is a command, and running
+# it while this file is merely being sourced -- for `help`, for a usage
+# error, for a test that only reads the text -- makes those paths depend
+# on a PATH they have no business needing.  Measured: declaring this as a
+# top-level array broke two tests whose sandbox PATH carries no `id`.
+CONTRACT_ARGS=()
+contract_args() {
+    CONTRACT_ARGS=(
+        --volume "${REPO_ROOT}:${REPO_ROOT}"
+        --workdir "${REPO_ROOT}"
+        --shm-size=1g
+        --user "$(id -u):$(id -g)"
+        --env "HOME=/tmp/playthrough-home"
+        --env "TMPDIR=/tmp"
+    )
+}
+
 docker_run() {
     local -a extra=()
     while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do
@@ -207,17 +227,158 @@ docker_run() {
     for name in ${TRUST_BYPASS_VARS}; do
         cleared+=(--env "${name}=")
     done
+    contract_args
     docker run --rm \
-        --volume "${REPO_ROOT}:${REPO_ROOT}" \
-        --workdir "${REPO_ROOT}" \
-        --shm-size=1g \
-        --user "$(id -u):$(id -g)" \
-        --env "HOME=/tmp/playthrough-home" \
-        --env "TMPDIR=/tmp" \
+        "${CONTRACT_ARGS[@]}" \
         "${cleared[@]}" \
         "${extra[@]}" \
         "${IMAGE_TAG}" \
         "$@"
+}
+
+# ---------------------------------------------------------------------
+# A HOSTED SESSION
+#
+# WHY THIS EXISTS.  The X server inside the container lives exactly as
+# long as the process tree that started it, so a `run` per keystroke
+# would photograph a different display each time.  A single `run` for the
+# whole session is not the answer either: the pipeline's invariant is ONE
+# KEYSTROKE PER session.py INVOCATION, and the loop between invocations
+# is observe the frame, decide in character, act -- a pre-scripted run
+# would be the blind key-spamming the record is required not to be.
+#
+# So a session gets a container that OUTLIVES the individual command.
+# PID 1 is a sleep, the display is started once and reparented to it, and
+# every keystroke is an `exec` onto that same live display.  Proven: the
+# X server and the window manager are still serving :99 in an exec issued
+# after the one that started them.
+#
+# IT IS NOT A SECOND CONTRACT.  The mounts, workdir, user, shm size, HOME,
+# TMPDIR and cleared trust bypasses are the ones docker_run already uses,
+# taken from one array -- a session hosted under a weaker contract than
+# `preflight` proved would mean the path was proved on one environment
+# and the record taken on another.
+#
+# THE NAME IS PER CHECKOUT, so parallel clones cannot adopt each other's
+# session: it carries CLONE_INDEX when the environment sets one and a
+# digest of the checkout path otherwise.
+# ---------------------------------------------------------------------
+session_name() {
+    local suffix="${CLONE_INDEX:-}"
+    if [ -z "${suffix}" ]; then
+        suffix="$(printf '%s' "${REPO_ROOT}" | cksum | cut -d" " -f1)"
+    fi
+    printf 'playthrough-session-%s\n' "${suffix}"
+}
+
+session_id() {
+    docker ps --quiet --filter "name=^$(session_name)$" 2>/dev/null |
+        head -n 1
+}
+
+do_up() {
+    require_docker
+    require_image
+    local existing
+    existing="$(session_id)"
+    if [ -n "${existing}" ]; then
+        log "the session container $(session_name) is" \
+            "already up (${existing}); leaving it exactly as found"
+        printf 'SESSION_CONTAINER=%s\n' "${existing}"
+        printf 'SESSION_NAME=%s\n' "$(session_name)"
+        return 0
+    fi
+    local -a cleared=()
+    local name
+    for name in ${TRUST_BYPASS_VARS}; do
+        cleared+=(--env "${name}=")
+    done
+    local id
+    contract_args
+    # `sleep infinity` is PID 1 so the container outlives every exec; the
+    # display started inside it reparents to this process.
+    if ! id="$(docker run --detach --rm \
+            --name "$(session_name)" \
+            "${CONTRACT_ARGS[@]}" \
+            "${cleared[@]}" \
+            "${IMAGE_TAG}" \
+            sleep infinity)"; then
+        die "${EX_MISSING}" "the session container could not be" \
+            "started; docker's own diagnosis is above."
+    fi
+    log "session container $(session_name) is up" \
+        "(${id:0:12}); bring the display up with" \
+        "'supported_env.sh exec', and take it down with" \
+        "'supported_env.sh down' when the session is closed"
+    printf 'SESSION_CONTAINER=%s\n' "${id}"
+    printf 'SESSION_NAME=%s\n' "$(session_name)"
+    return 0
+}
+
+do_exec() {
+    require_docker
+    [ "$#" -gt 0 ] ||
+        die "${EX_USAGE}" "exec needs a command to run in the session"
+    local id
+    id="$(session_id)"
+    [ -n "${id}" ] ||
+        die "${EX_MISSING}" "no session container is up for this" \
+            "checkout; start one with 'supported_env.sh up'.  It is" \
+            "not started implicitly: a session that came up in the" \
+            "middle of a keystroke would be a different display from" \
+            "the one the frames before it were photographed on."
+    local -a cleared=()
+    local name
+    for name in ${TRUST_BYPASS_VARS}; do
+        cleared+=(--env "${name}=")
+    done
+    docker exec \
+        --workdir "${REPO_ROOT}" \
+        --env "HOME=/tmp/playthrough-home" \
+        --env "TMPDIR=/tmp" \
+        "${cleared[@]}" \
+        "${id}" \
+        "$@"
+}
+
+do_down() {
+    require_docker
+    local id
+    id="$(session_id)"
+    if [ -z "${id}" ]; then
+        log "no session container is up for this checkout," \
+            "so there is nothing to take down"
+        return 0
+    fi
+    # The container is --rm, so stopping it removes it.  The engine inside
+    # it is NOT killed by this on purpose being harmless: a session is
+    # closed through the game's own Save & Quit before this is called, and
+    # calling it earlier is how a recorded session would end outside that
+    # path.
+    log "WARNING: taking the session container down; do this only" \
+        "AFTER the survivor has left through the game's own Save &" \
+        "Quit, because everything inside it goes with it"
+    docker stop --time 10 "${id}" >/dev/null 2>&1 || true
+    log "session container removed"
+    return 0
+}
+
+do_session_status() {
+    require_docker
+    local id
+    id="$(session_id)"
+    printf 'SESSION_NAME=%s\n' "$(session_name)"
+    printf 'SESSION_CONTAINER=%s\n' "${id}"
+    if [ -z "${id}" ]; then
+        printf 'SESSION_UP=no\n'
+        return 0
+    fi
+    printf 'SESSION_UP=yes\n'
+    printf 'SESSION_DISPLAY=%s\n' \
+        "$(docker exec "${id}" bash -c \
+            'pgrep -a Xvfb >/dev/null 2>&1 && echo serving || echo down' \
+            2>/dev/null)"
+    return 0
 }
 
 do_run() {
@@ -300,7 +461,11 @@ usage() {
             "inventory" "print what the built image contains" \
             "run CMD [ARG…]" "run CMD inside it, this checkout mounted" \
             "shell" "an interactive shell inside it" \
-            "preflight" "prove the production path inside it"
+            "preflight" "prove the production path inside it" \
+            "up" "start a session container that outlives a command" \
+            "exec CMD [ARG…]" "run CMD in the session container" \
+            "down" "stop and remove the session container" \
+            "session" "report whether a session container is up"
         printf '\n'
         printf '%s\n' "The environment is declared in \
 playthrough/tooling/environment/Dockerfile."
@@ -323,6 +488,10 @@ main() {
         run) do_run "$@" ;;
         shell) do_shell ;;
         preflight) do_preflight ;;
+        up) do_up ;;
+        exec) do_exec "$@" ;;
+        down) do_down ;;
+        session) do_session_status ;;
         help|--help|-h) usage 1 ;;
         "")
             usage 2

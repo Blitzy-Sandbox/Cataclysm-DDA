@@ -1,20 +1,20 @@
 {
   "outputs": [
     {
-      "bytes": 29078,
+      "bytes": 19462,
       "path": "playthrough/transcript.srt",
-      "sha256": "4cdec24bf43d7413329d853ab43fb1067e04e225d0ae434e6b8e734d7e0225f0"
+      "sha256": "7dd7ec12a9f7deda8ee05ccadd1ffbffd7c5290f17760116257379aa6aa68bc1"
     },
     {
-      "bytes": 23727,
+      "bytes": 14465,
       "path": "playthrough/transcript.md",
-      "sha256": "2ec57c3d13df32088754bd60b285ac1b810453f168bcfac03963652939f65469"
+      "sha256": "374f6f0b97b202d455eff7f83875a39b94e7491f11bc70c0e50562e7ea36e720"
     }
   ],
   "stage": "transcripts",
   "timeline": {
     "path": "playthrough/timeline.json",
-    "sha256": "d04c2d72849d69ceef392500211e1ee67f96489b8696de1be965ca2353e48747"
+    "sha256": "3c4339c0412f684cb19926afea1ed0f60ca5dc09ef68e570803a2fe1ccced005"
   },
   "version": 1
 }

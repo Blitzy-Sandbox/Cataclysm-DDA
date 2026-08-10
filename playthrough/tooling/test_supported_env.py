@@ -54,6 +54,7 @@ Standard library only.  Nothing outside the temporary directory is
 written, and no container is ever started.
 """
 
+import io
 import os
 import shutil
 import stat
@@ -474,7 +475,8 @@ class TestTheCommandLineItself(SupportedEnvFixture):
         result = self.run_script("help")
         self.assertEqual(result.returncode, 0)
         text = result.stdout.decode("utf-8", "replace")
-        for name in ("build", "inventory", "run", "shell", "preflight"):
+        for name in ("build", "inventory", "run", "shell", "preflight",
+                     "up", "exec", "down", "session"):
             with self.subTest(subcommand=name):
                 self.assertIn(name, text)
 
@@ -482,6 +484,101 @@ class TestTheCommandLineItself(SupportedEnvFixture):
         result = self.run_script("help")
         self.assertIn("trusted",
                       result.stdout.decode("utf-8", "replace"))
+
+
+class TestTheHostedSession(SupportedEnvFixture):
+    """A container that outlives the individual command.
+
+    WHY IT EXISTS.  The X server inside the container lives as long as
+    the process tree that started it, so a `run` per keystroke would
+    photograph a different display each time -- and one `run` for the
+    whole session would have to be pre-scripted, which is the blind
+    key-spamming the record is required not to be.  The invariant is one
+    keystroke per session.py invocation with observation in between, so
+    the container has to persist and each keystroke is an `exec` onto the
+    same live display.
+    """
+
+    def test_up_starts_a_detached_container_that_persists(self):
+        result = self.run_script("up")
+        self.assertEqual(result.returncode, 0)
+        argv = [call for call in self.invocations()
+                if call and call[0] == "run"]
+        self.assertEqual(len(argv), 1, msg=self.invocations())
+        self.assertIn("--detach", argv[0])
+        # PID 1 has to outlive every exec, which is the whole point.
+        self.assertIn("sleep", argv[0])
+        self.assertIn("infinity", argv[0])
+
+    def test_up_clears_every_registered_trust_bypass(self):
+        """A session may not be hosted under a relaxed check."""
+        self.run_script("up")
+        argv = [call for call in self.invocations()
+                if call and call[0] == "run"][0]
+        joined = " ".join(argv)
+        for name in ("PLAYTHROUGH_ALLOW_EOL_PLATFORM",):
+            with self.subTest(variable=name):
+                self.assertIn("%s=" % name, joined)
+
+    def test_a_session_uses_THE_SAME_contract_as_run(self):
+        """One contract, or the path is proved on another environment.
+
+        `preflight` proves the production path under a particular set of
+        mounts, workdir, user and shm size.  A session hosted under any
+        other set would mean the proof and the record were taken on
+        different environments, so both take these arguments from one
+        array and this compares them.
+        """
+        # BOTH IN ONE SANDBOX.  Re-running setUp between them would
+        # build a second checkout under a different temporary path, and
+        # the mounts would then differ for a reason that has nothing to
+        # do with the contract.
+        self.run_script("up")
+        self.run_script("run", "true")
+        runs = [call for call in self.invocations()
+                if call and call[0] == "run"]
+        self.assertEqual(len(runs), 2, msg=self.invocations())
+        hosted = next(call for call in runs if "--detach" in call)
+        plain = next(call for call in runs if "--detach" not in call)
+        for flag in ("--volume", "--workdir", "--shm-size=1g",
+                     "--user"):
+            with self.subTest(flag=flag):
+                self.assertIn(flag, hosted)
+                self.assertIn(flag, plain)
+        self.assertEqual(
+            hosted[hosted.index("--volume") + 1],
+            plain[plain.index("--volume") + 1],
+            msg="the session must mount exactly what run mounts")
+
+    def test_exec_without_a_command_is_a_usage_error(self):
+        result = self.run_script("exec")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(b"needs a command", result.stderr)
+
+    def test_exec_without_a_session_refuses_rather_than_starting_one(self):
+        """Implicit start would change the display mid-session."""
+        result = self.run_script("exec", "true")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn(b"no session container is up", result.stderr)
+        self.assertIn(b"not started implicitly", result.stderr)
+
+    def test_session_reports_no_when_nothing_is_up(self):
+        result = self.run_script("session")
+        self.assertEqual(result.returncode, 0)
+        text = result.stdout.decode("utf-8", "replace")
+        self.assertIn("SESSION_UP=no", text)
+        self.assertIn("SESSION_NAME=playthrough-session-", text)
+
+    def test_down_with_nothing_up_is_not_an_error(self):
+        result = self.run_script("down")
+        self.assertEqual(result.returncode, 0)
+        self.assertIn(b"nothing to take down", result.stderr)
+
+    def test_down_warns_that_it_takes_the_engine_with_it(self):
+        """A session is closed through Save & Quit, not through this."""
+        text = io.open(self.script, encoding="utf-8").read()
+        self.assertIn("Save &", text)
+        self.assertIn("everything inside it goes with it", text)
 
 
 class TestTheScriptItself(unittest.TestCase):

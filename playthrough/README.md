@@ -9,16 +9,32 @@ produced it. Nothing here changes the game. **The Cataclysm-DDA engine is the
 *host* of this feature, not its subject:** the shipped binary is invoked, the
 sidebar clock is read, and the rendered pixels are photographed, all through
 interfaces the engine already had. No game behaviour, balance, content or
-presentation is altered, and no file under `src/`, `tests/`, `data/` or `gfx/`
-is touched by any of it.
+presentation is altered, and **no tracked file** under `src/`, `tests/`,
+`data/` or `gfx/` is modified by any of it. One untracked thing outside this
+directory does get written, and it is named rather than glossed: the required
+tileset is *installed* into `gfx/MShockXotto+`, which `.gitignore:52` excludes,
+so it is artwork on the host rather than source in the repository (section 3).
 
-## The three documents, and which one to read
+`gfx/` is the one exception and it is stated rather than glossed: the required
+MSXotto+ artwork is **installed into `gfx/`** by `launch_game.sh`, which
+hydrates it from a pre-placed pack whose provenance is verified against the
+tracked anchor before it is used. That directory is git-ignored
+(`.gitignore:52`, with four negations), so the installation produces **no
+tracked change** — which is why it is invisible in a diff and why saying "no
+`gfx/` path is touched" was wrong in a way nothing would have caught. Nothing
+under `gfx/` is *authored* here; a pack is installed there, and the artwork
+every frame is rendered in is therefore the one substantive input git does not
+carry, which is exactly why the anchor exists.
+
+## The four documents, and which one to read
 
 | Page | Audience | Holds |
 | --- | --- | --- |
+| `REPORT.md` | anyone arriving for the first time | the deliverable account, in the three mandated sections: the recording and animation, the character creation, and the session itself |
 | `README.md` (this page) | operator | the artifact inventory, the prerequisites, how to re-run each stage, the environment contract, the commit lifecycle, the contracts the gates check |
 | `TECHNICAL_NOTES.md` | engineer | the measurements, the pitfalls, the divergences, and the chronological log of how the record was produced and reviewed |
 | `dossier.md`, `transcript.md` | reader | the survivor's own voice, and nothing about machinery |
+| `REPORT.md` | reviewer | the mandated three-section account of the recording, the character and the session — every figure measured, and every requirement that is not fully met named in the section it belongs to |
 
 This page is a reference; `TECHNICAL_NOTES.md` is a log. Where a fact here has
 an evidence trail longer than a sentence, this page states the fact and names
@@ -26,12 +42,20 @@ the section of that page which measured it, rather than reproducing the
 working. There is no in-character voice anywhere on this page, and no
 engineering narrative either — both live elsewhere on purpose.
 
-**Provenance convention, applied without exception below.** A figure stated
-plainly was measured in this checkout with the command shown. A figure marked
-**(plan)** comes from the Agent Action Plan and was *not* reproduced here.
-Where a plan figure and a measurement disagree, both appear and the
-disagreement is named. This is the same convention `TECHNICAL_NOTES.md` uses,
-so the two pages cannot quietly diverge about where a number came from.
+**Provenance convention.** A figure stated plainly was measured in this
+checkout with the command shown. A figure marked **(plan)** comes from the
+Agent Action Plan and was *not* reproduced here. Where a plan figure and a
+measurement disagree, both appear and the disagreement is named.
+`TECHNICAL_NOTES.md` uses the same convention.
+
+It is a discipline, not a guarantee, and it is written that way deliberately:
+a measurement is only true of the tree it was taken in, and this page has been
+found publishing stale ones — a commit count, a test count and an acceptance
+result that had all moved on. So counts here name the commit or the date they
+were taken at, a reader is entitled to re-run the command beside them, and
+where this page and `TECHNICAL_NOTES.md` disagree about a number the later
+measurement date wins. Unless a figure says otherwise, the measurements below
+were taken at **`5f902536e8`** on **2026-08-10**.
 
 ---
 
@@ -49,12 +73,22 @@ f38c2fbae3 Merge branch 'CleverRaven:master' into master
 $ git merge-base --is-ancestor f38c2fbae3 HEAD && echo "branch base"
 branch base
 $ git rev-list --count f38c2fbae3..HEAD
-30
+33
 ```
+
+(That count moves with every commit this feature adds; 32 is what it read at
+`5f902536e8`. The number that matters is not its value but that every one of
+them is under `playthrough/` or one of the two ignore files — section 8
+measures that.)
 
 `f38c2fbae3` is the branch base — the last upstream commit before any of this
 work — and the acceptance gate names it as the point the change surface is
-measured from. The root `README.md` is therefore an **upstream-synced** file:
+measured from. That last count is whatever it was **when this line was
+written**: every later commit on this branch moves it, so a reader running the
+command today should expect a larger number. The two commands above it are
+stable, and those two are the ones `test_readme.py` asserts — a figure that
+drifts by design is quoted here and deliberately left unasserted, rather than
+asserted and left to rot. The root `README.md` is therefore an **upstream-synced** file:
 editing it would create a permanent merge-conflict surface on every subsequent
 sync, for a document whose audience is players of the game rather than
 operators of this pipeline. Putting the feature's documentation here achieves
@@ -79,9 +113,10 @@ floor and the ceiling in section 6, and the only imagery in the film that was
 not photographed off the screen is the one-second transition unit the ceiling
 inserts.
 
-The shipped session: **326 captures**, **219.500 s** of film, **one**
-transition. Read `transcript.md` for the account of it and
-`TECHNICAL_NOTES.md` for how it was produced and reviewed.
+The shipped session: **305 captures**, **222.750 s** of film, **three**
+transitions. Read `REPORT.md` for the deliverable account, `transcript.md` for
+the survivor's own, and `TECHNICAL_NOTES.md` for how it was produced and
+reviewed.
 
 ---
 
@@ -89,19 +124,21 @@ transition. Read `transcript.md` for the account of it and
 
 | Path | What it is | Written by |
 | --- | --- | --- |
-| `tooling/` | the authored pipeline — 9 shell entry points, 10 Python modules, 20 `test_*.py` suites, `requirements.txt`, `requirements.lock`, `tileset_provenance.json`, `environment/Dockerfile`. Kept out of the game's source tree on purpose | authored |
-| `frames/frame_NNNNN.png` | exactly one 1920×1080 capture per keystroke — 326 of them, contiguous from `frame_00001`, none decimated, sampled or deduplicated | `capture.sh` |
+| `tooling/` | the authored pipeline — 9 shell entry points, 10 Python modules, 21 `test_*.py` suites, `requirements.txt`, `requirements.lock`, `tileset_provenance.json`, `environment/Dockerfile`. Kept out of the game's source tree on purpose | authored |
+| `frames/frame_NNNNN.png` | exactly one 1920×1080 capture per keystroke — 305 of them, contiguous from `frame_00001`, none decimated, sampled or deduplicated | `capture.sh` |
 | `manifest.jsonl` | one row per capture, six fields: `frame`, `file`, `real_ts`, `ingame_clock`, `action`, `commentary` | `session.py` |
 | `amendments.jsonl` | corrections to the record, **appended** rather than applied in place, so the original reading survives beside the correction | operator, via `session.py annotate --amend` and review |
 | `timeline.json` | the computed durations and transition flags — **the single source of truth** for both the film and the captions | `timeline.py` |
 | `build/` | intermediates and telemetry: `concat.txt`, `transitions/`, `observations.jsonl`, `frame_dates.jsonl`, `frame_digests.jsonl`, `transitions.json`, `movie.json`, `transcript.json` | the stage that owns each |
 | `cata-play.mp4` | the film: `h264`, 1920×1080, no audio stream | `render_movie.py` |
 | `cata-play-cc.mp4` | the same film with a selectable `mov_text` caption track tagged `language=eng` | `embed_captions.sh` |
-| `transcript.srt` | the caption cue file — 326 cues | `make_srt.py` |
-| `transcript.md` | the timestamped, in-character record — 326 entries, cumulative video time | `make_srt.py` |
+| `transcript.srt` | the caption cue file — 305 cues | `make_srt.py` |
+| `transcript.md` | the timestamped, in-character record — 305 entries, cumulative video time | `make_srt.py` |
 | `dossier.md` | the survivor's first-person backstory, written and committed **before** the first gameplay frame | authored |
-| `userdir/` | the engine's own tree: `save/<World>/`, `config/`, `achievements/`, `templates/`, `cache/`. Committed, never hand-edited | the game |
+| `userdir/` | the engine's own tree: `save/<World>/`, `config/`, `achievements/`, `templates/`, `cache/`. Committed. The **save** is the engine's alone and is never edited; the **config** is engine-created and then patched in place by `seed_options.py` (see below) | the game, plus `seed_options.py` for `config/options.json` |
 | `TECHNICAL_NOTES.md` | the engineering log — measurements, pitfalls, divergences | authored |
+| `REPORT.md` | the deliverable account, in exactly three sections: *A) Screen Recording and Animation*, *B) Character Creation*, *C) Playing the Game* | authored |
+| `acceptance-report.txt` | the gate's own passing verdict set over the tree it measured — committed so a verdict outlives the terminal it was printed at | `verify_artifacts.sh` |
 | `README.md` | this page | authored |
 
 Two properties of that set are easy to lose and are therefore stated rather
@@ -114,9 +151,9 @@ never here, because the acceptance gate asserts
 
 ```console
 $ ls -1 playthrough/frames/frame_*.png | wc -l
-326
+305
 $ wc -l < playthrough/manifest.jsonl
-326
+305
 ```
 
 and mixing derived images into `frames/` would destroy that identity while
@@ -126,12 +163,30 @@ every other count still tallied.
 
 ```console
 $ git ls-files playthrough | wc -l
-509
+435
 $ git ls-files playthrough/frames | wc -l
-326
+305
+$ git ls-files playthrough/userdir | wc -l
+32
 $ git ls-files playthrough/userdir/save | wc -l
-99
+3
+$ git ls-files playthrough/userdir/graveyard | wc -l
+11
 ```
+
+`userdir/save` holds only three tracked files, and that is the engine's doing
+rather than an omission: the survivor died, so `move_save_to_graveyard()`
+relocated her save into `userdir/graveyard/<timestamp>/` — the eleven files
+counted above — and `WORLD_END`, committed at the engine's own default
+`reset`, then cleared the world of everything but `mods.json`,
+`world_timestamp.json` and `worldoptions.json`. Section 9 has the whole
+sequence.
+
+The first of those three moves with every commit that adds a tooling file or a
+suite, so `test_readme.py` asserts the two that are properties of the
+**recording** — the captures and the save files — by running the commands above
+and comparing their output with what is quoted here, and it quotes the total
+without asserting it.
 
 When repository size and completeness conflict, completeness wins, and the
 mitigation is engineering rather than omission.
@@ -161,11 +216,21 @@ calls it. A **warmed** worktree that has already built one does have it, which
 is why "the binary is present" and "a clone has no binary" are both true
 statements about different trees rather than a contradiction.
 
-Verify whichever binary you end up with by asking it what it is:
+**Probe before you claim the tree is ready — do not assume this command
+works.** In a fresh clone it fails, because there is no binary to ask:
 
 ```console
 $ ./cataclysm-tiles --version
-Cataclysm Dark Days Ahead: 421659a9cf
+bash: ./cataclysm-tiles: No such file or directory
+$ playthrough/tooling/launch_game.sh build      # then ask again
+```
+
+Once a binary exists, verify whichever one you ended up with by asking it what
+it is:
+
+```console
+$ ./cataclysm-tiles --version
+Cataclysm Dark Days Ahead: <the short commit YOUR tree was built from>
 
 +tiles, +sound
 
@@ -173,9 +238,38 @@ data dir: data/
 user dir: ./
 ```
 
+**The commit line is deliberately not a literal here.** It used to carry a
+hard-coded hash, which read as a measurement of this tree and was not one: the
+binary built from this checkout reports its own `HEAD`, so a fixed hash in a
+document that outlives one commit is wrong for every tree except the one it was
+copied from. Compare it against `git rev-parse --short=10 HEAD`.
+
+They agree on a tree that has not been committed to since the build, and
+disagreeing does **not** by itself mean the binary is stale: this subsystem
+commits to `playthrough/` regularly, and a commit that touches nothing the
+engine is built from cannot change a single rendered pixel. What actually
+matters is whether the ENGINE has moved, so ask that instead:
+
+```console
+$ git diff --name-only \
+      "$(./cataclysm-tiles --version | head -1 | awk '{print $NF}')"..HEAD \
+      -- src Makefile CMakeLists.txt data gfx
+```
+
+Empty output means the binary describes HEAD's engine and is fine to capture
+with, whatever the two hashes read. Any path listed means the binary predates
+code or content that the record would otherwise be photographed against, and
+it must be rebuilt before anything is captured. Note that the gates enforce
+only the `+tiles` property, not this one -- it is a judgment about whether the
+film shows the tree the record describes, which is why it is stated here as an
+operator check rather than asserted as a measurement.
+
 That **`+tiles`** string is the direct, self-reported proof this is the SDL
 tiles build and not the curses one. The rule is about the *binary*, not about
-which artwork pack is selected.
+which artwork pack is selected. The hash on the first line names whichever
+commit that particular build came from, so it differs between builds and
+between worktrees; `+tiles` is the line that carries the claim, and it is the
+line `test_readme.py` holds this block to.
 
 ### The build command, and the switches that must and must not appear
 
@@ -216,10 +310,18 @@ Four constraints on that command line:
   documentation anticipates [doc/c++/COMPILING.md:232].
 * **`-j3`, not `-j$(nproc)`** — and never `-j$(nproc --all)`. The AAP caps
   parallelism for memory: 128 CPUs against ~3.85 GiB RAM with zero swap
-  **(plan)**. Measured here the ceiling is CPU rather than memory —
-  `nproc` reports **4** while `nproc --all` reports **128**, because the
-  cgroup grants four of the machine's cores, and `/proc/meminfo` shows
-  `SwapTotal: 6291452 kB`. Either way `-j3` is safe and `-j128` is not.
+  **(plan)**. Measured here the ceiling is CPU rather than memory, and the
+  figures have to be read from the **cgroup** rather than from `/proc`,
+  because `/proc` is not namespaced and reports the whole machine. Read at
+  `/sys/fs/cgroup/$(cut -d: -f3 /proc/self/cgroup)/` on **2026-08-10**:
+  `cpu.max` is `400000 100000`, i.e. **4 CPUs**; `memory.max` is
+  `137438953472`, i.e. **128 GiB**; `memory.swap.max` is **`0`**, so this
+  scope gets no swap at all. `/proc` meanwhile shows the host's
+  `MemTotal: 4029526764 kB` (3.75 TiB) and `SwapTotal: 6291452 kB`, and
+  `nproc` reports **4** against `nproc --all`'s **128** — the only two
+  numbers on this host that agree with the cgroup. Either way `-j3` is safe
+  and `-j128` is not: the limit is the four CPUs, not the memory the plan
+  worried about.
 * **Never pass `TESTS=0`.**
 * **Never pass `USE_XDG_DIR=1` or `USE_HOME_DIR=1`.** Both are opt-in
   [Makefile:1211-1222], and either one moves the configuration directory out
@@ -297,10 +399,37 @@ exit=1
 
 The system interpreter is 3.13 and carries the PEP 668 marker, so nothing may
 be installed into it; and `python3 -m venv` fails at the `ensurepip` step on
-this host. The working sequence is `python3 -m venv --without-pip` followed by
-bootstrapping pip from `get-pip.py` — and note that a venv built from the
-system interpreter would be 3.13, not the 3.12 the pins contract for. The
-pipeline resolves its own interpreter instead, and reports which one:
+this host. Note also that a venv built from the system interpreter would be
+3.13, not the 3.12 the pins contract for, so it could not install the lock at
+all — `numpy` and `Pillow` ship per-interpreter binary wheels.
+
+**Provision it from packages the archive key already trusts, and do not
+bootstrap pip off the network.** This page used to recommend
+`python3 -m venv --without-pip` followed by fetching `get-pip.py`, and that
+advice contradicted the whole point of the file it was helping to install: a
+script downloaded and executed with the caller's privileges, with no pin and no
+signature, is precisely the unverified trust anchor `requirements.lock` exists
+to eliminate for everything downstream of it. Installing a hash-pinned closure
+*through* an unverified installer establishes nothing.
+
+The supported routes, in order of preference:
+
+1. **Use the container.** `playthrough/tooling/supported_env.sh` drives an image
+   that already carries the interpreter and the pinned closure, which is also
+   the sanctioned path when the host release is out of support.
+2. **Install the distribution's own `python3-venv` and `python3-pip` for a 3.12
+   interpreter** with `apt-get`, so the artifacts come from a repository apt
+   already verifies, and create the environment with pip present from the
+   start.
+3. **If a 3.12 interpreter genuinely has to be built** — this archive carries no
+   `python3.12` package — build it from the release tarball whose published
+   **sha256 you verify before extracting**, and record the digest you checked
+   beside the command. That is what was done for `/opt/python3.12` on this host.
+
+Whichever route, install with the lock rather than the declaration:
+`pip install --require-hashes --only-binary :all: --no-deps -r
+playthrough/tooling/requirements.lock`. The pipeline resolves its own
+interpreter and reports which one:
 
 ```console
 $ bash playthrough/tooling/env.sh | grep PLAYTHROUGH_PYTHON
@@ -365,18 +494,34 @@ readable — and keystrokes are not injectable — by any other local account.
   **re-includes** `playthrough/tooling/__pycache__/*.pyc`. Because the negation
   must stay last (section 8), bytecode is prevented at source rather than
   re-excluded. Every documented Python command here also carries `-B`.
-* **Launch fully detached.** A foreground long-running child can have its whole
-  process group signalled when an outer call times out, which kills the game
-  mid-session:
+* **Launch fully detached, and launch it through `launch_game.sh`.** A
+  foreground long-running child can have its whole process group signalled when
+  an outer call times out, which kills the game mid-session, so the launch uses
+  `setsid nohup ... </dev/null & disown` — the strongest detachment a shell can
+  perform.
 
   ```bash
-  setsid nohup ./cataclysm-tiles --userdir ./playthrough/userdir/ \
-      >/tmp/cata.log 2>&1 < /dev/null & disown
+  playthrough/tooling/launch_game.sh launch     # detached
+  playthrough/tooling/launch_game.sh guard      # foreground, owns the instance
   ```
 
-  `launch_game.sh launch` does this. `launch_game.sh guard` is the variant that
-  stays in the foreground and owns the instance for its whole lifetime, for
-  callers that need something to hold the process.
+  **There is deliberately no raw command to copy here any more.** This page used
+  to print the bare `setsid nohup ./cataclysm-tiles ... >/tmp/cata.log` line,
+  and pasting it skips everything that makes a launch safe and clone-scoped:
+  the log goes to a **predictable, world-writable path** that another local
+  account can pre-create as a symlink — the redirection then truncates and
+  overwrites whatever it points at, with this process's privileges — while the
+  launcher writes to a verified 0700 runtime root instead. It also bypasses the
+  X cookie (so the display has no access control and any local account can read
+  the screen being captured and inject keystrokes), the per-checkout launch lock
+  (so two runs can drive one save), the geometry and tileset assertions, and the
+  `CLONE_INDEX` offsets that keep parallel checkouts off each other's display.
+  None of that is visible in the failure mode: the game starts and the frames
+  look fine.
+
+  `launch_game.sh guard` is the variant that stays in the foreground and owns
+  the instance for its whole lifetime, for callers that need something to hold
+  the process.
 * **Window targeting is class-based.** Resolve the window with
   `xdotool search --class cataclysm-tiles`, then `windowfocus`, then
   `key --window <id>` — the class route is the only one the tooling uses, and
@@ -392,7 +537,7 @@ readable — and keystrokes are not injectable — by any other local account.
   is 1920×1072 inside a 1920×1080 root, so photographing the root yields a
   true-resolution frame and needs no rescale that would soften the text the
   clock reader depends on. The eight leftover rows are a letterbox; measured
-  across the whole 326-frame population they are all at the **bottom**, rows
+  across the whole 305-frame population they are all at the **bottom**, rows
   1072–1079, with the grid at `+0+0` — the AAP's "four pixels top and bottom"
   **(plan)** does not reproduce. Nothing is cropped either way; see
   *Two figures where the plan and the measurement disagree* in
@@ -412,9 +557,16 @@ readable — and keystrokes are not injectable — by any other local account.
 
 ### The declared production environment
 
-`tooling/environment/Dockerfile` declares a complete, capture-capable image on
-a Linux release that is **in support**, and `tooling/supported_env.sh` drives
-it:
+`tooling/environment/Dockerfile` declares the **tooling** half of a capture
+environment on a Linux release that is **in support** — the X server and window
+manager, `xdotool`, ImageMagick, ffmpeg, tesseract, the engine's SDL2 runtime
+and fonts, `g++-14` for rebuilding the engine in the same place that captures
+it, and a sha256-pinned CPython 3.12 with `requirements.lock` installed into
+`/opt/playthrough-venv`. It is **not** self-sufficient for a recording, and the
+gap is named in *The required artwork is the one input nothing can hand you*
+below: the image ships **no artwork**, because `gfx/` is untracked, so the
+required tileset has to be present in the mounted checkout before the engine is
+launched. `tooling/supported_env.sh` drives the image:
 
 ```console
 $ playthrough/tooling/supported_env.sh build        # build the image
@@ -448,14 +600,84 @@ $ bash playthrough/tooling/env.sh | grep -E 'PLATFORM|TRUST'
 `PLAYTHROUGH_TRUST_BYPASSES`, so the relaxation is recorded in the environment
 every downstream stage reads. The container is the supported path rather than a
 way around that, and `supported_env.sh` clears every registered bypass on the
-way in and will not forward one. Regenerating the artifacts inside the image
-reproduces the committed films, timeline, transcript and cue file byte for byte.
+way in and will not forward one. Regenerating the *derived* artifacts inside the
+image reproduces the committed films, timeline, transcript and cue file byte for
+byte — that is a render, which needs the record and not the artwork. A
+**recording** additionally needs the pack, and that is the next section.
 
 The acceptance gate is the one stage that is safe to run anywhere, because it
 reads committed evidence and writes nothing. It treats a **capture-time**
 bypass as a failure — evidence produced under a relaxed check is not evidence —
 and this one as a warning, in its own words: it "says something about the host
 doing the reading rather than about the session that was recorded".
+
+### The required artwork is the one input nothing can hand you
+
+`gfx/` is git-ignored [.gitignore:52], so the MSXotto+ pack the film is rendered
+in is the single input that neither the repository nor the image carries.
+`tooling/tileset_provenance.json` is the tracked statement of exactly which
+bytes it must be — 22 files, `tree_sha256=3d6c2ef4871654fd…`, upstream
+`I-am-Erk/CDDA-Tilesets` at `6e864adbd2c5` — and `launch_game.sh` verifies the
+installed tree against it on **every** launch, with no bypass for the required
+tileset. A pack that does not match cannot be recorded under; that refusal is
+the design and not a bug.
+
+**Provisioning it, exactly, and what that currently produces.** Run from the
+repository root, with network access:
+
+```console
+$ git clone --depth 1 --filter=blob:none --sparse \
+      https://github.com/I-am-Erk/CDDA-Tilesets.git /tmp/cdda-tilesets
+$ git -C /tmp/cdda-tilesets sparse-checkout set gfx/MShockXotto+
+$ git -C /tmp/cdda-tilesets rev-parse HEAD    # must be 6e864adbd2c5…
+$ make SDL3=0 RELEASE=1 TILES=1 SOUND=1 ASTYLE=0 LINTJSON=0 \
+      COMPILER=g++-14 tools/format/json_formatter.cgi
+$ python3 tools/gfx_tools/compose.py --feedback CONCISE --format-json \
+      --loglevel INFO /tmp/cdda-tilesets/gfx/MShockXotto+ gfx/MShockXotto+
+$ ( cd gfx/MShockXotto+ && find . -type f \! -name SHA256SUMS \
+      -exec sha256sum {} + > SHA256SUMS )
+```
+
+`compose.py` needs `pyvips`, which is **not** in `requirements.lock` and not in
+the image — it is a repository tool with its own dependency, so composing
+happens outside the pinned closure. The `json_formatter.cgi` build matters:
+without it `compose.py` falls back to Python's formatter and writes a
+`tile_config.json` of 1 036 187 bytes instead of 625 336.
+
+**Measured on 2026-08-10, that procedure does not reproduce the anchor.** Twenty
+of the twenty-two files come out byte-identical, and they are all of the
+artwork. The two that differ are the generated index and the in-pack manifest
+that lists it: `tile_config.json` at 625 336 B / `064f4708e596…` against the
+anchor's 774 731 B / `9725384838a5…`, and `SHA256SUMS` differing in exactly one
+line — the one naming `tile_config.json`. Substituting the anchor's expected
+digest into that line reproduces the anchor's own `SHA256SUMS` digest
+`ac372c1947e7…` exactly, which is the proof that the index is the only real
+divergence. No file of 774 731 bytes exists anywhere on this host, so the pack
+the film was rendered against is not present here and not derivable from the
+inputs recorded above.
+
+**What that means for anyone re-recording, stated rather than left to be
+discovered at the launch gate.** A render or a re-render is unaffected. A new
+*recording* needs one of two things, and only a human can choose:
+
+1. **The original pack, restored from wherever it came from.** It matched the
+   anchor when the session was recorded — `launch_game.sh` would not have
+   started otherwise, and the engine's own log in the committed userdir records
+   `Loaded tileset: MshockXottoplus`. Preserving it out of band is the only way
+   to keep the film's declared pixels reproducible.
+2. **A deliberate re-anchor.** `tileset_provenance.py generate` rewrites
+   `tileset_provenance.json` over a freshly composed pack. That is a legitimate
+   act when the artwork legitimately changed, and a destructive one otherwise:
+   it replaces the tracked statement of what the shipped film's pixels are with
+   a statement about a different pack. It must be a recorded decision, taken in
+   its own commit, and it is not something to do to turn a check green.
+
+The divergence is reported everywhere it is relevant rather than smoothed over:
+the acceptance gate prints it as a **WARN** naming both digests (it is host
+state, not committed evidence), `tileset_provenance.py verify` exits 1 on it,
+and `test_tileset_provenance` refuses rather than passing. See *The provenance
+anchor is refusing a re-composition, not the film's artwork* in
+`TECHNICAL_NOTES.md` for the full account.
 
 ---
 
@@ -481,7 +703,22 @@ working directory that works:
   them quietly, by loading someone else's data or writing the save somewhere
   that is never committed.
 
-`env.sh` refuses to define a contract if it is sourced from anywhere else.
+**`env.sh` does not enforce this, and it is worth being exact about why.** This
+page used to claim it "refuses to define a contract if it is sourced from
+anywhere else", which is false and easy to disprove: sourcing it with the shell
+sitting in `/tmp` succeeds and resolves `PLAYTHROUGH_REPO_ROOT` correctly,
+because it derives the checkout from `BASH_SOURCE` — its own location — rather
+than from the working directory. That design is deliberate and it is the more
+useful one: every absolute path it exports is then correct no matter where a
+caller happens to be, so no sibling script has to guess. What it *does* refuse
+is a location that is not a Cataclysm-DDA checkout at all (no `data/`, no
+`src/path_info.cpp`).
+
+So the working directory is a requirement of **the engine and the git-tracking
+of the save**, enforced by the scripts that launch and commit rather than by the
+contract file. `run_pipeline.sh` and the other entry points `cd` to the
+repository root themselves before doing anything, which is what makes the
+requirement hold in practice; if you drive a module by hand, `cd` there first.
 
 ### How to invoke a Python module
 
@@ -526,6 +763,41 @@ The loop is **observe → decide in character → act → capture → log**. Key
 never blind-spammed: every iteration reads the captured frame before choosing
 the next keystroke.
 
+**Every step also proves there is room for the frame before the key is sent.**
+A session is deliberately unbounded and every capture is kept at full
+resolution, so `frames/` only ever grows — and a disk that fills *between* the
+keystroke and the photograph is the worst shape that failure can take: the key
+has been acted on and cannot be un-pressed, the capture is truncated or absent,
+and a keystroke with no frame breaks the identity the whole record rests on for
+a reason no later stage can repair. So `step` refuses first, with the session
+left exactly where it was:
+
+```console
+playthrough: FATAL: there is not room to record frame 1: 1024 byte(s) free where
+<frames> lives, against a reserve of 20971520 and therefore 20970496 byte(s)
+short.  The reserve is 64 keystroke(s) of headroom over a 65536-byte floor, plus
+16777216 for the sidecars, the journal and the save the engine rewrites.  THE KEY
+HAS NOT BEEN SENT, so nothing is lost: free space and press it again.  [...]
+$ echo $?
+6
+```
+
+(Measured with the disk measurement substituted, in a sandbox tree, which is why
+the reserve falls to its floor and the path is elided — the message is otherwise
+the one the code emits.)
+
+The reserve is **self-calibrating and costs two syscalls**: the size of the
+previous capture (one `stat` of one derived filename — never a listing of the
+directory, which would be O(captures) *per keystroke*) times 64 keystrokes of
+headroom, plus a 16 MiB floor for the sidecars, the journal and the save the
+engine rewrites. Because it is that cheap it is taken on **every** key rather
+than occasionally. `PLAYTHROUGH_CAPTURE_RESERVE` names a different reserve
+exactly, for a host whose figures are unusual; there is deliberately no value
+that switches the check off, and a value that is set but unreadable is refused
+rather than defaulted. A `statvfs` that cannot be read is reported once and the
+step proceeds — that is a fact about the host, and the capturer refuses a frame
+it could not write on its own account.
+
 ### The resume-versus-create branch
 
 The rule is *if a save already exists, continue that save file*, so a
@@ -534,11 +806,38 @@ creation:
 
 ```console
 $ "$PLAYTHROUGH_PYTHON" -B playthrough/tooling/session.py probe
+PLAYTHROUGH_SESSION_MODE=create
+PLAYTHROUGH_SAVE_WORLD_COUNT=0
+PLAYTHROUGH_SAVE_RESUMABLE_COUNT=0
+PLAYTHROUGH_SAVE_CHAR_COUNT=0
 ```
 
-`launch_game.sh probe` reports the same decision from the shell side. This
-checkout now carries a save, so the probe resolves to **resume**; on a clean
-tree it resolves to **create**, and the creator is entered through the
+`launch_game.sh probe` reports the same decision from the shell side. On a clean
+tree it resolves to **create**; on a tree carrying a live save it resolves to
+**resume**. The reading above is this checkout's, and the paragraph after next
+says why it is `create` on a tree that has already been played.
+
+**There is a third answer, and it is a refusal.** If the append-only record
+shows the survivor beginning their last words while a live character save is
+still sitting in the world, the probe refuses rather than answering either way,
+and names the frame, the survivor and the three ways forward. That state is what
+a process ended *inside* the death screen leaves behind: CDDA writes the
+character file during play and only moves it to the graveyard in
+`cleanup_at_end()`, which runs after that screen — so the save on disk reads as
+a perfectly ordinary living character, and resuming it would put a dead
+survivor back into play with nothing in the save to show it. Resumability is
+therefore decided from the record and the engine's cleanup products, never from
+the shape of the save.
+
+**What the probe answers in this checkout is `create`, and that is the engine's
+own doing.** The survivor died and `cleanup_at_end()` ran to completion, so
+`move_save_to_graveyard()` relocated her character file into
+`userdir/graveyard/<timestamp>/` and the world was cleared — `WORLD_END` sits at
+the engine default `reset` and she was its only character. What is left under
+`userdir/save/Barrows/` is world metadata and no character at all, so there is
+nothing resumable to resume, which is exactly what the probe reports above.
+
+The creator is entered through the
 main-menu door labelled `Custom Character` — the template picker
 (`Preset Character`), `Random Character`, `Play Now!  (Default Scenario)` and
 `Play Now!` are all forbidden. `session.py --help` prints that permitted-door
@@ -552,10 +851,42 @@ stage is independently runnable — and it takes no positional arguments.
 
 ```console
 $ playthrough/tooling/run_pipeline.sh --help          # the full contract
-$ playthrough/tooling/run_pipeline.sh --no-commit     # rebuild and gate, commit nothing
+$ playthrough/tooling/run_pipeline.sh --no-commit     # stages and gate, no commit
 $ playthrough/tooling/run_pipeline.sh --from render   # retry a late stage
 $ playthrough/tooling/run_pipeline.sh --only srt      # one stage
+$ playthrough/tooling/run_pipeline.sh --rebuild       # ignore the run receipt
 ```
+
+**Two preconditions decide whether the full run can complete, and neither is a
+property of the artifacts.** They are listed here rather than discovered at
+stage 7, because the sequencer refuses on both *before* the first stage runs and
+an operator reading a refusal should already know why:
+
+* **The Python closure has to be the reviewed one.** The plan is refused unless
+  all six declared libraries are installed at their declared versions in a
+  CPython 3.12 interpreter, importable, with the declaration and the lock in
+  agreement — and the refusal names each property that failed. Exact pins exist
+  so a later release cannot quietly change the rendered film while every other
+  gate still passes, which an unmeasured closure would allow.
+* **The trust state has to be `trusted` for any plan that WRITES.** Five of the
+  eight stages derive a delivered artifact; a plan containing any of them is
+  refused outright while a trust bypass or the platform waiver is in force,
+  because the earlier stages would otherwise rewrite the timeline, the
+  transition frames and both transcripts before the render's own refusal
+  arrived. A plan that only reads and publishes — `--only verify`,
+  `--only commit`, `--only attest` — is always permitted, and that exemption is
+  the important half: measuring a tree and publishing what is already in it are
+  what you need most when the host is imperfect.
+
+**And a full run cannot reach its checkpoint on this checkout today**, which is
+a fact about the record rather than about the tooling. `commit` takes the
+`final` checkpoint, and `final` has to be anchored on the `creation` checkpoint
+for the same survivor and world that `HEAD` carries; the newest pair here names
+a *superseded* survivor, so the gate correctly refuses and the sequencer stops
+at stage 6 with the checkpoint unattempted. Until the session is re-recorded to
+a genuine ending, `--no-commit` is the invocation that completes — it runs every
+stage up to and including the pre-commit gate — and the lifecycle below is what
+has to be repaired first.
 
 | # | Stage | Runs | Produces |
 | --- | --- | --- | --- |
@@ -570,11 +901,20 @@ $ playthrough/tooling/run_pipeline.sh --only srt      # one stage
 
 **The gate runs twice, and that is deliberate.** Most of its checks are
 properties of the *artifacts* and can be answered the moment a render finishes.
-Twelve are properties of the *history* — is the save tracked, is every artifact
-class committed, is the tree clean — and a commit is what makes those true. So
+Fourteen are properties of the *history* — is the save tracked, is every
+artifact class committed, is the tree clean, does **this** recording have a
+checkpoint pair of its own — and a commit is what makes those true. So
 the functional half guards the commit and the history half reports what the
 commit published. `--no-commit` drops the checkpoint **and** the attestation,
 since with nothing committed the second has nothing to read.
+
+**The second run is the short one.** The gate declares 120 checks altogether, 106
+before the commit and 31 after it — so 89 are asked only before, 14 only after,
+and 17 by both. The seventeen asked twice are the cheap ones it would be wrong
+to answer once: the measuring environment, and the version-control facts that
+have to hold at both moments. No artifact is re-measured after a commit that did
+not touch it, and the attestation on this record takes seconds where a
+`post-commit` that ran the whole audit took about ninety.
 
 Two orderings are non-negotiable, and the sequencer checks them against the
 plan it resolved rather than against the flags you typed: **`commit` requires
@@ -582,44 +922,265 @@ plan it resolved rather than against the flags you typed: **`commit` requires
 Ask for either on its own and it refuses, naming the invocation that would have
 worked.
 
+#### Three things are settled before stage 1 runs
+
+Every stage above is expensive and an hour of encoding cannot be given back, so
+three questions whose answers already exist are asked first. Each of them used
+to be discovered after the expensive work.
+
+**Would the checkpoint be taken at all?** `final` anchors to the `creation`
+checkpoint *of the survivor this session is about* and needs the record to have
+grown since it — both facts about the history before anything is rendered. When
+either fails, the checkpoint refuses at stage 7, with the timeline, the
+transitions, the encode, the transcripts, the caption mux and the whole
+functional gate already spent. The sequencer now asks `commit_artifacts.sh
+status`, which answers read-only with `FINAL_ELIGIBLE`, `FINAL_ANCHOR` and
+`FINAL_REASON`, and refuses with **exit 4** before stage 1, naming
+`--no-commit` as the way to run the render half deliberately:
+
+```console
+$ playthrough/tooling/run_pipeline.sh
+PIPELINE_LIFECYCLE=no-creation-for-this-survivor
+playthrough: FATAL: the 'final' checkpoint CANNOT be taken over this tree
+(no-creation-for-this-survivor), and its reason is above.  [...] no stage is run
+$ echo $?
+4
+```
+
+The lifecycle rule itself stays in `commit_artifacts.sh`; the sequencer reads
+three KEY=value lines and keeps no copy of it. An answer it cannot read is
+reported (`PIPELINE_LIFECYCLE=unread`) and the run proceeds — silence is not
+evidence of ineligibility, and the checkpoint stage remains the authority.
+
+**Is there room?** Every artifact is full resolution and nothing is ever
+dropped to make a generation fit, so running out of space part way through does
+not produce a smaller film — it produces a torn one. The reserve is *measured*,
+never predicted, and reported in full:
+
+| Term | What it is | When it applies |
+| --- | --- | --- |
+| rewrite | the bytes the planned producing stages will write over, measured per stage from its own declared outputs | always |
+| staging | one more copy of the film, which the caption mux writes beside it before relocating within it | only when `captions` is planned |
+| history | the objects the checkpoint writes — an upper bound, since git writes an object only for what changed and these are already-compressed formats | only when `commit` is planned |
+| margin | 256 MiB, because the engine's userdir, git's index and the encoder's temporary state all move during a run | always |
+
+It is checked **before the first stage** and **again immediately before the
+checkpoint**, because the producing stages spend the disk in between; the two
+report under `PIPELINE_CAPACITY` and `PIPELINE_CAPACITY_CHECKPOINT` so neither
+overwrites the other. Too little room is **exit 5**, refused before anything is
+written, with every figure and the shortfall named. A measurement that cannot
+be *taken* — no `df`, no `du`, an unreadable filesystem — is reported as
+`unmeasured` and does **not** block the run: that is a fact about the host
+rather than evidence the disk is full, and every stage checks its own
+preconditions anyway.
+
+One such reading, kept as a sample of the *shape* rather than as a standing
+fact — the free figure is whatever the filesystem had at that moment, and it
+moves constantly:
+
+```text
+playthrough: room to work: 25580575252480 byte(s) free (24395537 MiB) against a
+276021248-byte reserve (263 MiB: 3833856 rewrite + 3751936 staging + 0 history +
+268435456 margin)
+```
+
+`df -B1 /tmp` on **2026-08-10** reported 25 819 133 108 224 bytes free on the
+same filesystem, so the sample above is a few hours older than this page; the
+reserve is the part that is derived rather than sampled, and it is recomputed on
+every run from the artifacts actually present.
+
+**Is any of it already done?** A run receipt records, per producing stage, the
+identity of the inputs it was made from and the digest of what it produced. A
+stage is skipped only when **both** still hold:
+
+```text
+playthrough: stage 1/3 srt: ALREADY DONE -- this run's inputs are the ones it was
+produced from and its output is unchanged, so it is skipped.  Pass --rebuild to
+run it anyway.
+PIPELINE_STAGE_SRT=fresh
+PIPELINE_FRESH=srt
+```
+
+The receipt is **content-addressed and never time-stamped**. A modification
+time can move without the content moving and stay still while the content
+changes, so no mtime and no bare size appears in it. What does: the format
+number, `HEAD`, a digest of git's own view of the *input* paths (`frames/`, the
+record, the amendment ledger, the userdir — which covers the index and the
+working tree together), the capture count, and the digests of the record, the
+amendment ledger, the capture ledger, `requirements.txt`, the interpreter path,
+the trust state and **every stage script**. Change any one of them and nothing
+is fresh.
+
+It lives at `${PLAYTHROUGH_RUN_DIR}/receipt-<checkout digest>` — inside the
+mode-0700 runtime directory, **never in the working tree**, so it is not an
+artifact and cannot be committed, and two clones cannot read each other's. The
+name carries a digest of this checkout, the same scoping the lock uses.
+
+What is never skipped: `verify`, `commit` and `attest`, because each asks about
+a moment rather than producing a thing; the stage `--only` names, because an
+operator asking for one stage means it; anything at all under `--rebuild`; and
+every stage after the first one that does work, since its inputs have just
+moved. That last rule is also what makes it sound to leave the *intermediate*
+artifacts out of the fingerprint — the encoder reads the timeline and the
+transition images, which are outputs of earlier stages, and folding them in
+would mean nothing could ever be fresh after stage 1. Because freshness
+collapses at the first stage that does anything, a chain of skips is a chain in
+which nothing in the middle moved.
+
+The outputs are hashed only *after* the input fingerprint has matched, so a
+film is read to avoid re-encoding it and never the other way round.
+
+#### The caption mux bounds itself by the film it is given
+
+`embed_captions.sh` keeps `-c copy` and `+faststart` — the pixels are never
+re-encoded and the moov atom is moved to the front so the film starts playing
+before it has finished downloading — but that relocation rewrites the whole
+container, so its cost is the film's size rather than a constant. A fixed
+watchdog would therefore kill a legitimately long film as though it were stuck.
+Three things replace it:
+
+* **The ceiling is derived**, and the derivation is printed: a 300-second base,
+  plus one second per mebibyte for each of the two passes (the stream copy and
+  the relocation), plus one second per ten seconds of film. On this record that
+  is `328s -- derived from 3749146 byte(s) over 2 pass(es) at 1048576 B/s plus
+  219s of film at 1s per 10s, on a 300s base`.
+  `PLAYTHROUGH_CAPTION_TIMEOUT` overrides it *exactly*, and the ceiling is
+  enforced with `timeout --kill-after`, so a child that ignores `SIGTERM` does
+  not outlive the ceiling it was given.
+* **The watchdog is progress-aware.** It watches the staging file's size **and
+  its modification time** — both, because `+faststart` rewrites in place and the
+  size does not move while the largest piece of work happens — and only
+  terminates when progress genuinely stalls. `PLAYTHROUGH_CAPTION_STALL` sets
+  that stall window (120 seconds by default). The three outcomes are reported
+  differently: finished, stalled, and expired at the ceiling.
+* **Space is reserved before anything is written.** The mux stages its output
+  beside the film and then relocates within it, so the reserve is the input
+  film's bytes, plus any already-published captioned film it will replace, plus
+  a 64 MiB margin — refused up front with every figure named. An unreadable
+  `df` warns and proceeds.
+
 ### The gate on its own
 
 ```console
-$ playthrough/tooling/verify_artifacts.sh                       # all 111 checks
-$ playthrough/tooling/verify_artifacts.sh --phase pre-commit     # the 99 functional ones
-$ playthrough/tooling/verify_artifacts.sh --phase post-commit    # all 111, after a commit
+$ playthrough/tooling/verify_artifacts.sh                       # all 120 checks
+$ playthrough/tooling/verify_artifacts.sh --phase pre-commit     # the 106 before a commit
+$ playthrough/tooling/verify_artifacts.sh --phase post-commit    # the 31 about the history
+$ playthrough/tooling/verify_artifacts.sh --samples all          # every capture's pixels
 ```
 
 It writes nothing, and every verdict prints what it **observed** beside what it
-expected, so a passing report reads as evidence rather than as a tally. The
-counts are declared in the script — `EXPECTED_CHECKS_ALL=111`
-[playthrough/tooling/verify_artifacts.sh:572] and
-`EXPECTED_CHECKS_PRE_COMMIT=99` [:573] — and asserted against the verdicts
-actually emitted, so neither phase can return a short report unnoticed.
+expected, so a passing report reads as evidence rather than as a tally. All
+three counts are declared in the script and asserted against the verdicts
+actually emitted, so no phase can return a short report unnoticed:
+`EXPECTED_CHECKS_ALL=120`, `EXPECTED_CHECKS_PRE_COMMIT=106`,
+`EXPECTED_CHECKS_POST_COMMIT=31` — each summed from its own per-group table
+[playthrough/tooling/verify_artifacts.sh:777-832], with the group-by-group
+derivation of all three columns in the comment immediately above them.
+
+`post-commit` is the **history** phase, not a second full audit: it asks the
+fourteen questions only a commit can make true, plus the environment it measures
+them with and the version-control facts that have to hold at both moments. The
+artifact groups are absent because the commit did not touch the artifacts —
+`--phase all` is how they are re-measured deliberately. On this record the three
+phases take about **36 s**, **22 s** and **7 s**.
+
+`--samples N` chooses how many captures have their **current** pixels decoded
+for the luminance gate; the default is a bounded spread of 64 that always
+includes the first and the last, and `--samples all` decodes every one. The
+bounded default does not weaken the no-omission claim, because two
+**whole-population** witnesses are unconditional and neither is a sample:
+`capture.sh` recorded a non-blank reading for *every* frame at capture time and
+the gate reads all of them back out of `build/observations.jsonl`, and the
+digest sweep re-hashes *every* capture against the ledger. What the bounded
+default gives up is only the re-decoding of a frame whose capture-time reading
+and whose digest both already say it is not blank.
 
 ### The commit lifecycle
 
-Three ordered checkpoints, each refusing to run out of turn:
+Four ordered checkpoints, each refusing to run out of turn:
 
 ```console
-$ playthrough/tooling/commit_artifacts.sh dossier    # before the first frame
-$ playthrough/tooling/commit_artifacts.sh creation   # after character creation
+$ playthrough/tooling/commit_artifacts.sh integration # the rules, before any artifact
+$ playthrough/tooling/commit_artifacts.sh dossier     # before the first frame
+$ playthrough/tooling/commit_artifacts.sh creation    # after character creation
   # ... play the session ...
-$ playthrough/tooling/commit_artifacts.sh final      # after the session ends
-$ playthrough/tooling/commit_artifacts.sh status     # read-only, takes no lock
+$ playthrough/tooling/commit_artifacts.sh final       # after the session ends
+$ playthrough/tooling/commit_artifacts.sh status      # read-only, takes no lock
 ```
 
-The dossier is committed **alone and first** because "written before the first
-gameplay frame" is a statement about ancestry between two commits, and one
-commit cannot precede itself — so `creation` refuses until the dossier is
-tracked. `final` anchors to the `creation` checkpoint of **the same survivor**
-and refuses across a survivor change, which a row count cannot detect, since a
-record re-recorded from scratch has "grown" too.
+`integration` goes first because it commits the two rules everything after it
+depends on — the terminal negation in `.gitignore` and the six attribute rows —
+and a negation that was never committed loses the save data on the next clone.
+It is the **only** checkpoint that stages a path outside `playthrough/`, it
+stages exactly those two by name, and when HEAD already carries them as the
+working tree has them it says so and commits nothing rather than manufacturing
+an empty commit.
 
-Each checkpoint stages `playthrough/` by artifact class in bounded batches —
-never a blanket `add`, never `-A`, never `-f`, never a shell glob — and carries
+The dossier is committed **alone and first among the artifacts** because
+"written before the first gameplay frame" is a statement about ancestry between
+two commits, and one commit cannot precede itself — so `creation` refuses until
+the dossier is tracked. `dossier` itself refuses once play has begun at all: a
+capture on disk, a tracked capture, a manifest row, an observation or a frame
+digest is each enough to stop it, so the claim cannot be made retroactively by
+committing the dossier late. `final` anchors to the `creation` checkpoint of
+**the same survivor** and refuses across a survivor change, which a row count
+cannot detect, since a record re-recorded from scratch has "grown" too. The
+dossier-precedes-captures ordering is read from the commit that introduced the
+bytes **now at HEAD**, not from the oldest commit that ever touched those
+paths, so a retired generation's history cannot satisfy it for a later one.
+
+Each artifact checkpoint stages `playthrough/` by artifact class in bounded
+batches — never a blanket `add`, never `-A`, never `-f`, never a shell glob —
+and every checkpoint reads its own staged set back and refuses on anything
+outside its declared scope, comparing NUL-delimited pathnames end to end so
+that a pathname containing a newline cannot slip through the refusal. All carry
 a `Playthrough-Checkpoint: <name>` trailer, which is the lifecycle's entire
 persistent state. There is no side file to fall out of step with the history.
+
+`.gitignore` and `.gitattributes` are **checked** at every checkpoint and
+**committed** by `integration`: the terminal negation is verified both in the
+working tree and as HEAD carries it, because a negation that was never committed
+loses the save data on the next clone.
+
+`status` also answers, read-only and without taking the lock, whether `final`
+*would* be taken — `FINAL_ELIGIBLE` (`yes`/`no`), `FINAL_ANCHOR` (the creation
+checkpoint it would anchor to, which may be an older commit than the newest
+one) and `FINAL_REASON` (one stable token: `no-survivor-loaded`, `no-record`,
+`no-creation-checkpoint`, `no-creation-for-this-survivor`,
+`anchor-carries-no-record`, `record-has-not-grown`). It is computed with the
+same two predicates the refusal enforces, so the report cannot drift from what
+it predicts. This is what `run_pipeline.sh` reads before its first stage.
+
+Each checkpoint stages `playthrough/` **by artifact class** — never a blanket
+`add`, never `-A`, never `-f`, never a shell glob — and carries a
+`Playthrough-Checkpoint: <name>` trailer, which is the lifecycle's entire
+persistent state. There is no side file to fall out of step with the history.
+
+How the staging scales matters on a long session, because the captures are the
+one class whose size is the session's length:
+
+* the paths are **streamed** as NUL-delimited records into a pathspec file in
+  the runtime directory — never accumulated in a shell array, so a hundred
+  thousand captures cost a hundred thousand `[ -e ]` tests and no memory;
+* each class is then staged with **one** `git add --pathspec-from-file=<file>
+  --pathspec-file-nul`, which is one index read and one index write however long
+  the session was. Batching argv worked, but it paid a full index rewrite per
+  batch, and the index is the size of the repository rather than the size of the
+  batch;
+* on git older than 2.25, which has no `--pathspec-from-file`, the same file is
+  replayed in `STAGE_BATCH_SIZE` chunks through a bounded argument list. The
+  capability is *probed* (an empty pathspec list, which a capable git accepts and
+  an older one refuses with "unknown option") rather than inferred from a version
+  string;
+* a path that is neither on disk nor tracked is filtered out first, because a
+  pathspec matching nothing is a fatal `git add` error — and an optional
+  artifact nobody has written yet must not fell a checkpoint;
+* the booleans are git's own exit statuses (`git diff --cached --quiet`, and one
+  line of `git add --dry-run`), not captured lists measured for emptiness;
+* every human-facing list is **bounded and honest about it**: `status` prints the
+  exact total and at most twenty lines ("would stage 12,043 path(s); the first
+  20 are:"), and a refusal names at most eight paths followed by "(and N more)"
+  — a sample is never presented as the whole.
 
 `.gitignore` and `.gitattributes` are **checked** here and committed elsewhere:
 the terminal negation is verified both in the working tree and as HEAD carries
@@ -627,12 +1188,53 @@ it, because a negation that was never committed loses the save data on the next
 clone.
 
 The committer records the identity git already resolves in **this repository's**
-configuration (`git config --local`, never `--global`, never `--system`, never
-overwriting a pair the repository already carries). That is least privilege
-rather than tidiness: the container mounts the checkout, sets its own `HOME`
+configuration (`git config --local`, never `--global`, never `--system`). A
+repository-local pair that already **equals** that identity is left untouched;
+one that **disagrees** is replaced — both values together — with the identity
+the commit will actually carry, and the log line names both, because a local
+identity that contradicts the committer is a repository configured to attribute
+the next commit to somebody else. That is least privilege rather than tidiness:
+the container mounts the checkout, sets its own `HOME`
 and forwards no `GIT_*`, so an identity living only in a home directory does
 not exist in there. It never invents one — a missing identity is a refusal —
 and it never rewrites history and never pushes.
+
+**What this branch actually carries is not that, and saying so is the point.**
+The paragraph above describes the tool. The commits in this branch were taken
+with plain `git commit` rather than through it, so there is no local pair here
+to read — `git config --local user.email` exits non-zero — and the identity
+resolves from the host's global configuration instead, which is why every commit
+is authored and committed as `Blitzy Agent <agent@blitzy.com>`
+(`git log -1 --format='%an <%ae> %cn <%ce>'`). The execution environment for
+this work also forbids running `git config user.name` or `git config user.email`
+at all, so the repository-local pair R1 asks for is not written by these passes.
+The requirement's substance — commits that carry a real, attributable identity —
+holds; its mechanism does not. The divergence is set out in
+`TECHNICAL_NOTES.md` under *R1's repository-local identity: what this branch
+carries*.
+
+### The knobs, and what each one is for
+
+Every one of these has a working default, and every one that takes a number is
+validated before it reaches any arithmetic — a value that is *set but
+unreadable* is refused rather than quietly defaulted, because defaulting it
+hides an operator's mistake behind a run that looks fine.
+
+| Variable | Default | What it changes |
+| --- | --- | --- |
+| `PLAYTHROUGH_CAPTURE_RESERVE` | derived: previous capture × 64 + 16 MiB | the free space `session.py step` insists on before sending a key. No value switches the check off. |
+| `PLAYTHROUGH_CAPTION_TIMEOUT` | derived from the film's size and duration | the ceiling on the caption mux, honoured exactly when set |
+| `PLAYTHROUGH_CAPTION_STALL` | 120 s | how long the caption mux may make no progress before it is stopped |
+| `PLAYTHROUGH_PIPELINE_LOCK_TIMEOUT` | 60 s | how long the sequencer waits for another run over **this** checkout |
+| `PLAYTHROUGH_CHECKPOINT_LOCK_TIMEOUT` | 120 s | the same, for a checkpoint |
+| `PLAYTHROUGH_RUNTIME_DIR` | `${XDG_RUNTIME_DIR}/playthrough` | where the locks, logs and the run receipt live. Whatever is nominated goes through the same 0700-and-not-a-symlink verification as the default. |
+| `CLONE_INDEX` | 0 | shifts the display and the runtime directory so parallel clones do not collide |
+| `PLAYTHROUGH_ALLOW_EOL_PLATFORM` | unset | a **registered trust bypass**, not a "make it work" flag (section 4) |
+
+And two command-line switches worth knowing for the same reason:
+`verify_artifacts.sh --samples all` decodes every capture's pixels rather than
+the bounded default spread, and `run_pipeline.sh --rebuild` ignores the run
+receipt and re-runs every planned stage.
 
 ---
 
@@ -684,14 +1286,16 @@ end`. Measured on the shipped record:
 ```console
 $ python3 -c "import json; d=json.load(open('playthrough/timeline.json')); \
 print(d['total_duration'], d['total_transition'], d['total'], d['final_cue_end'])"
-218.5 1.0 219.5 219.5
+219.75 3.0 222.75 222.75
 $ grep -E -- '-->' playthrough/transcript.srt | tail -1
-00:03:39,250 --> 00:03:39,500
+00:03:42,500 --> 00:03:42,750
 ```
 
-218.5 + 1.0 = 219.5, and the last cue closes at 219.500 s. The ceiling engaged
-exactly once, at frame 139, where a raw delta of 13.0 s was held at 10.0 s —
-which is why there is one transition group of twelve pictures.
+219.75 + 3.0 = 222.75, and the last cue closes at 222.750 s. The ceiling
+engaged three times — at frames 195, 198 and 210, where raw deltas of 10 794 s,
+21 601 s and 47 s were each held at 10.0 s — which is why there are three
+transition groups of twelve pictures, 36 images altogether. The first two are
+the three-hour and six-hour waits the survivor spent in cover.
 
 `timeline.json` is the **single source of truth**: the renderer and the caption
 generator both read it, in one pass, so the cue windows and the frame windows
@@ -709,8 +1313,9 @@ Acquiring a time-telling device is therefore a **characterful and entirely
 legitimate** creation-and-scavenging decision, and never a code change. When
 the clock genuinely cannot be read — no watch, underground, or an OCR failure —
 the value is recorded as unreadable and reconciled against the previous frame,
-never invented. On the shipped record that is **209 exact readings and 117
-unreadable**, and the 117 say so in the telemetry rather than carrying a guess.
+never invented. On the shipped record that is **145 exact readings and 160
+unreadable**, and each of the 160 says so in the telemetry — `clock_status`
+reads `unreadable` on those rows — rather than carrying a guess.
 
 ### Why `24_HOUR` must be `24h`
 
@@ -754,7 +1359,7 @@ saves its panel options
 ```
 
 **`352x1072+1568+4`** — and `build/observations.jsonl` records exactly that,
-with `clock_rect_from = computed`, for all 326 captures.
+with `clock_rect_from = computed`, for all 305 captures.
 
 **This is where a hard-coded rectangle would have been wrong, and the
 disagreement is worth understanding rather than papering over.** The AAP
@@ -806,7 +1411,7 @@ module returns the reading the record holds:
 ```console
 $ "$PLAYTHROUGH_PYTHON" -B playthrough/tooling/ocr_clock.py \
       playthrough/frames/frame_00163.png
-08:00:27
+08:00:00
 ```
 
 The module measures which vertical phase the engine's cell grid is really drawn
@@ -842,9 +1447,13 @@ rules say — `--no-index` is required to see the rules themselves:
 
 ```console
 $ git check-ignore -v --no-index -- \
-    'playthrough/userdir/save/Apshawa/#QW1icm9zZSBIYWxsb3Jhbg==.sav'
-.gitignore:275:!/playthrough/**  playthrough/userdir/save/Apshawa/#QW1i….sav
+    'playthrough/userdir/graveyard/2026-08-10T04-04-38/#T2RldHRlIFZhY2hvbg==.sav'
+.gitignore:275:!/playthrough/**  playthrough/userdir/graveyard/…/#T2Rl….sav
 ```
+
+The path is in `graveyard/` rather than `save/` because a death relocates it
+there, and the leading `#` moves with the file — so this is exactly the name
+`\#*` would have swallowed.
 
 Run against a control copy of `.gitignore` truncated just above the block, the
 same paths are excluded, and by these patterns:
@@ -903,9 +1512,13 @@ treatment it prescribes for itself.
 
 ### What does not change
 
-Nothing else. No file under `src/`, `tests/`, `data/` or `gfx/`; not
+Nothing else. No tracked file under `src/`, `tests/`, `data/` or `gfx/`; not
 `Makefile`, `CMakeLists.txt`, `CMakePresets.json`, `.flake8`, `pyproject.toml`,
 `.astylerc`, or anything under `.github/`; and **not the root `README.md`**.
+`gfx/` gets the untracked tileset installed into it at provisioning time
+(section 4), which is host state and never enters the index — the gate's own
+change-surface check below is what proves the distinction rather than this
+sentence.
 
 In particular the one C++ edit the specification anticipated — the SDL2
 `get_shared_variant_pass` guard in the pixel minimap — is **already applied at
@@ -916,9 +1529,13 @@ paragraph:
 
 ```text
 PASS  the change surface is only the two ignore files and playthrough/
-      observed: 511 changed path(s) since f38c2fbae3, all of them under
+      observed: 513 changed path(s) since f38c2fbae3, all of them under
       playthrough/ or one of: .gitignore .gitattributes
 ```
+
+The path count grows whenever a file is added under this tree — it was 513 when
+this line was written — but the property the verdict is about does not: every
+changed path is either under `playthrough/` or one of those two files.
 
 ---
 
@@ -962,14 +1579,21 @@ $ python3 -c "import json; print([e for e in \
 json.load(open('playthrough/userdir/config/options.json')) \
 if e['name']=='WORLD_COMPRESSION2'])"
 [{'name': 'WORLD_COMPRESSION2', ..., 'value': 'false'}]
-$ ls playthrough/userdir/save/Apshawa/ | grep -E '^#.*\.sav'
-#QW1icm9zZSBIYWxsb3Jhbg==.sav
+$ ls playthrough/userdir/graveyard/2026-08-10T04-04-38/ | grep -E '^#.*\.sav$'
+#T2RldHRlIFZhY2hvbg==.sav
 ```
 
-The same option is why the overmaps are plain `o.0.0` / `o.1.0` files and the
-map data is a `maps/` **directory**, rather than `maps.zzip` and
-`overmaps/*.zzip`. Both layouts are legitimate; the artifacts in this tree are
-the uncompressed one.
+The same option is why the overmaps were written as plain `o.0.0` / `o.0.-1`
+files and the map data as a `maps/` **directory**, rather than `maps.zzip` and
+`overmaps/*.zzip`. Both layouts are legitimate; this session took the
+uncompressed one.
+
+Those world files are no longer in the working tree, and that is the engine's
+doing rather than a loss: the world was cleared when the survivor died. They are
+in the history, at the `creation` checkpoint `57ee8afc34`, which carries
+`master.gsav`, `o.0.0`, `o.0.-1`, `uistate.json`, `zones.json` and the whole
+`maps/` tree alongside the live character files. `git ls-tree -r 57ee8afc34 --
+playthrough/userdir/save/Barrows/` is the way to look at them.
 
 **2. `.shortcuts` is Android-only and will never exist on a Linux host.** It is
 written inside `#if defined(__ANDROID__)` [src/game_io.cpp:630-635] and only
@@ -989,22 +1613,50 @@ would fail on the next engine that adds one.
 
 ## 10. Python, lint and CI
 
-Two CI legs see new eligible inputs, and both are satisfied by construction
-rather than by exemption. Because no C++, JSON or CMake file changes, the
-astyle, JSON, cmake-format, clang-tidy, IWYU, matrix and MSVC workflows receive
-nothing they can act on.
+**Two legs get new inputs to act on. Rather more than two still run.** Those
+are different claims and an earlier version of this section made the wrong one,
+so both are stated. The only new *eligible input* this feature creates is
+Python, so `flake8.yml` — filtered to `**.py`
+[.github/workflows/flake8.yml:7-13] — and the `python` leg of
+`codeql-analysis.yml` [.github/workflows/codeql-analysis.yml:35] are the two
+gates with something of this feature's to examine, and both are satisfied by
+construction rather than by exemption.
 
-Worth knowing before editing this page: **a documentation-only change under this
-tree triggers no workflow at all.** Not one workflow in `.github/workflows/`
-carries a path filter that matches a `.md` file — checked across all of them —
-so the style reviewer, the TOC generator and the spell checker never see it. The
-spell check in particular runs from `text-changes-analyzer.yml`, whose filters
-are the workflow itself, `tools/pot_diff.py`, `lang/extract_json_strings.py`,
+But **a workflow that declares no `paths:` filter matches every change**, which
+is GitHub's rule and not a detail. Classified mechanically over all 35 files,
+**twelve** workflows trigger on a push or pull request and declare no path
+filter whatsoever, so they run on any commit here, prose included:
+`astyle.yml` and `json.yml` (both bare `on: pull_request`), `clang-tidy.yml`,
+`codeql-analysis.yml`, `iwyu.yml`, `matrix.yml`, `CBA.yml`, `pr-validator.yml`,
+and the four `pull_request_target` housekeepers `check-branch-name.yml`,
+`labeler.yml`, `label-first-time-contributor.yml` and `request-review.yml`. A
+thirteenth, `msvc-full-features.yml`, filters by `paths-ignore`, and that list
+— `android/`, `build-data/osx/`, `doc/`, `doxygen_doc/`, `gfx/`, `lang/`,
+`lgtm/`, `tools/` except `tools/format/`, `utilities/` — never mentions
+`playthrough/`, `.gitignore` or `.gitattributes`, so it matches too. Those
+workflows **run**, and then, with no C++, JSON or CMake change to act on, they
+pass: "receives nothing it can act on" is true of the *work*, not of the
+trigger. What genuinely does not start is the path-filtered set —
+`linter.yml`, `cmake-format.yml`, `toc.yml`, `text-changes-analyzer.yml`,
+`release.yml`, `weekly-changelog.yml`, `format_emscripten.yml`,
+`detect-translation-file-changes.yml` and
+`assign_mission_target_needs_om_special.yml` — each filtering on paths this
+feature never touches.
+
+The consequence for prose specifically: **no workflow filters *for* Markdown**,
+so nothing is triggered *by* a `.md` file, and there is no `markdownlint`, `mdl`
+or `remark-lint` anywhere in the tree — but a documentation-only commit pushed
+to `master` still starts the filterless workflows above, so "no gate reads this
+page" is the accurate claim rather than "nothing runs". The spell check in
+particular runs from `text-changes-analyzer.yml`, whose filters are the workflow
+itself, `tools/pot_diff.py`, `lang/extract_json_strings.py`,
 `lang/string_extractor/**`, `src/*.h`, `src/*.cpp` and `**.json`
-[.github/workflows/text-changes-analyzer.yml:4-16]. So prose here is reviewed by
-people, not by a gate, and the dictionary at
-`tools/spell_checker/dictionary.txt` — which carries `playthroughs` at line
-5351, the plural only — is not consulted for it either way.
+[.github/workflows/text-changes-analyzer.yml:4-16], so it never sees prose here
+and the dictionary at `tools/spell_checker/dictionary.txt` — which carries
+`playthroughs` at line 5351, the plural only — is not consulted either way. This
+page's correctness therefore rests on the commands written beside its numbers,
+which is why they are written down. Measured across all **35** workflow files in
+`.github/workflows/` at `5f902536e8`.
 
 **flake8, at the DEFAULT 79 columns.** `.flake8` excludes only
 `.git,__pycache__,lang/json,tools/clang-tidy-plugin/test/check_clang_tidy.py`
@@ -1053,37 +1705,45 @@ gate, so the tooling uses `subprocess.run([...])` argument **lists** and never
 ### The tests
 
 Standard-library `unittest`, no new framework, discovered from this directory —
-one suite per script plus `test_artifacts.py` over the artifact set, 20 in all,
+one suite per script, `test_artifacts.py` over the artifact set and
+`test_readme.py` over this page's own commands, 21 in all,
 run against the real scripts rather than against restatements of them, and
-writing only inside their own sandboxes. It takes about fifteen minutes:
+writing only inside their own sandboxes. It takes about twenty-two minutes. Run
+here on **2026-08-10**, on a host with the tileset installed:
 
 ```console
 $ . playthrough/tooling/env.sh
 $ "$PLAYTHROUGH_PYTHON" -B -m unittest discover \
       -s playthrough/tooling -p 'test_*.py'
 [...]
-Ran 2507 tests in 879.849s
+Ran 3017 tests in 1427.759s
 
-FAILED (errors=1, skipped=5)
+OK (skipped=1)
 ```
 
-A single suite runs against this host's artwork rather than against the record,
-and it is the one error above. **It is environment-dependent, and it must not be
-"fixed".** On a host whose `gfx/` pack has been re-composed since the session was
-recorded, `test_tileset_provenance` refuses and names the two files that differ
-— `tile_config.json` and the in-pack `SHA256SUMS` that indexes it. `gfx/` is
-untracked [.gitignore:52], so `tooling/tileset_provenance.json` is the **only
-tracked statement of what the film's pixels are**: the anchor is right, the
-artwork the film was rendered against matched it, and regenerating the anchor to
-turn a test green would destroy the evidence. The full account is in *The
-provenance anchor is refusing a re-composition, not the film's artwork* in
-`TECHNICAL_NOTES.md`. Every other suite passes, and the deterministic core can
-be run on its own in seconds:
+**One skip, and it is named rather than smoothed.** It is
+`test_tileset_provenance.EveryFailureToReadIsARefusal.test_an_unreadable_file_is_refused`,
+whose own message says why: *running as a user that ignores file modes*. A test
+that removes read permission and expects a refusal cannot assert anything as
+root, so it declines instead of passing vacuously.
+
+The suite that measures this host's artwork rather than the record —
+`test_tileset_provenance`, over the pack installed at `gfx/MShockXotto+` — passes
+here because the pack and the tracked anchor describe the same 22 files
+(`TILESET_PROVENANCE=verified`, tree digest `7d853c21de2e…`). `gfx/` is untracked
+[.gitignore:52], so `tooling/tileset_provenance.json` is the **only tracked
+statement of what the film's pixels are**, and it is what `launch_game.sh
+tileset`, the acceptance gate and that suite all reach their verdict through
+rather than each re-implementing the walk. On a host whose pack differs from the
+anchor the suite refuses and names the files, which is the point of it; the
+account of one such divergence, and of what it took to close it honestly, is in
+*The provenance anchor is refusing a re-composition, not the film's artwork* in
+`TECHNICAL_NOTES.md`. The deterministic core can be run on its own in seconds:
 
 ```console
 $ "$PLAYTHROUGH_PYTHON" -B playthrough/tooling/test_timeline.py
 [...]
-Ran 361 tests in 2.594s
+Ran 374 tests in 2.370s
 
 OK
 ```
@@ -1131,21 +1791,47 @@ final section name where each obligation is discharged.
 
 ### The acceptance gate
 
-`tooling/verify_artifacts.sh` is the executable form of all of it. On the
-shipped record:
+`tooling/verify_artifacts.sh` is the executable form of all of it. A run that
+passes ends like this — the shape, not a transcript of the current tree:
 
 ```console
-$ playthrough/tooling/verify_artifacts.sh --phase post-commit
+$ playthrough/tooling/verify_artifacts.sh
 [...]
-SUMMARY  111 of 111 checks passed (111 of 111 declared for the 'post-commit'
-phase), 11 informational note(s); the committed artifacts are what they claim
+SUMMARY  120 of 120 checks passed (120 of 120 declared for the 'all'
+phase), N informational note(s); the committed artifacts are what they claim
 to be.
-VERIFY_CAPTURES=326
-VERIFY_ROWS=326
-VERIFY_TIMELINE_TOTAL=219.500
-VERIFY_TRANSITIONS=1
+VERIFY_CAPTURES=<captures>
+VERIFY_ROWS=<the same number>
+VERIFY_TIMELINE_TOTAL=<seconds>
+VERIFY_TRANSITIONS=<transition groups>
+VERIFY_REPORT=playthrough/acceptance-report.txt
 VERIFY=pass
 ```
+
+**The block above is the shape of a passing run, not a transcript of one.** The
+receipt of the run that did pass over these artifacts is committed at
+`playthrough/acceptance-report.txt`; it records `117 of 117` because that was
+the inventory the gate declared when the record was published, and the gate now
+declares 120 — the single "every row records what was pressed and why" verdict
+became a two-part rationale contract, and two properties were added: that the
+readable record's sentences are the caption track's, and that the recording in
+the tree has a checkpoint pair of its own.
+
+**One condition is open on a checkout like this one, and it is a fact about the
+checkout rather than a defect in the gate:** `git config --local user.name` and
+`user.email` may be unset, because an identity that resolves from a broader
+scope is not this repository's and does not travel with the branch. That check
+then FAILS by design; `tooling/commit_artifacts.sh` persists a local identity
+with `git config --local` wherever that is permitted. While a session's output
+is still being worked on, the "nothing under `playthrough/` is left
+uncommitted" property fails too, for the ordinary reason.
+
+A failing run publishes no report **and removes any stale one**, so a report in
+the tree means the last full run over it passed — which is the property that
+makes its presence mean something. It also means that running the gate over a
+checkout with an open condition deletes the committed receipt: put it back with
+`git checkout -- playthrough/acceptance-report.txt`, which is exactly what the
+test suite does around every gate run of its own.
 
 What it asserts, by section: the `frames == manifest rows` identity and
 contiguous indices from `00001`; the clamp bounds on every timeline entry, the
@@ -1225,9 +1911,12 @@ before play as well.
 
 Stated plainly, so the boundary is not re-litigated:
 
-* **No change to game behaviour, balance, content or presentation.** `src/`,
-  `tests/`, `data/` and `gfx/` are untouched, and so is every build and CI
-  file (section 8).
+* **No change to game behaviour, balance, content or presentation.** No
+  tracked file under `src/`, `tests/`, `data/` or `gfx/` is modified, and
+  neither is any build or CI file (section 8). The one exception is untracked
+  and deliberate: the required tileset is installed into `gfx/MShockXotto+`,
+  which `.gitignore:52` excludes, so no tracked `gfx/` source changes and the
+  artwork never enters the index.
 * **No frame decimation, sampling, deduplication, downscaling or lossy
   recompression.** One frame per keystroke, all committed. Completeness
   outranks repository size and the mitigation is engineering, not omission.
@@ -1265,11 +1954,16 @@ Stated plainly, so the boundary is not re-litigated:
 
 ## Where to read next
 
+* `REPORT.md` — the deliverable report the specification asks for, in exactly
+  three sections and no more: the recording and animation with its evidence,
+  the character, and the session as the frames record it. It is also where any
+  requirement this record does not fully meet is stated in full, in the section
+  it belongs to.
 * `TECHNICAL_NOTES.md` — the engineering log: every measurement with the
   command that produced it, every pitfall, and every place a plan figure did
   not reproduce. Start at its own front matter, which maps the page and says
   which capture set each block describes.
-* `dossier.md` — the survivor, in his own words, written before the first
+* `dossier.md` — the survivor, in her own words, written before the first
   keystroke.
 * `transcript.md` — the session, timestamped in cumulative video time.
 * **The stages' own `--help`.** All ten Python modules take `--help`, and so do
@@ -1292,5 +1986,7 @@ not create merge-conflict surfaces in upstream-synced files** (the root
 over assertion** (`[path:locator]` citations and executed commands throughout,
 with plan figures marked **(plan)**); **make integrity claims auditable** (R12
 discharged against committed artifacts — section 11); and **least privilege
-over the repository** (repository-local git identity only, no history
-rewriting, no force-push, no global configuration change — section 5).
+over the repository** (no history rewriting, no force-push, no global
+configuration written, and the committer confined to a repository-local
+identity when it writes one at all — section 5, which also records what this
+branch's commits actually resolved their identity from).

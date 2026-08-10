@@ -8,8 +8,14 @@ This module is what fills that second: a fade to black, a card reading
 "…time passes…" set in the game's own Terminus face, and a fade back in,
 composed with MoviePy and written out as ordinary PNG images.
 
-    python3 -B playthrough/tooling/make_transitions.py
-    python3 -B playthrough/tooling/make_transitions.py --timeline PATH
+    . playthrough/tooling/env.sh
+    MT='playthrough/tooling/make_transitions.py'
+    "$PLAYTHROUGH_PYTHON" -B "$MT"
+    "$PLAYTHROUGH_PYTHON" -B "$MT" --timeline PATH
+
+``env.sh`` exports ``PLAYTHROUGH_PYTHON``, the pinned CPython 3.12 that
+carries MoviePy and Pillow -- the system ``python3`` carries neither --
+and ``-B`` keeps a re-included ``__pycache__`` out of the tree.
 
 WHY IMAGES RATHER THAN VIDEO SEGMENTS
 The transition could have been spliced in as a rendered clip, and that

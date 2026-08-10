@@ -119,9 +119,16 @@ final cue end is checked here too rather than assumed from the fact
 that it was checked when the file was written.
 
 USE
-    python3 -B playthrough/tooling/make_srt.py
-    python3 -B playthrough/tooling/make_srt.py --dry-run
-    python3 -B playthrough/tooling/make_srt.py --timeline PATH
+    . playthrough/tooling/env.sh
+    MS='playthrough/tooling/make_srt.py'
+    "$PLAYTHROUGH_PYTHON" -B "$MS"
+    "$PLAYTHROUGH_PYTHON" -B "$MS" --dry-run
+    "$PLAYTHROUGH_PYTHON" -B "$MS" --timeline PATH
+
+    env.sh exports PLAYTHROUGH_PYTHON, the pinned CPython 3.12 this
+    tooling is installed against, and -B keeps a re-included
+    __pycache__ out of the tree -- this module imports a sibling, so an
+    interpreter left free to write bytecode would leave one.
 
     import make_srt
     srt, markdown, cues = make_srt.build_transcripts(document)
@@ -249,7 +256,7 @@ CUE_MAX_LINES = 2
 # "deliberately the same opening playthrough/dossier.md uses" -- and a
 # runtime QA pass found that claim false in the shipped tree: the record
 # had been re-captured with a different survivor, the dossier opened
-# with his name, and the transcript still opened with the retired one.
+# with that name, and the transcript still opened with the retired one.
 # Every other layer of the record agreed with the dossier (the
 # manifest's own sentences, the caption cues, the save file's base64
 # name, the achievements file, lastworld.json); this one file, generated
@@ -1446,8 +1453,8 @@ def read_survivor_name(dossier_path: Optional[str] = None,
     """Return the survivor's name as the dossier's first heading gives it.
 
     THE ONE PLACE THE NAME IS ESTABLISHED.  playthrough/dossier.md is
-    the survivor's own account of himself, written before the first
-    keystroke, and its first level-one heading is his name -- so it is
+    the survivor's own account of themselves, written before the first
+    keystroke, and its first level-one heading is that name -- so it is
     the name every other layer of the record agrees with, and the name
     this module's title has to carry.  Reading it here rather than
     spelling it in a constant is what makes "one survivor, one name"
@@ -2102,7 +2109,7 @@ def main(
         # re-recorded manifest, which is the failure no internal
         # invariant can see: a stale document is self-consistent.
         assert_timeline_document(document, root, label="timeline")
-        # THE SURVIVOR'S NAME, read from his own dossier before either
+        # THE SURVIVOR'S NAME, read from their own dossier before
         # body is rendered.  It is derived rather than spelled here so
         # that the transcript cannot outlive the survivor it names: a
         # re-captured record ships a new dossier, and the title follows

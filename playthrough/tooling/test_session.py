@@ -64,9 +64,11 @@ artifacts were untouched.  Standard library only.
 import argparse
 import dataclasses
 import hashlib
+import inspect
 import io
 import json
 import os
+import subprocess
 import re
 import shutil
 import stat
@@ -1059,6 +1061,71 @@ class JournalRecovery(SessionFixture):
         self.assertEqual(self.rows(), [])
 
 
+class TheKeystrokeArgv(unittest.TestCase):
+    """What is actually handed to xdotool, argument by argument.
+
+    THE MODIFIER BUG THIS PINS.  A key like 'Y' is not one X keystroke:
+    xdotool implements it as shift down, y, shift up.  Through
+    `key --window` -- synthetic events the server never reconciles
+    against real key state -- that trailing shift-up can be lost, and the
+    modifier then stays DOWN for the rest of the session.  Every plain
+    key after it arrives as Shift+key, the game ignores them, xdotool
+    still exits 0, and send_key still reports success.
+
+    Measured on a real session: after one 'Y' confirmed a world, every
+    subsequent Up, Down, Return and Tab was silently discarded.  The
+    engine was alive and idle throughout -- main thread in
+    hrtimer_nanosleep, focus and active window both correct -- and the
+    screen digest did not move for ninety seconds.  Releasing the stuck
+    modifiers and re-sending with --clearmodifiers moved it on the first
+    key.
+
+    That is the worst failure shape this pipeline has: a keystroke
+    reported as delivered that the game never acted on, with a frame
+    captured against it, so the row claims an action that never
+    happened.  Hence a test on the argv rather than on the outcome.
+    """
+
+    def sent(self, key, window=4194313):
+        seen = {}
+
+        def fake_run(command, timeout, what, env=None, cwd=None):
+            seen["argv"] = list(command)
+            return subprocess.CompletedProcess(list(command), 0, "", "")
+
+        original_run = session._run
+        original_verified = session._verified
+        session._run = fake_run
+        session._verified = lambda name: "/usr/bin/" + name
+        try:
+            session.send_key(window, key)
+        finally:
+            session._run = original_run
+            session._verified = original_verified
+        return seen["argv"]
+
+    def test_every_keystroke_clears_held_modifiers(self):
+        argv = self.sent("Down")
+        self.assertIn("--clearmodifiers", argv)
+        self.assertIn("key", argv)
+
+    def test_it_still_targets_the_authenticated_window(self):
+        argv = self.sent("Down", window=4194313)
+        self.assertIn("--window", argv)
+        self.assertEqual(argv[argv.index("--window") + 1], "4194313")
+
+    def test_the_key_is_the_last_argument_and_is_only_one(self):
+        """One key, one argv slot -- more would hide behind one frame."""
+        argv = self.sent("Return")
+        self.assertEqual(argv[-1], "Return")
+
+    def test_a_modified_key_keeps_its_own_modifier(self):
+        """--clearmodifiers clears HELD ones, not requested ones."""
+        argv = self.sent("shift+Tab")
+        self.assertEqual(argv[-1], "shift+Tab")
+        self.assertIn("--clearmodifiers", argv)
+
+
 class TheStepLock(SessionFixture):
     """Finding 13: exactly one process may advance the counter."""
 
@@ -1533,6 +1600,83 @@ class MandatoryAudits(SessionFixture):
         self.assertTrue(os.path.isfile(grave_save))
         self.assertNotIn("Fern Creek", opened._fingerprint)
         # Once accepted, the now-empty live set remains stable.
+        opened._assert_save_pin()
+
+    def test_a_recorded_death_does_not_veto_its_own_session(self):
+        """The run recording a death must be able to finish recording it.
+
+        A runtime pass drove a real death and was refused at the keystroke
+        AFTER the first last-words frame: the strict pre-flight saw a live
+        character save for a survivor the record showed dying and declared
+        the tree unresumable, which is the right answer for a tree being
+        LOADED and the wrong one for the run photographing the death.  The
+        engine only moves the save in cleanup_at_end(), after the death
+        screen, so that state is unavoidable and every remaining frame of
+        a permitted ending was unreachable.
+        """
+        self.world()
+        self.lastworld()
+        opened = self.open_session()
+        self.stub_window(opened)
+        self.record_death_sequence(opened)
+        before = len(list(io.open(self.manifest, encoding="utf-8")))
+
+        # The tree is now EXACTLY what the strict pre-flight refuses.
+        with self.assertRaisesRegex(session.SessionError, "NOT resumable"):
+            session.probe_save_resume(self.save, None, self.root)
+
+        # A driver that invokes this module once per keystroke re-runs the
+        # pre-flight on every one of them, so it must not refuse here.
+        # Closed first, because exactly one process may hold the step
+        # lock -- which is also what a per-keystroke driver does.
+        opened.close()
+        again = self.open_session()
+        self.stub_window(again)
+        again.step("Escape", note="exit the post-death scores screen",
+                   commentary="Let it end.")
+        after = len(list(io.open(self.manifest, encoding="utf-8")))
+        self.assertEqual(after, before + 1)
+
+    def test_the_death_proof_honours_the_amendment_ledger(self):
+        """A post-death screen named through the ledger is accepted.
+
+        The amendment ledger is this pipeline's only sanctioned way to
+        correct a narration, and the death proof reads exactly the field
+        an amendment corrects.  Reading the RAW rows would reject a record
+        whose screens had been named correctly through the ledger while
+        accepting one whose original wording happened to contain a marker.
+        """
+        self.world()
+        self.lastworld()
+        opened = self.open_session()
+        self.stub_window(opened)
+        opened.step("Return", note="submit A's last words: keep moving",
+                    commentary="Leave it there: keep moving.")
+        opened.step("Escape", note="shut it", commentary="Let it end.")
+        os.unlink(os.path.join(self.save, "Fern Creek", "#QQ==.sav"))
+        os.unlink(os.path.join(
+            self.save, "Fern Creek", session.SAVE_MASTER_NAME))
+        self.write_death_persistence()
+
+        # The second row names no post-death screen, so the proof refuses.
+        with self.assertRaisesRegex(
+                session.CheatGuard, "captured last-words"):
+            opened._assert_save_pin()
+
+        rows = session.manifest.read_rows(self.manifest, self.root)
+        digests = session.manifest.row_digests(self.manifest, self.root)
+        target = rows[-1]
+        session.manifest.append_amendment(
+            os.path.join(self.root, session.manifest.AMENDMENTS_NAME),
+            1, "2026-08-10T04:00:00.000Z", target["frame"], "action",
+            digests[target["frame"]], target["action"],
+            "press 'Escape' -- closed it, and the capture that followed "
+            "shows the post-death scores screen",
+            "the capture renders the engine's own scores window",
+            "the row did not name the screen the capture shows",
+            root=self.root)
+
+        # Naming it through the ledger satisfies the same proof.
         opened._assert_save_pin()
 
     def test_death_files_without_a_captured_death_are_refused(self):
@@ -2145,6 +2289,196 @@ class TheLauncherStateCoupling(SessionFixture):
             text = handle.read()
         self.assertIn('_emit("LAUNCH_UI_STATE", session.launch_state)',
                       text)
+
+
+class ADeathIsNotResumable(SessionFixture):
+    """M-18: a live-shaped save for a dead survivor is refused.
+
+    The state this covers is the one a signalled process leaves, and it
+    is the reason save shape cannot decide resumability.  CDDA writes the
+    character file during play and only moves it to the graveyard in
+    ``cleanup_at_end()``, which runs AFTER the death screen -- so a
+    session that ended inside that screen leaves a fully live-shaped save
+    for a survivor the record shows dying.  It was measured on this
+    checkout: the committed save reads as a living character while the
+    manifest records last words and neither graveyard/ nor memorial/
+    exists, and `probe` answered `resume`.
+    """
+
+    def write_record(self, *rows):
+        """Write a manifest holding exactly the rows given."""
+        with open(self.manifest, "w", encoding="utf-8") as handle:
+            for index, (action, commentary) in enumerate(rows, start=1):
+                handle.write(json.dumps({
+                    "frame": index,
+                    "file": "playthrough/frames/frame_%05d.png" % index,
+                    "real_ts": "2026-08-09T00:00:0%d+00:00" % (index % 10),
+                    "ingame_clock": "08:0%d:00" % (index % 10),
+                    "action": action,
+                    "commentary": commentary,
+                }) + "\n")
+
+    def a_recorded_death(self):
+        """A tree whose record shows a death and whose save survived."""
+        self.world("Fern Creek", ("#QQ==",))
+        self.lastworld("Fern Creek", "A")
+        self.write_record(
+            ("press 'j' -- walk south", "South."),
+            ("press 'O' -- begin my last words", "O."),
+        )
+
+    def probe(self):
+        return session.probe_save_resume(self.save, None, self.root)
+
+    def test_a_live_save_for_a_dead_survivor_is_refused(self):
+        self.a_recorded_death()
+        with self.assertRaises(session.SessionError) as refused:
+            self.probe()
+        said = str(refused.exception)
+        self.assertIn("NOT resumable", said)
+        self.assertIn("Fern Creek", said)
+
+    def test_the_refusal_names_the_survivor_and_the_frame(self):
+        """A refusal that cannot be acted on is only an obstruction."""
+        self.a_recorded_death()
+        with self.assertRaises(session.SessionError) as refused:
+            self.probe()
+        said = str(refused.exception)
+        self.assertIn("'A'", said)
+        self.assertIn("frame 2", said)
+        # The three ways out, so the operator is not left guessing.
+        for way in ("retire this userdir", "complete the engine's own "
+                    "cleanup", session.ENV_RESUME_WORLD):
+            with self.subTest(way=way):
+                self.assertIn(way, said)
+
+    def test_it_does_not_silently_become_a_create(self):
+        """The dangerous half: CREATE beside the dead survivor's save.
+
+        Making the world non-resumable removes it from the resumable
+        list, and the CREATE branch would then report "make a new
+        character" on a tree that still holds the dead one's save and
+        world -- starting a second survivor in the same world directory,
+        which the continue-an-existing-save rule forbids outright.  So
+        the refusal has to come BEFORE that branch, and this is the test
+        that would catch it moving.
+        """
+        self.a_recorded_death()
+        with self.assertRaises(session.SessionError):
+            self.probe()
+
+    def test_a_living_survivor_is_still_resumable(self):
+        """The fix must not refuse an ordinary interrupted session."""
+        self.world("Fern Creek", ("#QQ==",))
+        self.lastworld("Fern Creek", "A")
+        self.write_record(
+            ("press 'j' -- walk south", "South."),
+            ("press '5' -- wait a while", "Rest."),
+        )
+        probe = self.probe()
+        self.assertTrue(probe.resume)
+        self.assertEqual(probe.world, "Fern Creek")
+
+    def test_a_first_run_with_no_record_at_all_still_creates(self):
+        """No manifest is 'no death recorded', not 'unreadable'."""
+        probe = self.probe()
+        self.assertFalse(probe.resume)
+        self.assertEqual(probe.mode, session.SESSION_MODE_CREATE)
+
+    def test_a_completed_cleanup_leaves_no_live_save_to_refuse(self):
+        """The legitimate ending: the engine moved the save itself.
+
+        Cleanup having run is reported as a note rather than a refusal,
+        because there is nothing left to load -- which is exactly the
+        difference between an ending and an interruption.
+        """
+        self.world("Fern Creek", ())
+        self.lastworld("Fern Creek", "A")
+        self.write_record(
+            ("press 'O' -- begin my last words", "O."),
+            ("press 'Escape' -- exit the post-death scores screen",
+             "Let it end."),
+        )
+        self.write_death_persistence()
+        probe = self.probe()
+        self.assertFalse(probe.resume)
+        self.assertTrue(any("recorded a death" in one
+                            for one in probe.notes))
+
+    def test_an_unattributable_death_disqualifies_no_world(self):
+        """Without lastworld.json the death belongs to no world.
+
+        Charging it to a world anyway would refuse a tree that may have
+        nothing to do with it, so it is reported and resumability is
+        decided on the saves alone.
+        """
+        self.world("Fern Creek", ("#QQ==",))
+        self.write_record(
+            ("press 'O' -- begin my last words", "O."),
+        )
+        probe = self.probe()
+        self.assertTrue(probe.resume)
+        self.assertTrue(any("cannot be attributed" in one
+                            for one in probe.notes))
+
+    def test_the_evidence_travels_with_the_decision(self):
+        """A consumer must be able to see WHY a world was excluded."""
+        self.world("Fern Creek", ())
+        self.lastworld("Fern Creek", "A")
+        self.write_record(
+            ("press 'O' -- begin my last words", "O."),
+        )
+        payload = self.probe().as_dict()
+        world = payload["worlds"][0]
+        self.assertEqual(world["death_recorded_at"], 1)
+        self.assertFalse(world["cleanup_complete"])
+        self.assertTrue(world["death_pending"])
+        self.assertFalse(world["resumable"])
+
+    def test_the_observation_never_raises_on_a_broken_record(self):
+        """The probe must survive a manifest it cannot parse.
+
+        observed_death_frame is deliberately the non-raising counterpart
+        of assert_death_cleanup_evidence: the probe asks this question
+        about trees that may be broken, and an exception mid-way through
+        building its answer would replace a usable verdict with none.
+        """
+        with open(self.manifest, "w", encoding="utf-8") as handle:
+            handle.write("this is not json at all\n")
+        self.assertIsNone(
+            session.observed_death_frame(root=self.root))
+
+    def test_both_readers_share_one_definition_of_a_death(self):
+        """The proof and the observation must not drift apart."""
+        self.assertIn(session.DEATH_LAST_WORDS_MARKER,
+                      "press 'O' -- begin my last words")
+        self.assertIn("post-death", session.DEATH_POST_MARKERS)
+
+    def test_the_world_scan_is_available_without_the_refusal(self):
+        """A live session recording its own death must not be refused.
+
+        THE REGRESSION THIS FIX NEARLY INTRODUCED, pinned here because it
+        is not obvious from either side.  Session._save_fingerprint calls
+        this probe on EVERY step, and a session recording a legitimate
+        death passes through exactly the refused state: the last-words
+        keystroke is captured while the live save is still on disk,
+        because the engine only moves it in cleanup_at_end() after the
+        death screen finishes.  With the refusal unconditional, pressing
+        the last-words key made every subsequent step raise -- so death,
+        a PERMITTED ending, became impossible to record, several hundred
+        keystrokes into a session.  Two of the mandatory-audit tests
+        caught it; this one says why, next to the fix.
+        """
+        self.a_recorded_death()
+        probe = session.probe_save_resume(
+            self.save, None, self.root, refuse_recorded_death=False)
+        # The scan still reports everything, including the evidence.
+        self.assertEqual(len(probe.worlds), 1)
+        self.assertEqual(probe.worlds[0].characters, ("#QQ==.sav",))
+        self.assertEqual(probe.worlds[0].death_recorded_at, 2)
+        # And the strict reading is still the default.
+        with self.assertRaises(session.SessionError):
+            session.probe_save_resume(self.save, None, self.root)
 
 
 class SaveTreeConfinement(SessionFixture):
@@ -4014,6 +4348,196 @@ class ThePhaseIndex(SessionFixture):
         self.assertEqual(again.ui_phase, session.UI_PHASE_IN_WORLD)
         self.assertEqual(again.sidebar_frame, 1)
         self.assertEqual(self.indexed(), 1)
+
+
+class TheRoomForTheNextFrame(SessionFixture):
+    """A full disk must be refused BEFORE the keystroke, not after.
+
+    A session is unbounded and every capture is kept at full resolution,
+    so the frames directory only ever grows.  Nothing checked the disk at
+    all, and the failure that leaves is the worst shape one can take: the
+    key has been delivered and cannot be un-pressed, the capture is
+    truncated or missing, and a keystroke with no frame breaks the
+    identity the whole record rests on for a reason no later stage can
+    repair.
+
+    The reserve is exercised through $PLAYTHROUGH_CAPTURE_RESERVE, which
+    is also the only way an operator can name one -- so these tests use
+    the same door a person would.
+    """
+
+    def reserve(self, value):
+        """Name the reserve for this test, and put it back afterwards."""
+        previous = os.environ.get(session.ENV_CAPTURE_RESERVE)
+        os.environ[session.ENV_CAPTURE_RESERVE] = str(value)
+        self.addCleanup(self._restore, session.ENV_CAPTURE_RESERVE,
+                        previous)
+
+    def measured(self, answer):
+        """Stand in for the disk measurement.
+
+        The host this suite runs on has terabytes free, so the only
+        honest way to exercise the decision is to substitute the
+        measurement -- exactly as the window and the keystroke are
+        substituted.  `answer` is a number of bytes, or an exception
+        instance to raise.
+        """
+        original = session.free_bytes
+
+        def report(path):
+            if isinstance(answer, BaseException):
+                raise answer
+            return answer
+
+        session.free_bytes = report
+        self.addCleanup(setattr, session, "free_bytes", original)
+
+    def test_a_step_with_no_room_sends_nothing(self):
+        """The whole point: refused before the irreversible act."""
+        self.measured(1024)
+        opened = self.open_session()
+        self.stub_window(opened)
+        with self.assertRaises(session.CapacityError):
+            opened.step("j", commentary="Shelves first.",
+                        note="step one tile south")
+        self.assertEqual(self.sent, [])
+        self.assertEqual(self.rows(), [])
+        self.assertEqual(opened.frame, 0)
+        self.assertFalse(os.path.isfile(
+            os.path.join(self.frames, "frame_00001.png")))
+        self.assertFalse(
+            os.path.isfile(session.journal_path(self.root)))
+
+    def test_the_refusal_names_the_figures_and_the_remedy(self):
+        self.measured(1024)
+        opened = self.open_session()
+        self.stub_window(opened)
+        with self.assertRaises(session.CapacityError) as failed:
+            opened.step("j", commentary="South.")
+        message = str(failed.exception)
+        self.assertIn("THE KEY HAS NOT BEEN SENT", message)
+        self.assertIn("1024 byte(s) free", message)
+        self.assertIn(str(session.capture_reserve(None)), message)
+        self.assertIn("short", message)
+        self.assertIn(session.ENV_CAPTURE_RESERVE, message)
+        # The path is reported relative to the checkout, as every other
+        # machine-readable path in this module is.
+        self.assertNotIn(self.directory, message)
+
+    def test_a_step_with_room_is_not_refused(self):
+        """The positive control: room means nothing changes."""
+        self.measured(session.capture_reserve(None))
+        opened = self.open_session()
+        self.stub_window(opened)
+        result = opened.step("j", commentary="South.")
+        self.assertEqual(result.frame, 1)
+        self.assertEqual(self.sent, ["j"])
+
+    def test_an_unmeasurable_disk_is_reported_not_refused(self):
+        """A statvfs that fails is a fact about the host.
+
+        It is not evidence that the disk is full, and the capturer
+        refuses a frame it could not write on its own account -- so a
+        session must not be stopped by the absence of a measurement.
+        """
+        self.measured(OSError("no answer"))
+        opened = self.open_session()
+        self.stub_window(opened)
+        result = opened.step("j", commentary="South.")
+        self.assertEqual(result.frame, 1)
+        self.assertEqual(self.sent, ["j"])
+
+    def test_the_named_reserve_is_used_exactly(self):
+        """An operator's figure is honoured, not adjusted."""
+        self.reserve(12345)
+        self.assertEqual(session.capture_reserve(None), 12345)
+        self.assertEqual(session.capture_reserve(99999999), 12345)
+
+    def test_the_reserve_is_calibrated_from_the_previous_capture(self):
+        """A constant would be wrong for every session but one."""
+        lookahead = session.CAPTURE_RESERVE_LOOKAHEAD
+        extra = session.CAPTURE_RESERVE_FLOOR
+        floor = (session.CAPTURE_RESERVE_PER_FRAME_FLOOR *
+                 lookahead + extra)
+        self.assertEqual(session.capture_reserve(None), floor)
+        self.assertEqual(session.capture_reserve(1), floor)
+        big = session.CAPTURE_RESERVE_PER_FRAME_FLOOR * 20
+        self.assertEqual(session.capture_reserve(big),
+                         big * lookahead + extra)
+
+    def test_the_previous_capture_is_one_stat_not_a_listing(self):
+        """A per-key directory walk is O(captures) per keystroke.
+
+        This module already carries too much of that shape, so the
+        calibration reads ONE file whose name it can derive.  Asserted
+        against the source, because the cost is the point and a listing
+        added later would still pass every behavioural test here.
+        """
+        source = inspect.getsource(session.Session._previous_capture_bytes)
+        self.assertIn("os.stat(", source)
+        for walked in ("listdir", "scandir", "glob", "iglob",
+                       "_frames_on_disk"):
+            with self.subTest(walked=walked):
+                self.assertNotIn(walked, source)
+
+    def test_the_measurement_is_the_available_figure(self):
+        """f_bavail, not f_bfree.
+
+        The difference is the filesystem's own reserved blocks: f_bfree
+        counts space an unprivileged writer may not actually have.  The
+        statvfs answer is substituted rather than compared against a
+        second live reading, because the real figure moves between two
+        calls on a host anything else is running on -- which is what a
+        first version of this test discovered, by failing on a 4096-byte
+        drift.
+        """
+        class Answer(object):
+            f_bavail = 1000
+            f_bfree = 9999
+            f_frsize = 4096
+
+        original = os.statvfs
+        os.statvfs = lambda path: Answer()
+        self.addCleanup(setattr, os, "statvfs", original)
+        self.assertEqual(session.free_bytes(self.frames), 1000 * 4096)
+
+    def test_an_unreadable_reserve_is_refused_not_defaulted(self):
+        """Defaulting it would hide the mistake behind a full disk."""
+        for value in ("", "  ", "abc", "-1", "12.5", "0x10",
+                      "$(id)", "1; rm -rf /",
+                      str(session.MAX_CAPTURE_RESERVE + 1)):
+            with self.subTest(value=value):
+                self.reserve(value)
+                with self.assertRaises(session.CapacityError):
+                    session.capture_reserve(None)
+
+    def test_there_is_no_value_that_switches_the_check_off(self):
+        """A session on a nearly full disk is one that should stop."""
+        self.reserve(0)
+        with self.assertRaises(session.CapacityError) as failed:
+            session.capture_reserve(None)
+        self.assertIn("switches the reserve off", str(failed.exception))
+
+    def test_the_status_distinguishes_a_full_disk(self):
+        """A driver has to tell "free space" from "the session is over"."""
+        self.assertEqual(
+            session._status_for(session.CapacityError("full")),
+            session.EXIT_CAPACITY)
+        for other in (session.KeyRejected("k"), session.WindowError("w"),
+                      session.CaptureError("c"), session.RecordError("r"),
+                      session.CheatGuard("g")):
+            with self.subTest(other=type(other).__name__):
+                self.assertNotEqual(session._status_for(other),
+                                    session.EXIT_CAPACITY)
+
+    def test_the_check_happens_before_the_window_is_prepared(self):
+        """Order matters: nothing may be reached that could send a key."""
+        source = inspect.getsource(session.Session.step)
+        room = source.index("_assert_capture_room")
+        for later in ("_prepare_window_for", "write_journal",
+                      "_capture_frame"):
+            with self.subTest(later=later):
+                self.assertLess(room, source.index(later))
 
 
 class CommittedArtifactsUntouched(unittest.TestCase):

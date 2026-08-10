@@ -5359,24 +5359,112 @@ class TestStrictDocumentTypes(unittest.TestCase):
 
 
 class TestBytecodeHygiene(unittest.TestCase):
-    """F33: running the module standalone leaves no __pycache__."""
+    """F33: running the module standalone leaves no __pycache__.
 
-    def test_a_standalone_run_writes_no_pycache(self):
-        tooling = os.path.dirname(os.path.abspath(timeline.__file__))
-        cache = os.path.join(tooling, "__pycache__")
-        if os.path.exists(cache):
-            self.skipTest("a __pycache__ already exists here")
+    WHY THIS RUNS A COPY, IN A TEMPORARY DIRECTORY.  The regression it
+    detects is bytecode being written beside the module -- and beside the
+    REAL module means inside playthrough/tooling/, the one tree whose
+    terminal `!/playthrough/**` negation re-includes everything, where the
+    checkpoint's own hygiene gate then refuses to commit while it is
+    there.  So a test that detected the regression by provoking it in the
+    working tree would leave the working tree needing a repair, and it
+    had to skip itself whenever a __pycache__ was already present, which
+    is exactly when the question matters least.
+
+    A copy in a system temporary directory answers the same question --
+    the module's `sys.dont_write_bytecode = True` is what suppresses the
+    cache, and it travels with the bytes -- and its residue is thrown
+    away with the directory.  The real folder is checked too, as an
+    assertion rather than as a skip condition.
+    """
+
+    # The module under test, and the sibling it imports.  timeline.py
+    # imports manifest at module scope, so a copy without it would fail
+    # to start and the test would pass for the wrong reason.
+    COPIED = ("timeline.py", "manifest.py")
+
+    def setUp(self):
+        self.tooling = os.path.dirname(os.path.abspath(timeline.__file__))
+        self.temporary = tempfile.TemporaryDirectory(
+            prefix="blitzy_bytecode_")
+        self.addCleanup(self.temporary.cleanup)
+        self.copy = os.path.join(self.temporary.name, "tooling")
+        os.makedirs(self.copy)
+        for name in self.COPIED:
+            shutil.copyfile(os.path.join(self.tooling, name),
+                            os.path.join(self.copy, name))
+
+    def run_without_the_environment_guard(self, directory):
+        """Run `timeline.py --help` from `directory`, bytecode enabled.
+
+        PYTHONDONTWRITEBYTECODE is removed and -B is NOT passed, so the
+        only thing left standing between a run and a __pycache__ is the
+        module's own statement -- which is the subject.
+        """
         environment = dict(os.environ)
         environment.pop("PYTHONDONTWRITEBYTECODE", None)
         done = subprocess.run(
-            [sys.executable,
-             os.path.join(tooling, "timeline.py"), "--help"],
+            [sys.executable, os.path.join(directory, "timeline.py"),
+             "--help"],
             capture_output=True, text=True, timeout=120,
             env=environment)
         self.assertEqual(done.returncode, 0, done.stderr)
+        return done
+
+    def test_a_standalone_run_writes_no_pycache(self):
+        self.run_without_the_environment_guard(self.copy)
+        cache = os.path.join(self.copy, "__pycache__")
         self.assertFalse(
             os.path.exists(cache),
-            msg="a standalone run left %s behind" % cache)
+            msg=("a standalone run left %s behind; against the real "
+                 "module that residue would be committable and the "
+                 "checkpoint's hygiene gate would refuse until it was "
+                 "removed" % cache))
+
+    def test_the_copy_really_is_the_module_under_test(self):
+        """Byte for byte, so this cannot pass against a stale copy."""
+        for name in self.COPIED:
+            with self.subTest(module=name):
+                with open(os.path.join(self.tooling, name), "rb") as one:
+                    with open(os.path.join(self.copy, name), "rb") as two:
+                        self.assertEqual(one.read(), two.read())
+
+    def test_the_copy_would_have_shown_the_regression(self):
+        """The harness is proved able to FAIL before it is trusted.
+
+        A copy with the statement removed writes a __pycache__ where the
+        real one does not -- so the assertion above is measuring the
+        module's own instruction and not the interpreter's mood.
+        """
+        source = os.path.join(self.copy, "timeline.py")
+        with open(source, "r", encoding="utf-8") as handle:
+            text = handle.read()
+        marker = "sys.dont_write_bytecode = True"
+        self.assertIn(marker, text)
+        with open(source, "w", encoding="utf-8") as handle:
+            handle.write(text.replace(
+                marker, "sys.dont_write_bytecode = False", 1))
+        self.run_without_the_environment_guard(self.copy)
+        self.assertTrue(
+            os.path.isdir(os.path.join(self.copy, "__pycache__")),
+            msg="the harness cannot detect the regression it exists for")
+
+    def test_the_real_tooling_folder_holds_no_bytecode(self):
+        """Asserted, not skipped over.
+
+        The old form of this test skipped when a __pycache__ was already
+        present, which is the one state worth reporting.
+        """
+        for name in ("__pycache__",):
+            with self.subTest(name=name):
+                self.assertFalse(
+                    os.path.exists(os.path.join(self.tooling, name)),
+                    msg=("%s is in playthrough/tooling/, where the "
+                         "terminal negation makes it committable and a "
+                         "checkpoint refuses it" % name))
+        stray = [name for name in os.listdir(self.tooling)
+                 if name.endswith((".pyc", ".pyo"))]
+        self.assertEqual(stray, [])
 
     def test_the_module_disables_bytecode_writing(self):
         self.assertTrue(sys.dont_write_bytecode)
@@ -6727,6 +6815,179 @@ class TestTheArtifactLock(unittest.TestCase):
         with timeline.ArtifactLock("movie", self.directory):
             pass
         self.assertTrue(os.path.isfile(path))
+
+
+class TestTheDocumentCanBeReadWithoutBeingHeld(unittest.TestCase):
+    """The event reader, and the header beside it.
+
+    read_timeline() returns the whole document, which is what the
+    producers need -- this module builds it, the renderer plans from it,
+    the caption generator walks it.  It is the wrong answer for a
+    consumer that only WALKS: one entry per keystroke is roughly a
+    kilobyte of interpreter objects, so a session nobody has bounded is
+    hundreds of megabytes resident on a host with under four gigabytes.
+
+    Three consumers in the acceptance gate walk the entries in order and
+    never look back.  iter_timeline_frames() is what they use, and this
+    is where it is held to being EXACTLY equivalent to the whole read --
+    a streamed read that is also a lenient one would be worse than the
+    memory it saves.
+    """
+
+    def setUp(self):
+        holder = tempfile.TemporaryDirectory()
+        self.addCleanup(holder.cleanup)
+        self.directory = os.path.realpath(holder.name)
+
+    def write(self, name, text):
+        path = os.path.join(self.directory, name)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        return path
+
+    def document(self, count=5):
+        """A real document, written by this module's own encoder."""
+        frames = [{"frame": index,
+                   "file": "playthrough/frames/frame_%05d.png" % index,
+                   "real_ts": "2026-08-08T07:52:%02d.000Z" % index,
+                   "ingame_clock": None,
+                   "duration": 0.25,
+                   "cue_start": 0.25 * (index - 1),
+                   "cue_end": 0.25 * index,
+                   "transition_after": False}
+                  for index in range(1, count + 1)]
+        return {"version": 1,
+                "manifest": {"path": "playthrough/manifest.jsonl",
+                             "sha256": "0" * 64, "rows": count},
+                "floor": timeline.FLOOR, "ceil": timeline.CEIL,
+                "frames": frames, "total": 0.25 * count}
+
+    def test_the_stream_is_the_whole_read(self):
+        document = self.document()
+        path = self.write("timeline.json",
+                          timeline.encode_timeline(document))
+        self.assertEqual(
+            list(timeline.iter_timeline_frames(path)),
+            document["frames"],
+            msg="a streamed entry must be the entry json.load() returns")
+
+    def test_the_header_is_everything_but_the_entries(self):
+        document = self.document()
+        path = self.write("timeline.json",
+                          timeline.encode_timeline(document))
+        header = timeline.read_timeline_header(path)
+        self.assertEqual(header["frames"], [],
+                         msg="the array is emptied, not removed, so a "
+                             "caller cannot mistake a streamed read for "
+                             "a document that never had entries")
+        for key, value in document.items():
+            if key == "frames":
+                continue
+            self.assertEqual(header[key], value)
+
+    def test_an_empty_array_streams_as_nothing(self):
+        document = self.document(0)
+        path = self.write("timeline.json",
+                          timeline.encode_timeline(document))
+        self.assertEqual(list(timeline.iter_timeline_frames(path)), [])
+        self.assertEqual(timeline.read_timeline_header(path)["frames"],
+                         [])
+
+    def test_a_document_with_no_array_streams_as_nothing(self):
+        path = self.write("timeline.json", '{"version": 1}\n')
+        self.assertEqual(list(timeline.iter_timeline_frames(path)), [])
+        self.assertEqual(timeline.read_timeline_header(path),
+                         {"version": 1})
+
+    def test_a_string_that_spells_the_key_is_not_the_array(self):
+        """Valid JSON cannot carry an unescaped quote inside a string.
+
+        The array is found by searching the raw text for the KEY, quotes
+        included, and a value that spelled it out would have to escape
+        them -- so the first match is the array itself.  Asserted rather
+        than assumed, because the whole streaming design rests on it.
+        """
+        path = self.write(
+            "timeline.json",
+            '{"note": "beware \\"frames\\": [ in a value",'
+            ' "frames": [{"frame": 7}], "total": 1}\n')
+        self.assertEqual(
+            [entry["frame"]
+             for entry in timeline.iter_timeline_frames(path)], [7])
+        self.assertEqual(
+            timeline.read_timeline_header(path)["note"],
+            'beware "frames": [ in a value')
+
+    def test_a_truncated_array_is_refused_rather_than_shortened(self):
+        """A short read must not look like a short session.
+
+        Silently yielding the entries it managed to decode is the one
+        behaviour that would make this reader dangerous: every count
+        downstream would tally against a document that had been cut.
+        """
+        for text in ('{"frames": [{"frame": 1}',
+                     '{"frames": [{"frame": ',
+                     '{"frames": [{"frame": 1}, {"frame"'):
+            path = self.write("timeline.json", text)
+            with self.subTest(text=text):
+                with self.assertRaises(timeline.TimelineError):
+                    list(timeline.iter_timeline_frames(path))
+                with self.assertRaises(timeline.TimelineError):
+                    timeline.read_timeline_header(path)
+
+    def test_a_bare_array_document_is_read_whole(self):
+        """The defensive form: no object, so no header to separate."""
+        path = self.write("timeline.json", '[{"frame": 1}, {"frame": 2}]')
+        self.assertEqual(list(timeline.iter_timeline_frames(path)), [])
+        self.assertEqual(timeline.read_timeline_header(path),
+                         [{"frame": 1}, {"frame": 2}])
+
+    def test_a_symbolic_link_is_refused(self):
+        """The same rule read_timeline() applies, for the same reason.
+
+        A redirected read would hand a consumer somebody else's document
+        while every downstream count still tallied.
+        """
+        target = self.write("timeline.json",
+                            timeline.encode_timeline(self.document()))
+        link = os.path.join(self.directory, "link.json")
+        os.symlink(target, link)
+        with self.assertRaises(timeline.TimelineError):
+            list(timeline.iter_timeline_frames(link))
+        with self.assertRaises(timeline.TimelineError):
+            timeline.read_timeline_header(link)
+
+    def test_an_entry_larger_than_the_chunk_still_arrives_whole(self):
+        """The reader refills its buffer rather than giving up.
+
+        An entry longer than the read size is ordinary -- a commentary is
+        a sentence, and the chunk is 64 KiB -- but the failure mode if it
+        were not handled is a refusal on a perfectly good document.
+        """
+        document = self.document(2)
+        document["frames"][0]["commentary"] = "x" * 200000
+        path = self.write("timeline.json",
+                          timeline.encode_timeline(document))
+        entries = list(timeline.iter_timeline_frames(path))
+        self.assertEqual(len(entries), 2)
+        self.assertEqual(len(entries[0]["commentary"]), 200000)
+        self.assertEqual(timeline.read_timeline_header(path)["total"],
+                         document["total"])
+
+    def test_the_reader_holds_one_entry_at_a_time(self):
+        """The point of it, asserted on the object graph itself.
+
+        A generator that had materialised the array would hand back the
+        SAME objects on a second pass; this one decodes afresh, which is
+        what proves nothing was retained between yields.
+        """
+        path = self.write("timeline.json",
+                          timeline.encode_timeline(self.document(3)))
+        first = list(timeline.iter_timeline_frames(path))
+        second = list(timeline.iter_timeline_frames(path))
+        self.assertEqual(first, second)
+        for left, right in zip(first, second):
+            self.assertIsNot(left, right)
 
 
 if __name__ == "__main__":

@@ -215,6 +215,14 @@ readonly EX_PREREQ=8
 # nothing about the invocation was wrong: the state of the run is what
 # refuses it.
 readonly EX_RECORDED=9
+# A save tree exists but MUST NOT be continued -- the append-only record
+# shows its survivor died and the engine's own death cleanup never ran,
+# so the character file is still live-shaped for somebody who is dead in
+# the record.  Distinct from EX_LAYOUT, which means the save tree is
+# malformed or ambiguous: here the tree is well-formed and it is the
+# RECORD that refuses it.  session.py owns this judgment (see
+# assert_resume_not_superseded) and its message names the ways forward.
+readonly EX_NOT_RESUMABLE=10
 
 # ---------------------------------------------------------------------
 # Tunables.
@@ -354,6 +362,11 @@ WINDOW_ID=""
 WINDOW_GEOMETRY=""
 WINDOW_WIDTH=""
 WINDOW_HEIGHT=""
+# The offsets, kept beside the size because the capture contract names
+# all four and a geometry check that reads only two is not a check of the
+# geometry.
+WINDOW_X=""
+WINDOW_Y=""
 GAME_PID=""
 # The pid find_game_window verified for the window it chose, declared
 # here with the other results and set only by that function.
@@ -1086,6 +1099,74 @@ build_in_progress() {
     return 0
 }
 
+# assert_build_capabilities -- prove the LIBRARIES are there, not just
+# the commands.
+#
+# An executable inventory is half a build preflight, and the missing half
+# is the one that costs an hour: `make`, `g++-14`, `pkg-config` and
+# `ccache` can all be present on a host with no SDL2 development headers
+# at all, and the build then fails several hundred object files in, with
+# a compiler error about a missing header rather than a sentence naming a
+# package.  A review named this precisely, so every capability the tiles
+# build genuinely consumes is probed HERE, before a log is truncated or a
+# child is spawned, and every failure is collected so one run tells an
+# operator everything to install rather than one thing at a time.
+#
+# WHAT IS PROBED, AND WHY EACH ONE.  The list is derived from the
+# Makefile's own tiles configuration and from doc/c++/COMPILING.md, not
+# invented: sdl2, SDL2_ttf, SDL2_image and SDL2_mixer because TILES=1
+# SOUND=1 links all four; freetype2 because the SDL font path needs it;
+# zlib because the save layer is compressed; ncursesw because the shared
+# curses code compiles against it even in a tiles build; msgfmt because
+# LOCALIZE builds the .mo catalogues.  SDL3 is deliberately NOT probed:
+# SDL3=0 is mandatory on this archive and the Makefile hard-errors
+# without it, which is stated where the build command is assembled.
+assert_build_capabilities() {
+    playthrough_require_tools pkg-config ||
+        die "${EX_PREREQ}" "pkg-config is what the Makefile asks the" \
+            "host about SDL and FreeType with, so a build cannot even" \
+            "be configured without it."
+    local -a missing=()
+    local module package
+    # One pkg-config module per line, with the Debian/Ubuntu package
+    # that provides its .pc file.
+    while read -r module package; do
+        [ -n "${module}" ] || continue
+        if ! "${PLAYTHROUGH_BIN_PKG_CONFIG}" --exists "${module}" \
+                >/dev/null 2>&1; then
+            missing+=("${module} (apt: ${package})")
+        fi
+    done <<'MODULES'
+sdl2 libsdl2-dev
+SDL2_ttf libsdl2-ttf-dev
+SDL2_image libsdl2-image-dev
+SDL2_mixer libsdl2-mixer-dev
+freetype2 libfreetype-dev
+zlib zlib1g-dev
+ncursesw libncurses-dev
+MODULES
+    if ! command -v msgfmt >/dev/null 2>&1; then
+        missing+=("msgfmt (apt: gettext)")
+    fi
+    if [ "${#missing[@]}" -ne 0 ]; then
+        die "${EX_PREREQ}" "the build cannot start: this host has the" \
+            "build COMMANDS but not the development libraries the" \
+            "tiles build links against.  Missing: ${missing[*]}." \
+            "The complete, separated inventories -- host build," \
+            "capture runtime and the supported container -- are in" \
+            "playthrough/tooling/requirements.txt.  Nothing has been" \
+            "changed."
+    fi
+    playthrough_log "build capabilities present: sdl2" \
+        "$("${PLAYTHROUGH_BIN_PKG_CONFIG}" --modversion sdl2 \
+            2>/dev/null || printf 'unknown'), SDL2_ttf, SDL2_image," \
+        "SDL2_mixer, freetype2" \
+        "$("${PLAYTHROUGH_BIN_PKG_CONFIG}" --modversion freetype2 \
+            2>/dev/null || printf 'unknown'), zlib, ncursesw and" \
+        "msgfmt"
+    return 0
+}
+
 build_binary() {
     # PREFLIGHT EVERY EXTERNAL COMMAND FIRST, before a log is
     # truncated, a pidfile is removed or a child is spawned.  Each of
@@ -1101,6 +1182,7 @@ build_binary() {
         die "${EX_PREREQ}" "the build cannot start: the tools above" \
             "are missing.  Install them and retry; nothing has been" \
             "changed."
+    assert_build_capabilities
     resolve_compiler ||
         die "${EX_PREREQ}" "no usable C++ compiler: this tree builds" \
             "with ${SANCTIONED_COMPILER} (major" \
@@ -1557,6 +1639,20 @@ ensure_headless() {
 # MSXotto+, so this step has exactly two outcomes: the required tileset
 # is installed and reported, or this script exits non-zero.  There is
 # NO FALLBACK.
+#
+# WHICH REQUIREMENT, AND WHY IT OUTRANKS THE OTHER TEXT.  The plan says
+# two things about artwork and a review was right that enforcing one of
+# them without saying why is the implementation deciding for itself.  The
+# resolution is recorded once, in env.sh beside PLAYTHROUGH_TILESET, and
+# every consumer including this one enforces that single contract.  In
+# short: §0.1.2's last bullet is the only text that names a pack and it
+# is an instruction in the imperative -- "You must install the tilesets
+# found in this repository https://github.com/I-am-Erk/CDDA-Tilesets ...
+# and configure the game to use the MSXotto+ Tileset" -- while §0.7.3's
+# and §0.8.2's ASCIITiles statements describe the checkout BEFORE any
+# provisioning, reasoning from `.gitignore:52` as §0.4.1.3 says in as
+# many words.  A description of the starting state does not override an
+# instruction about what to do to it.
 #
 # A fallback would be worse than a failure: the checkout ships
 # ASCIITiles, so a run that quietly fell back to it would still produce
@@ -2365,6 +2461,95 @@ recheck_save_resume() {
     return 0
 }
 
+# assert_resume_not_superseded WORLD -- refuse a save the RECORD has
+# already finished with.
+#
+# THE SCAN ABOVE CANNOT ANSWER THIS, which is why this delegates instead
+# of duplicating the logic.  Resumability LOOKS like a property of the
+# save tree, so this script used to decide it from the save tree alone:
+# a world holding a character file was resumable.  That is wrong.  CDDA
+# writes the character file throughout play and only MOVES it to the
+# graveyard in cleanup_at_end(), which runs after the death screen -- so
+# a session that ended inside that screen leaves a fully live-shaped
+# save for a survivor who is dead in the append-only record.  Nothing in
+# the save's own shape separates the two cases, so the judgment needs
+# the RECORD, and session.py holds the one implementation of it
+# (probe_save_resume, refuse_recorded_death).
+#
+# ONE AUTHORITY, CONSULTED -- NOT A SECOND OPINION.  Two independent
+# implementations of "is this resumable" is precisely how this script
+# came to tell an operator to continue a dead survivor while session.py
+# refused the very same tree.  This asks session.py and adopts its
+# answer, so the two cannot disagree by construction.
+#
+# AN UNAVAILABLE AUTHORITY IS A REFUSAL, NOT A PASS.  session.py is a
+# tracked file beside this one; if it or the interpreter is missing then
+# the checkout is broken, and "resume" is the one answer that must never
+# be given on a guess -- guessing it puts a dead survivor back into play
+# and nothing on disk would show it.
+assert_resume_not_superseded() {
+    local world="$1"
+    local prober="${PLAYTHROUGH_TOOLING_DIR}/session.py"
+    local refusal="" status=0
+    if [ ! -f "${prober}" ]; then
+        die "${EX_PREREQ}" "no ${prober}, so whether the existing" \
+            "save may be continued cannot be established.  It is" \
+            "not assumed: a save whose survivor has died is still" \
+            "live-shaped on disk, so continuing it on a guess would" \
+            "put a dead survivor back into play."
+    fi
+    if [ -z "${PLAYTHROUGH_PYTHON}" ] ||
+       [ ! -x "${PLAYTHROUGH_PYTHON}" ]; then
+        die "${EX_PREREQ}" "the interpreter" \
+            "'${PLAYTHROUGH_PYTHON:-<unset>}' is not executable, so" \
+            "whether the existing save may be continued cannot be" \
+            "established, and it is not assumed for the reason" \
+            "above."
+    fi
+    local -a probe=(
+        "${PLAYTHROUGH_PYTHON}" -B "${prober}" probe
+        --save-dir "${PLAYTHROUGH_SAVE_DIR}"
+    )
+    if [ -n "${world}" ]; then
+        probe+=(--world "${world}")
+    fi
+    # stdout is session.py's KEY=value channel and is discarded here --
+    # this script emits its own -- while stderr carries the refusal and
+    # is forwarded verbatim, because that message names the three ways
+    # forward and choosing between them is the operator's call.
+    if refusal="$("${probe[@]}" 2>&1 1>/dev/null)"; then
+        playthrough_log "the append-only record agrees this save may" \
+            "be continued: session.py reports world" \
+            "'${world:-the only resumable one}' resumable"
+        return 0
+    else
+        status=$?
+    fi
+    if [ -n "${refusal}" ]; then
+        # session.py stamps its own 'playthrough: FATAL: ' prefix, so
+        # that prefix is dropped before forwarding: otherwise the line
+        # reads "WARNING: ... FATAL", saying two contradictory things
+        # about one message.  The wording itself is forwarded unchanged
+        # -- it names the ways forward and must not be paraphrased.
+        playthrough_warn "session.py reports:" \
+            "${refusal#playthrough: FATAL: }"
+    fi
+    if [ "${status}" -eq 2 ]; then
+        die "${EX_NOT_RESUMABLE}" "the existing save MUST NOT be" \
+            "continued: the append-only record shows this world's" \
+            "survivor died, and the save on disk is inconsistent" \
+            "with that ending, so continuing it would put a dead" \
+            "survivor back into play with nothing on disk to show" \
+            "it.  Which inconsistency it is, and the ways forward," \
+            "are named in session.py's refusal above; this script" \
+            "will not choose between them, because each one either" \
+            "discards or publishes evidence."
+    fi
+    die "${EX_PREREQ}" "session.py could not establish whether the" \
+        "existing save may be continued (exit ${status}).  The" \
+        "resume decision is refused rather than guessed."
+}
+
 probe_save_resume() {
     if [ "${PROBE_DONE}" -eq 1 ]; then
         return 0
@@ -2470,6 +2655,11 @@ probe_save_resume() {
                 "command.  Set PLAYTHROUGH_RESUME_WORLD to the one" \
                 "you mean."
         fi
+        # THE RECORD GETS A VETO, before the instruction below is
+        # printed.  "MUST be continued" is the wrong thing to tell an
+        # operator about a survivor who is dead in the record, so the
+        # one authority on that is consulted first.
+        assert_resume_not_superseded "${SAVE_WORLD}"
         playthrough_log "RESUME: ${SAVE_WORLD_COUNT} world(s) and" \
             "${SAVE_CHAR_COUNT} character save(s)" \
             "(${SAVE_CHAR_FORMS:-no character file yet}) exist under" \
@@ -2680,9 +2870,80 @@ read_window_geometry() {
     y="$(printf '%s\n' "${raw}" | sed -n 's/^Y=//p' | head -n 1)"
     case "${w}" in ''|*[!0-9]*) return 1 ;; esac
     case "${h}" in ''|*[!0-9]*) return 1 ;; esac
+    # THE OFFSETS ARE VALIDATED TOO, not merely defaulted.  They used to
+    # be interpolated with `${x:-0}`, which turns an unparsed or
+    # non-numeric value into a confident "+0" -- so a window at an offset
+    # nobody measured was reported as one at the origin, and the exact
+    # geometry contract below could be satisfied by a value that was
+    # never read.  An offset that is not an integer means the geometry
+    # was not understood, and that is a failed read.
+    case "${x}" in ''|*[!0-9-]*) return 1 ;; esac
+    case "${y}" in ''|*[!0-9-]*) return 1 ;; esac
     WINDOW_WIDTH="${w}"
     WINDOW_HEIGHT="${h}"
-    WINDOW_GEOMETRY="${w}x${h}+${x:-0}+${y:-0}"
+    WINDOW_X="${x}"
+    WINDOW_Y="${y}"
+    WINDOW_GEOMETRY="${w}x${h}+${x}+${y}"
+    return 0
+}
+
+# settle_window_geometry -- re-resolve the window and wait for its
+# geometry to STOP CHANGING, before anything asserts on it.
+#
+# FULLSCREEN=windowedbl DOES NOT CREATE A BORDERLESS WINDOW.  It creates
+# an ordinary decorated, resizable one at the grid size and then applies
+# SDL's fullscreen_desktop AFTER creation [src/sdltiles.cpp:612-616], and
+# SDL implements that by DESTROYING the window and creating a
+# replacement.  So for a moment a launch has two window ids and two
+# geometries, and the first one is not the one the session is captured
+# from.  Measured on this surface, in order:
+#
+#   window 4194306   1920x1072+1+22   the decorated original -- openbox's
+#                                     1px border and 22px titlebar
+#   window 4194313   1920x1080+0+0    the replacement, borderless, given
+#                                     the whole root
+#
+# The launcher read the geometry once, as soon as a window appeared, and
+# never read it again -- assert_instance_alive re-resolves the ID after
+# the settle but left WINDOW_WIDTH/HEIGHT at the transient values.  So a
+# perfectly good launch refused itself for a geometry the engine had
+# already left, reported as `window is 1920x1072+1+22, and a capture
+# launch requires exactly ...`.
+#
+# TWO CONSECUTIVE IDENTICAL READS, not a fixed sleep: a sleep long enough
+# to be safe on a loaded host is dead time on every launch, and one short
+# enough to feel quick is the bug again.  An unreadable or never-settling
+# geometry is left exactly as the last read found it, so the assertion
+# that follows reports what was actually observed rather than nothing.
+settle_window_geometry() {
+    local previous="" attempt=0
+    # Twenty attempts at a quarter second is five seconds, which is an
+    # order of magnitude more than the transition measured here and still
+    # bounded.
+    while [ "${attempt}" -lt 20 ]; do
+        attempt=$(( attempt + 1 ))
+        # The ID first: the window being measured may already be gone.
+        find_game_window || true
+        if ! read_window_geometry || [ -z "${WINDOW_GEOMETRY}" ]; then
+            sleep 0.25
+            continue
+        fi
+        if [ -n "${previous}" ] &&
+            [ "${WINDOW_GEOMETRY}" = "${previous}" ]; then
+            if [ "${attempt}" -gt 2 ]; then
+                playthrough_log "window geometry settled at" \
+                    "${WINDOW_GEOMETRY} (window ${WINDOW_ID}, after" \
+                    "${attempt} reads)"
+            fi
+            return 0
+        fi
+        previous="${WINDOW_GEOMETRY}"
+        sleep 0.25
+    done
+    playthrough_warn "the window geometry was still changing after" \
+        "${attempt} reads; the last one was" \
+        "${WINDOW_GEOMETRY:-unreadable} on window" \
+        "${WINDOW_ID:-none}.  What follows judges that reading."
     return 0
 }
 
@@ -3478,11 +3739,34 @@ emit_launch_facts() {
     return 0
 }
 
-# check_capture_geometry -- confirm the window is big enough for the
-# grid the terminal dimensions imply, and shout only on a shortfall.
+# check_capture_geometry -- confirm the capture surface, exactly, before
+# a session is photographed from it.
 #
-# The test is "at least as large as", NOT "exactly equal to", and the
-# distinction is load-bearing rather than lenient:
+# THE STRICT MODE ASSERTS THE CONTRACT, NOT A LOWER BOUND.  It used to
+# test "at least as large as" in both modes, with the offsets defaulted
+# rather than read, and a review was right that this accepts surfaces the
+# contract does not describe: a 1920x1080+0+0 window satisfies ">= the
+# 1920x1072 grid" while painting the grid somewhere the sidebar crop was
+# not computed for, and an unparsed offset was silently reported as +0.
+# The Agent Action Plan states the contract as a measurement rather than
+# a preference -- "the X root is exactly 1920x1080 while the game window
+# occupies 1920x1072 at offset +0+4" (§0.7.3, restated in §0.1.2 and in
+# the crop derivation of §0.2.3) -- and the sidebar crop, the clock
+# region and every duration in the film are computed from it.  So a
+# CAPTURE launch requires all four numbers:
+#
+#   width   TERMINAL_X * FONT_WIDTH   (240 * 8  = 1920)
+#   height  TERMINAL_Y * FONT_HEIGHT  (67 * 16  = 1072)
+#   x       0, because the grid is painted from the left edge
+#   y       (SCREEN_HEIGHT - height) / 2, the letterbox a borderless
+#           window is centred in by the window manager (1080-1072)/2 = 4
+#
+# The advisory mode keeps the old lower-bound behaviour, because the
+# callers that use it are diagnosing rather than capturing and a window
+# that merely covers the grid is enough to look at a frame.
+#
+# The reasoning that produced the lower bound is kept below, because it
+# is still the reason the ROOT rather than the window is captured:
 #
 #   * The geometry that MUST hold is the X ROOT's 1920x1080, which
 #     ensure_headless already asserted, because capture targets the
@@ -3521,6 +3805,7 @@ check_capture_geometry() {
     local want_w=$(( PLAYTHROUGH_TERMINAL_X * PLAYTHROUGH_FONT_WIDTH ))
     local want_h=$(( PLAYTHROUGH_TERMINAL_Y * PLAYTHROUGH_FONT_HEIGHT ))
     local want="${want_w}x${want_h}"
+    local want_y=$(( ( PLAYTHROUGH_SCREEN_HEIGHT - want_h ) / 2 ))
 
     if [ -z "${WINDOW_WIDTH}" ] || [ -z "${WINDOW_HEIGHT}" ]; then
         if [ "${mode}" = "strict" ]; then
@@ -3568,17 +3853,115 @@ check_capture_geometry() {
         return 0
     fi
 
-    if [ "${WINDOW_WIDTH}" -eq "${want_w}" ] &&
-        [ "${WINDOW_HEIGHT}" -eq "${want_h}" ]; then
+    # THE EXACT CONTRACT, for a launch a session is captured from.
+    #
+    # TWO geometries are correct, and which of them appears is a property
+    # of the WINDOW MANAGER rather than of this pipeline, so both are
+    # computed from the environment and both are named:
+    #
+    #   A  the window is sized to the GRID and the WM centres it, so it
+    #      measures want_w x want_h at +0+((screen_h - want_h) / 2).
+    #   B  the window is BORDERLESS and the WM gives it the whole root,
+    #      so it measures the root exactly at +0+0, and the engine blits
+    #      the grid at the window's top-left and leaves the remainder as
+    #      border [src/sdltiles.cpp:311-320, :1046-1050].
+    #
+    # B IS WHAT OPENBOX ACTUALLY DOES, and this function required A alone
+    # until it was measured against a real surface.  Re-measured over all
+    # 305 captures of the shipped record: ink spans rows 0 to 1071 and
+    # NOT ONE frame carries a pixel in y1072-1079, so the grid sat at
+    # +0+0 with all eight leftover pixels in one band at the BOTTOM.
+    # (The same measurement over the retired 395-capture set said the
+    # same thing, which is how the defect was first found.)  sidebar_geometry.py
+    # records the same measurement and says to read the centred y as
+    # "where a centred window would put the grid", never as "where the
+    # grid was".  Requiring A alone therefore refused every legitimate
+    # capture launch on the very surface that produced the record --
+    # measured as `window is 1920x1080+0+0, and a capture launch requires
+    # exactly 1920x1072+0+4`.
+    #
+    # WHAT IS STILL EXACT.  Neither case is a tolerance: all four numbers
+    # are compared, x is pinned to 0, and the width is pinned to the grid
+    # width in both -- so a scaled, resized or offset window is still
+    # refused, which is what this check exists for.  In BOTH cases the
+    # grid begins at the window's top-left, so the crop's y is the
+    # window's own y and nothing downstream needs to know which case it
+    # was.
+    local centred_y="${want_y}"
+    local geometry_a="${want}+0+${centred_y}"
+    local geometry_b="${PLAYTHROUGH_SCREEN_WIDTH}x"
+    geometry_b="${geometry_b}${PLAYTHROUGH_SCREEN_HEIGHT}+0+0"
+    local matched=""
+    if [ "${WINDOW_WIDTH}" = "${want_w}" ] &&
+        [ "${WINDOW_HEIGHT}" = "${want_h}" ] &&
+        [ "${WINDOW_X}" = "0" ] &&
+        [ "${WINDOW_Y}" = "${centred_y}" ]; then
+        matched="A (the grid, centred by the window manager)"
+    elif [ "${WINDOW_WIDTH}" = "${PLAYTHROUGH_SCREEN_WIDTH}" ] &&
+        [ "${WINDOW_HEIGHT}" = "${PLAYTHROUGH_SCREEN_HEIGHT}" ] &&
+        [ "${WINDOW_X}" = "0" ] &&
+        [ "${WINDOW_Y}" = "0" ]; then
+        matched="B (borderless, given the whole root)"
+    fi
+
+    local -a wrong=()
+    if [ -z "${matched}" ]; then
+        # Named per number against BOTH candidates, so the refusal says
+        # which number is wrong rather than printing geometry strings and
+        # leaving the reader to diff them.
+        [ "${WINDOW_X}" = "0" ] ||
+            wrong+=("x offset ${WINDOW_X} (want 0 in either case)")
+        [ "${WINDOW_WIDTH}" = "${want_w}" ] ||
+            [ "${WINDOW_WIDTH}" = "${PLAYTHROUGH_SCREEN_WIDTH}" ] ||
+            wrong+=("width ${WINDOW_WIDTH} (want ${want_w} for A or"
+                    "${PLAYTHROUGH_SCREEN_WIDTH} for B)")
+        [ "${WINDOW_HEIGHT}" = "${want_h}" ] ||
+            [ "${WINDOW_HEIGHT}" = "${PLAYTHROUGH_SCREEN_HEIGHT}" ] ||
+            wrong+=("height ${WINDOW_HEIGHT} (want ${want_h} for A or"
+                    "${PLAYTHROUGH_SCREEN_HEIGHT} for B)")
+        [ "${WINDOW_Y}" = "${centred_y}" ] || [ "${WINDOW_Y}" = "0" ] ||
+            wrong+=("y offset ${WINDOW_Y} (want ${centred_y} for A or 0"
+                    "for B)")
+        if [ "${#wrong[@]}" -eq 0 ]; then
+            wrong+=("the four numbers are individually plausible but"
+                    "do not form either accepted geometry")
+        fi
+    fi
+
+    if [ "${mode}" = "strict" ] && [ -z "${matched}" ]; then
+        die "${EX_WINDOW}" "window is ${WINDOW_GEOMETRY}, and a" \
+            "capture launch requires exactly ${geometry_a} (the grid," \
+            "centred) or ${geometry_b} (borderless, the whole root)." \
+            "Wrong: ${wrong[*]}." \
+            "That geometry is the capture contract rather than a" \
+            "preference: the width and height are the" \
+            "${PLAYTHROUGH_TERMINAL_X}x${PLAYTHROUGH_TERMINAL_Y} grid" \
+            "at ${PLAYTHROUGH_FONT_WIDTH}x${PLAYTHROUGH_FONT_HEIGHT}" \
+            "cells (src/sdltiles.cpp:595-596), and the engine blits" \
+            "that grid at the window's TOP-LEFT -- so the sidebar" \
+            "crop, the clock region and therefore every duration in" \
+            "the film are computed from all four numbers.  A window at" \
+            "another size or offset paints the grid somewhere the crop" \
+            "was not computed for.  Check" \
+            "TERMINAL_X/TERMINAL_Y, FONT_WIDTH/FONT_HEIGHT," \
+            "FULLSCREEN and SCALING_FACTOR in" \
+            "${PLAYTHROUGH_OPTIONS_JSON} (seed_options.py writes and" \
+            "verifies all six), confirm the window manager is the" \
+            "openbox this pipeline starts, then stop this instance and" \
+            "relaunch."
+    fi
+
+    if [ -n "${matched}" ]; then
         playthrough_log "window geometry ${WINDOW_GEOMETRY} matches" \
-            "the ${PLAYTHROUGH_TERMINAL_X}x${PLAYTHROUGH_TERMINAL_Y}" \
-            "grid exactly (${want})"
+            "the capture contract exactly -- case ${matched}; the" \
+            "${PLAYTHROUGH_TERMINAL_X}x${PLAYTHROUGH_TERMINAL_Y} grid" \
+            "begins at the window's top-left, so the sidebar crop's y" \
+            "is ${WINDOW_Y}"
     else
-        playthrough_log "window geometry ${WINDOW_GEOMETRY} covers" \
-            "the ${want} grid (a borderless window may be sized to" \
-            "the whole root by the window manager); capture targets" \
-            "the ${PLAYTHROUGH_SCREEN_WIDTH}x${PLAYTHROUGH_SCREEN_HEIGHT}" \
-            "root either way"
+        playthrough_warn "window geometry ${WINDOW_GEOMETRY} covers" \
+            "the ${want} grid but is neither ${geometry_a} nor" \
+            "${geometry_b}; this is tolerated only because the mode is" \
+            "advisory, and a capture launch would refuse it"
     fi
     return 0
 }
@@ -3621,6 +4004,21 @@ assert_capture_preconditions() {
 # CHARACTER_POINT_POOLS is what leaves the creator's point-buy tab live;
 # SOUND_ENABLED=false matches the dummy audio driver; WORLD_COMPRESSION2
 # decides the character file's name, which the resume probe reads.
+#
+# THE GRID IS NOT THE WINDOW, WHICH IS WHY THE LIST IS LONGER THAN IT
+# WAS.  A review found this check delegating only the eight values above,
+# while the window those numbers become -- and therefore the rectangle
+# the clock is cropped out of -- also depends on FONT_WIDTH and
+# FONT_HEIGHT (the grid is TERMINAL_* times the FONT_* dimensions,
+# src/sdltiles.cpp:595-596), on FULLSCREEN (which decides whether the
+# window manager sizes the window at all, src/options.cpp:2715-2724), on
+# SCALING_FACTOR and SCALING_MODE (which scale and resample it,
+# src/options.cpp:2806-2825), on SIDEBAR_POSITION (which side the clock
+# is on, src/options.cpp:2132-2136) and on the active sidebar layout in
+# panel_options.json (which decides the column's width in cells,
+# src/panels.cpp:412-418).  seed_options.py now writes and verifies all
+# fourteen values and the layout, and reports every mismatch in one
+# failure, so this call covers the whole contract rather than half of it.
 #
 # A seed that failed halfway, was never run, ran against a different
 # userdir, or was overwritten by an engine exiting afterwards leaves a
@@ -3722,6 +4120,7 @@ launch_game() {
         # this run would have checked.  An instance that came up before
         # the options were seeded is what this catches.
         assert_instance_alive
+        settle_window_geometry
         check_capture_geometry strict
         emit_launch_facts
         return 0
@@ -3833,6 +4232,7 @@ launch_game() {
         INITIAL_UI_STATE="main-menu-create-permitted"
     fi
     launch_instance
+    settle_window_geometry
     check_capture_geometry strict
     # THE RESUME CONTRACT, established and verified AFTER the window is
     # up and its geometry confirmed -- the diagnostic capture below reads

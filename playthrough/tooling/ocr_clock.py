@@ -168,20 +168,28 @@ documented, per-invocation override for diagnosis
 default.
 
 CLI CHANNELS
-    $ python3 -B playthrough/tooling/ocr_clock.py FRAME
+    $ . playthrough/tooling/env.sh
+    $ OC='playthrough/tooling/ocr_clock.py'
+    $ "$PLAYTHROUGH_PYTHON" -B "$OC" FRAME
     08:00:00
 
-    $ python3 -B playthrough/tooling/ocr_clock.py --field date FRAME
+    $ "$PLAYTHROUGH_PYTHON" -B "$OC" --field date FRAME
     Thursday, Dec 21
 
-    $ python3 -B playthrough/tooling/ocr_clock.py --kv \
+    $ "$PLAYTHROUGH_PYTHON" -B "$OC" --kv \
           --audit "$PLAYTHROUGH_DATE_AUDIT" --audit-frame 42 FRAME
     CLOCK=08:00:00
     TIME_PHRASE=
     CLOCK_DATE=Thursday, Dec 21
 
+``env.sh`` exports ``PLAYTHROUGH_PYTHON``, the pinned CPython 3.12 that
+carries Pillow and pytesseract; the system ``python3`` does not, so it
+is the interpreter every example here uses, and ``-B`` keeps a
+re-included ``__pycache__`` out of the tree.
+
 Standard output carries exactly the reading and nothing else, so
-``CLOCK="$(ocr_clock.py "$FRAME")"`` is safe; an unreadable clock prints
+capturing it in a ``CLOCK="$(...)"`` substitution is safe; an
+unreadable clock prints
 nothing and exits 1, and a fault prints a diagnosis on stderr and exits
 2.  Every warning, note and derivation goes to stderr, which keeps
 engineering observations out of the in-character record.
@@ -3441,7 +3449,8 @@ def append_date_audit(path: str, frame: int,
 #
 # STDOUT CARRIES EXACTLY THE READING AND NOTHING ELSE, so that
 #
-#     CLOCK="$(python3 playthrough/tooling/ocr_clock.py "$FRAME")"
+#     CLOCK="$("${PLAYTHROUGH_PYTHON}" -B \
+#         playthrough/tooling/ocr_clock.py "$FRAME")"
 #
 # needs no parsing, no trimming and no decoration to strip -- and so
 # that an unreadable clock yields an empty string rather than a
@@ -3461,28 +3470,33 @@ exit codes:
      written
 
 examples (run from the repository root; this file is tracked mode 644
-and is not on PATH, so it is always invoked through the interpreter,
-with -B so no __pycache__ is left in the tree):
+and is not on PATH, so it is always invoked through the pinned
+interpreter -- source playthrough/tooling/env.sh first, which exports it
+as PLAYTHROUGH_PYTHON and is the only interpreter carrying Pillow and
+pytesseract -- with -B so no __pycache__ is left in the tree):
+  OC='playthrough/tooling/ocr_clock.py'
+  SG='playthrough/tooling/sidebar_geometry.py'
+
   # the pipeline's own call, crop computed from configuration
-  python3 -B playthrough/tooling/ocr_clock.py \\
+  "$PLAYTHROUGH_PYTHON" -B "$OC" \\
       playthrough/frames/frame_00042.png
 
   # the crop capture.sh already has in hand
-  python3 -B playthrough/tooling/ocr_clock.py --rect \\
-      "$(python3 -B playthrough/tooling/sidebar_geometry.py)" "$FRAME"
+  "$PLAYTHROUGH_PYTHON" -B "$OC" --rect \\
+      "$("$PLAYTHROUGH_PYTHON" -B "$SG")" "$FRAME"
 
   # audit one frame: run every pass and show the evidence
-  python3 -B playthrough/tooling/ocr_clock.py --cross-check -v "$FRAME"
+  "$PLAYTHROUGH_PYTHON" -B "$OC" --cross-check -v "$FRAME"
 
   # the whole reading, for a tool rather than a human
-  python3 -B playthrough/tooling/ocr_clock.py --json "$FRAME"
+  "$PLAYTHROUGH_PYTHON" -B "$OC" --json "$FRAME"
 
   # what a watchless survivor's sidebar says
-  python3 -B playthrough/tooling/ocr_clock.py --field phrase "$FRAME"
+  "$PLAYTHROUGH_PYTHON" -B "$OC" --field phrase "$FRAME"
 
   # capture.sh's own call: every reading from ONE OCR pass, and the
   # date evidence timeline.py needs persisted in the same breath
-  python3 -B playthrough/tooling/ocr_clock.py --kv \\
+  "$PLAYTHROUGH_PYTHON" -B "$OC" --kv \\
       --audit "$PLAYTHROUGH_DATE_AUDIT" --audit-frame 42 "$FRAME"
 
 note on --kv: the values are printed unquoted as KEY=value, one per

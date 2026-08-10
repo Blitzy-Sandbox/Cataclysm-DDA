@@ -135,6 +135,31 @@ class ProvenanceFixture(unittest.TestCase):
             self.verify(ident, view)
         return str(caught.exception)
 
+    def assert_is_the_anchor(self, returned, sealed):
+        """Hold a returned document to the anchor that was sealed.
+
+        verify() RETURNS the anchor, and its caller uses what it returns:
+        launch_game.sh reports the id, the view and the tree digest of
+        the artwork it is about to render with.  A test that only checked
+        "no exception" would pass against a verify() that returned the
+        wrong document, or None, or the anchor for another directory --
+        so every field a caller reads is asserted.
+        """
+        self.assertIsInstance(returned, dict)
+        self.assertEqual(returned["tileset"]["id"], "MshockXottoplus")
+        self.assertEqual(returned["tileset"]["view"], "MSXotto+")
+        self.assertEqual(returned["tileset"]["directory"],
+                         "gfx/MShockXotto+")
+        self.assertEqual(returned["tree_sha256"], sealed["tree_sha256"])
+        self.assertEqual(returned["file_count"], sealed["file_count"])
+        self.assertEqual(returned["byte_count"], sealed["byte_count"])
+        # The digest is the recipe's own, recomputed from the rows the
+        # returned document carries, so a document whose summary and
+        # whose file list disagreed would fail here.
+        self.assertEqual(returned["tree_sha256"],
+                         provenance.tree_digest(returned["files"]))
+        self.assertEqual(len(returned["files"]), returned["file_count"])
+
 
 class TheTreeDigest(ProvenanceFixture):
     """The recipe, reproducible by hand from its own definition."""
@@ -224,13 +249,17 @@ class TheHappyPath(ProvenanceFixture):
 
     def test_an_absolute_directory_is_accepted_too(self):
         """launch_game.sh passes the absolute path it resolved."""
-        self.seal()
-        provenance.verify(self.install, "MshockXottoplus", "MSXotto+",
-                          root=self.checkout)
+        sealed = self.seal()
+        returned = provenance.verify(
+            self.install, "MshockXottoplus", "MSXotto+",
+            root=self.checkout)
+        self.assert_is_the_anchor(returned, sealed)
 
     def test_a_trailing_separator_is_accepted(self):
-        self.seal()
-        provenance.verify(self.install + os.sep, root=self.checkout)
+        sealed = self.seal()
+        returned = provenance.verify(self.install + os.sep,
+                                     root=self.checkout)
+        self.assert_is_the_anchor(returned, sealed)
 
 
 class TheSymmetricComparison(ProvenanceFixture):
@@ -315,9 +344,11 @@ class TheSymmetricComparison(ProvenanceFixture):
 
     def test_the_id_and_view_are_optional_arguments(self):
         """A caller that has not resolved them still gets the bytes
-        checked."""
-        self.seal()
-        provenance.verify("gfx/MShockXotto+", root=self.checkout)
+        checked -- and still gets the anchor back to read them FROM."""
+        sealed = self.seal()
+        returned = provenance.verify("gfx/MShockXotto+",
+                                     root=self.checkout)
+        self.assert_is_the_anchor(returned, sealed)
 
 
 class LinksAreRefusedNeverFollowed(ProvenanceFixture):

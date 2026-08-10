@@ -1168,7 +1168,16 @@ class TestTheUserdirContract(ArtifactFixture):
         if not os.path.isdir(USERDIR):
             raise unittest.SkipTest(
                 "no engine-written userdir at %s yet" % USERDIR)
-        cls.probe = session.probe_save_resume()
+        # THE SCAN, NOT THE CREATE-VERSUS-RESUME DECISION.  This suite
+        # measures the REAL committed tree, and the pre-flight refuses a
+        # tree whose record shows a death its live save outlived -- so
+        # asking for the decision here would turn every test in the class
+        # into the same setUpClass error, reporting one fault twenty times
+        # and hiding the other nineteen answers.  The scan reports that
+        # state instead, and
+        # test_the_persistence_matches_the_legitimate_ending judges it.
+        cls.probe = session.probe_save_resume(
+            refuse_recorded_death=False)
         cls.death = None
         loaded = session.read_lastworld(root=PLAYTHROUGH)
         if not cls.probe.worlds and loaded is not None:
@@ -1215,15 +1224,56 @@ class TestTheUserdirContract(ArtifactFixture):
 
     def test_the_persistence_matches_the_legitimate_ending(self):
         # The hard rule is that an existing save is CONTINUED rather
-        # than replaced.  The only valid non-resumable final shape is
-        # the engine-authored death generation proved against the
-        # append-only record and both memorials.
+        # than replaced, so the committed tree has to be in one of the
+        # two shapes a legitimate ending leaves:
+        #
+        #   * LIVE -- the survivor slept, woke and left through the
+        #     in-game Save & Quit, so the character save is still there
+        #     and the world is resumable;
+        #   * DEATH -- the engine moved the character files into a
+        #     graveyard generation and wrote both memorials, proved
+        #     against the append-only record.
+        #
+        # A THIRD SHAPE EXISTS AND IT IS NOT AN ENDING.  This test used to
+        # recognise only the two above and assert `resume` for anything
+        # else, which meant it PASSED on the third: a live-shaped save
+        # belonging to a survivor the record shows dying, left behind
+        # because the process ended inside the death screen before
+        # cleanup_at_end() could move it.  Nothing in the save
+        # distinguishes that from an ordinary mid-session snapshot, so the
+        # old assertion was satisfied by a tree in which resuming would
+        # have put a dead survivor back into play.
+        #
+        # It is reported rather than tolerated.  An unfinished session is
+        # exactly what the session-end requirement excludes -- the ending
+        # is a realistic sleep or a death, followed by the in-game Save &
+        # Quit path -- and a suite that measures the real tree has to say
+        # so while it is true.
         if self.death is not None:
             self.assertGreater(self.death.death_frame, 0)
             self.assertFalse(self.probe.resume)
             return
         self.assertEqual(len(self.probe.worlds), 1)
-        self.assertTrue(self.probe.worlds[0].resumable)
+        world = self.probe.worlds[0]
+        if world.death_recorded_at is not None:
+            self.fail(
+                "the committed tree is in neither legitimate final "
+                "shape: save/%s still holds a live character save (%s) "
+                "while the append-only record shows that survivor "
+                "beginning their last words at frame %d, and the "
+                "engine's death cleanup %s.  The session therefore "
+                "never completed a permitted ending -- no Save & Quit "
+                "after waking, and no finished death cleanup -- so the "
+                "record is of an interrupted session rather than a "
+                "closed one, and it has to be re-recorded to a genuine "
+                "ending before this tree can be presented as evidence."
+                % (world.name, ", ".join(world.characters),
+                   world.death_recorded_at,
+                   "left no graveyard or memorial behind, so it never "
+                   "ran" if world.death_pending
+                   else "did run, which a surviving live save "
+                        "contradicts"))
+        self.assertTrue(world.resumable)
         self.assertTrue(self.probe.resume)
 
     def test_the_engine_state_for_the_ending_is_present(self):
@@ -1316,7 +1366,16 @@ class TestTheArtifactsAreTracked(ArtifactFixture):
             raise unittest.SkipTest(
                 "not a readable git work tree, so tracking cannot be "
                 "checked here")
-        cls.probe = session.probe_save_resume()
+        # THE SCAN, NOT THE CREATE-VERSUS-RESUME DECISION.  This suite
+        # measures the REAL committed tree, and the pre-flight refuses a
+        # tree whose record shows a death its live save outlived -- so
+        # asking for the decision here would turn every test in the class
+        # into the same setUpClass error, reporting one fault twenty times
+        # and hiding the other nineteen answers.  The scan reports that
+        # state instead, and
+        # test_the_persistence_matches_the_legitimate_ending judges it.
+        cls.probe = session.probe_save_resume(
+            refuse_recorded_death=False)
         cls.death = None
         loaded = session.read_lastworld(root=PLAYTHROUGH)
         if not cls.probe.worlds and loaded is not None:
