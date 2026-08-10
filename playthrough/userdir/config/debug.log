@@ -1,0 +1,25 @@
+
+
+-----------------------------------------
+21:30:20.059 : Starting log.
+21:30:20.059 INFO : Cataclysm DDA version 421659a9cf
+21:30:20.059 INFO : [main] C locale set to C
+21:30:20.059 INFO : [main] C++ locale set to C
+21:30:20.059 INFO : SDL version used during compile is 2.32.4
+21:30:20.059 INFO : SDL version used during linking and in runtime is 2.32.10
+21:30:20.064 INFO : SDL render devices: software, opengl, opengles2
+21:30:20.066 INFO : [options] C locale set to C
+21:30:20.066 INFO : [options] C++ locale set to C
+21:30:20.066 INFO : Setting language to: 'en'
+21:30:20.066 INFO : [i18n] Scanning mod translations from playthrough/userdir/mods/
+21:30:20.066 INFO : [i18n] Scanning core translations from lang/mo/
+21:30:20.485 INFO : USE_COLOR_MODULATED_TEXTURES is set to 0
+21:30:20.513 INFO : Setting language to: 'en'
+21:30:20.513 INFO : [i18n] Scanning mod translations from playthrough/userdir/mods/
+21:30:20.513 INFO : [i18n] Scanning core translations from lang/mo/
+21:36:25.798 INFO : src/mod_tracker.h:68: Tried check if 'vector_null' had a duplicate, but type 'attack_vector' does not track object sources
+21:36:27.642 WARNING : Dark Days Ahead pack load time:: 1740399us (avg: 1740399us) (count: 1)
+21:36:27.642 WARNING : Disable NPC Needs pack load time:: 165us (avg: 165us) (count: 1)
+21:36:27.642 WARNING : Portal Storms Ignore NPCs pack load time:: 316us (avg: 316us) (count: 1)
+21:36:39.334 INFO : Loaded tileset: MshockXottoplus
+21:36:39.481 INFO : Loaded tileset: Larwick Overmap
