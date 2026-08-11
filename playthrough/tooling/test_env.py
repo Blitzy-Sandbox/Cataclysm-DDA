@@ -61,7 +61,9 @@ Nothing in the repository is written.  The only host-global effect is
 suite created it.
 """
 
+import hashlib
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -78,6 +80,14 @@ TOOLING = os.path.dirname(os.path.abspath(__file__))
 PLAYTHROUGH = os.path.dirname(TOOLING)
 REPO_ROOT = os.path.dirname(PLAYTHROUGH)
 ENV_SH = os.path.join(TOOLING, "env.sh")
+REQUIREMENTS = os.path.join(TOOLING, "requirements.txt")
+REQUIREMENTS_LOCK = os.path.join(TOOLING, "requirements.lock")
+# The interpreter the closure checker is measured against: the one the
+# pipeline actually runs, because the checker's first verdict is about the
+# ABI and asking a different interpreter would measure a different
+# environment.  sys.executable is that interpreter -- these tests run
+# under it.
+PYTHON = sys.executable
 
 # The one line in playthrough_secure_dir that READS the mode back after
 # the chmod.  Two tests below replace it wholesale to stand in for a
@@ -104,6 +114,33 @@ MARKER = "<<<PLAYTHROUGH-ENV-DUMP>>>"
 
 # A clone index far from any real run, used for the offset tests.
 SPARE_INDEX = 91
+
+
+def unsafe_ancestor(path):
+    """The first group/world-writable non-sticky directory at or above
+    `path`, or None when every one of them is safe.
+
+    The Python twin of env.sh's playthrough_untrusted_ancestor, and it
+    exists so the anchor-selection tests can assert the branch THIS host
+    actually takes instead of hard-coding an answer that is only true
+    where /tmp is mode 2777.  Both walk to '/', and both treat the sticky
+    bit as the deciding property: in a world-writable directory WITHOUT
+    it any account may rename any entry regardless of owner, and with it
+    only the entry's owner may -- which is why a private tree under a
+    conventional 1777 /tmp is not a finding.
+    """
+    entry = os.path.realpath(path)
+    while True:
+        try:
+            mode = os.stat(entry).st_mode
+        except OSError:
+            mode = None
+        if mode is not None and (mode & 0o022) and not (mode & stat.S_ISVTX):
+            return entry
+        if entry == "/":
+            return None
+        entry = os.path.dirname(entry) or "/"
+
 
 # The contract's own values, restated so that changing one has to be a
 # deliberate change to the contract rather than a silent one.
@@ -238,6 +275,7 @@ SUMMARY_FIELDS = (
     "PLAYTHROUGH_TRUST_STATE",
     "PLAYTHROUGH_TRUST_BYPASSES",
     "PLAYTHROUGH_TRUST_UNVERIFIED",
+    "PLAYTHROUGH_RUNTIME_UNTRUSTED_ANCESTOR",
 )
 
 
@@ -257,12 +295,65 @@ class Sourced(object):
         return self.environment.get(name, default)
 
 
+def env_source():
+    """env.sh's text, read once and cached.
+
+    Several tests below assert on the SOURCE rather than on behaviour --
+    that a refusal is written separately from its neighbour, that a check
+    precedes the signal it guards. Those are properties of the file.
+    """
+    global _ENV_SOURCE
+    if _ENV_SOURCE is None:
+        with open(ENV_SH, encoding="utf-8") as handle:
+            _ENV_SOURCE = handle.read()
+    return _ENV_SOURCE
+
+
+_ENV_SOURCE = None
+
+
 class EnvFixture(unittest.TestCase):
     """Sources env.sh under a controlled, empty environment."""
 
     def setUp(self):
         self.root = tempfile.mkdtemp(prefix="blitzy_env_")
         self.addCleanup(shutil.rmtree, self.root, True)
+
+    def forget_record(self):
+        """Remove the spare display's ownership record if it exists.
+
+        THE RECORD IS SHARED STATE OUTSIDE ANY FIXTURE'S TEMPORARY
+        DIRECTORY, so it is the one thing in this file that leaks from one
+        test into the next, and it lives on the base class because more
+        than one class writes it.
+
+        This is not hypothetical tidiness. It produced a genuinely
+        misleading test: at HEAD, a test that recorded ownership sorted
+        alphabetically before
+        test_a_foreign_display_holds_the_trust_state_at_diagnostic and
+        left its record behind, so the "foreign" test ran with a record
+        present, took the STALE branch, and passed against the stale
+        branch's wording. Renaming the earlier test reordered the two and
+        the foreign test began measuring the arm its name claims -- and
+        failed, because the phrase it asserted appears only in the stale
+        message. The assertion had been green for the wrong reason.
+
+        ITS PATH IS ASKED OF env.sh RATHER THAN SPELLED HERE, because the
+        runtime anchor is chosen at source time: it resolves under /run
+        when a root-owned /run path is available and under /tmp otherwise.
+        A hardcoded path removes nothing and leaves the stale record in
+        place, which is how the above stayed hidden.
+        """
+        self.source(
+            preset={"CLONE_INDEX": str(SPARE_INDEX)},
+            after='rm -f -- "$(playthrough_x_ownership_record)"\n')
+
+    def field(self, result, marker):
+        """The text inside the first `MARKER[...]` line on stderr."""
+        for line in result.stderr.splitlines():
+            if line.startswith(marker) and line.endswith("]"):
+                return line[len(marker):-1]
+        return ""
 
     # -- the harness -------------------------------------------------
 
@@ -361,10 +452,24 @@ class EnvFixture(unittest.TestCase):
         return holder
 
     def spare_runtime_dir(self):
-        """/tmp/xdg<SPARE_INDEX>, removed afterwards if we made it."""
+        """/tmp/xdg<SPARE_INDEX>, created, removed if we made it.
+
+        IT IS CREATED HERE RATHER THAN LEFT TO env.sh, and that is now
+        load-bearing rather than convenience.  The anchor is chosen from
+        an ordered list (see THE ANCHOR IS CHOSEN in env.sh): the
+        conventional /tmp/xdg<suffix> wins whenever it is trusted OR
+        already present, and only a road that is BOTH unsafe and carries
+        no live state sends the run to /run instead.  On a host whose
+        /tmp is 2777 the second condition is the deciding one, so a test
+        that wants the conventional anchor has to make it exist -- and a
+        test that wants the /run branch removes it, which
+        test_an_unsafe_road_with_nothing_to_orphan_moves_to_run does.
+        """
         path = "/tmp/xdg%d" % SPARE_INDEX
         if not os.path.exists(path):
             self.addCleanup(shutil.rmtree, path, True)
+        os.makedirs(path, mode=0o700, exist_ok=True)
+        os.chmod(path, 0o700)
         return path
 
 
@@ -642,14 +747,104 @@ class TestTheRuntimeDirectory(EnvFixture):
                  "world-readable runtime directory"))
 
     def test_a_missing_runtime_directory_is_created_not_assumed(self):
+        """Whichever anchor is chosen, it EXISTS at 0700 afterwards.
+
+        The path is read out of the result rather than predicted, because
+        which candidate wins depends on the host's /tmp: see
+        spare_runtime_dir.  What is invariant -- and what this asserts --
+        is that env.sh does not assume an anchor into existence.
+        """
         path = self.spare_runtime_dir()
         shutil.rmtree(path, True)
         self.assertFalse(os.path.exists(path))
         result = self.sourced(
             preset={"CLONE_INDEX": str(SPARE_INDEX)})
+        chosen = result["XDG_RUNTIME_DIR"]
+        self.addCleanup(shutil.rmtree, chosen, True)
+        self.assertTrue(os.path.isdir(chosen))
+        self.assertEqual(os.stat(chosen).st_mode & 0o777, 0o700)
+        self.assertEqual(result["PLAYTHROUGH_RUNTIME_DIR"],
+                         os.path.join(chosen, "playthrough"))
+
+    def test_an_unsafe_road_with_nothing_to_orphan_moves_to_run(self):
+        """The /run branch, on a host whose /tmp is 2777 non-sticky.
+
+        A security review found the ancestry of the runtime anchor
+        measured nowhere.  It is measured now, and when the conventional
+        address is BOTH unreachable-safely and empty of live state the
+        run anchors under the root-owned /run instead -- where the whole
+        road is owner-controlled.  On a host with a conventional 1777
+        /tmp there is nothing to move away from, and this asserts that
+        case too rather than skipping it.
+        """
+        legacy = "/tmp/xdg%d" % SPARE_INDEX
+        shutil.rmtree(legacy, True)
+        self.assertFalse(os.path.exists(legacy))
+        result = self.sourced(
+            preset={"CLONE_INDEX": str(SPARE_INDEX)})
+        chosen = result["XDG_RUNTIME_DIR"]
+        self.addCleanup(shutil.rmtree, chosen, True)
+        if unsafe_ancestor("/tmp") is None:
+            self.assertEqual(
+                chosen, legacy,
+                msg="a trusted /tmp is not a road worth moving away from")
+            self.assertEqual(
+                result["PLAYTHROUGH_RUNTIME_UNTRUSTED_ANCESTOR"], "")
+            return
+        self.assertEqual(
+            chosen,
+            "/run/playthrough-%d%d" % (os.geteuid(), SPARE_INDEX),
+            msg="an unsafe road with nothing to orphan anchors under /run")
+        self.assertEqual(
+            result["PLAYTHROUGH_RUNTIME_UNTRUSTED_ANCESTOR"], "",
+            msg="and the chosen anchor's own road is then clean")
+        self.assertEqual(result["PLAYTHROUGH_TRUST_STATE"], "trusted")
+
+    def test_an_existing_unsafe_road_is_kept_and_measured(self):
+        """Continuity wins, and the fact is not swallowed.
+
+        The anchor holds the X cookie, the pid of a running server, the
+        locks and any in-flight journal, so moving it out from under a
+        live session would orphan all of it.  It is kept -- and the
+        unsafe road is MEASURED and exported, which is what
+        playthrough_check_path_ancestry refuses on at launch.
+
+        Sourcing stays silent about it deliberately: this file is sourced
+        into the caller's shell and sourcing is inert, so the fact is
+        published and the refusal belongs to the stage that is about to
+        produce evidence.  See TestThePathAncestryGate.
+        """
+        if unsafe_ancestor("/tmp") is None:
+            self.skipTest("this host's /tmp is not a world-writable "
+                          "non-sticky directory, so there is no unsafe "
+                          "road to keep")
+        path = self.spare_runtime_dir()
+        result = self.sourced(
+            preset={"CLONE_INDEX": str(SPARE_INDEX)})
         self.assertEqual(result["XDG_RUNTIME_DIR"], path)
-        self.assertTrue(os.path.isdir(path))
-        self.assertEqual(os.stat(path).st_mode & 0o777, 0o700)
+        self.assertEqual(
+            result["PLAYTHROUGH_RUNTIME_UNTRUSTED_ANCESTOR"], "/tmp")
+        self.assertEqual(result.stderr, "",
+                         msg="sourcing reports it by export, not by "
+                             "printing")
+
+    def test_a_nominated_anchor_is_used_and_never_fallen_back_from(self):
+        nominated = os.path.join(self.root, "nominated-anchor")
+        os.makedirs(nominated, mode=0o700)
+        result = self.sourced(
+            preset={"PLAYTHROUGH_XDG_ANCHOR": nominated})
+        self.assertEqual(result["XDG_RUNTIME_DIR"], nominated)
+
+    def test_a_nomination_that_cannot_be_used_is_fatal(self):
+        """A silent fallback would put the credential somewhere else."""
+        blocker = os.path.join(self.root, "anchor-in-the-way")
+        with open(blocker, "w", encoding="utf-8") as handle:
+            handle.write("in the way\n")
+        result = self.source(
+            preset={"PLAYTHROUGH_XDG_ANCHOR": blocker})
+        self.assertNotEqual(result.status, 0)
+        self.assertIn("PLAYTHROUGH_XDG_ANCHOR", result.stderr)
+        self.assertIn("not fallen back from", result.stderr)
 
     def test_an_existing_directory_is_tightened_rather_than_trusted(self):
         path = self.spare_runtime_dir()
@@ -661,13 +856,32 @@ class TestTheRuntimeDirectory(EnvFixture):
             msg="a directory left over from another run is not trusted")
 
     def test_a_runtime_directory_that_cannot_be_made_is_fatal(self):
+        """BOTH candidates are blocked, because either one would do.
+
+        The anchor is chosen from an ordered list now, so sabotaging only
+        the conventional address would simply send the run to the /run
+        candidate and prove nothing.  Both are pointed at a regular file,
+        which no `mkdir -p` can turn into a directory.
+        """
         blocker = os.path.join(self.root, "not-a-dir")
         with open(blocker, "w", encoding="utf-8") as handle:
             handle.write("in the way\n")
         root, copy = self.sabotaged_copy(
-            '_playthrough_runtime_dir="/tmp/xdg${_playthrough_suffix}"',
-            '_playthrough_runtime_dir="%s/in/the/way"' % blocker,
+            '_playthrough_legacy_anchor="/tmp/xdg${_playthrough_suffix}"',
+            '_playthrough_legacy_anchor="%s/in/the/way"' % blocker,
             name="blocked")
+        with open(copy, encoding="utf-8") as handle:
+            text = handle.read()
+        run_candidate = ('_playthrough_runtime_dir=\\\n'
+                         '"/run/playthrough-$(_playthrough_euid)'
+                         '${_playthrough_suffix}"')
+        self.assertEqual(
+            text.count(run_candidate), 1,
+            msg="the /run candidate must be a single, unique line")
+        with open(copy, "w", encoding="utf-8") as handle:
+            handle.write(text.replace(
+                run_candidate,
+                '_playthrough_runtime_dir="%s/in/the/way"' % blocker, 1))
         result = self.source(script=copy, cwd=root)
         self.assertNotEqual(result.status, 0)
         self.assertIn("cannot create", result.stderr)
@@ -1523,6 +1737,359 @@ class TestThePythonInterpreter(EnvFixture):
                  "requirements.lock builds its wheels for"))
 
 
+class TestTheInheritedEnvironmentIsRefused(EnvFixture):
+    """A poisoned environment chooses what code the pipeline runs.
+
+    Every external command in this tree is resolved by absolute path and
+    verified so that a replaceable tool cannot decide a reading in the
+    film.  A security review named the hole beside it: the ENVIRONMENT
+    those verified binaries inherit is a second way to choose their code,
+    and nothing looked at it.  These are refused rather than unset --
+    honouring one runs a caller's code, discarding one silently does
+    something other than what the caller asked, and saying so is the only
+    honest third option.
+    """
+
+    # Every name env.sh refuses, grouped by what it reaches.  The list is
+    # the contract; a name added to env.sh without one here fails
+    # test_the_refusal_list_is_the_one_env_sh_publishes.
+    REFUSED = (
+        # bash SOURCES this at the start of every non-interactive shell,
+        # so one variable runs a caller's file inside all nine stages.
+        "BASH_ENV", "ENV",
+        # The dynamic loader: a caller's shared object in every process,
+        # able to override any symbol in it.
+        "LD_PRELOAD", "LD_AUDIT", "LD_LIBRARY_PATH",
+        # The interpreter, and what its imports resolve to.
+        "PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONUSERBASE",
+        "PYTHONEXECUTABLE",
+        # Arbitrary git configuration -- core.hooksPath among it --
+        # outranking the containment commit_artifacts.sh applies.
+        "GIT_CONFIG", "GIT_CONFIG_COUNT",
+        # Where git reads the evidence from and writes it to.
+        "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_NAMESPACE",
+        # Programs git executes.
+        "GIT_EXEC_PATH", "GIT_TEMPLATE_DIR", "GIT_SSH",
+        "GIT_SSH_COMMAND", "GIT_EXTERNAL_DIFF", "GIT_PROXY_COMMAND",
+        "GIT_ASKPASS",
+        # ImageMagick's coder and filter MODULE paths -- code that runs
+        # on every frame -- and font resolution, which the attested
+        # Terminus digest exists to pin.
+        "MAGICK_HOME", "MAGICK_CONFIGURE_PATH",
+        "MAGICK_CODER_MODULE_PATH", "MAGICK_FILTER_MODULE_PATH",
+        "FONTCONFIG_FILE",
+        # ffmpeg writing a report to a caller-chosen path every call.
+        "FFREPORT",
+    )
+
+    # Left alone deliberately: refusing any of these would break a
+    # legitimate mechanism this pipeline or its own suites depend on.
+    PERMITTED = (
+        "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL",
+        "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL",
+        "GIT_TERMINAL_PROMPT", "GIT_CONFIG_NOSYSTEM",
+    )
+
+    def test_the_refusal_list_is_the_one_env_sh_publishes(self):
+        published = self.sourced()["PLAYTHROUGH_REFUSED_ENV_VARS"]
+        self.assertEqual(sorted(published.split()),
+                         sorted(self.REFUSED))
+
+    def test_every_refused_variable_stops_the_source(self):
+        for name in self.REFUSED:
+            with self.subTest(variable=name):
+                result = self.source(preset={name: "/tmp/whatever"})
+                self.assertNotEqual(
+                    result.status, 0,
+                    msg="%s must refuse, not warn" % name)
+                self.assertIn("refused environment: %s=" % name,
+                              result.stderr)
+
+    def test_every_refused_variable_says_what_it_would_reach(self):
+        """A refusal that names a variable and stops is not a diagnosis."""
+        for name in self.REFUSED:
+            with self.subTest(variable=name):
+                result = self.source(preset={name: "/tmp/whatever"})
+                marker = "refused environment: %s=" % name
+                start = result.stderr.index(marker)
+                line = result.stderr[start:].split("\n", 1)[0]
+                self.assertIn(" -- ", line)
+                self.assertNotIn(
+                    "it is not part of this pipeline's environment "
+                    "contract", line,
+                    msg="%s falls through to the generic reason" % name)
+
+    def test_an_empty_value_is_not_a_poisoned_environment(self):
+        """`env -u` and `NAME=` reach here the same way."""
+        self.sourced(preset={name: "" for name in self.REFUSED})
+
+    def test_the_permitted_variables_are_left_alone(self):
+        for name in self.PERMITTED:
+            with self.subTest(variable=name):
+                result = self.sourced(preset={name: "1"})
+                self.assertEqual(result[name], "1")
+
+    def test_a_partial_git_config_injection_is_reported_too(self):
+        """GIT_CONFIG_KEY_n only bites through GIT_CONFIG_COUNT.
+
+        It is named anyway, so half an injection is reported rather than
+        left in place for the next run to complete.
+        """
+        result = self.source(
+            preset={"GIT_CONFIG_KEY_0": "core.hooksPath",
+                    "GIT_CONFIG_VALUE_0": "/tmp/hooks"})
+        self.assertNotEqual(result.status, 0)
+        self.assertIn("GIT_CONFIG_KEY_0=core.hooksPath", result.stderr)
+        self.assertIn("GIT_CONFIG_VALUE_0=/tmp/hooks", result.stderr)
+
+    def test_the_refusal_names_what_is_deliberately_permitted(self):
+        """So the reader is not left guessing whether to unset those."""
+        result = self.source(preset={"PYTHONPATH": "/tmp/x"})
+        for name in ("GIT_AUTHOR_*", "GIT_COMMITTER_*",
+                     "GIT_CONFIG_GLOBAL"):
+            self.assertIn(name, result.stderr)
+
+    def test_there_is_no_waiver_and_the_refusal_says_so(self):
+        result = self.source(preset={"LD_PRELOAD": "/tmp/evil.so"})
+        self.assertIn("There is no waiver", result.stderr)
+        self.assertIn("env -u", result.stderr)
+
+    def test_a_writable_nominated_git_config_is_refused(self):
+        """An isolation lever another account can write is an injection
+        point wearing the clothes of a containment measure."""
+        path = os.path.join(self.root, "global.gitconfig")
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("")
+        os.chmod(path, 0o666)
+        result = self.source(preset={"GIT_CONFIG_GLOBAL": path})
+        self.assertNotEqual(result.status, 0)
+        self.assertIn("writable by group or other", result.stderr)
+
+    def test_an_owner_only_nominated_git_config_is_honoured(self):
+        path = os.path.join(self.root, "global.gitconfig")
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("")
+        os.chmod(path, 0o600)
+        result = self.sourced(preset={"GIT_CONFIG_GLOBAL": path})
+        self.assertEqual(result["GIT_CONFIG_GLOBAL"], path)
+
+    def test_a_nominated_git_config_that_is_absent_is_refused(self):
+        result = self.source(
+            preset={"GIT_CONFIG_GLOBAL":
+                    os.path.join(self.root, "absent.gitconfig")})
+        self.assertNotEqual(result.status, 0)
+        self.assertIn("does not name a", result.stderr)
+
+    def test_dev_null_is_accepted_as_a_nominated_config(self):
+        """git's own documented idiom for "no configuration at all"."""
+        self.sourced(preset={"GIT_CONFIG_GLOBAL": "/dev/null"})
+
+    def test_the_user_site_directory_is_kept_out_of_every_interpreter(
+            self):
+        """PYTHONNOUSERSITE=1 is `-s` without fifteen call sites.
+
+        ~/.local/lib/pythonX.Y/site-packages is writable by this account
+        and is not one of the paths the executable verification covers, so
+        a module planted there would shadow one of the six pinned,
+        hash-locked distributions.
+        """
+        self.assertEqual(self.sourced()["PYTHONNOUSERSITE"], "1")
+
+    def test_the_safe_path_flag_is_deliberately_not_set(self):
+        """-P would drop the script's own directory from sys.path, and
+        this pipeline's modules import each other by name."""
+        result = self.sourced()
+        self.assertNotIn("PYTHONSAFEPATH", result.environment)
+
+    def test_the_sanitiser_runs_before_anything_else(self):
+        """A check that ran after the first child would be reporting on
+        an environment that had already been used."""
+        with open(ENV_SH, encoding="utf-8") as handle:
+            source = handle.read()
+        call = source.index("if ! playthrough_sanitize_environment; then")
+        self.assertLess(call, source.index("_playthrough_script_dir=\"$("))
+        self.assertLess(call, source.index("_playthrough_repo_root=\"$("))
+
+
+class TestThePathAncestryGate(EnvFixture):
+    """The road to the evidence, not just the mode of the destination.
+
+    A security review found this tree checking the type, owner and mode of
+    every directory it wrote into and of every ancestor BELOW its own
+    verified anchor, and stopping there -- so on a host whose /tmp is mode
+    2777 (world-writable and NOT sticky) the fact that the anchor's own
+    NAME could be renamed out from under it was never measured.  It is
+    measured now, a launch REFUSES on it, and the waiver that proceeds is
+    a registered trust bypass.
+    """
+
+    def ancestry(self, path, after=""):
+        """Run playthrough_untrusted_ancestor over `path`."""
+        return self.sourced(
+            after='ANCESTOR="$(playthrough_untrusted_ancestor "%s" '
+                  '|| printf "")"\nexport ANCESTOR\n%s' % (path, after))
+
+    def test_a_safe_road_reports_nothing(self):
+        safe = os.path.join(self.root, "safe")
+        os.makedirs(safe, mode=0o700)
+        if unsafe_ancestor(safe) is not None:
+            self.skipTest("this sandbox's own base has an unsafe road, "
+                          "so there is no safe path to measure")
+        self.assertEqual(self.ancestry(safe)["ANCESTOR"], "")
+
+    def test_a_world_writable_non_sticky_ancestor_is_named(self):
+        parent = os.path.join(self.root, "open")
+        child = os.path.join(parent, "under")
+        os.makedirs(child, mode=0o700)
+        os.chmod(parent, 0o777)
+        self.assertEqual(self.ancestry(child)["ANCESTOR"], parent)
+
+    def test_the_sticky_bit_makes_a_world_writable_road_safe(self):
+        """The whole distinction, and why a 1777 /tmp is not a finding.
+
+        Without the sticky bit any account with write permission may
+        rename or unlink any entry regardless of owner; with it, only the
+        entry's owner may.
+        """
+        parent = os.path.join(self.root, "sticky")
+        child = os.path.join(parent, "under")
+        os.makedirs(child, mode=0o700)
+        os.chmod(parent, 0o1777)
+        reported = self.ancestry(child)["ANCESTOR"]
+        self.assertNotEqual(
+            reported, parent,
+            msg="a 1777 directory is not an unsafe road")
+        # The walk goes PAST it rather than stopping, so whatever it does
+        # report is further up -- and on a host whose /tmp is a
+        # conventional 1777 the whole road is clean.
+        self.assertEqual(reported, unsafe_ancestor(child) or "")
+        # And the same directory WITHOUT the bit is reported, which is
+        # what proves the bit is what made the difference.
+        os.chmod(parent, 0o777)
+        self.assertEqual(self.ancestry(child)["ANCESTOR"], parent)
+
+    def test_the_walk_reaches_the_root_rather_than_an_anchor(self):
+        """It is the ROAD that is measured, however far up it goes."""
+        deep = os.path.join(self.root, "a", "b", "c", "d")
+        os.makedirs(deep, mode=0o700)
+        opened = os.path.join(self.root, "a")
+        os.chmod(opened, 0o777)
+        self.assertEqual(self.ancestry(deep)["ANCESTOR"], opened)
+
+    def test_the_gate_refuses_an_unsafe_road_by_default(self):
+        result = self.source(
+            after='playthrough_untrusted_ancestor() { printf "/openish"; }'
+                  '\nplaythrough_check_path_ancestry\n'
+                  'export GATE="$?"')
+        self.assertEqual(result.get("GATE"), "1")
+        self.assertIn("refusing to launch", result.stderr)
+        self.assertIn("sticky bit", result.stderr)
+
+    def test_the_waiver_proceeds_and_is_a_registered_bypass(self):
+        result = self.source(
+            preset={"PLAYTHROUGH_ALLOW_UNSAFE_PATH_ANCESTRY":
+                    "auditing on the provisioning host"},
+            after='playthrough_untrusted_ancestor() { printf "/openish"; }'
+                  '\nplaythrough_check_path_ancestry\n'
+                  'export GATE="$?"')
+        self.assertEqual(result.get("GATE"), "0")
+        self.assertIn("proceeding with an unsafe path ancestry",
+                      result.stderr)
+        self.assertEqual(result["PLAYTHROUGH_TRUST_STATE"], "diagnostic")
+
+    def test_a_safe_road_passes_the_gate_silently(self):
+        result = self.source(
+            after='playthrough_untrusted_ancestor() { return 1; }'
+                  '\nPLAYTHROUGH_RUNTIME_UNTRUSTED_ANCESTOR=""\n'
+                  'playthrough_check_path_ancestry\nexport GATE="$?"')
+        self.assertEqual(result.get("GATE"), "0")
+        self.assertEqual(result["PLAYTHROUGH_REPO_UNTRUSTED_ANCESTOR"], "")
+
+    def test_the_launch_consults_the_gate(self):
+        with open(ENV_SH, encoding="utf-8") as handle:
+            source = handle.read()
+        start = source.index("playthrough_headless_up() {")
+        end = source.index("\nplaythrough_mkdirs()", start)
+        self.assertIn("playthrough_check_path_ancestry",
+                      source[start:end])
+
+
+class TestForeignWriteIsDeniedOnTheArtifactTree(EnvFixture):
+    """No account but the owner may rewrite the evidence.
+
+    A security review measured fifteen directories at 2777 and a hundred
+    and fifty-one files at 0666 on the delivered tree -- the survivor's
+    save, the engine's config, the captioned film and the acceptance
+    report among them.  The property enforced is WRITE, not read: this
+    tree is committed to a git repository and is meant to be read.
+    """
+
+    def deny(self, path, after=""):
+        return self.sourced(
+            after='playthrough_deny_foreign_write "%s" "the subject"\n'
+                  'export DENIED="$?"\n%s' % (path, after))
+
+    def test_a_world_writable_directory_is_tightened(self):
+        path = os.path.join(self.root, "wide")
+        os.makedirs(path, mode=0o777)
+        os.chmod(path, 0o777)
+        result = self.deny(path)
+        self.assertEqual(result["DENIED"], "0")
+        self.assertEqual(os.stat(path).st_mode & 0o022, 0)
+
+    def test_a_world_writable_file_is_tightened(self):
+        path = os.path.join(self.root, "wide-file")
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("evidence\n")
+        os.chmod(path, 0o666)
+        result = self.deny(path)
+        self.assertEqual(result["DENIED"], "0")
+        self.assertEqual(os.stat(path).st_mode & 0o777, 0o644)
+
+    def test_read_access_is_left_exactly_as_it_was(self):
+        """Owner-only would protect nothing that is about to be
+        published."""
+        path = os.path.join(self.root, "readable")
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("evidence\n")
+        os.chmod(path, 0o646)
+        self.deny(path)
+        self.assertEqual(os.stat(path).st_mode & 0o777, 0o644)
+
+    def test_a_repair_is_announced_rather_than_silent(self):
+        path = os.path.join(self.root, "announced")
+        os.makedirs(path, mode=0o777)
+        os.chmod(path, 0o777)
+        result = self.deny(path)
+        self.assertIn("has been tightened", result.stderr)
+        self.assertIn("another local account", result.stderr)
+
+    def test_an_already_private_path_says_nothing(self):
+        path = os.path.join(self.root, "already")
+        os.makedirs(path, mode=0o700)
+        result = self.deny(path)
+        self.assertEqual(result["DENIED"], "0")
+        self.assertEqual(result.stderr, "")
+
+    def test_a_mode_that_cannot_be_read_is_fatal_not_assumed_safe(self):
+        result = self.source(
+            after='playthrough_deny_foreign_write '
+                  '"%s/absent" "the subject"\nexport DENIED="$?"'
+                  % self.root)
+        self.assertEqual(result.get("DENIED"), "1")
+        self.assertIn("cannot read the mode", result.stderr)
+
+    def test_the_artifact_directories_are_held_to_it(self):
+        with open(ENV_SH, encoding="utf-8") as handle:
+            source = handle.read()
+        start = source.index("playthrough_mkdirs() {")
+        end = source.index("\nplaythrough_deny_foreign_write()", start)
+        self.assertIn("playthrough_deny_foreign_write",
+                      source[start:end])
+
+
 class TestTheTrustState(EnvFixture):
     """One computed answer about the environment, not seven warnings."""
 
@@ -1543,6 +2110,14 @@ class TestTheTrustState(EnvFixture):
         # under it.  It forces the diagnostic state now, and the four
         # stages that make production media refuse under it.
         "PLAYTHROUGH_ALLOW_EOL_PLATFORM",
+        # A component of the path to this run's own evidence or runtime
+        # state can be renamed or replaced by another local account, so a
+        # frame, a save or a lock may not be the one this pipeline wrote.
+        # playthrough_check_path_ancestry refuses a launch on it and this
+        # is the waiver that proceeds; it belongs in the registry for the
+        # same reason the platform waiver does -- the launch and the
+        # capture consult this list and nothing else.
+        "PLAYTHROUGH_ALLOW_UNSAFE_PATH_ANCESTRY",
     )
 
     def test_the_registry_lists_every_bypass_this_pipeline_has(self):
@@ -2643,6 +3218,15 @@ class TestThePlatformWaiverText(EnvFixture):
 class TestDisplayOwnership(EnvFixture):
     """"A server is answering" and "we started it" are two facts."""
 
+    def setUp(self):
+        super().setUp()
+        # Several tests here write the ownership record, and it outlives
+        # the fixture. Clearing it before and after each one is what makes
+        # every test in this class measure the branch it names rather than
+        # the branch its predecessor left set up.
+        self.forget_record()
+        self.addCleanup(self.forget_record)
+
     def probe(self, after):
         return self.source(preset={"CLONE_INDEX": str(SPARE_INDEX)},
                            after=after)
@@ -2685,16 +3269,355 @@ class TestDisplayOwnership(EnvFixture):
             'playthrough_assert_x_ownership || true\n'
             'printf "TRUST[%s]\\n" "${PLAYTHROUGH_TRUST_STATE}" >&2\n')
         self.assertIn("TRUST[diagnostic]", result.stderr)
-        self.assertIn("not started by this checkout", result.stderr)
+        # THE FOREIGN ARM'S OWN WORDING, not the stale arm's. The record is
+        # cleared in setUp, so "nothing claims the server that is
+        # answering" is the message under measurement; the stale arm's
+        # "no longer running" phrasing is covered by
+        # test_a_recorded_pid_that_is_not_an_x_server_is_stale, so
+        # asserting the correct arm here loses no coverage and stops one
+        # test from standing in for two.
+        self.assertIn("this checkout did not start", result.stderr)
+        self.assertIn("no ownership record exists", result.stderr)
 
-    def test_a_dead_recorded_pid_is_stale_rather_than_owned(self):
+    def test_a_recorded_pid_that_is_not_an_x_server_is_stale(self):
+        """`$$` is alive and is not Xvfb, so it cannot be the server."""
         result = self.probe(
             'playthrough_display_probe() { return 0; }\n'
             'playthrough_display_ready() { return 0; }\n'
-            'playthrough_record_x_ownership pipeline 999999999\n'
+            'playthrough_record_x_ownership pipeline $$\n'
             'printf "STATE[%s]\\n" "$(playthrough_x_ownership_state)" '
             '>&2\n')
         self.assertIn("STATE[stale]", result.stderr)
+
+    def test_recording_a_pid_with_no_identity_is_refused(self):
+        """An unverifiable claim of ownership is worse than none.
+
+        A record naming a process /proc knows nothing about would assert
+        an ownership no later run could check -- and a MISSING record
+        degrades the trust state, where a false one would not. So the
+        recording refuses rather than writing a claim it cannot support.
+        """
+        result = self.probe(
+            'playthrough_record_x_ownership pipeline 999999999\n'
+            'printf "STATUS[%s]\\n" "$?" >&2\n'
+            'if [ -f "$(playthrough_x_ownership_record)" ]; then\n'
+            '    printf "WROTE[yes]\\n" >&2\n'
+            'else\n'
+            '    printf "WROTE[no]\\n" >&2\n'
+            'fi\n')
+        self.assertIn("STATUS[1]", result.stderr)
+        self.assertIn("WROTE[no]", result.stderr)
+        self.assertIn("no readable identity in /proc", result.stderr)
+
+
+class TestTheXServerIsIdentifiedNotJustCounted(EnvFixture):
+    """A pid and a command name are not an identity.
+
+    A review measured this host and found THREE Xvfb processes answering
+    for one display, with distinct start times, while the pid files named
+    one pair and no ownership record existed at all. The ownership check
+    compared the recorded pid against /proc/PID/comm and nothing else, so
+    any process that happened to hold the recorded number and be called
+    Xvfb would have been treated as the server this checkout started --
+    and, running as root, signalled as such by the teardown.
+
+    Linux recycles pids. "Some process called Xvfb is alive at 962316" and
+    "the Xvfb we started at 962316 is still that process" are different
+    claims, and only the second one is ownership.
+    """
+
+    def setUp(self):
+        super().setUp()
+        # THE RECORD PERSISTS BETWEEN TESTS.  It lives in the spare
+        # index's runtime root rather than in this fixture's temporary
+        # directory, so a record written by one test is still there for
+        # the next -- measured, as a test expecting "no record" read back
+        # the previous test's stale one instead.
+        #
+        # ITS PATH IS ASKED OF env.sh RATHER THAN SPELLED HERE.  A first
+        # version hardcoded /tmp/xdg91/..., and the runtime anchor is
+        # chosen at source time: on this host it resolves to
+        # /run/playthrough-091/..., because the trusted-anchor selection
+        # prefers a root-owned /run path over /tmp, whose mode is 2777 and
+        # not sticky. The removal silently did nothing and the stale
+        # record was still there.
+        self.forget_record()
+        self.addCleanup(self.forget_record)
+
+    def probe(self, after):
+        return self.source(preset={"CLONE_INDEX": str(SPARE_INDEX)},
+                           after=after)
+
+    # -- the identity itself -----------------------------------------
+
+    def test_the_identity_has_five_fields(self):
+        """comm, start time, uid, resolved exe, argument vector."""
+        result = self.probe(
+            'printf "ID[%s]\\n" "$(playthrough_pid_identity $$)" >&2\n')
+        marker = "ID["
+        line = [item for item in result.stderr.splitlines()
+                if item.startswith(marker)][0]
+        identity = line[len(marker):-1]
+        self.assertTrue(identity, msg=result.stderr)
+        fields = identity.split(" ")
+        self.assertGreaterEqual(len(fields), 5)
+        self.assertEqual(fields[0], "bash")
+        self.assertRegex(fields[1], r"\A[0-9]+\Z")
+        self.assertEqual(fields[2], str(os.getuid()))
+        self.assertTrue(fields[3].startswith("/"), msg=fields[3])
+
+    def test_a_later_process_of_the_same_program_differs(self):
+        """The property the whole fix rests on, and its real granularity.
+
+        Two processes of the SAME program under the same account differ in
+        their start time, which is precisely what comm cannot see. But the
+        start time is measured in CLOCK TICKS, so two processes launched
+        inside one tick SHARE it: measured, two `sleep 30 &` started back
+        to back both reported 58916125.
+
+        That is not a hole in the check. The recorded pid is what selects
+        which process is being asked about, and a pid cannot be recycled
+        into the same tick its predecessor started in; the socket inode and
+        the cookie digest are checked beside it. It does mean this test has
+        to separate the two launches in order to measure what it claims to.
+        """
+        result = self.probe(
+            'sleep 30 & first=$!\n'
+            'sleep 0.2\n'
+            'sleep 30 & second=$!\n'
+            'printf "A[%s]\\n" '
+            '"$(playthrough_pid_identity "${first}")" >&2\n'
+            'printf "B[%s]\\n" '
+            '"$(playthrough_pid_identity "${second}")" >&2\n'
+            'kill "${first}" "${second}" 2>/dev/null || true\n')
+        first = self.field(result, "A[")
+        second = self.field(result, "B[")
+        self.assertTrue(first and second, msg=result.stderr)
+        self.assertNotEqual(first, second)
+        # The program is the same; only the start time differs.
+        self.assertEqual(first.split(" ")[0], second.split(" ")[0])
+        self.assertEqual(first.split(" ")[3], second.split(" ")[3])
+        self.assertNotEqual(first.split(" ")[1], second.split(" ")[1])
+
+    def test_reading_one_process_twice_gives_one_identity(self):
+        """Otherwise every revalidation would report a replacement."""
+        result = self.probe(
+            'sleep 30 & child=$!\n'
+            'printf "A[%s]\\n" '
+            '"$(playthrough_pid_identity "${child}")" >&2\n'
+            'sleep 0.2\n'
+            'printf "B[%s]\\n" '
+            '"$(playthrough_pid_identity "${child}")" >&2\n'
+            'kill "${child}" 2>/dev/null || true\n')
+        self.assertTrue(self.field(result, "A["), msg=result.stderr)
+        self.assertEqual(self.field(result, "A["),
+                         self.field(result, "B["))
+
+    def test_a_dead_pid_has_no_identity(self):
+        result = self.probe(
+            'if playthrough_pid_identity 999999999 >/dev/null; then\n'
+            '    printf "ID[yes]\\n" >&2\n'
+            'else\n'
+            '    printf "ID[no]\\n" >&2\n'
+            'fi\n')
+        self.assertIn("ID[no]", result.stderr)
+
+    def test_a_cmdline_is_one_printable_line(self):
+        """It is written into a record read back line by line.
+
+        A value carrying a newline would forge a field in that record, so
+        the reader refuses one rather than trimming it.
+        """
+        result = self.probe(
+            'sleep 30 & child=$!\n'
+            'printf "CMD[%s]\\n" '
+            '"$(playthrough_proc_cmdline "${child}")" >&2\n'
+            'kill "${child}" 2>/dev/null || true\n')
+        text = self.field(result, "CMD[")
+        self.assertEqual(text, "sleep 30", msg=result.stderr)
+        self.assertLessEqual(len(text), 240)
+
+    def test_a_cmdline_carrying_a_newline_is_refused(self):
+        """Which is why `$$` is not used above.
+
+        The harness shell's own argument vector holds this multi-line
+        program, so its cmdline contains newlines -- and the reader
+        rejects it rather than returning a value that would forge a field
+        in the ownership record. Measured: the first version of the test
+        above read `$$` and got nothing back, which is the refusal working.
+        """
+        result = self.probe(
+            'if playthrough_proc_cmdline $$ >/dev/null; then\n'
+            '    printf "CMD[accepted]\\n" >&2\n'
+            'else\n'
+            '    printf "CMD[refused]\\n" >&2\n'
+            'fi\n')
+        self.assertIn("CMD[refused]", result.stderr)
+
+    def test_the_uid_is_read_from_status(self):
+        result = self.probe(
+            'printf "UID[%s]\\n" "$(playthrough_proc_uid $$)" >&2\n')
+        self.assertIn("UID[%d]" % os.getuid(), result.stderr)
+
+    # -- what the record carries -------------------------------------
+
+    def test_the_record_carries_the_identity_socket_and_cookie(self):
+        result = self.probe(
+            'playthrough_record_x_ownership pipeline $$ || exit 1\n'
+            'cat "$(playthrough_x_ownership_record)" >&2\n')
+        self.assertEqual(result.status, 0, msg=result.stderr)
+        for field in ("identity=", "socket=", "cookie="):
+            with self.subTest(field=field):
+                self.assertIn(field, result.stderr)
+        self.assertIn("identity=bash ", result.stderr)
+
+    # -- and what it refuses -----------------------------------------
+
+    def state(self, edit):
+        """Record ownership of `$$`, apply `edit` with sed, re-read."""
+        return self.probe(
+            'playthrough_display_probe() { return 0; }\n'
+            'playthrough_display_ready() { return 0; }\n'
+            'playthrough_pid_is() { return 0; }\n'
+            'playthrough_record_x_ownership pipeline $$ || exit 1\n'
+            'R="$(playthrough_x_ownership_record)"\n'
+            'sed -i %s "${R}"\n'
+            'playthrough_x_ownership_state >/dev/null || true\n'
+            'printf "STATE[%%s]\\n" '
+            '"${PLAYTHROUGH_X_OWNERSHIP_STATE}" >&2\n'
+            'printf "WHY[%%s]\\n" '
+            '"${PLAYTHROUGH_X_OWNERSHIP_REASON}" >&2\n' % edit)
+
+    def test_an_unedited_record_is_owned(self):
+        """The positive control: the checks must not be unconditional."""
+        result = self.state("-e ''")
+        self.assertIn("STATE[pipeline]", result.stderr)
+
+    def test_an_altered_start_time_is_replaced(self):
+        """The recycled-pid case, which comm cannot see."""
+        result = self.state(r"-e 's/^identity=\(\S*\) [0-9]*/"
+                            r"identity=\1 999999/'")
+        self.assertIn("STATE[replaced]", result.stderr)
+        self.assertIn("is not the process that was recorded",
+                      result.stderr)
+
+    def test_an_altered_executable_is_replaced(self):
+        """A second Xvfb earlier on PATH is a different program."""
+        result = self.state(r"-e 's#/bin/bash#/tmp/evil/bash#'")
+        self.assertIn("STATE[replaced]", result.stderr)
+
+    def test_a_record_with_no_identity_is_replaced_not_owned(self):
+        """A pre-identity record cannot be revalidated.
+
+        Accepting an unverifiable claim on the strength of a pid and a
+        name is the whole defect being fixed, so an old record is reported
+        rather than trusted.
+        """
+        result = self.state(r"-e 's/^identity=.*/identity=-/'")
+        self.assertIn("STATE[replaced]", result.stderr)
+        self.assertIn("no process identity", result.stderr)
+
+    def test_an_altered_socket_is_replaced(self):
+        """The display's own identity, independent of any pid.
+
+        A server that died and was replaced leaves a NEW socket inode, and
+        the pid check cannot see that at all.
+        """
+        result = self.state(r"-e 's/^socket=.*/socket=1:999999999/'")
+        self.assertIn("STATE[replaced]", result.stderr)
+        self.assertIn("is not what was recorded", result.stderr)
+
+    def test_an_altered_cookie_is_replaced(self):
+        """-auth is read once, at exec.
+
+        A cookie rotated under a running server leaves that server
+        accepting the old value, so the authority file no longer describes
+        it.
+        """
+        result = self.state(r"-e 's/^cookie=.*/cookie=deadbeefdeadbeef/'")
+        self.assertIn("STATE[replaced]", result.stderr)
+        self.assertIn("was started with", result.stderr)
+
+    def test_replaced_is_reported_separately_from_stale(self):
+        """They send an operator to different places.
+
+        `stale` means the recorded process is gone. `replaced` means one
+        is there and is not ours. Collapsing them into "not ours" would
+        hide exactly the case a recycled pid produces.
+        """
+        source = env_source()
+        self.assertIn('printf \'%s\' "replaced"', source)
+        self.assertIn('printf \'%s\' "stale"', source)
+        self.assertIn("REPLACED IS REPORTED SEPARATELY FROM STALE",
+                      source)
+
+    def test_the_reason_survives_the_call(self):
+        """It must not be read through a command substitution.
+
+        `state="$(playthrough_x_ownership_state)"` runs the function in a
+        subshell, where every variable it sets dies -- measured that way,
+        with the state returned and the reason empty.
+        """
+        # setUp removed the record, so this measures the absent case.
+        result = self.probe(
+            'playthrough_display_probe() { return 0; }\n'
+            'playthrough_display_ready() { return 0; }\n'
+            'playthrough_x_ownership_state >/dev/null || true\n'
+            'printf "WHY[%s]\\n" '
+            '"${PLAYTHROUGH_X_OWNERSHIP_REASON}" >&2\n')
+        why = self.field(result, "WHY[")
+        self.assertTrue(why, msg="the reason did not survive the call")
+        self.assertIn("no ownership record exists", why)
+
+
+class TestTheTeardownSignalsOnlyWhatItVerified(EnvFixture):
+    """Running as root, a stale pid file is not a failed teardown.
+
+    A review put it exactly: shutdown trusted pid file values weakly while
+    running as root. A pid file is a NUMBER written minutes or days ago,
+    and on this host the recorded file named one pair while three Xvfb
+    processes were alive. Signalling a recycled pid as root is killing a
+    stranger's process, not stopping a server.
+    """
+
+    def test_a_recycled_pid_is_reported_and_not_signalled(self):
+        """The pid is alive and is not the program it should be."""
+        result = self.source(
+            preset={"CLONE_INDEX": str(SPARE_INDEX)},
+            after=(
+                'playthrough_display_probe() { return 0; }\n'
+                'playthrough_display_ready() { return 0; }\n'
+                'playthrough_pid_is() { return 0; }\n'
+                'playthrough_record_x_ownership pipeline $$ || exit 1\n'
+                'playthrough_pid_is() { return 1; }\n'
+                'sleep 30 & victim=$!\n'
+                'printf "%s\\n" "${victim}" '
+                '>"${PLAYTHROUGH_XVFB_PIDFILE}"\n'
+                'printf "%s\\n" "${victim}" '
+                '>"${PLAYTHROUGH_WM_PIDFILE}"\n'
+                'playthrough_headless_down >/dev/null 2>&1 || true\n'
+                'if [ -d "/proc/${victim}" ]; then\n'
+                '    printf "VICTIM[alive]\\n" >&2\n'
+                'else\n'
+                '    printf "VICTIM[killed]\\n" >&2\n'
+                'fi\n'
+                'kill "${victim}" 2>/dev/null || true\n'))
+        self.assertIn(
+            "VICTIM[alive]", result.stderr,
+            msg="a pid that is not the program it should be was "
+                "signalled anyway")
+
+    def test_the_teardown_checks_before_it_kills(self):
+        source = env_source()
+        start = source.index("playthrough_headless_down() {")
+        body = source[start:source.index("\n}\n", start)]
+        self.assertIn("NOTHING IS SIGNALLED ON THE STRENGTH OF A PIDFILE",
+                      body)
+        self.assertIn("playthrough_pid_is", body)
+        self.assertIn("playthrough_proc_uid", body)
+        # And the check precedes the signal.
+        self.assertLess(body.index("playthrough_pid_is"),
+                        body.index("if kill "))
 
 
 class TestRuntimeRetention(EnvFixture):
@@ -2775,6 +3698,842 @@ class TestRuntimeRetention(EnvFixture):
         for path in keepers:
             with self.subTest(path=path):
                 self.assertTrue(os.path.exists(path))
+
+    def aged_scratch(self, name, contents):
+        """An aged scratch directory holding the named empty files."""
+        base = "/tmp/xdg%d/playthrough" % SPARE_INDEX
+        path = os.path.join(base, name)
+        os.makedirs(path, mode=0o700, exist_ok=True)
+        for item in contents:
+            with open(os.path.join(path, item), "wb"):
+                pass
+        os.utime(path, (0, 0))
+        self.addCleanup(shutil.rmtree, path, True)
+        return path
+
+    def test_a_journal_bearing_scratch_root_is_kept_and_named(self):
+        path = self.aged_scratch("session-deadbeefdeadbeef",
+                                 ("step.json", "phase.json"))
+        result = self.prune("playthrough_prune_runtime\n")
+        self.assertEqual(result.status, 0, msg=result.stderr)
+        self.assertTrue(
+            os.path.isdir(path),
+            msg="an unresolved journal describes a keystroke that may "
+                "have been delivered; a timer must not erase it")
+        self.assertIn("unresolved journal", result.stderr)
+        self.assertIn("step.json", result.stderr)
+
+    def test_a_generation_journal_keeps_a_scratch_root_too(self):
+        path = self.aged_scratch("session-cafecafecafecafe",
+                                 ("movie.generation.json",))
+        self.prune("playthrough_prune_runtime\n")
+        self.assertTrue(os.path.isdir(path))
+
+    def test_a_cache_only_scratch_root_is_pruned(self):
+        # phase.json is a rebuildable cache of what the sidecar already
+        # says, so it must NOT block a prune -- otherwise every session
+        # directory this pipeline has ever opened is immortal.
+        path = self.aged_scratch("session-0000000000000000",
+                                 ("phase.json",))
+        self.prune("playthrough_prune_runtime\n")
+        self.assertFalse(os.path.exists(path))
+
+    def test_a_scratch_root_holding_a_held_lock_is_kept(self):
+        path = self.aged_scratch("pipeline-heldlock", ())
+        lock = os.path.join(path, "step.lock")
+        with open(lock, "wb"):
+            pass
+        result = self.prune(
+            'exec {probe}>>"%s"\n'
+            'flock -n "${probe}" || exit 1\n'
+            'playthrough_prune_runtime\n' % lock)
+        self.assertEqual(result.status, 0, msg=result.stderr)
+        self.assertTrue(
+            os.path.isdir(path),
+            msg="removing a directory whose lock is held leaves the "
+                "holder locking an inode nothing can reach, and the "
+                "next process free to take a new lock at the same name")
+
+    def test_a_lock_file_somebody_still_has_open_is_kept(self):
+        # `flock -n` proves nobody HOLDS it and says nothing about a
+        # process blocked waiting for it.  Unlinking under a waiter is
+        # how two processes come to hold one lock.
+        path = self.aged_lock("waited-on.lock")
+        result = self.prune(
+            'exec {probe}>>"%s"\n'
+            'playthrough_prune_runtime\n' % path)
+        self.assertEqual(result.status, 0, msg=result.stderr)
+        self.assertTrue(os.path.exists(path))
+
+    def test_an_error_file_for_a_live_process_is_kept(self):
+        base = "/tmp/xdg%d/playthrough" % SPARE_INDEX
+        os.makedirs(base, mode=0o700, exist_ok=True)
+        path = os.path.join(base, "capture-stage-%d.err" % os.getpid())
+        with open(path, "wb"):
+            pass
+        os.utime(path, (0, 0))
+        self.addCleanup(
+            lambda: os.path.exists(path) and os.unlink(path))
+        self.prune("playthrough_prune_runtime\n")
+        self.assertTrue(
+            os.path.exists(path),
+            msg="the diagnostics of a stage that is still running are "
+                "the ones worth keeping")
+
+
+class TestProcessIdentityAndOpenPaths(EnvFixture):
+    """The two primitives the pruner reasons with.
+
+    A pid is not an identity, and `flock -n` does not answer "is anything
+    using this".  The pruner acts on both answers by REMOVING things, so
+    both are measured here rather than assumed.
+    """
+
+    def setUp(self):
+        super(TestProcessIdentityAndOpenPaths, self).setUp()
+        self.spare_runtime_dir()
+
+    def probe(self, after):
+        return self.source(
+            preset={"CLONE_INDEX": str(SPARE_INDEX)}, after=after)
+
+    def test_a_live_process_reports_a_plausible_start_time(self):
+        result = self.probe(
+            'printf "START[%s]\\n" '
+            '"$(playthrough_proc_start_time $$)" >&2\n')
+        match = re.search(r"START\[(\d+)\]", result.stderr)
+        self.assertTrue(match, msg=result.stderr)
+        value = int(match.group(1))
+        self.assertGreater(value, 0)
+        # Field 22 is clock ticks since boot, so a shell started moments
+        # ago cannot precede this process by more than the uptime.  A
+        # thread count or a nice value -- what an off-by-one in the field
+        # arithmetic would return -- would fail this bound.
+        with open("/proc/self/stat", "rb") as handle:
+            mine = int(handle.read().rpartition(b") ")[2].split()[19])
+        self.assertGreaterEqual(value, mine)
+
+    def test_a_pid_that_does_not_exist_reports_nothing(self):
+        result = self.probe(
+            'if playthrough_proc_start_time 999999999 >/dev/null; then\n'
+            '    printf "FOUND\\n" >&2\n'
+            'else\n'
+            '    printf "ABSENT\\n" >&2\n'
+            'fi\n')
+        self.assertIn("ABSENT", result.stderr)
+
+    def in_use(self, target, opened=None):
+        prologue = ""
+        epilogue = ""
+        if opened is not None:
+            prologue = 'exec {probe}<"%s"\n' % opened
+            epilogue = 'exec {probe}<&-\n'
+        question = (
+            'if playthrough_path_in_use "%s"; then\n'
+            '    printf "IN_USE\\n" >&2\n'
+            'else\n'
+            '    printf "FREE\\n" >&2\n'
+            'fi\n' % target)
+        return self.probe(prologue + question + epilogue)
+
+    def test_a_path_this_shell_has_open_is_in_use(self):
+        target = os.path.join(self.root, "open-file")
+        with open(target, "wb"):
+            pass
+        self.assertIn("IN_USE",
+                      self.in_use(target, opened=target).stderr)
+
+    def test_a_path_nobody_has_open_is_free(self):
+        target = os.path.join(self.root, "closed-file")
+        with open(target, "wb"):
+            pass
+        self.assertIn("FREE", self.in_use(target).stderr)
+
+    def test_a_directory_is_in_use_when_a_file_inside_it_is(self):
+        directory = os.path.join(self.root, "busy-dir")
+        os.makedirs(directory)
+        inside = os.path.join(directory, "held")
+        with open(inside, "wb"):
+            pass
+        self.assertIn("IN_USE",
+                      self.in_use(directory, opened=inside).stderr)
+
+
+class TestNothingChosenElsewhereCanForgeALine(EnvFixture):
+    """A world name is somebody else's string, and it was printed raw.
+
+    A review found world names reaching both the log and the KEY=value
+    channel with no rejection of C0, C1 or newline.  The world name is a
+    directory name under the save tree -- the engine writes it from what
+    the player typed, and any local account able to create a directory
+    there writes whatever it likes.  From there it went into
+    `playthrough: WARNING: save/<name> ...` and into
+    PLAYTHROUGH_SAVE_WORLD, which later stages parse as KEY=value.
+
+    So a name containing a newline forged a whole extra line -- of the log,
+    or of a record a later stage reads as fact -- and one containing ESC-[
+    or the single-byte C1 CSI repainted the terminal of whoever was
+    reading the run.
+    """
+
+    def probe(self, after):
+        return self.source(after=after)
+
+    def escaped(self, value):
+        """What playthrough_escape_controls makes of one value."""
+        result = self.probe(
+            'printf "OUT[%%s]\\n" '
+            '"$(playthrough_escape_controls %s)" >&2\n' % value)
+        return self.field(result, "OUT[")
+
+    # -- detection ----------------------------------------------------
+
+    def test_each_control_class_is_detected(self):
+        """C0, DEL and C1 -- the last because 0x9B is a bare CSI."""
+        cases = {
+            "$(printf 'a\\nb')": "newline",
+            "$(printf 'a\\rb')": "carriage return",
+            "$(printf 'a\\tb')": "tab",
+            "$(printf 'a\\033[31mb')": "escape",
+            "$(printf 'a\\177b')": "delete",
+            "$(printf 'a\\302\\233b')": "C1 CSI",
+            "$(printf 'a\\302\\205b')": "C1 NEL",
+        }
+        for value, label in cases.items():
+            with self.subTest(control=label):
+                result = self.probe(
+                    'if playthrough_has_control "%s"; then\n'
+                    '    printf "OUT[yes]\\n" >&2\n'
+                    'else printf "OUT[no]\\n" >&2 ; fi\n' % value)
+                self.assertEqual(self.field(result, "OUT["), "yes")
+
+    def test_legitimate_non_ascii_is_not_a_control(self):
+        """Refusing a name for not being English would not be safety."""
+        for value, label in (("Sunnysid\u00e9", "accented Latin"),
+                             ("\u0410\u043d\u043d\u0430", "Cyrillic"),
+                             ("\u674e", "Han")):
+            with self.subTest(text=label):
+                result = self.probe(
+                    'if playthrough_has_control "%s"; then\n'
+                    '    printf "OUT[yes]\\n" >&2\n'
+                    'else printf "OUT[no]\\n" >&2 ; fi\n' % value)
+                self.assertEqual(self.field(result, "OUT["), "no")
+
+    # -- escaping -----------------------------------------------------
+
+    def test_a_clean_value_passes_through_unchanged(self):
+        self.assertEqual(self.escaped('"Sunnyside"'), "Sunnyside")
+        self.assertEqual(self.escaped('"Sunnysid\u00e9"'),
+                         "Sunnysid\u00e9")
+
+    def test_a_control_becomes_a_visible_escape(self):
+        """Replaced, not deleted: a delete loses the evidence."""
+        self.assertEqual(self.escaped("\"$(printf 'a\\nb')\""), "a<0A>b")
+        self.assertEqual(self.escaped("\"$(printf 'a\\tb')\""), "a<09>b")
+        self.assertEqual(self.escaped("\"$(printf 'a\\177b')\""),
+                         "a<7F>b")
+
+    def test_an_ansi_sequence_cannot_reach_the_terminal(self):
+        self.assertEqual(
+            self.escaped("\"$(printf 'a\\033[31mRED')\""),
+            "a<1B>[31mRED")
+
+    def test_the_single_byte_c1_csi_is_escaped_too(self):
+        """0x9B is honoured as ESC-[ by some terminals."""
+        self.assertEqual(self.escaped("\"$(printf 'a\\302\\233b')\""),
+                         "a<9B>b")
+
+    # -- and every diagnostic goes through it -------------------------
+
+    def test_a_warning_cannot_be_made_to_forge_a_second_line(self):
+        """The property that matters, measured end to end."""
+        result = self.probe(
+            'playthrough_warn '
+            '"save/$(printf \'Evil\\nplaythrough: FORGED\')"\n')
+        lines = [line for line in result.stderr.splitlines()
+                 if "playthrough:" in line]
+        forged = [line for line in lines
+                  if line.startswith("playthrough: FORGED")]
+        self.assertEqual(forged, [],
+                         msg="a second line was forged: %s" % lines)
+        self.assertIn("Evil<0A>playthrough: FORGED", result.stderr)
+
+    def test_a_fatal_diagnostic_is_escaped_as_well(self):
+        result = self.probe(
+            '(playthrough_die '
+            '"world $(printf \'X\\nplaythrough: FORGED\')") || true\n')
+        self.assertNotIn("\nplaythrough: FORGED", result.stderr)
+        self.assertIn("X<0A>", result.stderr)
+
+    # -- the record-token grammar -------------------------------------
+
+    def token(self, value):
+        """STATUS and the diagnosis for one candidate value."""
+        result = self.probe(
+            'if playthrough_assert_record_token %s "the world name"\n'
+            'then printf "OUT[ok]\\n" >&2\n'
+            'else printf "OUT[refused]\\n" >&2 ; fi\n' % value)
+        return self.field(result, "OUT["), result.stderr
+
+    def test_a_plain_name_is_accepted(self):
+        self.assertEqual(self.token('"Sunnyside"')[0], "ok")
+
+    def test_an_accented_name_is_accepted(self):
+        self.assertEqual(self.token('"Sunnysid\u00e9"')[0], "ok")
+
+    def test_a_name_carrying_a_newline_is_refused(self):
+        status, errors = self.token("\"$(printf 'a\\nb')\"")
+        self.assertEqual(status, "refused")
+        self.assertIn("carries a control character", errors)
+
+    def test_the_refusal_shows_the_bytes_without_printing_them(self):
+        """A diagnostic must not perform the injection it reports."""
+        status, errors = self.token(
+            "\"$(printf 'Evil\\nplaythrough: FORGED')\"")
+        self.assertEqual(status, "refused")
+        self.assertIn("Evil<0A>playthrough: FORGED", errors)
+        forged = [line for line in errors.splitlines()
+                  if line.startswith("playthrough: FORGED")]
+        self.assertEqual(forged, [])
+
+    def test_an_empty_name_is_refused(self):
+        status, errors = self.token('""')
+        self.assertEqual(status, "refused")
+        self.assertIn("is empty", errors)
+
+    def test_a_name_past_the_ceiling_is_refused(self):
+        # `%.0s` with a single per cent -- a REAL conversion, so printf
+        # recycles the format once per argument and emits nothing each
+        # time.  Written `%%.0s` it is a literal and printf runs one
+        # cycle, which produced a five-character probe that the ceiling
+        # correctly accepted; the test failed and the code was right.
+        status, errors = self.token(
+            '"$(printf \'x%.0s\' $(seq 1 200))"')
+        self.assertEqual(status, "refused")
+        self.assertIn("past the", errors)
+
+    def test_the_ceiling_is_published_for_the_python_half(self):
+        """session.py restates it, and the two have to agree."""
+        self.assertIn("PLAYTHROUGH_MAX_RECORD_TOKEN=128", env_source())
+
+
+class TestTheClosureIsAskedWhatElseIsInIt(unittest.TestCase):
+    """Three questions the closure checker was not asking.
+
+    Checks 1 to 5 all ask "is what we declared present and coherent".
+    None of them asked the opposite question, and for a supply chain that
+    is the one that matters: what ELSE is in here, and what of it runs
+    before any pipeline code does.  The third question is narrower and
+    sharper -- the pinned Pillow carries advisories accepted only because
+    an upstream constraint forces the pin, and nothing noticed if the
+    constraint moved.
+
+    The checker is a fixed program embedded in env.sh, so these tests
+    extract it and run it against a real interpreter with one fact
+    changed at a time.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        source = env_source()
+        match = re.search(r"PLAYTHROUGH_CLOSURE_CHECKER='(.*?)\n'\n",
+                          source, re.S)
+        if match is None:                       # pragma: no cover
+            raise AssertionError(
+                "the embedded closure checker could not be extracted "
+                "from env.sh, so nothing below is measuring it")
+        cls.program = match.group(1)
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="blitzy_closure_")
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.script = os.path.join(self.root, "closure.py")
+        with open(self.script, "w", encoding="utf-8") as handle:
+            handle.write(self.program + "\n")
+
+    def verdicts(self, patch=""):
+        """Run the checker, optionally with one fact changed.
+
+        `patch` is Python executed BEFORE the checker, in the same
+        interpreter, so it can replace what the checker reads without any
+        of it being simulated: the checker still walks real installed
+        metadata and a real site-packages.
+        """
+        driver = os.path.join(self.root, "driver.py")
+        with open(driver, "w", encoding="utf-8") as handle:
+            handle.write(
+                "import runpy, sys\n"
+                "%s\n"
+                "sys.argv = ['closure', '|', %r, %r]\n"
+                "runpy.run_path(%r, run_name='__main__')\n"
+                % (patch or "pass", REQUIREMENTS, REQUIREMENTS_LOCK,
+                   self.script))
+        result = subprocess.run(
+            [PYTHON, "-B", driver], capture_output=True, timeout=300)
+        rows = []
+        for line in result.stdout.decode("utf-8", "replace").splitlines():
+            parts = line.split("|")
+            if len(parts) >= 3:
+                rows.append((parts[0], parts[1], parts[2]))
+        return rows
+
+    def failures(self, patch=""):
+        return [row for row in self.verdicts(patch) if row[0] == "FAIL"]
+
+    def named(self, rows, fragment):
+        found = [row for row in rows if fragment in row[1]]
+        self.assertTrue(
+            found, msg="no verdict named %r; got %s"
+            % (fragment, [row[1] for row in rows]))
+        return found[0]
+
+    # -- the environment as it stands ---------------------------------
+
+    def test_the_real_environment_passes_every_check(self):
+        """Eight verdicts, all passing, on the provisioned interpreter."""
+        rows = self.verdicts()
+        self.assertEqual([row for row in rows if row[0] == "FAIL"], [])
+        self.assertGreaterEqual(
+            len([row for row in rows if row[0] == "PASS"]), 8)
+
+    # -- check 6: the pin, and the day it stops being forced ----------
+
+    def test_the_pin_is_reported_as_forced_while_it_is(self):
+        row = self.named(self.verdicts(), "still forces the Pillow pin")
+        self.assertEqual(row[0], "PASS")
+        self.assertIn("excludes the first fixed release", row[2])
+
+    def test_a_render_stack_that_admits_the_fix_fails_the_gate(self):
+        """The whole point: prose does not fire, and this does.
+
+        requirements.txt states the trigger for moving the pin as a
+        sentence.  The day a moviepy release lifts `pillow<12.0`, nothing
+        would have noticed and the justification for the pin would have
+        quietly become false while every gate still reported green.
+        """
+        rows = self.failures(
+            "import importlib.metadata as md\n"
+            "_real = md.requires\n"
+            "md.requires = lambda name: (['pillow<13.0,>=9.2.0']\n"
+            "    if name == 'moviepy' else _real(name))\n")
+        row = self.named(rows, "still forces the Pillow pin")
+        self.assertIn("ADMITS the first fixed release", row[2])
+
+    def test_an_unreadable_bound_fails_closed(self):
+        """An unreadable justification is not "no constraint".
+
+        The pin is defensible only while the constraint that forces it can
+        be checked, so a moviepy that declares nothing about Pillow is a
+        failure rather than a pass.
+        """
+        rows = self.failures(
+            "import importlib.metadata as md\n"
+            "_real = md.requires\n"
+            "md.requires = lambda name: ([] if name == 'moviepy'\n"
+            "    else _real(name))\n")
+        row = self.named(rows, "still forces the Pillow pin")
+        self.assertIn("no readable Pillow requirement", row[2])
+
+    # -- check 7: what else is installed ------------------------------
+
+    def test_an_undeclared_distribution_fails_the_gate(self):
+        """A package nothing declared, nothing hashed and no review saw.
+
+        Every module in the closure can import it.
+        """
+        rows = self.failures(
+            "import importlib.metadata as md\n"
+            "class _Fake(object):\n"
+            "    version = '9.9.9'\n"
+            "    metadata = {'Name': 'totally-legit-helper'}\n"
+            "    requires = None\n"
+            "_real = md.distributions\n"
+            "md.distributions = lambda *a, **k: (list(_real(*a, **k))\n"
+            "    + [_Fake()])\n")
+        row = self.named(rows, "does not name")
+        self.assertIn("totally-legit-helper==9.9.9", row[2])
+
+    def test_the_bootstrap_tools_are_allowed_without_being_declared(self):
+        """pip installs the lock, so it cannot be an entry in it.
+
+        Naming the three explicitly is what lets the check refuse
+        everything else instead of accepting whatever is present.
+        """
+        row = self.named(self.verdicts(), "does not name")
+        self.assertEqual(row[0], "PASS")
+        for tool in ("pip", "setuptools", "wheel"):
+            self.assertIn(tool, row[2])
+
+    # -- check 8: what runs before anything else ----------------------
+
+    def test_an_unexpected_executable_pth_fails_the_gate(self):
+        """A .pth beginning `import` runs at every interpreter start.
+
+        It is arbitrary code inside the closure that no wheel hash and no
+        version pin describes -- and it runs before this checker does.
+        """
+        site = os.path.join(self.root, "site")
+        os.makedirs(site)
+        with open(os.path.join(site, "evil.pth"), "w",
+                  encoding="utf-8") as handle:
+            handle.write("import os; os.environ['PWNED'] = '1'\n")
+        rows = self.failures(
+            "import sysconfig\n"
+            "_real = sysconfig.get_paths\n"
+            "def _paths(*a, **k):\n"
+            "    p = dict(_real(*a, **k))\n"
+            "    p['purelib'] = %r\n"
+            "    p['platlib'] = %r\n"
+            "    return p\n"
+            "sysconfig.get_paths = _paths\n" % (site, site))
+        row = self.named(rows, "runs at interpreter startup")
+        self.assertIn("evil.pth", row[2])
+        self.assertIn("not an allowed startup file", row[2])
+
+    def test_a_non_executable_pth_is_not_an_offence(self):
+        """A path-only .pth adds a directory; it does not run code."""
+        site = os.path.join(self.root, "site")
+        os.makedirs(site)
+        with open(os.path.join(site, "plain.pth"), "w",
+                  encoding="utf-8") as handle:
+            handle.write("../some/other/directory\n")
+        rows = self.verdicts(
+            "import sysconfig\n"
+            "_real = sysconfig.get_paths\n"
+            "def _paths(*a, **k):\n"
+            "    p = dict(_real(*a, **k))\n"
+            "    p['purelib'] = %r\n"
+            "    p['platlib'] = %r\n"
+            "    return p\n"
+            "sysconfig.get_paths = _paths\n" % (site, site))
+        row = self.named(rows, "runs at interpreter startup")
+        self.assertEqual(row[0], "PASS", msg=row[2])
+
+    def test_a_mutated_allowed_pth_fails_the_gate(self):
+        """Allowed BY DIGEST, so the name alone buys nothing.
+
+        Allowing setuptools' shim by name would allow any content under
+        that name, which is exactly the substitution worth refusing.
+        """
+        site = os.path.join(self.root, "site")
+        os.makedirs(site)
+        with open(os.path.join(site, "distutils-precedence.pth"), "w",
+                  encoding="utf-8") as handle:
+            handle.write("import os\nimport shutil\n")
+        rows = self.failures(
+            "import sysconfig\n"
+            "_real = sysconfig.get_paths\n"
+            "def _paths(*a, **k):\n"
+            "    p = dict(_real(*a, **k))\n"
+            "    p['purelib'] = %r\n"
+            "    p['platlib'] = %r\n"
+            "    return p\n"
+            "sysconfig.get_paths = _paths\n" % (site, site))
+        row = self.named(rows, "runs at interpreter startup")
+        self.assertIn("its bytes have changed", row[2])
+
+    def test_the_allowed_digest_is_the_one_setuptools_ships(self):
+        """Measured from the provisioned environment, not invented."""
+        source = env_source()
+        self.assertIn("distutils-precedence.pth", source)
+        self.assertIn("2638ce9e2500e572a5e0de7faed6661eb569d1b696fcba07"
+                      "b0dd223da5f5d2", source)
+
+    # -- the file the program lives in --------------------------------
+
+    def test_the_embedded_program_carries_no_apostrophe(self):
+        """It lives inside a single-quoted bash string.
+
+        An apostrophe anywhere in it TERMINATES that string, and what
+        follows is parsed as bash -- which is how a docstring saying
+        "moviepy's own declared bound" turned the program into a shell
+        syntax error.  Cheaper to assert than to rediscover.
+        """
+        self.assertNotIn("'", self.program)
+
+
+class TestTheMutationLock(EnvFixture):
+    """One lock the whole checkout agrees on.
+
+    Every other lock in env.sh serialises a stage against another copy of
+    ITSELF.  This one serialises the producers against the gate and the
+    committer, which is the gap a review found: a gate that passed, a
+    producer that changed the tree, and a commit that published state no
+    gate ever saw -- with every individual lock correctly held throughout,
+    because no two holders were ever the same stage.
+    """
+
+    def setUp(self):
+        super(TestTheMutationLock, self).setUp()
+        self.spare_runtime_dir()
+
+    def probe(self, after, **preset):
+        values = {"CLONE_INDEX": str(SPARE_INDEX)}
+        values.update(preset)
+        return self.source(preset=values, after=after)
+
+    def outsider(self, mode):
+        """A shell carrying no marker, asking for `mode`.
+
+        The marker is stripped so this stands in for an UNRELATED stage
+        rather than a child of the holder.
+        """
+        return (
+            'env -u PLAYTHROUGH_MUTATION_LOCK_HELD '
+            '-u PLAYTHROUGH_MUTATION_LOCK_FD '
+            'bash --noprofile --norc -c '
+            '\'. playthrough/tooling/env.sh >/dev/null 2>&1 || exit 9\n'
+            'playthrough_acquire_mutation_lock %s 1 >/dev/null 2>&1\n'
+            'printf "OUTSIDER[%%s]\\n" "$?" >&2\'\n' % mode)
+
+    def child(self, mode, prefix=""):
+        """A child that inherits whatever the parent holds."""
+        return (
+            '%sbash --noprofile --norc -c '
+            '\'. playthrough/tooling/env.sh >/dev/null 2>&1 || exit 9\n'
+            'playthrough_acquire_mutation_lock %s 1\n'
+            'printf "CHILD[%%s]\\n" "$?" >&2\'\n' % (prefix, mode))
+
+    # -- the name and the two modes ----------------------------------
+
+    def test_the_lock_is_in_the_lock_directory_and_names_the_checkout(
+            self):
+        result = self.probe(
+            'printf "LOCKPATH[%s]\\n" '
+            '"$(playthrough_mutation_lock_path)" >&2\n')
+        match = re.search(r"LOCKPATH\[(.+)\]", result.stderr)
+        self.assertTrue(match, msg=result.stderr)
+        path = match.group(1)
+        digest = hashlib.sha256(
+            REPO_ROOT.encode("utf-8")).hexdigest()[:8]
+        self.assertEqual(os.path.basename(path),
+                         "mutation-%s.lock" % digest)
+        self.assertEqual(
+            os.path.dirname(path),
+            "/tmp/xdg%d/playthrough/lock" % SPARE_INDEX)
+
+    def test_a_lock_mode_that_is_neither_word_is_refused(self):
+        result = self.probe(
+            'playthrough_acquire_lock probe 5 sideways || '
+            'printf "REFUSED\\n" >&2\n')
+        self.assertIn("REFUSED", result.stderr)
+        self.assertIn("is not a lock mode", result.stderr)
+
+    def test_a_mutation_mode_that_is_neither_word_is_refused(self):
+        result = self.probe(
+            'playthrough_acquire_mutation_lock sideways 5 || '
+            'printf "REFUSED\\n" >&2\n')
+        self.assertIn("REFUSED", result.stderr)
+        self.assertIn("is not a mutation lock mode", result.stderr)
+
+    # -- what excludes what ------------------------------------------
+
+    def test_two_shared_holders_coexist(self):
+        result = self.probe(
+            'playthrough_acquire_mutation_lock shared 5 || exit 1\n' +
+            self.outsider("shared"))
+        self.assertIn(
+            "OUTSIDER[0]", result.stderr,
+            msg="two producers must be able to run beside each other; "
+                "each already excludes its own twin through its stage "
+                "lock")
+
+    def test_an_exclusive_holder_excludes_a_shared_one(self):
+        result = self.probe(
+            'playthrough_acquire_mutation_lock exclusive 5 || exit 1\n' +
+            self.outsider("shared"))
+        self.assertIn("OUTSIDER[1]", result.stderr)
+
+    def test_a_shared_holder_excludes_an_exclusive_one(self):
+        result = self.probe(
+            'playthrough_acquire_mutation_lock shared 5 || exit 1\n' +
+            self.outsider("exclusive"))
+        self.assertIn("OUTSIDER[1]", result.stderr)
+
+    # -- re-entrancy, proved rather than trusted ---------------------
+
+    def test_a_child_proves_and_inherits_a_shared_hold(self):
+        result = self.probe(
+            'playthrough_acquire_mutation_lock shared 5 || exit 1\n' +
+            self.child("shared"))
+        self.assertIn(
+            "CHILD[0]", result.stderr,
+            msg="a child that re-acquired would block against its own "
+                "parent for the whole timeout and then refuse")
+        self.assertIn("already held", result.stderr)
+
+    def test_a_child_inherits_an_exclusive_hold_for_a_shared_request(
+            self):
+        result = self.probe(
+            'playthrough_acquire_mutation_lock exclusive 5 || exit 1\n' +
+            self.child("shared"))
+        self.assertIn("CHILD[0]", result.stderr)
+
+    def test_a_child_needing_exclusive_under_a_shared_hold_is_refused(
+            self):
+        result = self.probe(
+            'playthrough_acquire_mutation_lock shared 5 || exit 1\n' +
+            self.child("exclusive"))
+        self.assertIn("CHILD[1]", result.stderr)
+        self.assertIn("does not make the tree quiescent", result.stderr)
+
+    def test_a_marker_whose_descriptor_is_not_open_is_refused(self):
+        result = self.probe(
+            'playthrough_acquire_mutation_lock shared 5 || exit 1\n' +
+            self.child(
+                "shared",
+                prefix="PLAYTHROUGH_MUTATION_LOCK_FD=77 "))
+        self.assertIn("CHILD[1]", result.stderr)
+        self.assertIn("not open", result.stderr)
+
+    def test_a_marker_whose_descriptor_points_elsewhere_is_refused(self):
+        result = self.probe(
+            'playthrough_acquire_mutation_lock shared 5 || exit 1\n'
+            'exec {decoy}</dev/null\n' +
+            self.child(
+                "shared",
+                prefix='PLAYTHROUGH_MUTATION_LOCK_FD="${decoy}" '))
+        self.assertIn("CHILD[1]", result.stderr)
+        self.assertIn("rather than", result.stderr)
+
+    def test_a_marker_nothing_actually_holds_is_refused(self):
+        # The shape a hand-set marker takes: the descriptor really is open
+        # on the right file, and no process holds the lock.
+        result = self.probe(
+            'lock="$(playthrough_mutation_lock_path)"\n'
+            'playthrough_secure_file "${lock}" 600 || exit 1\n'
+            'exec {opened}>>"${lock}"\n' +
+            self.child(
+                "shared",
+                prefix=('PLAYTHROUGH_MUTATION_LOCK_HELD=shared '
+                        'PLAYTHROUGH_MUTATION_LOCK_FD="${opened}" ')))
+        self.assertIn("CHILD[1]", result.stderr)
+        self.assertIn("nothing holds it", result.stderr)
+
+    def test_a_marker_that_is_not_a_mode_is_refused(self):
+        result = self.probe(self.child(
+            "shared",
+            prefix="PLAYTHROUGH_MUTATION_LOCK_HELD=sideways "))
+        self.assertIn("CHILD[1]", result.stderr)
+        self.assertIn("not a lock mode", result.stderr)
+
+    def test_an_inherited_hold_is_not_released_by_the_child(self):
+        # THE DANGEROUS CASE, and the reason release is conditional: the
+        # child's copy of the descriptor IS the parent's open file
+        # description, so an unconditional `flock -u` in the child drops
+        # the PARENT's lock while the parent goes on believing it holds
+        # the tree.  After a correct release the parent still holds it,
+        # which an outsider asking for exclusive proves.
+        released = (
+            'bash --noprofile --norc -c '
+            '\'. playthrough/tooling/env.sh >/dev/null 2>&1 || exit 9\n'
+            'playthrough_acquire_mutation_lock shared 1 '
+            '>/dev/null 2>&1\n'
+            'playthrough_release_mutation_lock\n'
+            'printf "CHILD_DONE\\n" >&2\'\n')
+        result = self.probe(
+            'playthrough_acquire_mutation_lock shared 5 || exit 1\n' +
+            released + self.outsider("exclusive"))
+        self.assertIn("CHILD_DONE", result.stderr)
+        self.assertIn(
+            "OUTSIDER[1]", result.stderr,
+            msg="the child released a hold it had only inherited, so "
+                "the parent lost a lock it still believes it holds")
+
+    def test_a_holder_releases_its_own_hold(self):
+        result = self.probe(
+            'playthrough_acquire_mutation_lock shared 5 || exit 1\n'
+            'playthrough_release_mutation_lock\n' +
+            self.outsider("exclusive"))
+        self.assertIn("OUTSIDER[0]", result.stderr)
+
+    # -- living beside the stage locks -------------------------------
+
+    def test_a_stage_lock_descriptor_survives_a_mutation_acquisition(
+            self):
+        result = self.probe(
+            'playthrough_acquire_lock stage 5 || exit 1\n'
+            'before="${PLAYTHROUGH_LOCK_FD}"\n'
+            'playthrough_acquire_mutation_lock shared 5 || exit 1\n'
+            'printf "STAGE[%s->%s] MUTATION[%s]\\n" "${before}" '
+            '"${PLAYTHROUGH_LOCK_FD}" '
+            '"${PLAYTHROUGH_MUTATION_LOCK_FD}" >&2\n')
+        match = re.search(
+            r"STAGE\[(\d+)->(\d+)\] MUTATION\[(\d+)\]", result.stderr)
+        self.assertTrue(match, msg=result.stderr)
+        self.assertEqual(
+            match.group(1), match.group(2),
+            msg="the mutation lock overwrote the stage lock's "
+                "descriptor, so the caller can no longer release the "
+                "lock it took first")
+        self.assertNotEqual(match.group(1), match.group(3))
+
+    def test_both_descriptors_are_withheld_from_a_detached_child(self):
+        result = self.probe(
+            'playthrough_acquire_lock stage 5 || exit 1\n'
+            'playthrough_acquire_mutation_lock shared 5 || exit 1\n'
+            'playthrough_child_close_fd || exit 1\n'
+            'printf "FD[%s] FD2[%s] BORROWED[%s][%s]\\n" '
+            '"${PLAYTHROUGH_CHILD_CLOSE_FD}" '
+            '"${PLAYTHROUGH_CHILD_CLOSE_FD2}" '
+            '"${PLAYTHROUGH_CHILD_CLOSE_BORROWED}" '
+            '"${PLAYTHROUGH_CHILD_CLOSE_BORROWED2}" >&2\n'
+            'playthrough_child_close_done\n')
+        match = re.search(
+            r"FD\[(\d+)\] FD2\[(\d+)\] BORROWED\[(\d)\]\[(\d)\]",
+            result.stderr)
+        self.assertTrue(match, msg=result.stderr)
+        self.assertNotEqual(match.group(1), match.group(2))
+        self.assertEqual(match.group(3), "0")
+        self.assertEqual(
+            match.group(4), "0",
+            msg="the mutation descriptor was borrowed rather than "
+                "withheld, so a detached child would inherit the lock "
+                "and hold the whole checkout for its entire lifetime")
+
+    def test_a_detached_child_really_cannot_see_either_descriptor(self):
+        result = self.probe(
+            'playthrough_acquire_lock stage 5 || exit 1\n'
+            'playthrough_acquire_mutation_lock shared 5 || exit 1\n'
+            'playthrough_child_close_fd || exit 1\n'
+            'FD_A="${PLAYTHROUGH_CHILD_CLOSE_FD}" '
+            'FD_B="${PLAYTHROUGH_CHILD_CLOSE_FD2}" '
+            'bash --noprofile --norc -c '
+            '\'printf "SEEN[%s][%s]\\n" '
+            '"$(readlink "/proc/self/fd/${FD_A}" 2>/dev/null '
+            '|| printf absent)" '
+            '"$(readlink "/proc/self/fd/${FD_B}" 2>/dev/null '
+            '|| printf absent)" >&2\' '
+            '{PLAYTHROUGH_CHILD_CLOSE_FD}>&- '
+            '{PLAYTHROUGH_CHILD_CLOSE_FD2}>&-\n'
+            'playthrough_child_close_done\n')
+        self.assertIn(
+            "SEEN[absent][absent]", result.stderr,
+            msg="a detached child inherited a lock descriptor; that is "
+                "the measured defect the two-descriptor withholding "
+                "exists to prevent")
+
+    def test_the_marker_survives_a_child_re_sourcing_env(self):
+        # THE MEASURED BUG: env.sh runs in the child too, and an
+        # unconditional `PLAYTHROUGH_MUTATION_LOCK_FD=""` there erased the
+        # one piece of evidence the child had.
+        result = self.probe(
+            'playthrough_acquire_mutation_lock shared 5 || exit 1\n'
+            'bash --noprofile --norc -c '
+            '\'. playthrough/tooling/env.sh >/dev/null 2>&1 || exit 9\n'
+            'printf "INHERITED[%s][%s]\\n" '
+            '"${PLAYTHROUGH_MUTATION_LOCK_HELD:-unset}" '
+            '"${PLAYTHROUGH_MUTATION_LOCK_FD:-unset}" >&2\n'
+            'printf "OWNED[%s]\\n" '
+            '"${PLAYTHROUGH_MUTATION_LOCK_OWNED}" >&2\'\n')
+        match = re.search(r"INHERITED\[(\w+)\]\[(\w+)\]", result.stderr)
+        self.assertTrue(match, msg=result.stderr)
+        self.assertEqual(match.group(1), "shared")
+        self.assertTrue(match.group(2).isdigit(), msg=result.stderr)
+        self.assertIn(
+            "OWNED[0]", result.stderr,
+            msg="a child must never believe it OWNS what it inherited, "
+                "or its cleanup will release its parent's lock")
 
 
 if __name__ == "__main__":

@@ -173,6 +173,101 @@ fi
 #   a path derived from it.  playthrough_rel is the same rule applied to
 #   a single path on purpose, and manifest.relative_to_repo() is the
 #   Python half.
+# The ceiling on a value that becomes one line of the record.
+#
+# Generous beside anything real -- CDDA world names are short, and the
+# survivor name this pipeline derives is bounded at 120 by make_srt.py --
+# and small enough that a value past it is evidently not a name.  It is
+# declared here rather than beside the other limits because
+# playthrough_assert_record_token below is the first thing in this file
+# that needs it.
+PLAYTHROUGH_MAX_RECORD_TOKEN=128
+
+# playthrough_has_control TEXT
+#   True when TEXT contains a C0 control, DEL, or a C1 control.
+#
+#   THE PATTERNS ARE BYTES, DELIBERATELY.  The first arm covers C0
+#   (0x01-0x1F, so tab, newline, carriage return and ESC) and DEL; the
+#   second covers the C1 block, which in UTF-8 is 0xC2 followed by
+#   0x80-0x9F -- and C1 matters because 0x9B is a single-byte CSI that
+#   some terminals honour exactly like ESC-[.
+#
+#   Legitimate non-ASCII is NOT refused: a world or survivor name may be
+#   spelled with accents or in another script, and refusing that would be
+#   parochial rather than safe.  Verified on this host, in LC_ALL=C, in
+#   C.UTF-8, and with no LC_ALL set at all -- identical every time:
+#   newline, CR, tab, ESC, DEL, BEL, U+0085 and U+009B are all detected,
+#   while 'Sunnysidé' and Cyrillic text are clean.  The byte ranges make
+#   the answer independent of the caller's locale, which a
+#   [[:cntrl:]] class would not be.
+playthrough_has_control() {
+    case "${1-}" in
+        *[$'\001'-$'\037']*|*$'\177'*) return 0 ;;
+    esac
+    case "${1-}" in
+        *$'\302'[$'\200'-$'\237']*) return 0 ;;
+    esac
+    return 1
+}
+
+# playthrough_escape_controls TEXT
+#   TEXT with every control character replaced by a visible <NN> escape.
+#
+#   Used by playthrough_redact, so it applies to EVERY diagnostic this
+#   pipeline writes.  A review found world names reaching log and
+#   KEY=value output with no rejection of C0/C1/newline: a name carrying
+#   a newline forges a whole extra log line, and one carrying ESC-[ can
+#   repaint the terminal of whoever is reading the run.  Escaping at the
+#   single point every message passes through is what makes that true of
+#   all inputs rather than of the ones somebody remembered.
+playthrough_escape_controls() {
+    # BYTES, DETERMINISTICALLY, whatever the caller's locale is.  This
+    # walked the value one CHARACTER at a time, and "character" is a
+    # locale question: in a UTF-8 locale ${rest:0:1} takes the whole
+    # two-byte C1 sequence, and in the C locale it takes one byte of it.
+    # Measured, and the C-locale outcome was the bad one -- U+009B came
+    # back SILENTLY DELETED rather than escaped, which is safe but throws
+    # away the evidence that anything was there.  A local LC_ALL makes the
+    # walk bytewise everywhere, so the output is a property of the input
+    # rather than of the environment that happened to call it.
+    local LC_ALL=C
+    local out="" rest="${1-}" byte second
+    playthrough_has_control "${rest}" || {
+        printf '%s' "${rest}"
+        return 0
+    }
+    # One byte at a time, because the substitution has to name WHICH byte
+    # it replaced; a blanket `tr -d` would delete the evidence that
+    # something was there at all.
+    while [ -n "${rest}" ]; do
+        byte="${rest:0:1}"
+        case "${byte}" in
+            $'\302')
+                # A C1 control is 0xC2 followed by 0x80-0x9F.  Both bytes
+                # are consumed together and reported as the CODEPOINT,
+                # which is the second byte's value -- so U+009B reads
+                # <9B> rather than as two meaningless halves.
+                second="${rest:1:1}"
+                case "${second}" in
+                    [$'\200'-$'\237'])
+                        out+="$(printf '<%02X>' "'${second}")"
+                        rest="${rest:2}"
+                        continue
+                        ;;
+                esac
+                ;;
+            [$'\001'-$'\037']|$'\177')
+                out+="$(printf '<%02X>' "'${byte}")"
+                rest="${rest:1}"
+                continue
+                ;;
+        esac
+        out+="${byte}"
+        rest="${rest:1}"
+    done
+    printf '%s' "${out}"
+}
+
 playthrough_redact() {
     local text="${1-}"
     if [ -n "${PLAYTHROUGH_REPO_ROOT:-}" ]; then
@@ -182,7 +277,50 @@ playthrough_redact() {
     if [ -n "${PLAYTHROUGH_RUNTIME_DIR:-}" ]; then
         text="${text//"${PLAYTHROUGH_RUNTIME_DIR}"/<runtime>}"
     fi
-    printf '%s' "${text}"
+    # LAST, so a control character cannot be reintroduced by a
+    # substitution above, and so the escaping applies to the whole
+    # message rather than to the part somebody thought to guard.
+    playthrough_escape_controls "${text}"
+}
+
+# playthrough_assert_record_token VALUE LABEL
+#   Refuse a value that cannot safely become one line of the record.
+#
+#   THE GRAMMAR: non-empty, no longer than
+#   PLAYTHROUGH_MAX_RECORD_TOKEN, and free of C0, DEL and C1 controls.
+#   Applied to values that are chosen OUTSIDE this pipeline and then
+#   published inside it -- a world name is a directory name any local
+#   account can create under the save tree, and it is emitted as
+#   PLAYTHROUGH_SAVE_WORLD, which later stages parse as KEY=value.  A
+#   newline in it appends a line of that record that nothing wrote.
+#
+#   The refusal reports the value ESCAPED, because a diagnostic that
+#   printed the offending bytes raw would perform the injection it is
+#   complaining about.
+playthrough_assert_record_token() {
+    local value="${1-}"
+    local label="${2:-a record value}"
+    if [ -z "${value}" ]; then
+        playthrough_die "${label} is empty, and an empty value cannot" \
+            "identify anything the record refers to"
+        return 1
+    fi
+    if [ "${#value}" -gt "${PLAYTHROUGH_MAX_RECORD_TOKEN}" ]; then
+        playthrough_die "${label} is ${#value} characters, past the" \
+            "${PLAYTHROUGH_MAX_RECORD_TOKEN}-character ceiling for a" \
+            "value that becomes one line of the record:" \
+            "$(playthrough_escape_controls "${value:0:64}")..."
+        return 1
+    fi
+    if playthrough_has_control "${value}"; then
+        playthrough_die "${label} carries a control character, so it" \
+            "cannot be written as one line of the record without" \
+            "forging or corrupting it. The value, with every control" \
+            "byte shown as <NN>, is:" \
+            "$(playthrough_escape_controls "${value}")"
+        return 1
+    fi
+    return 0
 }
 
 playthrough_log() {
@@ -496,6 +634,335 @@ playthrough_validate_int() {
 #   reporting success is indistinguishable from a verified one, and the
 #   directory it blesses is where the Xauthority cookie, the step lock
 #   and the capture staging live.
+# ---------------------------------------------------------------------
+# THE INHERITED ENVIRONMENT IS NOT TRUSTED EITHER
+#
+# Every external command in this tree is resolved by absolute path and
+# verified -- owner, writability, and the same for every directory above
+# it -- so that a tool another account can replace cannot decide a
+# reading in the film.  A security review pointed out the hole beside it:
+# the ENVIRONMENT those verified binaries inherit is a second way to
+# choose what code they run, and nothing looked at it.
+#
+#   * `BASH_ENV` names a file bash SOURCES at the start of every
+#     non-interactive shell.  Every stage in this tree is a
+#     non-interactive bash script, so one variable runs a caller's file
+#     inside all nine of them, before their first line.
+#   * `LD_PRELOAD` and `LD_AUDIT` load a caller's shared object into
+#     every dynamically linked process -- the engine, ImageMagick,
+#     ffmpeg, tesseract, git -- and override any symbol in it.
+#     `LD_LIBRARY_PATH` does the same thing one step less directly.
+#   * `PYTHONSTARTUP` and `PYTHONEXECUTABLE` reach the interpreter;
+#     `PYTHONPATH` and `PYTHONHOME` decide which modules the pipeline's
+#     own imports resolve to.
+#   * `GIT_CONFIG_COUNT` with `GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n`
+#     injects arbitrary configuration -- including `core.hooksPath`,
+#     `core.fsmonitor` and a credential helper -- into every git call,
+#     outranking the file this pipeline contains hooks with.
+#     `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`,
+#     `GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES` and
+#     `GIT_NAMESPACE` redirect where the evidence is read from and
+#     written to; `GIT_SSH`, `GIT_SSH_COMMAND`, `GIT_EXTERNAL_DIFF`,
+#     `GIT_PROXY_COMMAND` and `GIT_ASKPASS` name programs git executes.
+#   * `MAGICK_*` name ImageMagick's coder and filter MODULE paths --
+#     shared objects it loads to decode a PNG -- and `FONTCONFIG_FILE`
+#     redirects font resolution, which is what the attested Terminus
+#     digest exists to pin.
+#
+# THEY ARE REFUSED, NOT UNSET, and the distinction is deliberate.  None
+# of them has a legitimate reason to be set for this pipeline, so their
+# presence is either an attack or a misconfiguration serious enough that
+# proceeding quietly would be the wrong service: a run that silently
+# discarded a caller's `PYTHONPATH` would be doing something other than
+# what the caller asked, and one that honoured it would be running the
+# caller's code.  Saying so and stopping is the only honest third option,
+# and the fix is one `env -u NAME` away.
+#
+# THERE IS NO WAIVER for this, unlike the platform and path-ancestry
+# gates, and that is because it is not a property of the host: nothing
+# about any machine requires these to be set, so there is no environment
+# in which the refusal is the wrong answer.
+#
+# WHAT IS DELIBERATELY LEFT ALONE, because refusing it would break a
+# legitimate mechanism:
+#
+#   * `GIT_AUTHOR_*` and `GIT_COMMITTER_*` are how the platform supplies
+#     the committer identity -- see commit_artifacts.sh, which asserts an
+#     identity and never writes git configuration.
+#   * `GIT_CONFIG_GLOBAL`, `GIT_CONFIG_SYSTEM` and `GIT_CONFIG_NOSYSTEM`
+#     NARROW git's configuration rather than adding to it, and they are
+#     how this tree's own suites isolate a sandbox repository from the
+#     host's configuration.  They are VERIFIED instead of refused: a
+#     nominated configuration file must be a regular file this user owns
+#     and must not be writable by anybody else, which closes the
+#     injection path while leaving the isolation intact.
+#   * `GIT_TERMINAL_PROMPT`, and env.sh's own `PYTHON*` exports.
+#
+# `PYTHONNOUSERSITE=1` is exported below rather than adding `-s` to
+# fifteen call sites: it is exactly equivalent, it cannot be forgotten at
+# a new one, and it keeps the per-user site directory -- which is
+# writable by this account and by nothing else the pipeline verified --
+# out of every interpreter this run starts.  `-P`/`PYTHONSAFEPATH` is
+# deliberately NOT set: it would drop the script's own directory from
+# sys.path and the pipeline's modules import each other by name.
+# ---------------------------------------------------------------------
+export PLAYTHROUGH_REFUSED_ENV_VARS="\
+BASH_ENV ENV \
+LD_PRELOAD LD_AUDIT LD_LIBRARY_PATH \
+PYTHONPATH PYTHONHOME PYTHONSTARTUP PYTHONUSERBASE PYTHONEXECUTABLE \
+GIT_CONFIG GIT_CONFIG_COUNT GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE \
+GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE \
+GIT_EXEC_PATH GIT_TEMPLATE_DIR GIT_SSH GIT_SSH_COMMAND \
+GIT_EXTERNAL_DIFF GIT_PROXY_COMMAND GIT_ASKPASS \
+MAGICK_HOME MAGICK_CONFIGURE_PATH MAGICK_CODER_MODULE_PATH \
+MAGICK_FILTER_MODULE_PATH FONTCONFIG_FILE FFREPORT"
+
+# playthrough_env_var_reason NAME
+#   What NAME would let a caller do, in one sentence, so a refusal
+#   explains itself instead of naming a variable and stopping.
+playthrough_env_var_reason() {
+    case "${1-}" in
+        BASH_ENV|ENV)
+            printf '%s' "bash SOURCES the file it names at the start of \
+every non-interactive shell, so it runs inside all nine stages of this \
+pipeline before their first line"
+            ;;
+        LD_PRELOAD|LD_AUDIT)
+            printf '%s' "the shared object it names is loaded into \
+every dynamically linked process this run starts -- the engine, \
+ImageMagick, ffmpeg, tesseract and git among them -- and may override \
+any symbol in them"
+            ;;
+        LD_LIBRARY_PATH)
+            printf '%s' "it decides which shared libraries the verified \
+binaries load, which is the same substitution their verification exists \
+to prevent; a host that genuinely needs a library path should record it \
+in /etc/ld.so.conf.d"
+            ;;
+        PYTHONPATH|PYTHONHOME)
+            printf '%s' "it decides which modules this pipeline's own \
+imports resolve to"
+            ;;
+        PYTHONSTARTUP|PYTHONEXECUTABLE)
+            printf '%s' "it reaches the interpreter that reads every \
+clock and composes every transition"
+            ;;
+        PYTHONUSERBASE)
+            printf '%s' "it relocates the per-user site directory the \
+interpreter imports from"
+            ;;
+        GIT_CONFIG|GIT_CONFIG_COUNT)
+            printf '%s' "it injects arbitrary git configuration -- \
+core.hooksPath, core.fsmonitor, a credential helper -- into every git \
+call, outranking the containment this pipeline applies itself"
+            ;;
+        GIT_DIR|GIT_WORK_TREE|GIT_INDEX_FILE|GIT_OBJECT_DIRECTORY|\
+GIT_ALTERNATE_OBJECT_DIRECTORIES|GIT_NAMESPACE)
+            printf '%s' "it redirects where git reads the evidence from \
+and writes it to, so a checkpoint could commit into another repository \
+and report success"
+            ;;
+        GIT_EXEC_PATH|GIT_TEMPLATE_DIR|GIT_SSH|GIT_SSH_COMMAND|\
+GIT_EXTERNAL_DIFF|GIT_PROXY_COMMAND|GIT_ASKPASS)
+            printf '%s' "it names a program git executes, or a \
+directory git executes its own subcommands from"
+            ;;
+        MAGICK_HOME|MAGICK_CONFIGURE_PATH|MAGICK_CODER_MODULE_PATH|\
+MAGICK_FILTER_MODULE_PATH)
+            printf '%s' "it names the module path ImageMagick loads its \
+coders and filters from, which is code that runs on every frame this \
+pipeline captures and crops"
+            ;;
+        FONTCONFIG_FILE)
+            printf '%s' "it redirects font resolution, which is what \
+the attested Terminus digest exists to pin"
+            ;;
+        FFREPORT)
+            printf '%s' "it makes ffmpeg write a report to a \
+caller-chosen path on every invocation"
+            ;;
+        *)
+            printf '%s' "it is not part of this pipeline's environment \
+contract"
+            ;;
+    esac
+}
+
+# playthrough_sanitize_environment
+#   Refuse an inherited environment that could choose what code this run
+#   executes, and verify the isolation levers that are allowed to remain.
+#   Returns 0 when the environment is acceptable, 1 when it is refused.
+#
+#   Called ONCE, at source time, before anything in this file starts a
+#   child process -- which is the only placement that means anything: a
+#   check that ran after the first `stat` would be reporting on an
+#   environment that had already been used.
+playthrough_sanitize_environment() {
+    local name value
+    local -a offenders=()
+    local -a names=()
+    read -r -a names <<<"${PLAYTHROUGH_REFUSED_ENV_VARS}"
+    for name in "${names[@]}"; do
+        value="${!name-}"
+        [ -n "${value}" ] || continue
+        offenders+=("${name}=${value} -- $(
+            playthrough_env_var_reason "${name}")")
+    done
+    # GIT_CONFIG_KEY_n / GIT_CONFIG_VALUE_n only take effect through
+    # GIT_CONFIG_COUNT, which is refused above; they are named here too
+    # so that a partial injection is reported rather than left in place
+    # for the next run to complete.
+    for name in $(compgen -A variable GIT_CONFIG_KEY_ 2>/dev/null) \
+            $(compgen -A variable GIT_CONFIG_VALUE_ 2>/dev/null); do
+        offenders+=("${name}=${!name} -- $(
+            playthrough_env_var_reason GIT_CONFIG_COUNT)")
+    done
+    if [ "${#offenders[@]}" -gt 0 ]; then
+        for name in "${offenders[@]}"; do
+            playthrough_warn "refused environment: ${name}"
+        done
+        playthrough_die "this pipeline will not run with the" \
+            "environment above.  Each of those variables lets whoever" \
+            "set it choose what code the verified binaries execute, so" \
+            "honouring one would run a caller's code and discarding" \
+            "one silently would do something other than what the" \
+            "caller asked.  There is no waiver: nothing about any host" \
+            "requires them, and the fix is 'env -u <NAME> <command>'." \
+            "Note that GIT_AUTHOR_*, GIT_COMMITTER_*," \
+            "GIT_CONFIG_GLOBAL, GIT_CONFIG_SYSTEM and" \
+            "GIT_CONFIG_NOSYSTEM are deliberately NOT in that list."
+        return 1
+    fi
+    # The isolation levers, verified rather than refused.  A nominated
+    # configuration file that another account can write is an injection
+    # point wearing the clothes of a containment measure.
+    for name in GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM; do
+        value="${!name-}"
+        [ -n "${value}" ] || continue
+        case "${value}" in
+            /dev/null) continue ;;
+        esac
+        if [ ! -f "${value}" ]; then
+            playthrough_die "${name}='${value}' does not name a" \
+                "regular file.  It is git's own way to narrow which" \
+                "configuration is read, so it is honoured -- but only" \
+                "when what it names can be checked."
+            return 1
+        fi
+        if playthrough_is_group_or_world_writable "${value}"; then
+            playthrough_die "${name}='${value}' is writable by group" \
+                "or other, so anybody on this host can put" \
+                "core.hooksPath or a credential helper into every git" \
+                "call this run makes.  Tighten it to 0600 or 0644."
+            return 1
+        fi
+    done
+    return 0
+}
+
+# playthrough_permission_bits PATH
+#   Print PATH's three permission digits -- 644, 700, 666 -- with the
+#   special-bits digit dropped, or fail with no output.
+#
+#   THE SPECIAL-BITS DIGIT IS NOT PART OF THE ANSWER, and that is the
+#   whole reason this exists as a helper rather than as a bare
+#   `stat -c %a`.  A directory created inside a set-group-ID parent
+#   inherits setgid, and /tmp is mode 2777 on this class of host, so
+#   `stat %a` answers "2700" for a directory that is private by every
+#   definition that matters.  Callers comparing against 700, or masking
+#   with 8#077, need the access bits and nothing else.
+#
+#   Symlinks are FOLLOWED (-L), because every caller is asking about the
+#   thing it is going to read or write, not about the link naming it;
+#   callers that must refuse a link do so separately and before this.
+playthrough_permission_bits() {
+    local path="${1-}"
+    local raw
+    [ -n "${path}" ] || return 1
+    playthrough_assert_utilities \
+        "reading the mode of '${path}'" || return 1
+    raw="$("${PLAYTHROUGH_UTIL_STAT}" -Lc '%a' -- "${path}" \
+        2>/dev/null || true)"
+    [ -n "${raw}" ] || return 1
+    if [ "${#raw}" -gt 3 ]; then
+        raw="${raw#"${raw%???}"}"
+    fi
+    printf '%s' "${raw}"
+}
+
+# playthrough_is_group_or_world_writable PATH
+#   True when PATH grants write access to group or other.  A PREDICATE,
+#   silent on both answers, and FALSE when the mode cannot be read --
+#   callers that must not proceed on an unknown mode ask
+#   playthrough_permission_bits directly and refuse on empty, because
+#   "unreadable" and "safe" are different facts and only one of them is
+#   worth continuing on.
+playthrough_is_group_or_world_writable() {
+    local bits
+    bits="$(playthrough_permission_bits "${1-}")" || return 1
+    [ $(( 8#${bits} & 8#022 )) -ne 0 ]
+}
+
+# playthrough_untrusted_ancestor PATH
+#   Print the first directory AT OR ABOVE PATH that is group- or
+#   world-writable WITHOUT the sticky bit, walking all the way to '/'.
+#   Prints nothing and returns 1 when every ancestor is safe.
+#
+#   WHY THIS IS A SEPARATE, WALK-TO-THE-ROOT MEASUREMENT.  A security
+#   review found that this tree checked the mode of each directory it
+#   used and of each ancestor BELOW its own verified anchor, and stopped
+#   there -- so on a host whose /tmp is mode 2777 and NOT sticky
+#   (measured on the provisioning host; a normal /tmp is 1777) the fact
+#   that the anchor's own NAME could be renamed out from under it by any
+#   local account was never measured and never reported.  That is the
+#   gap this closes: not the mode of the thing, the mode of the road to
+#   it.
+#
+#   THE STICKY BIT IS THE WHOLE DISTINCTION, and it is why a 1777 /tmp is
+#   not a finding while a 2777 one is.  In a world-writable directory
+#   WITHOUT the sticky bit, any account with write permission may rename
+#   or unlink ANY entry regardless of who owns it; with the sticky bit
+#   set, only the entry's owner (or the directory's, or root) may.  So a
+#   private 0700 subtree under a 1777 /tmp really is private, and the
+#   same subtree under a 2777 /tmp can have its top component replaced
+#   between one check and the next use.
+#
+#   A REPORTER, NOT A JUDGE.  It returns the offending path and leaves
+#   "fatal, degrading or merely noted" to the caller, because the answer
+#   genuinely differs: the pipeline can MOVE its own runtime anchor, and
+#   cannot move the checkout it was given.
+#   THE WHOLE `stat %a` STRING IS READ HERE, not
+#   playthrough_permission_bits, and that is load-bearing: that helper
+#   DROPS the special-bits digit -- correctly, for callers comparing
+#   against 700 on a setgid-inheriting directory -- and the sticky bit
+#   lives in exactly that digit.  Reading through it would strip the one
+#   bit this function turns on, and every world-writable ancestor would
+#   be reported as unsafe including a conventional 1777 /tmp.  Measured:
+#   the first version of this function did that and a sticky-bit test
+#   caught it.
+playthrough_untrusted_ancestor() {
+    local path="${1-}"
+    local entry bits
+    [ -n "${path}" ] || return 1
+    playthrough_assert_utilities \
+        "measuring the ancestry of '${path}'" || return 1
+    entry="$(playthrough_canonical_path "${path}")" || return 1
+    while : ; do
+        bits="$("${PLAYTHROUGH_UTIL_STAT}" -Lc '%a' -- "${entry}" \
+            2>/dev/null || true)"
+        if [ -n "${bits}" ] &&
+           [ $(( 8#${bits} & 8#022 )) -ne 0 ] &&
+           [ $(( 8#${bits} & 8#1000 )) -eq 0 ]; then
+            printf '%s' "${entry}"
+            return 0
+        fi
+        [ "${entry}" = "/" ] && break
+        entry="${entry%/*}"
+        [ -n "${entry}" ] || entry="/"
+    done
+    return 1
+}
+
 playthrough_secure_dir() {
     local path="${1-}"
     local mode="${2:-700}"
@@ -922,18 +1389,37 @@ playthrough_verify_authority_file() {
             "and send keystrokes into the session"
         return 1
     fi
-    # THE WALK STOPS AT THE VERIFIED RUNTIME ROOT, and that boundary is
-    # the file's whole trust model rather than a shortcut.  This host's
-    # /tmp is mode 2777 -- world-writable and NOT sticky (measured) --
-    # so a walk that ran to '/' would refuse every path under it,
-    # including this pipeline's own private tree.  What makes that tree
-    # private is not /tmp's mode: it is that env.sh proved
-    # XDG_RUNTIME_DIR itself to be a real, non-symlink, owner-only 0700
-    # directory owned by this user before exporting it, which is the
-    # same anchor playthrough_secure_dir rests on everywhere else.  So
-    # ancestors BELOW that anchor are checked and the anchor terminates
-    # the walk; a file OUTSIDE it is walked all the way to '/', because
-    # nothing has vouched for any of its ancestors.
+    # THE WALK STOPS AT THE VERIFIED RUNTIME ROOT for its REFUSAL, and
+    # goes past it for its REPORT.  Both halves matter and a review found
+    # the second one missing.
+    #
+    # Why the refusal stops there: this host's /tmp is mode 2777 --
+    # world-writable and NOT sticky (measured) -- so a refusal that ran
+    # to '/' would refuse every path under it, including this pipeline's
+    # own private tree, and the anchor has separately been proved to be a
+    # real, non-symlink, owner-only 0700 directory owned by this user.
+    # An ancestor BELOW that anchor is a genuine local defect and stays
+    # fatal.
+    #
+    # Why the report goes past it: "the anchor is private" and "the road
+    # to the anchor cannot be re-paved by another account" are DIFFERENT
+    # facts, and the second one used to be neither measured nor said. It
+    # is now measured once, when the anchor is chosen, and carried in
+    # PLAYTHROUGH_RUNTIME_UNTRUSTED_ANCESTOR -- which also degrades the
+    # trust state, so nothing produced through such a road is reported as
+    # produced in a trusted environment.  This function names it beside
+    # the credential it is about, because a reader looking at the X
+    # cookie should not have to go and find that out.
+    if [ -n "${PLAYTHROUGH_RUNTIME_UNTRUSTED_ANCESTOR-}" ]; then
+        playthrough_warn "${label} '${path}' is a credential inside" \
+            "the private runtime anchor, and that anchor is reached" \
+            "through '${PLAYTHROUGH_RUNTIME_UNTRUSTED_ANCESTOR}'," \
+            "which is group- or world-writable and not sticky.  The" \
+            "file's own mode and owner are verified below and hold;" \
+            "what cannot be verified is that the PATH to it will still" \
+            "name this file at the next connection.  The trust state" \
+            "carries this already"
+    fi
     local boundary=""
     boundary="$(playthrough_canonical_path "${XDG_RUNTIME_DIR:-}" \
         2>/dev/null || true)"
@@ -1080,6 +1566,17 @@ playthrough_assert_no_symlink() {
 # build-scripts/clang-tidy-run.sh:8-9, adjusted for this file's depth
 # of two directories rather than one.
 # ---------------------------------------------------------------------
+# THE ENVIRONMENT IS SANITISED FIRST, before this file resolves a path,
+# starts a child or reads a file.  Placement is the whole of the control:
+# a check that ran later would be reporting on an environment that had
+# already been used, and `BASH_ENV` in particular has run its file before
+# any line of this one executes -- which is why the refusal names it
+# rather than pretending to have prevented it.  See THE INHERITED
+# ENVIRONMENT IS NOT TRUSTED EITHER, above.
+if ! playthrough_sanitize_environment; then
+    return 1 2>/dev/null || exit 1
+fi
+
 _playthrough_script_dir="$(
     cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd
 )"
@@ -1220,12 +1717,99 @@ fi
 # non-directory, refuses a directory this user does not own, and
 # confirms the mode rather than trusting chmod, which turns a silent
 # redirect into a loud failure.
-_playthrough_runtime_dir="/tmp/xdg${_playthrough_suffix}"
-if ! playthrough_secure_dir "${_playthrough_runtime_dir}" 700 \
-        "XDG_RUNTIME_DIR"; then
-    return 1 2>/dev/null || exit 1
+# AND ITS ANCESTRY IS NOW PART OF THE CHOICE, not just its own inode.
+#
+# A security review measured what the paragraph above already suspected
+# and stopped short of acting on: /tmp on the provisioning host is mode
+# 2777 -- world-writable and NOT sticky -- so `/tmp/xdg` is a private
+# 0700 directory reached through a road any local account may re-pave.
+# Verifying the destination cannot fix the road.
+#
+# So the anchor is CHOSEN from an ordered list of candidates, and the
+# first one whose whole ancestry is free of group- or world-writable
+# non-sticky directories wins:
+#
+#   1. $PLAYTHROUGH_XDG_ANCHOR, when a caller nominates one.  It is held
+#      to exactly the same verification as the defaults -- the control is
+#      that the anchor is proved, not that it is hard-coded -- and it is
+#      how an operator on an unconventional host asks for a better
+#      address without editing this file.
+#   2. /tmp/xdg<suffix>, the historical default, WHEN IT ALREADY EXISTS.
+#      Continuity outranks a better address here, and not as a
+#      concession: this directory holds live state -- the X authority
+#      cookie, the pid files of a running server, the lock files, an
+#      in-flight step journal -- and silently moving the anchor out from
+#      under a running session would orphan every one of them and turn a
+#      display this checkout owns into a foreign one.  An untrusted
+#      ancestry on this branch is REPORTED and it DEGRADES THE TRUST
+#      STATE, so nothing produced through such a road can be reported as
+#      produced in a trusted environment, and
+#      playthrough_assert_trusted refuses a launch or a production
+#      capture on it.
+#   3. /run/playthrough-<uid><suffix>, under a root-owned /run, which is
+#      the "root-controlled parent" the finding asks for.  It carries the
+#      clone-index suffix for the same reason the legacy path does: two
+#      clones must not share one runtime root, and /run/user/<uid> --
+#      the other address that would qualify -- is per USER and cannot
+#      carry that suffix without ceasing to be the thing it is.
+#   4. /tmp/xdg<suffix>, created, as the last resort on a host with no
+#      /run at all.  Reported and trust-degrading, like branch 2.
+#
+# On a host with a normal 1777 /tmp -- which includes the supported
+# container -- branches 2 and 4 are trusted anyway, and the sticky bit is
+# why: see playthrough_untrusted_ancestor for the difference the bit
+# makes.  The ordering therefore costs a conventional host nothing and
+# earns an unconventional one a real ancestor.
+_playthrough_legacy_anchor="/tmp/xdg${_playthrough_suffix}"
+_playthrough_runtime_dir=""
+_playthrough_unsafe_ancestor=""
+if [ -n "${PLAYTHROUGH_XDG_ANCHOR-}" ]; then
+    # A NOMINATION IS FATAL WHEN IT FAILS.  Falling back to a default
+    # after a caller has asked for a specific anchor would silently put
+    # the X cookie, the locks and the withdrawn frames somewhere the
+    # caller did not choose -- which is the whole class of surprise a
+    # nomination exists to avoid.
+    if ! playthrough_secure_dir "${PLAYTHROUGH_XDG_ANCHOR}" 700 \
+            "XDG_RUNTIME_DIR"; then
+        playthrough_die "PLAYTHROUGH_XDG_ANCHOR" \
+            "'${PLAYTHROUGH_XDG_ANCHOR}' cannot be used as the private" \
+            "runtime anchor (the reason is above).  It is not fallen" \
+            "back from: a nominated anchor that quietly became a" \
+            "different directory would put this run's credential and" \
+            "locks somewhere nobody asked for."
+        return 1 2>/dev/null || exit 1
+    fi
+    _playthrough_runtime_dir="${PLAYTHROUGH_XDG_ANCHOR}"
+else
+    # THE AUTOMATIC CHOICE.  The legacy anchor wins whenever it is
+    # trusted OR already present; the /run candidate is reached only when
+    # the legacy road is unsafe AND there is no live state to orphan.
+    if [ -d "${_playthrough_legacy_anchor}" ] ||
+       ! playthrough_untrusted_ancestor \
+            "${_playthrough_legacy_anchor}" >/dev/null ||
+       [ ! -d /run ]; then
+        _playthrough_runtime_dir="${_playthrough_legacy_anchor}"
+    else
+        _playthrough_runtime_dir=\
+"/run/playthrough-$(_playthrough_euid)${_playthrough_suffix}"
+    fi
+    if ! playthrough_secure_dir "${_playthrough_runtime_dir}" 700 \
+            "XDG_RUNTIME_DIR"; then
+        return 1 2>/dev/null || exit 1
+    fi
+fi
+if ! _playthrough_unsafe_ancestor="$(playthrough_untrusted_ancestor \
+        "${_playthrough_runtime_dir}")"; then
+    _playthrough_unsafe_ancestor=""
 fi
 export XDG_RUNTIME_DIR="${_playthrough_runtime_dir}"
+# THE ANCESTRY IS EXPORTED AS A FACT, so every stage and the acceptance
+# gate read the same answer instead of each re-deriving it.  Empty means
+# every directory from the anchor to '/' is free of group- or
+# world-writable non-sticky components.
+export PLAYTHROUGH_RUNTIME_UNTRUSTED_ANCESTOR=\
+"${_playthrough_unsafe_ancestor-}"
+unset _playthrough_legacy_anchor _playthrough_unsafe_ancestor
 
 # ---------------------------------------------------------------------
 # The private runtime root: one place for everything this pipeline
@@ -1417,6 +2001,23 @@ export PYTHONDONTWRITEBYTECODE=1
 # reports progress as it happens instead of at exit.
 export PYTHONUNBUFFERED=1
 
+# PYTHONNOUSERSITE=1 IS `-s` FOR EVERY INTERPRETER THIS RUN STARTS, and
+# exporting it is why `-s` does not have to be remembered at fifteen call
+# sites.  It keeps ~/.local/lib/pythonX.Y/site-packages out of sys.path,
+# which matters because that directory is writable by this account and is
+# not one of the paths the executable verification covers: a module
+# planted there would shadow one of the six pinned, hash-locked
+# distributions and decide the readings in the film.
+#
+# `PYTHONSAFEPATH` (the `-P` flag) is deliberately NOT set: it would drop
+# the script's own directory from sys.path, and this pipeline's modules
+# import each other by name -- make_srt imports timeline, session imports
+# manifest.  `-E`'s effect is achieved instead by
+# playthrough_sanitize_environment refusing the PYTHON* variables
+# outright, which is stronger: -E would silently ignore a poisoned
+# PYTHONPATH where the refusal says it was there.
+export PYTHONNOUSERSITE=1
+
 # ---------------------------------------------------------------------
 # Artifact layout -- one authoritative definition for every sibling
 #
@@ -1607,6 +2208,36 @@ export PLAYTHROUGH_DATE_AUDIT="${PLAYTHROUGH_BUILD_DIR}/frame_dates.jsonl"
 # nothing.
 export PLAYTHROUGH_FRAME_DIGESTS="${PLAYTHROUGH_BUILD_DIR}/\
 frame_digests.jsonl"
+
+# WHAT THE OPERATOR SAW BETWEEN THE KEYS, and it is named here because
+# the acceptance gate reads it.  session.py appends one row per frame
+# that was looked at, and a review found the consequence of nothing else
+# reading the file: frame 298 had been read twice with neither row saying
+# it replaced the other, and frame 307 -- the last capture -- had not
+# been read at all.  Both now fail the gate.
+export PLAYTHROUGH_ACKNOWLEDGMENTS="${PLAYTHROUGH_BUILD_DIR}/\
+acknowledgments.jsonl"
+
+# THE ONE ARTIFACT THAT VOUCHES FOR THE OTHERS FROM OUTSIDE THEMSELVES.
+#
+# Every ledger above sits in the same tree as the evidence it describes,
+# under the same permissions, so none of them can answer "was this
+# changed after the fact" -- the answer would have to come from the file
+# being asked about.  This is a hash-chained, append-only seal: each row
+# carries an artifact's sha256, GIT'S OWN NAME for the same bytes
+# (`git hash-object` re-derives it, computed by code nobody here wrote),
+# and the previous row's chain hash.  commit_artifacts.sh publishes the
+# chain head as a `Playthrough-Evidence-Anchor:` trailer at each
+# checkpoint, and a commit object's name is a hash of its own content --
+# so rewriting an artifact means rewriting this ledger AND rewriting
+# published history.
+#
+# Sealing build/frame_digests.jsonl seals all 307 captures transitively,
+# which is why the sealed set is short enough to read: a substituted
+# frame breaks its digest row, repairing that row breaks the seal, and
+# repairing the seal breaks the chain and the committed trailer.
+export PLAYTHROUGH_EVIDENCE_ANCHOR="${PLAYTHROUGH_BUILD_DIR}/\
+evidence_anchor.jsonl"
 export PLAYTHROUGH_MOVIE="${PLAYTHROUGH_DIR}/cata-play.mp4"
 export PLAYTHROUGH_MOVIE_CC="${PLAYTHROUGH_DIR}/cata-play-cc.mp4"
 export PLAYTHROUGH_TRANSCRIPT_MD="${PLAYTHROUGH_DIR}/transcript.md"
@@ -2157,6 +2788,40 @@ MODULES = [
 ]
 PIN = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)==([^\s\\;#]+)")
 
+# The first Pillow release that carries the fix for the advisories the
+# pinned 11.3.0 is exposed to -- CVE-2026-25990 (HIGH) first fixed in
+# 12.1.1, with further records first fixed in 12.2.0 and 12.3.0.  It is
+# a CONSTANT HERE AND A GATE BELOW rather than a sentence in
+# requirements.txt, because the trigger for moving the pin was written
+# down as prose ("when a moviepy release lifts the pillow<12.0 cap")
+# and prose does not fire.  Check 6 fires.
+PILLOW_FIRST_FIXED = "12.1.1"
+
+# The bootstrap tools belonging to the interpreter.  These are NOT in
+# the lock and must not be: pip installs the lock, so it cannot be an
+# entry in it.
+# They are the ONLY distributions allowed to be present without being
+# declared, and naming them here is what lets check 7 refuse everything
+# else instead of accepting whatever happens to be installed.
+BOOTSTRAP = ("pip", "setuptools", "wheel")
+
+# The one executable startup file the closure is permitted to contain,
+# by sha256 of its exact bytes.
+#
+# A `.pth` file whose line begins `import` is EXECUTED by the site
+# module at every interpreter startup, before any pipeline code runs --
+# so it is a code-execution vector that no version pin and no hash on a
+# wheel describes.  setuptools ships exactly one, to keep its distutils
+# shim ahead of the one in the stdlib, and it is allowed by digest
+# rather than by
+# name: allowing it by name would allow ANY content under that name,
+# which is precisely the substitution worth refusing.
+STARTUP_ALLOWED = {
+    "distutils-precedence.pth":
+        "2638ce9e2500e572a5e0de7faed6661eb569d1b696fcba07b0dd223da5f5d2"
+        "24",
+}
+
 
 def say(kind, name, observed, expected=""):
     fields = (kind, name, observed, expected)
@@ -2357,6 +3022,215 @@ else:
         "needs neither pip nor a network",
     )
 
+# 6  THE PIN THAT IS FORCED, AND STOPS BEING FORCED WITHOUT NOTICE.
+#
+# pillow 11.3.0 is pinned because moviepy 2.2.1 declares
+# `pillow<12.0,>=9.2.0` and 2.2.1 is the newest moviepy there is -- so
+# 11.3.0 is the newest Pillow the declared render stack permits, and it
+# carries published advisories that are first fixed in 12.1.1.  That is
+# an accepted, disclosed risk for exactly as long as the constraint
+# forces it, and NOT ONE DAY LONGER.
+#
+# The failure this closes is a silent one: the day a moviepy release
+# lifts the cap, nothing in this pipeline would notice, and the
+# justification for the pin would quietly become false while every gate
+# still reported green.  So the justification is measured instead of
+# recited -- read from the INSTALLED metadata of the thing that imposes
+# it, with no network -- and the moment it stops holding, this FAILS and
+# names the move to make.
+try:
+    from packaging.requirements import Requirement as _Req
+    from packaging.utils import canonicalize_name as _canon
+    from packaging.version import Version as _Ver
+except Exception as err:                                    # noqa: BLE001
+    verdict(
+        False,
+        "the render stack still forces the Pillow pin it is held at",
+        "packaging is not importable, so the bound moviepy declares "
+        "cannot be read: %s" % err,
+        "packaging installed -- the bound has to be READ, because a "
+        "pin justified by a constraint stops being justified the "
+        "moment the constraint moves",
+    )
+else:
+    bound = None
+    bound_err = ""
+    try:
+        for raw in md.requires("moviepy") or []:
+            req = _Req(raw)
+            if _canon(req.name) != "pillow":
+                continue
+            if req.marker is not None and not req.marker.evaluate(
+                    {"extra": ""}):
+                continue
+            bound = req.specifier
+            break
+    except Exception as err:                                # noqa: BLE001
+        bound_err = str(err)
+    have_pillow = installed.get("pillow")
+    if bound is None:
+        # FAIL-CLOSED.  An unreadable bound is not "no constraint"; it
+        # is a justification that can no longer be checked, and the pin
+        # is only defensible while it can be.
+        verdict(
+            False,
+            "the render stack still forces the Pillow pin it is held at",
+            "moviepy declares no readable Pillow requirement%s"
+            % (": %s" % bound_err if bound_err else ""),
+            "moviepy to declare the Pillow range it was tested "
+            "against -- without it there is nothing forcing 11.3.0 and "
+            "nothing justifying it either",
+        )
+    elif have_pillow and _Ver(have_pillow) >= _Ver(PILLOW_FIRST_FIXED):
+        verdict(
+            True,
+            "the render stack still forces the Pillow pin it is held at",
+            "pillow is %s, at or past the first fixed release %s, so "
+            "the exposure the pin was accepted for is closed"
+            % (have_pillow, PILLOW_FIRST_FIXED),
+            "either a Pillow at or past %s, or a render stack whose "
+            "own declared bound still forces an earlier one"
+            % PILLOW_FIRST_FIXED,
+        )
+    elif bound.contains(PILLOW_FIRST_FIXED, prereleases=True):
+        verdict(
+            False,
+            "the render stack still forces the Pillow pin it is held at",
+            "moviepy now declares pillow%s, which ADMITS the first "
+            "fixed release %s -- so the constraint that justified "
+            "pinning %s no longer exists"
+            % (bound, PILLOW_FIRST_FIXED, have_pillow or "11.3.0"),
+            "move BOTH pins together in requirements.txt and "
+            "requirements.lock -- moviepy to the release that lifted "
+            "the cap and pillow to the newest it allows at or past "
+            "%s -- then re-run the transition path end to end before "
+            "trusting it with a render.  Do NOT raise the Pillow pin "
+            "alone" % PILLOW_FIRST_FIXED,
+        )
+    else:
+        verdict(
+            True,
+            "the render stack still forces the Pillow pin it is held at",
+            "moviepy declares pillow%s, which excludes the first fixed "
+            "release %s, so %s remains the newest permitted and the "
+            "accepted risk is still forced rather than chosen"
+            % (bound, PILLOW_FIRST_FIXED, have_pillow or "11.3.0"),
+            "either a Pillow at or past %s, or a render stack whose "
+            "own declared bound still forces an earlier one"
+            % PILLOW_FIRST_FIXED,
+        )
+
+# 7  NOTHING IS INSTALLED THAT THE LOCK DOES NOT NAME.
+#
+# Checks 2-5 all ask "is what we declared present and coherent".  None
+# of them asks the opposite question, and it is the one that matters for
+# a supply chain: what ELSE is in here.  An extra distribution is a
+# package nothing declared, nothing hash-pinned and no review saw, and
+# it can be imported by any module in the closure.
+extra = []
+if locked:
+    allowed = set(locked)
+    allowed.update(norm(name) for name in BOOTSTRAP)
+    try:
+        for dist in md.distributions():
+            name = dist.metadata["Name"]
+            if not name:
+                extra.append("an unnamed distribution at %s"
+                             % getattr(dist, "_path", "<unknown>"))
+            elif norm(name) not in allowed:
+                extra.append("%s==%s" % (name, dist.version))
+    except Exception as err:                                # noqa: BLE001
+        extra.append("the installed set could not be enumerated: %s"
+                     % err)
+    verdict(
+        not extra,
+        "nothing is installed that requirements.lock does not name",
+        "; ".join(sorted(set(extra))) if extra
+        else "%d distribution(s), all named by the lock or one of the "
+             "%d bootstrap tools (%s)"
+             % (len(allowed), len(BOOTSTRAP), ", ".join(BOOTSTRAP)),
+        "an environment containing the locked closure and the "
+        "bootstrap tools of the interpreter and NOTHING else -- an "
+        "undeclared distribution is one no hash pinned and no review "
+        "saw, and every module in the closure can import it",
+    )
+else:
+    verdict(
+        False,
+        "nothing is installed that requirements.lock does not name",
+        "the lock could not be read, so the installed set has nothing "
+        "to be compared against",
+        "a readable requirements.lock",
+    )
+
+# 8  NOTHING RUNS AT INTERPRETER STARTUP THAT WAS NOT ALLOWED.
+#
+# A .pth file in site-packages whose line begins `import` is executed by
+# the site module on EVERY interpreter start, before main() and before
+# any check in this program. It is arbitrary code inside the closure
+# that no wheel hash and no version pin describes, so it is inventoried
+# here by digest.
+startup = []
+try:
+    import os as _os
+    import sysconfig as _sysconfig
+    import hashlib as _hashlib
+
+    roots = []
+    for key in ("purelib", "platlib"):
+        path = _sysconfig.get_paths().get(key)
+        if path and path not in roots:
+            roots.append(path)
+    scanned = 0
+    for root in roots:
+        if not _os.path.isdir(root):
+            continue
+        for entry in sorted(_os.listdir(root)):
+            if not entry.endswith(".pth"):
+                continue
+            scanned += 1
+            full = _os.path.join(root, entry)
+            try:
+                with open(full, "rb") as handle:
+                    body = handle.read()
+            except OSError as err:
+                startup.append("%s could not be read: %s" % (entry, err))
+                continue
+            executable = [
+                line for line in body.decode(
+                    "utf-8", "replace").splitlines()
+                if line.strip().startswith(("import ", "import\t"))
+            ]
+            if not executable:
+                continue
+            digest = _hashlib.sha256(body).hexdigest()
+            want = STARTUP_ALLOWED.get(entry)
+            if want is None:
+                startup.append(
+                    "%s executes %d line(s) at startup and is not an "
+                    "allowed startup file (sha256 %s)"
+                    % (entry, len(executable), digest[:16]))
+            elif digest != want:
+                startup.append(
+                    "%s is an allowed startup file but its bytes have "
+                    "changed: sha256 %s, expected %s"
+                    % (entry, digest[:16], want[:16]))
+except Exception as err:                                    # noqa: BLE001
+    startup.append("the startup files could not be inventoried: %s"
+                   % err)
+verdict(
+    not startup,
+    "nothing runs at interpreter startup that was not allowed",
+    "; ".join(sorted(set(startup))) if startup
+    else "%d .pth file(s) present; every executable one is allowed by "
+         "digest (%s)"
+         % (scanned if "scanned" in dir() else 0,
+            ", ".join(sorted(STARTUP_ALLOWED)) or "none"),
+    "every executable .pth allowed by the sha256 of its exact bytes -- "
+    "a .pth beginning `import` runs before any pipeline code, so "
+    "allowing one by NAME would allow any content under that name",
+)
+
 say("INFO", "the installed dependency closure",
     ", ".join("%s==%s" % (d, installed.get(d) or "ABSENT")
               for d, _m in MODULES))
@@ -2424,6 +3298,14 @@ playthrough_assert_video_driver() {
 #   PLAYTHROUGH_TRUST_BYPASS_VARS  every variable that relaxes a check
 #   PLAYTHROUGH_TRUST_BYPASSES     those of them currently active
 #   PLAYTHROUGH_TRUST_UNVERIFIED   security checks that could not run
+#   PLAYTHROUGH_RUNTIME_UNTRUSTED_ANCESTOR
+#                                  the first group- or world-writable
+#                                  non-sticky directory on the road to
+#                                  the private runtime anchor, or empty
+#   PLAYTHROUGH_REPO_UNTRUSTED_ANCESTOR
+#                                  the same measurement for the road to
+#                                  the checkout, set by
+#                                  playthrough_check_path_ancestry
 #   PLAYTHROUGH_TRUST_STATE        trusted | diagnostic
 #
 # and two consumers act on it without discretion: launch_game.sh
@@ -2455,6 +3337,7 @@ PLAYTHROUGH_ALLOW_UNVERIFIED_TILESET_PACK \
 PLAYTHROUGH_ALLOW_TILESET_FALLBACK \
 PLAYTHROUGH_ALLOW_VULNERABLE_PILLOW \
 PLAYTHROUGH_ALLOW_ANY_COMPILER \
+PLAYTHROUGH_ALLOW_UNSAFE_PATH_ANCESTRY \
 PLAYTHROUGH_ALLOW_EOL_PLATFORM"
 
 # playthrough_trust_reason NAME
@@ -2485,6 +3368,12 @@ the pinned, reviewed one"
         PLAYTHROUGH_ALLOW_ANY_COMPILER)
             printf '%s' "the binary may have been built by a compiler \
 the project does not sanction"
+            ;;
+        PLAYTHROUGH_ALLOW_UNSAFE_PATH_ANCESTRY)
+            printf '%s' "a component of the path to this run's own \
+evidence or runtime state can be renamed or replaced by another local \
+account, so a frame, a save or a lock may not be the one this pipeline \
+wrote"
             ;;
         PLAYTHROUGH_ALLOW_EOL_PLATFORM)
             printf '%s' "the ImageMagick, ffmpeg and Xorg/Xvfb \
@@ -2526,7 +3415,20 @@ playthrough_trust_refresh() {
     # verification, so it lands in the same state a bypass does, and
     # playthrough_assert_trusted refuses the launch and the capture on
     # either.
-    if [ -n "${active}" ] || [ -n "${PLAYTHROUGH_TRUST_UNVERIFIED}" ]; then
+    #
+    # AN UNSAFE PATH ANCESTRY IS NOT A THIRD INPUT HERE, and that is a
+    # deliberate placement rather than an omission.  It is a property of
+    # the HOST, like an end-of-life platform, and this file handles those
+    # the same way: the property is measured, a stage that is about to
+    # produce evidence REFUSES on it, and the waiver that proceeds anyway
+    # is a bypass -- PLAYTHROUGH_ALLOW_UNSAFE_PATH_ANCESTRY -- which then
+    # reaches the trust state through the loop above like every other
+    # one.  Keying the state on the measurement directly would make
+    # merely SOURCING this file on such a host report a diagnostic
+    # environment before anything had been asked of it, and sourcing is
+    # supposed to be inert.  See playthrough_check_path_ancestry.
+    if [ -n "${active}" ] ||
+       [ -n "${PLAYTHROUGH_TRUST_UNVERIFIED}" ]; then
         export PLAYTHROUGH_TRUST_STATE="diagnostic"
         return 1
     fi
@@ -2615,10 +3517,10 @@ playthrough_tool_package() {
         ccache) printf '%s\n' "ccache" ;;
         setsid|nohup|kill|env|readlink|tr|head|tail|sleep|mkdir|chmod|\
 sha256sum|stat|timeout|id|realpath|cut|cp|mv|rm|wc|dirname|basename|\
-cat|ls|sort|touch|pwd|date|df|du|mktemp)
+cat|ls|sort|touch|pwd|date|df|du|mktemp|od)
             printf '%s\n' "coreutils" ;;
         find|xargs) printf '%s\n' "findutils" ;;
-        flock) printf '%s\n' "util-linux" ;;
+        flock|mcookie) printf '%s\n' "util-linux" ;;
         git) printf '%s\n' "git" ;;
         xauth) printf '%s\n' "xauth" ;;
         grep) printf '%s\n' "grep" ;;
@@ -2917,7 +3819,8 @@ playthrough_spawn_detached() {
     # by design, so an inherited lock would be held indefinitely.
     playthrough_child_close_fd || return 1
     setsid nohup "$@" >"${logfile}" 2>&1 </dev/null \
-        {PLAYTHROUGH_CHILD_CLOSE_FD}>&- &
+        {PLAYTHROUGH_CHILD_CLOSE_FD}>&- \
+        {PLAYTHROUGH_CHILD_CLOSE_FD2}>&- &
     spawned="$!"
     # disown removes the job from this shell's table so that no
     # exit-time cleanup in the caller can reach it.  It is the last
@@ -2988,13 +3891,66 @@ playthrough_supervisor_start() {
 #   preferred because it is purpose-built; /dev/urandom is the fallback
 #   so a host without util-linux still gets a real random cookie rather
 #   than something guessable.
+#   BOTH GENERATORS ARE RESOLVED BY VERIFIED ABSOLUTE PATH.  A review
+#   noted that the cookie helpers were not all authority-verified, and the
+#   consequence is specific rather than theoretical: whatever produces
+#   these sixteen bytes decides whether the display's only credential is
+#   unguessable, so a `mcookie` earlier on PATH than the packaged one is
+#   in a position to hand out a cookie it already knows.  Every other
+#   external command in this file goes through playthrough_require_tools,
+#   which verifies ownership and mode and exports a checked
+#   PLAYTHROUGH_BIN_<NAME>; these two now do the same.
+#
+#   The fallback is not a lesser cookie -- sixteen bytes of /dev/urandom
+#   is the same strength mcookie provides -- it exists so a host without
+#   util-linux still gets a real random value instead of something
+#   derived from the clock.
 playthrough_xauth_cookie() {
-    if command -v mcookie >/dev/null 2>&1; then
-        mcookie
+    if command -v mcookie >/dev/null 2>&1 &&
+       playthrough_require_tools mcookie >/dev/null 2>&1; then
+        "${PLAYTHROUGH_BIN_MCOOKIE}"
         return 0
     fi
-    od -An -tx1 -N16 /dev/urandom | tr -d ' \n'
+    playthrough_require_tools od tr >/dev/null 2>&1 || {
+        playthrough_die "neither mcookie nor a verified od and tr are" \
+            "available, so a 128-bit X cookie cannot be generated." \
+            "Install util-linux (mcookie) or coreutils (od, tr)."
+        return 1
+    }
+    "${PLAYTHROUGH_BIN_OD}" -An -tx1 -N16 /dev/urandom |
+        "${PLAYTHROUGH_BIN_TR}" -d ' \n'
     printf '\n'
+}
+
+# playthrough_xauth_digest
+#   A sha256 of the MIT-MAGIC-COOKIE-1 entry the active authority file
+#   holds for the contracted display, or nothing.
+#
+#   A DIGEST, NEVER THE COOKIE.  This value is written into the ownership
+#   record and quoted in diagnostics, and the cookie itself is the
+#   credential that lets its holder read the screen being captured and
+#   inject keystrokes into the session.  A digest answers the only
+#   question the record needs to ask -- "is the cookie in the file still
+#   the one the recorded server was started with" -- and answers it
+#   without putting the credential anywhere a log can reach.
+playthrough_xauth_digest() {
+    local file="${XAUTHORITY:-${PLAYTHROUGH_XAUTHORITY}}"
+    local entry="" value=""
+    [ -f "${file}" ] || return 1
+    command -v xauth >/dev/null 2>&1 || return 1
+    command -v sha256sum >/dev/null 2>&1 || return 1
+    entry="$(xauth -f "${file}" list "${PLAYTHROUGH_DISPLAY}" \
+        2>/dev/null | grep 'MIT-MAGIC-COOKIE-1' | head -n 1 || true)"
+    [ -n "${entry}" ] || return 1
+    # The hex value is the last field; the display name before it differs
+    # between hosts (it carries the hostname), so hashing the whole line
+    # would report a difference where the cookie had not changed.
+    value="${entry##* }"
+    case "${value}" in
+        ''|*[!0-9a-fA-F]*) return 1 ;;
+    esac
+    printf '%s' "$(printf '%s' "${value}" | sha256sum | cut -c1-16)"
+    return 0
 }
 
 # playthrough_ensure_xauth
@@ -3018,8 +3974,26 @@ playthrough_xauth_cookie() {
 #   three ways out, one of which (PLAYTHROUGH_ALLOW_INHERITED_XAUTH_WRITE)
 #   is an explicit, verified opt-in: it still requires the file to pass
 #   verification, so the opt-in buys the write, never the trust.
+#   A FRESH COOKIE PER SERVER GENERATION, when asked for one.  A review
+#   found that this returned early whenever ANY MIT cookie for the display
+#   already existed, and measured the consequence on this host: the cookie
+#   in the authority file was written at 18:54 on one day and the three
+#   Xvfb processes answering for the display had all started later.  A
+#   cookie that outlives the server it authenticated is a credential whose
+#   history nobody can account for -- it may have been left by a previous
+#   generation, or planted -- and adopting it silently means the new server
+#   is started with a secret this run did not choose.
+#
+#   So the bring-up path calls this as `playthrough_ensure_xauth fresh`,
+#   immediately before Xvfb is exec'd, and a fresh cookie REPLACES any
+#   prior entry for the display.  Every other caller asks for no rotation
+#   and gets the existing cookie, which is not laxity: -auth is read once
+#   at exec, so rotating under a running server would leave that server
+#   accepting the old value while every new client presented the new one.
+#   Rotation belongs to the one moment a server is about to be created.
 playthrough_ensure_xauth() {
     playthrough_require_tools xauth || return 1
+    local mode="${1-}"
     local file="${XAUTHORITY:-${PLAYTHROUGH_XAUTHORITY}}"
     if [ "${PLAYTHROUGH_XAUTHORITY_ORIGIN}" = "pipeline" ]; then
         playthrough_secure_file "${file}" 600 || return 1
@@ -3032,9 +4006,39 @@ playthrough_ensure_xauth() {
             "owner and mode."
         return 1
     fi
+    local present="no"
     if xauth -f "${file}" list "${PLAYTHROUGH_DISPLAY}" 2>/dev/null |
             grep -q 'MIT-MAGIC-COOKIE-1'; then
+        present="yes"
+    fi
+    if [ "${present}" = "yes" ] && [ "${mode}" != "fresh" ]; then
         return 0
+    fi
+    if [ "${present}" = "yes" ] && [ "${mode}" = "fresh" ]; then
+        # ROTATION IS ONLY EVER DONE TO AN AUTHORITY FILE THIS PIPELINE
+        # OWNS.  An inherited file's lifecycle belongs to whoever provided
+        # it, and removing an entry from it would break clients this run
+        # cannot see; the opt-in below buys an `add`, never a `remove`.
+        if [ "${PLAYTHROUGH_XAUTHORITY_ORIGIN}" != "pipeline" ]; then
+            playthrough_log "reusing the inherited authority file's" \
+                "existing cookie for ${PLAYTHROUGH_DISPLAY}: rotating" \
+                "an entry this pipeline did not create would break" \
+                "clients it cannot see.  The cookie's digest is bound" \
+                "into the ownership record either way, so a later" \
+                "rotation by its owner is detected rather than assumed"
+            return 0
+        fi
+        if ! xauth -f "${file}" -q remove "${PLAYTHROUGH_DISPLAY}"; then
+            playthrough_die "could not remove the previous cookie for" \
+                "${PLAYTHROUGH_DISPLAY} from '${file}', so a fresh one" \
+                "cannot be guaranteed to be the only one.  A server" \
+                "started with an unaccounted cookie is not started."
+            return 1
+        fi
+        playthrough_log "removed the previous MIT-MAGIC-COOKIE-1 for" \
+            "${PLAYTHROUGH_DISPLAY} from ${file}: a new server" \
+            "generation gets a cookie this run chose, not one it" \
+            "inherited from a server that is gone"
     fi
     if [ "${PLAYTHROUGH_XAUTHORITY_ORIGIN}" != "pipeline" ] &&
        [ "${PLAYTHROUGH_ALLOW_INHERITED_XAUTH_WRITE:-0}" != "1" ]; then
@@ -3304,7 +4308,10 @@ playthrough_start_xvfb() {
     fi
     playthrough_supervised_x_hint
     playthrough_require_tools Xvfb xdpyinfo || return 1
-    playthrough_ensure_xauth || return 1
+    # `fresh`: this is the one call site that is about to CREATE a server,
+    # so it is the one that may rotate the cookie.  See
+    # playthrough_ensure_xauth for why no other caller does.
+    playthrough_ensure_xauth fresh || return 1
     mkdir -p /tmp/.X11-unix 2>/dev/null || true
     playthrough_secure_truncate "${PLAYTHROUGH_XVFB_LOG}" || return 1
     playthrough_log "starting Xvfb on ${PLAYTHROUGH_DISPLAY} at" \
@@ -3367,6 +4374,17 @@ playthrough_x_ownership_record() {
 #   read directly because `ps` is not in the pipeline's tool contract and
 #   an ownership check that needs a package to be installed is one more
 #   thing that can silently not happen.
+#
+#   THIS IS A NECESSARY CONDITION AND NOT A SUFFICIENT ONE, and callers
+#   deciding ownership must not stop here.  A command NAME is not an
+#   identity: Linux recycles pids, and "some process called Xvfb is alive
+#   at 962316" is a different claim from "the Xvfb we started at 962316 is
+#   still that process".  A review measured the gap on this very host --
+#   THREE Xvfb processes answering for one display, with distinct start
+#   times, while the pidfiles named one pair -- so an ownership decision
+#   taken on comm alone would have signalled whichever of the three
+#   happened to hold the recorded number.  playthrough_pid_identity below
+#   is the whole answer; this is the cheap first half of it.
 playthrough_pid_is() {
     local kind="${1-}" pid="${2-}" comm=""
     case "${pid}" in
@@ -3377,16 +4395,157 @@ playthrough_pid_is() {
     [ "${comm}" = "${kind}" ]
 }
 
+# playthrough_proc_uid PID
+#   The real uid of a running process, from /proc/PID/status, or nothing.
+playthrough_proc_uid() {
+    local pid="${1-}" value=""
+    case "${pid}" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    while IFS= read -r line; do
+        case "${line}" in
+            Uid:*)
+                # Uid: real effective saved fs -- the real uid is first.
+                # shellcheck disable=SC2086
+                set -- ${line#Uid:}
+                value="${1-}"
+                break
+                ;;
+        esac
+    done <"/proc/${pid}/status" 2>/dev/null || return 1
+    case "${value}" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    printf '%s' "${value}"
+    return 0
+}
+
+# playthrough_proc_cmdline PID
+#   The process's argument vector as one printable line, or nothing.
+#
+#   NUL-separated on disk, so the separators become spaces; and the
+#   result is held to a printable single-line grammar before it is
+#   returned, because it is written into a record this pipeline reads
+#   back line by line and a value carrying a newline would forge a field.
+playthrough_proc_cmdline() {
+    local pid="${1-}" text=""
+    case "${pid}" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    text="$(tr '\0' ' ' <"/proc/${pid}/cmdline" 2>/dev/null || true)"
+    [ -n "${text}" ] || return 1
+    text="${text%"${text##*[![:space:]]}"}"
+    case "${text}" in
+        *[[:cntrl:]]*) return 1 ;;
+    esac
+    # Bounded, because this is a diagnostic field and an unbounded one
+    # would let a long argument vector dominate the record.
+    printf '%s' "${text:0:240}"
+    return 0
+}
+
+# playthrough_pid_identity PID
+#   Print a process's full identity as one line, or nothing:
+#
+#     <comm> <starttime> <uid> <resolved exe> <cmdline>
+#
+#   WHY ALL FIVE.  Each closes a hole the others leave open: comm is
+#   trivially forgeable by any process that renames itself; the start
+#   time makes (pid, starttime) unique for the life of a boot and so
+#   defeats pid recycling; the uid says whose process it is; the resolved
+#   executable says WHICH Xvfb, since a second one earlier on PATH is a
+#   different program with the same name; and the argument vector carries
+#   the display and screen the server was actually asked for.
+#
+#   Printed as one line so a caller can record it and compare it whole,
+#   which is the comparison that cannot be partly done by accident.
+playthrough_pid_identity() {
+    local pid="${1-}" comm="" started="" uid="" exe="" cmd=""
+    case "${pid}" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    [ -d "/proc/${pid}" ] || return 1
+    comm="$(cat "/proc/${pid}/comm" 2>/dev/null || true)"
+    started="$(playthrough_proc_start_time "${pid}")" || return 1
+    uid="$(playthrough_proc_uid "${pid}")" || return 1
+    # readlink rather than a shell test: /proc/PID/exe is a symlink to the
+    # backing file, so this reports the program that is RUNNING even when
+    # the name it was invoked under has since been replaced on disk.
+    exe="$(readlink -f "/proc/${pid}/exe" 2>/dev/null || true)"
+    cmd="$(playthrough_proc_cmdline "${pid}")" || cmd="-"
+    [ -n "${comm}" ] || return 1
+    [ -n "${exe}" ] || exe="-"
+    printf '%s %s %s %s %s' "${comm}" "${started}" "${uid}" "${exe}" \
+        "${cmd}"
+    return 0
+}
+
+# playthrough_x_socket_identity
+#   The device and inode of the contracted display's unix socket, or
+#   nothing.
+#
+#   THE SOCKET IS THE DISPLAY'S OWN IDENTITY, independent of any pid.  A
+#   server that died and was replaced leaves a NEW socket inode behind, so
+#   comparing it against the one recorded at bring-up answers "is the
+#   thing answering on :99 still the thing we started" without trusting a
+#   process table at all.  On this host the socket outlived two later Xvfb
+#   generations that never bound it, which is exactly the confusion this
+#   field removes.
+playthrough_x_socket_identity() {
+    local socket="/tmp/.X11-unix/X${PLAYTHROUGH_DISPLAY_NUM}"
+    local value=""
+    [ -e "${socket}" ] || return 1
+    value="$(find "${socket}" -maxdepth 0 -printf '%D:%i' 2>/dev/null \
+        || true)"
+    case "${value}" in
+        ''|*[!0-9:]*) return 1 ;;
+    esac
+    printf '%s' "${value}"
+    return 0
+}
+
 # playthrough_record_x_ownership KIND [PID]
 #   Record that this checkout brought the contracted display up.  KIND is
 #   'pipeline' for a server this shell's process tree owns, or
 #   'supervisor' for the provisioned durable service, which this checkout
 #   asked for and can restart.
+#   THE PROCESS IDENTITY IS RECORDED, NOT JUST ITS NUMBER.  A review found
+#   the record carrying only (display, kind, pid, repo, screen, authority,
+#   recorded), and the ownership check comparing the pid against
+#   /proc/PID/comm alone -- so any process that happened to hold the
+#   recorded number and be called Xvfb would be treated as the server this
+#   pipeline started, and signalled as such by the teardown.  Measured on
+#   this host: three Xvfb processes for one display with distinct start
+#   times.  So the identity written here is the whole of
+#   playthrough_pid_identity, plus the socket the display is actually
+#   answering on and the digest of the cookie the server was started with.
 playthrough_record_x_ownership() {
     local kind="${1:-pipeline}"
     local pid="${2-}"
-    local record
+    local record identity="" socket="" cookie=""
     record="$(playthrough_x_ownership_record)"
+    # THE IDENTITY IS READ BEFORE THE FILE IS CREATED, so a refusal leaves
+    # nothing behind at all.  Creating the record first and then refusing
+    # left an EMPTY file where a later run would look for a claim --
+    # harmless, because a record with no fields reads as foreign, and
+    # still the wrong shape for a refusal that says nothing was recorded.
+    if [ -n "${pid}" ]; then
+        identity="$(playthrough_pid_identity "${pid}")" || identity=""
+        if [ -z "${identity}" ]; then
+            # A pipeline-owned server whose identity cannot be read is not
+            # recordable: the record would then claim an ownership no
+            # later run could check, which is worse than no record at all
+            # (a missing record degrades the trust state, and a false one
+            # would not).
+            playthrough_die "the X server pid '${pid}' has no readable" \
+                "identity in /proc, so this checkout's ownership of" \
+                "${PLAYTHROUGH_DISPLAY} cannot be recorded in a form" \
+                "any later run could verify.  Nothing was recorded."
+            return 1
+        fi
+    fi
+    socket="$(playthrough_x_socket_identity)" || socket="-"
+    cookie="$(playthrough_xauth_digest)" || cookie="-"
     playthrough_secure_file "${record}" 600 \
         "the X ownership record" || return 1
     {
@@ -3396,6 +4555,9 @@ playthrough_record_x_ownership() {
         printf 'repo=%s\n' "${PLAYTHROUGH_REPO_ROOT}"
         printf 'screen=%s\n' "${PLAYTHROUGH_SCREEN}"
         printf 'authority=%s\n' "${PLAYTHROUGH_XAUTHORITY_ORIGIN}"
+        printf 'identity=%s\n' "${identity:--}"
+        printf 'socket=%s\n' "${socket}"
+        printf 'cookie=%s\n' "${cookie}"
         printf 'recorded=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     } >"${record}" || {
         playthrough_die "cannot write the X ownership record" \
@@ -3418,15 +4580,52 @@ playthrough_record_x_ownership() {
 #                 server that was recorded
 #     foreign     something is answering and no record claims it
 #     absent      nothing is answering
+#     replaced   a record exists and its process is alive, but the
+#                identity, the socket or the cookie no longer match what
+#                was recorded -- so something OTHER than the recorded
+#                server is what a client would now reach
+#
+#   REPLACED IS REPORTED SEPARATELY FROM STALE, and the distinction is the
+#   review's finding made legible.  `stale` means the recorded process is
+#   gone; `replaced` means a process is there and is not the one we
+#   recorded.  Both are refusals -- neither is `pipeline` -- but they send
+#   an operator to different places, and collapsing them into "not ours"
+#   would hide the case a recycled pid produces.
+#
+#   PLAYTHROUGH_X_OWNERSHIP_REASON carries the detail, because a one-word
+#   state cannot say WHICH field disagreed and that is exactly what an
+#   operator needs next.
+#
+#   IT IS PUBLISHED IN A VARIABLE AS WELL AS PRINTED, and a caller that
+#   wants the reason must NOT use command substitution.  `state="$(...)"`
+#   runs the function in a subshell, so every variable it sets dies with
+#   that subshell -- which is how the reason came back empty the first
+#   time it was measured.  The printed word stays the contract for callers
+#   that only want the state; a caller wanting both does:
+#
+#       playthrough_x_ownership_state >/dev/null || true
+#       state="${PLAYTHROUGH_X_OWNERSHIP_STATE}"
+#       why="${PLAYTHROUGH_X_OWNERSHIP_REASON}"
+export PLAYTHROUGH_X_OWNERSHIP_REASON=""
+export PLAYTHROUGH_X_OWNERSHIP_STATE=""
+
 playthrough_x_ownership_state() {
     local record recorded_display="" recorded_kind="" recorded_pid=""
-    local recorded_repo="" line
+    local recorded_repo="" recorded_identity="" recorded_socket=""
+    local recorded_cookie="" line
+    local identity="" socket="" cookie=""
+    PLAYTHROUGH_X_OWNERSHIP_REASON=""
+    PLAYTHROUGH_X_OWNERSHIP_STATE=""
     if ! playthrough_display_ready >/dev/null 2>&1; then
+        PLAYTHROUGH_X_OWNERSHIP_STATE="absent"
         printf '%s' "absent"
         return 1
     fi
     record="$(playthrough_x_ownership_record)"
     if [ ! -f "${record}" ]; then
+        PLAYTHROUGH_X_OWNERSHIP_REASON="no ownership record exists for \
+${PLAYTHROUGH_DISPLAY}, so nothing claims the server that is answering"
+        PLAYTHROUGH_X_OWNERSHIP_STATE="foreign"
         printf '%s' "foreign"
         return 1
     fi
@@ -3436,27 +4635,98 @@ playthrough_x_ownership_state() {
             kind=*) recorded_kind="${line#kind=}" ;;
             pid=*) recorded_pid="${line#pid=}" ;;
             repo=*) recorded_repo="${line#repo=}" ;;
+            identity=*) recorded_identity="${line#identity=}" ;;
+            socket=*) recorded_socket="${line#socket=}" ;;
+            cookie=*) recorded_cookie="${line#cookie=}" ;;
         esac
     done <"${record}"
     if [ "${recorded_display}" != "${PLAYTHROUGH_DISPLAY}" ] ||
        [ "${recorded_repo}" != "${PLAYTHROUGH_REPO_ROOT}" ]; then
+        PLAYTHROUGH_X_OWNERSHIP_REASON="the record names display \
+'${recorded_display}' for checkout '${recorded_repo}', and this run is \
+${PLAYTHROUGH_DISPLAY} for ${PLAYTHROUGH_REPO_ROOT}"
+        PLAYTHROUGH_X_OWNERSHIP_STATE="foreign"
         printf '%s' "foreign"
         return 1
     fi
     case "${recorded_kind}" in
         supervisor)
-            printf '%s' "supervisor"
+            PLAYTHROUGH_X_OWNERSHIP_STATE="supervisor"
+        printf '%s' "supervisor"
             return 0
             ;;
         pipeline)
-            if playthrough_pid_is Xvfb "${recorded_pid}"; then
-                printf '%s' "pipeline"
-                return 0
+            if ! playthrough_pid_is Xvfb "${recorded_pid}"; then
+                PLAYTHROUGH_X_OWNERSHIP_REASON="the recorded pid \
+${recorded_pid:-<none>} is not a live Xvfb, so the server that was \
+recorded is gone"
+                PLAYTHROUGH_X_OWNERSHIP_STATE="stale"
+        printf '%s' "stale"
+                return 1
             fi
-            printf '%s' "stale"
-            return 1
+            # A RECORD WITHOUT AN IDENTITY IS NOT TRUSTED.  Records written
+            # before the identity field existed cannot be revalidated, and
+            # treating an unverifiable claim as ownership is the whole
+            # defect being fixed -- so it is reported as replaced rather
+            # than accepted on the strength of a pid and a name.
+            if [ -z "${recorded_identity}" ] ||
+               [ "${recorded_identity}" = "-" ]; then
+                PLAYTHROUGH_X_OWNERSHIP_REASON="the record carries no \
+process identity, so 'pid ${recorded_pid} is called Xvfb' is the only \
+claim in it and a recycled pid would satisfy that"
+                PLAYTHROUGH_X_OWNERSHIP_STATE="replaced"
+        printf '%s' "replaced"
+                return 1
+            fi
+            identity="$(playthrough_pid_identity "${recorded_pid}")" ||
+                identity=""
+            if [ "${identity}" != "${recorded_identity}" ]; then
+                PLAYTHROUGH_X_OWNERSHIP_REASON="pid ${recorded_pid} is \
+alive but is not the process that was recorded: recorded \
+'${recorded_identity}', found '${identity:-<unreadable>}'"
+                PLAYTHROUGH_X_OWNERSHIP_STATE="replaced"
+        printf '%s' "replaced"
+                return 1
+            fi
+            # THE SOCKET, WHICH IS THE DISPLAY'S OWN IDENTITY.  A server
+            # that died and was replaced leaves a new inode behind, and
+            # the pid check cannot see that at all.
+            if [ -n "${recorded_socket}" ] &&
+               [ "${recorded_socket}" != "-" ]; then
+                socket="$(playthrough_x_socket_identity)" || socket=""
+                if [ "${socket}" != "${recorded_socket}" ]; then
+                    PLAYTHROUGH_X_OWNERSHIP_REASON="the socket for \
+${PLAYTHROUGH_DISPLAY} is ${socket:-<absent>} and the recorded server \
+created ${recorded_socket}, so what a client reaches now is not what was \
+recorded"
+                    PLAYTHROUGH_X_OWNERSHIP_STATE="replaced"
+        printf '%s' "replaced"
+                    return 1
+                fi
+            fi
+            # AND THE COOKIE THE SERVER WAS STARTED WITH.  -auth is read
+            # once, at exec; a cookie replaced afterwards leaves the
+            # running server accepting the OLD one, so a mismatch means
+            # the authority file no longer describes this server.
+            if [ -n "${recorded_cookie}" ] &&
+               [ "${recorded_cookie}" != "-" ]; then
+                cookie="$(playthrough_xauth_digest)" || cookie=""
+                if [ "${cookie}" != "${recorded_cookie}" ]; then
+                    PLAYTHROUGH_X_OWNERSHIP_REASON="the authority file \
+now holds cookie ${cookie:-<none>} for ${PLAYTHROUGH_DISPLAY} and the \
+recorded server was started with ${recorded_cookie}"
+                    PLAYTHROUGH_X_OWNERSHIP_STATE="replaced"
+        printf '%s' "replaced"
+                    return 1
+                fi
+            fi
+            PLAYTHROUGH_X_OWNERSHIP_STATE="pipeline"
+        printf '%s' "pipeline"
+            return 0
             ;;
     esac
+    PLAYTHROUGH_X_OWNERSHIP_REASON="the record names kind \
+'${recorded_kind}', which is neither 'pipeline' nor 'supervisor'"
     printf '%s' "foreign"
     return 1
 }
@@ -3468,11 +4738,19 @@ playthrough_x_ownership_state() {
 #   nothing recorded on one can be mistaken for evidence.
 playthrough_assert_x_ownership() {
     local state
-    state="$(playthrough_x_ownership_state)" && {
+    # NOT `$( )`: the reason is set INSIDE the function, and a command
+    # substitution would run it in a subshell where every variable it sets
+    # dies.  Measured that way -- the state came back and the reason came
+    # back empty.
+    if playthrough_x_ownership_state >/dev/null; then
+        state="${PLAYTHROUGH_X_OWNERSHIP_STATE}"
         playthrough_log "the display ${PLAYTHROUGH_DISPLAY} is owned" \
             "by this checkout (${state})"
         return 0
-    }
+    fi
+    state="${PLAYTHROUGH_X_OWNERSHIP_STATE}"
+    local why="${PLAYTHROUGH_X_OWNERSHIP_REASON:-no detail was \
+recorded}"
     case "${state}" in
         absent)
             return 1
@@ -3484,9 +4762,31 @@ ${PLAYTHROUGH_DISPLAY} is not the one this checkout recorded starting \
             playthrough_warn "the ownership record for" \
                 "${PLAYTHROUGH_DISPLAY} names a process that is no" \
                 "longer running, so the server answering now was not" \
-                "started by this checkout.  Diagnosis continues; the" \
-                "trust state is held at diagnostic, so no frame taken" \
-                "on this display can join the record.  Run" \
+                "started by this checkout: ${why}.  Diagnosis" \
+                "continues; the trust state is held at diagnostic, so" \
+                "no frame taken on this display can join the record." \
+                "Run 'playthrough/tooling/launch_game.sh stop' and" \
+                "bring the surface up again to own it."
+            ;;
+        replaced)
+            # THE CASE A PID-AND-NAME CHECK CANNOT SEE.  A process IS
+            # alive under the recorded number and it is not the one that
+            # was recorded -- a recycled pid, a different Xvfb binary, a
+            # server that died and was replaced, or a cookie rotated out
+            # from under the running one.  Reported in its own right
+            # because it sends an operator somewhere different from
+            # `stale`, and because a review measured three Xvfb processes
+            # answering for one display on this very host.
+            playthrough_trust_unverifiable "a process is alive under \
+the recorded X server pid and is not the process that was recorded, so \
+what a client reaches on ${PLAYTHROUGH_DISPLAY} cannot be shown to be \
+the server this checkout started"
+            playthrough_warn "the ownership record for" \
+                "${PLAYTHROUGH_DISPLAY} no longer describes what is" \
+                "answering: ${why}.  This is not a stale record --" \
+                "something IS there -- so it is reported separately." \
+                "The trust state is held at diagnostic, so no frame" \
+                "taken on this display can join the record.  Run" \
                 "'playthrough/tooling/launch_game.sh stop' and bring" \
                 "the surface up again to own it."
             ;;
@@ -3495,9 +4795,8 @@ ${PLAYTHROUGH_DISPLAY} is not the one this checkout recorded starting \
 ${PLAYTHROUGH_DISPLAY} was not started by this checkout, so it cannot \
 be shown to be free of other clients for the length of the session"
             playthrough_warn "${PLAYTHROUGH_DISPLAY} is served by" \
-                "infrastructure this checkout did not start -- there" \
-                "is no ownership record for it under" \
-                "'${PLAYTHROUGH_RUN_DIR}'.  It is fine to DIAGNOSE" \
+                "infrastructure this checkout did not start:" \
+                "${why}.  It is fine to DIAGNOSE" \
                 "against, and the trust state is held at diagnostic so" \
                 "that nothing captured on it can join the record.  For" \
                 "a recorded session, let this checkout own the" \
@@ -3548,6 +4847,97 @@ playthrough_lock_is_held() {
             >/dev/null 2>&1; then
         return 1
     fi
+    return 0
+}
+
+# playthrough_path_in_use PATH
+#   True when some live process has PATH, or anything beneath it, open --
+#   as a descriptor or as its working directory.
+#
+#   WHY THIS EXISTS, AND WHY `flock -n` IS NOT ENOUGH.  A lock is held by
+#   an open file description, so unlinking the file another process is
+#   BLOCKED ON does not merely lose a file: the waiter's descriptor still
+#   refers to the old inode, the next acquirer creates a new one at the
+#   same name, and the two of them then "hold" a lock neither can see the
+#   other holding.  `flock -n` answers "does anyone hold it", which
+#   deliberately says nothing about a process that has the file open and
+#   is waiting for it.  This answers the question the pruner actually has
+#   to ask before it removes anything: is this path still connected to a
+#   running process at all.
+#
+#   Only processes whose /proc entry THIS uid can read are considered,
+#   and that is a deliberate bound rather than an oversight: the runtime
+#   root is 0700 and owned by this uid, so nothing but this uid's own
+#   processes -- and root -- can have a descriptor inside it, and this
+#   pipeline never runs a stage as root that another account started.
+#   Treating an unreadable foreign process as a holder would disable
+#   pruning entirely on any busy host, which trades a real leak for an
+#   imagined one.
+#
+#   THIS IS USED INSTEAD OF "ACQUIRE EVERY CONTAINED LOCK", and on purpose.
+#   Acquiring each lock would prove nothing holds them at that instant and
+#   would leave the pruner itself holding locks it then has to drop --
+#   during which a stage could legitimately be waiting for one, get it,
+#   and start working inside a directory the pruner is about to remove.
+#   Proving nothing has the path OPEN is the stronger statement: it covers
+#   the holder, the waiter, and the process that has merely opened a
+#   journal to read it, none of which an acquisition distinguishes.
+playthrough_path_in_use() {
+    local path="${1-}" link="" entry="" fd=""
+    [ -n "${path}" ] || return 1
+    [ -e "${path}" ] || return 1
+    [ -d /proc ] || return 0
+    for entry in /proc/[0-9]*; do
+        [ -d "${entry}" ] || continue
+        link="$(readlink "${entry}/cwd" 2>/dev/null || true)"
+        if [ -n "${link}" ]; then
+            case "${link}" in
+                "${path}"|"${path}"/*) return 0 ;;
+            esac
+        fi
+        for fd in "${entry}"/fd/*; do
+            [ -e "${fd}" ] || continue
+            link="$(readlink "${fd}" 2>/dev/null || true)"
+            [ -n "${link}" ] || continue
+            case "${link}" in
+                "${path}"|"${path}"/*) return 0 ;;
+            esac
+        done
+    done
+    return 1
+}
+
+# playthrough_proc_start_time PID
+#   Print the process's start time in clock ticks since boot -- field 22
+#   of /proc/PID/stat -- or nothing.
+#
+#   A PID ALONE IS NOT AN IDENTITY.  Linux recycles them, so "pid 4242 is
+#   alive" and "the pid 4242 we recorded is alive" are different claims,
+#   and a check that conflates them will one day report a stranger's
+#   process as this pipeline's own.  The start time is the missing half:
+#   the pair (pid, starttime) is unique for the life of a boot.
+#
+#   Field 22 is read by first discarding everything up to and including
+#   the LAST ')' of field 2, because a process name may itself contain
+#   spaces and parentheses and no field-splitting survives that.
+playthrough_proc_start_time() {
+    local pid="${1-}" line="" tail=""
+    case "${pid}" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    line="$(cat "/proc/${pid}/stat" 2>/dev/null || true)"
+    [ -n "${line}" ] || return 1
+    tail="${line##*) }"
+    # After the discard, field 3 (state) is first, so the start time --
+    # field 22 -- is the 20th remaining token.
+    # shellcheck disable=SC2086
+    set -- ${tail}
+    [ "$#" -ge 20 ] || return 1
+    local value="${20}"
+    case "${value}" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    printf '%s' "${value}"
     return 0
 }
 
@@ -3630,6 +5020,41 @@ playthrough_diagnose_x_socket() {
 #   day), read from the environment rather than taken as an argument so
 #   that there is exactly one way to set it and every caller is the same
 #   call.
+# playthrough_holds_live_lock DIRECTORY
+#   True when DIRECTORY contains a lock file some process still holds.
+#   One level only: every lock this tree creates sits directly in the
+#   directory it protects.
+playthrough_holds_live_lock() {
+    local directory="${1-}" candidate=""
+    [ -d "${directory}" ] || return 1
+    command -v find >/dev/null 2>&1 || return 0
+    while IFS= read -r candidate; do
+        [ -n "${candidate}" ] || continue
+        if playthrough_lock_is_held "${candidate}"; then
+            return 0
+        fi
+    done < <(find "${directory}" -maxdepth 1 -type f -name '*.lock' \
+        2>/dev/null || true)
+    return 1
+}
+
+# playthrough_unresolved_journals DIRECTORY
+#   Print the names of the journal files DIRECTORY still holds, space
+#   separated, or nothing.  The set is exact -- session.py's `step.json`
+#   and each producer's `<stage>.generation.json` -- because a pattern
+#   loose enough to catch `phase.json` would make a rebuildable cache
+#   block a prune for ever.
+playthrough_unresolved_journals() {
+    local directory="${1-}" found=""
+    [ -d "${directory}" ] || return 0
+    command -v find >/dev/null 2>&1 || return 0
+    found="$(find "${directory}" -maxdepth 1 -type f \
+        \( -name 'step.json' -o -name '*.generation.json' \) \
+        -printf '%f ' 2>/dev/null || true)"
+    printf '%s' "${found% }"
+    return 0
+}
+
 playthrough_prune_runtime() {
     local minutes="${PLAYTHROUGH_RUNTIME_RETENTION_MINUTES:-1440}"
     playthrough_validate_int "${minutes}" \
@@ -3637,12 +5062,25 @@ playthrough_prune_runtime() {
         return 0
     minutes="${PLAYTHROUGH_INT}"
     command -v find >/dev/null 2>&1 || return 0
-    local path removed=0
+    local path removed=0 pid="" journals=""
     # 1  CLOSED LOCK FILES.  Held ones are kept, and proving which is
     #    which is the diagnosis this used not to have.
+    #
+    #    AND SO ARE OPEN-BUT-UNHELD ONES.  `flock -n` answers "does
+    #    anyone hold it" and says nothing about a process that has the
+    #    file OPEN and is blocked waiting for it -- and unlinking the
+    #    file under a waiter is how a lock stops being a lock: the
+    #    waiter keeps a descriptor on the old inode, the next acquirer
+    #    creates a new one at the same name, and the two of them then
+    #    hold "the lock" simultaneously without either being able to see
+    #    the other.  So a lock file is removed only when nothing has it
+    #    open at all.
     while IFS= read -r path; do
         [ -n "${path}" ] || continue
         if playthrough_lock_is_held "${path}"; then
+            continue
+        fi
+        if playthrough_path_in_use "${path}"; then
             continue
         fi
         rm -f -- "${path}" 2>/dev/null && removed=$(( removed + 1 ))
@@ -3650,9 +5088,27 @@ playthrough_prune_runtime() {
         -name '*.lock' -mmin "+${minutes}" 2>/dev/null || true)
     # 2  ORPHANED PER-STAGE STDERR CAPTURES.  Named for the pid that
     #    wrote them, which is what makes them identifiable and what makes
-    #    them useless once that pid is gone.
+    #    them useless once that pid is gone -- so the pid is CHECKED
+    #    rather than assumed dead because the file is old.  A long-lived
+    #    stage's diagnostics are exactly the ones worth keeping, and a
+    #    recycled pid can only cause a dead stage's file to be KEPT,
+    #    never a live stage's file to be removed, which is the direction
+    #    a pruner should err in.
     while IFS= read -r path; do
         [ -n "${path}" ] || continue
+        pid="${path##*/capture-stage-}"
+        pid="${pid%.err}"
+        case "${pid}" in
+            ''|*[!0-9]*) ;;
+            *)
+                if [ -d "/proc/${pid}" ]; then
+                    continue
+                fi
+                ;;
+        esac
+        if playthrough_path_in_use "${path}"; then
+            continue
+        fi
         rm -f -- "${path}" 2>/dev/null && removed=$(( removed + 1 ))
     done < <(find "${PLAYTHROUGH_RUNTIME_DIR}" -maxdepth 1 -type f \
         -name 'capture-stage-*.err' -mmin "+${minutes}" \
@@ -3665,8 +5121,48 @@ playthrough_prune_runtime() {
     #    exit trap in each stage is the primary cleanup and this is the
     #    backstop for a run that was killed outright, so both are needed.
     #    Anything else in the runtime root is left exactly where it is.
+    #
+    #    THREE REFUSALS GUARD THIS `rm -rf`, because a scratch directory
+    #    is not only scratch.  The session's holds `step.json` -- the
+    #    journal recording a keystroke that may already have reached the
+    #    game -- and each producer's holds `<stage>.generation.json`, the
+    #    record of a publication interrupted mid-switch.  Removing either
+    #    does not tidy anything: it destroys the only description of an
+    #    in-flight evidence transaction, and nothing afterwards can tell
+    #    a completed step from a delivered-but-unrecorded one.  So a
+    #    directory that still holds one is KEPT AND NAMED, to be
+    #    reconciled deliberately rather than erased by a timer.
+    #    `phase.json` is deliberately not in that set: it is a
+    #    rebuildable cache of what the sidecar already says, so it never
+    #    blocks a prune.
     while IFS= read -r path; do
         [ -n "${path}" ] || continue
+        if playthrough_path_in_use "${path}"; then
+            continue
+        fi
+        if playthrough_holds_live_lock "${path}"; then
+            continue
+        fi
+        journals="$(playthrough_unresolved_journals "${path}")"
+        if [ -n "${journals}" ]; then
+            # The path is passed raw: every message from these helpers
+            # goes through playthrough_redact, which rewrites the runtime
+            # root to '<runtime>' -- whereas playthrough_rel, which is
+            # about paths INSIDE the checkout, would render a runtime path
+            # as '<outside the checkout>/...' and drop the one piece of
+            # context an operator needs to find it.
+            playthrough_warn "the scratch directory" \
+                "'${path}' has been idle for more" \
+                "than ${minutes} minute(s) but still holds an" \
+                "unresolved journal (${journals}), so it is KEPT.  A" \
+                "journal describes an evidence transaction that was" \
+                "interrupted -- a keystroke that may have been" \
+                "delivered, or a publication caught mid-switch -- and" \
+                "deleting it would leave nothing able to say which." \
+                "Reconcile it deliberately and this pruner will clear" \
+                "what is left."
+            continue
+        fi
         rm -rf -- "${path}" 2>/dev/null && removed=$(( removed + 1 ))
     done < <(find "${PLAYTHROUGH_RUNTIME_DIR}" -maxdepth 1 -type d \
         \( -name 'verify.*' -o -name 'lock-*' -o -name 'session-*' \
@@ -3690,7 +5186,10 @@ playthrough_prune_runtime() {
 #   surface up is idempotent and safe, tearing one down is neither.
 playthrough_headless_down() {
     local state pid stopped=0
-    state="$(playthrough_x_ownership_state)" || true
+    # Read without a subshell, for the reason given in
+    # playthrough_assert_x_ownership: the detail lives in a variable.
+    playthrough_x_ownership_state >/dev/null || true
+    state="${PLAYTHROUGH_X_OWNERSHIP_STATE}"
     case "${state}" in
         pipeline) ;;
         supervisor)
@@ -3709,22 +5208,68 @@ playthrough_headless_down() {
             return 0
             ;;
         *)
+            # `stale`, `replaced` and `foreign` all land here, and all
+            # three mean the same thing for a TEARDOWN: this checkout
+            # cannot show that what is answering is its own.  Running as
+            # root, that is the difference between stopping a server and
+            # killing a stranger's process, so nothing is signalled.  The
+            # reason is quoted because `replaced` in particular is worth
+            # reading -- it means a process IS alive under the recorded
+            # number and is not the one that was recorded.
             playthrough_warn "the display ${PLAYTHROUGH_DISPLAY} was" \
-                "not started by this checkout (${state}), so it is" \
-                "left running.  Stopping infrastructure this pipeline" \
-                "does not own would take the display away from" \
-                "whoever does."
+                "not started by this checkout (${state}:" \
+                "${PLAYTHROUGH_X_OWNERSHIP_REASON:-no detail was" \
+                "recorded}), so it is left running.  Stopping" \
+                "infrastructure this pipeline does not own would take" \
+                "the display away from whoever does."
             return 1
             ;;
     esac
+    # NOTHING IS SIGNALLED ON THE STRENGTH OF A PIDFILE.  A review put it
+    # exactly: shutdown trusted pidfile values weakly while running as
+    # root.  A pidfile is a NUMBER written minutes or days ago, in a
+    # directory this pipeline owns but whose contents outlive any process
+    # in it -- and on this host the recorded pidfile named one pair while
+    # three Xvfb processes were alive.  As root, signalling a recycled pid
+    # is not a failed teardown; it is killing a stranger's process.
+    #
+    # So each number is checked against what it is supposed to BE before
+    # anything is sent to it: alive, the expected program, owned by this
+    # account, and started when the record says.  A number that does not
+    # answer to that is reported and left alone.
+    local kind="" expected=""
     for pid in \
         "$(cat "${PLAYTHROUGH_WM_PIDFILE}" 2>/dev/null || true)" \
         "$(cat "${PLAYTHROUGH_XVFB_PIDFILE}" 2>/dev/null || true)"; do
         case "${pid}" in
             ''|*[!0-9]*) continue ;;
         esac
-        if [ -d "/proc/${pid}" ]; then
-            kill "${pid}" 2>/dev/null && stopped=$(( stopped + 1 ))
+        [ -d "/proc/${pid}" ] || continue
+        # The window pid file is written first, so the loop order fixes
+        # which program each number is supposed to be.
+        if [ -z "${kind}" ]; then
+            kind="openbox"
+        else
+            kind="Xvfb"
+        fi
+        if ! playthrough_pid_is "${kind}" "${pid}"; then
+            playthrough_warn "the pid file for ${kind} names ${pid}," \
+                "and that process is alive and is not ${kind}" \
+                "($(cat "/proc/${pid}/comm" 2>/dev/null || \
+printf '<unreadable>')).  It was NOT signalled: the number was recycled" \
+                "and killing whatever now holds it would be killing" \
+                "somebody else's process."
+            continue
+        fi
+        expected="$(playthrough_proc_uid "${pid}")" || expected=""
+        if [ -n "${expected}" ] && [ "${expected}" != "$(id -u)" ]; then
+            playthrough_warn "${kind} ${pid} is owned by uid" \
+                "${expected} and this run is uid $(id -u), so it was" \
+                "not started by this account and was NOT signalled."
+            continue
+        fi
+        if kill "${pid}" 2>/dev/null; then
+            stopped=$(( stopped + 1 ))
         fi
     done
     playthrough_log "stopped ${stopped} process(es) of the headless" \
@@ -3898,6 +5443,7 @@ playthrough_assert_display() {
 #   "already up" flag in this file for that reason.
 playthrough_headless_up() {
     playthrough_check_platform || return 1
+    playthrough_check_path_ancestry || return 1
     playthrough_assert_video_driver || return 1
     playthrough_require_tools xdpyinfo xprop grep awk || return 1
     playthrough_start_xvfb || return 1
@@ -3947,7 +5493,76 @@ playthrough_mkdirs() {
             playthrough_die "cannot create ${dir}"
             return 1
         fi
+        playthrough_deny_foreign_write "${dir}" \
+            "artifact directory" || return 1
     done
+    return 0
+}
+
+# playthrough_deny_foreign_write PATH [LABEL]
+#   Take group and other WRITE access off PATH, announce it if it had
+#   any, and confirm the result.  Read access is left exactly as it was.
+#
+#   THIS IS THE ARTIFACT TREE'S RULE, and it is deliberately weaker than
+#   playthrough_secure_dir's 0700.  The two trees are answerable for
+#   different things:
+#
+#     * the RUNTIME root holds a credential, the pid of a live server and
+#       full-resolution captures that were withdrawn -- private, so 0700,
+#       and readable by nobody else at all;
+#     * the ARTIFACT tree holds what is about to be committed to a git
+#       repository and read by whoever reads the repository.  Making it
+#       owner-only would protect nothing that is not about to be
+#       published anyway, and would be theatre.
+#
+#   What is NOT acceptable in either is foreign WRITE access, and that is
+#   the property this enforces.  A security review measured the
+#   consequence on the delivered tree: fifteen directories at mode 2777
+#   and a hundred and fifty-one files at 0666 -- the survivor's save, the
+#   engine's config, the captioned film and the acceptance report among
+#   them -- because `mkdir -p` inherits the ambient umask and the engine
+#   was launched under a permissive one.  Any local account could have
+#   rewritten or deleted the evidence, and nothing would have said so.
+#
+#   REPAIR AND ANNOUNCE, never repair quietly.  A directory found wider
+#   than it should be means something outside this pipeline opened the
+#   evidence to other accounts, and the repair is the only moment anybody
+#   would learn that happened.  verify_artifacts.sh asserts the same
+#   property over the whole tree afterwards, so this is enforcement and
+#   that is the audit.
+playthrough_deny_foreign_write() {
+    local path="${1-}"
+    local label="${2:-${1-}}"
+    local before after
+    [ -n "${path}" ] || return 1
+    playthrough_assert_utilities \
+        "tightening '${path}'" || return 1
+    before="$(playthrough_permission_bits "${path}")" || {
+        playthrough_die "cannot read the mode of ${label} '${path}'," \
+            "so whether other accounts can write to the evidence" \
+            "cannot be established"
+        return 1
+    }
+    if [ $(( 8#${before} & 8#022 )) -eq 0 ]; then
+        return 0
+    fi
+    if ! "${PLAYTHROUGH_UTIL_CHMOD}" go-w -- "${path}"; then
+        playthrough_die "cannot take group and other write access off" \
+            "${label} '${path}' (mode ${before})"
+        return 1
+    fi
+    after="$(playthrough_permission_bits "${path}")" || after=""
+    if [ -z "${after}" ] || [ $(( 8#${after} & 8#022 )) -ne 0 ]; then
+        playthrough_die "${label} '${path}' is still mode" \
+            "'${after:-unreadable}' after chmod go-w, so it remains" \
+            "writable by accounts other than its owner"
+        return 1
+    fi
+    playthrough_warn "${label} '${path}' was mode ${before} --" \
+        "writable by group or other -- and has been tightened to" \
+        "${after}.  Anything written there while it was open could" \
+        "have been rewritten or deleted by another local account, so" \
+        "this is reported rather than repaired in silence"
     return 0
 }
 
@@ -3999,8 +5614,8 @@ playthrough_checkout_lock_name() {
     return 0
 }
 
-# playthrough_acquire_lock NAME [TIMEOUT_SECONDS]
-#   Take an exclusive advisory lock and leave its descriptor in
+# playthrough_acquire_lock NAME [TIMEOUT_SECONDS] [MODE]
+#   Take an advisory lock and leave its descriptor in
 #   PLAYTHROUGH_LOCK_FD.
 #
 #   Check-and-act is the whole problem this solves.  "No game is
@@ -4011,11 +5626,20 @@ playthrough_checkout_lock_name() {
 #   for as long as the shell that took it and is released by the kernel
 #   even if that shell dies.
 #
+#   MODE is 'exclusive' (the default, and what every caller before the
+#   mutation lock wanted) or 'shared'.  A SHARED holder excludes every
+#   exclusive one and no other shared one, which is exactly the shape a
+#   quiescence lock needs: many producers may run beside each other,
+#   while a verifier or a committer that takes the same lock exclusively
+#   gets the tree to itself and knows nothing changed under it.
+#
 #   The descriptor is allocated with bash's {var} redirection rather than
 #   a fixed number, so nothing in a caller collides with it, and NOT with
 #   eval: there is no eval anywhere in this tree.
 PLAYTHROUGH_CHILD_CLOSE_FD=""
 PLAYTHROUGH_CHILD_CLOSE_BORROWED=0
+PLAYTHROUGH_CHILD_CLOSE_FD2=""
+PLAYTHROUGH_CHILD_CLOSE_BORROWED2=0
 
 playthrough_acquire_lock() {
     local name="${1-}"
@@ -4029,6 +5653,18 @@ playthrough_acquire_lock() {
     playthrough_validate_int "${2:-60}" "lock timeout" 0 86400 ||
         return 1
     local timeout="${PLAYTHROUGH_INT}"
+    local mode="${3:-exclusive}" flag=""
+    case "${mode}" in
+        exclusive) flag="-x" ;;
+        shared) flag="-s" ;;
+        *)
+            playthrough_die "'${mode}' is not a lock mode; the only" \
+                "two are 'exclusive' (nothing else may hold it) and" \
+                "'shared' (other shared holders are welcome, exclusive" \
+                "ones are not)"
+            return 1
+            ;;
+    esac
     playthrough_require_tools flock || return 1
     local path="${PLAYTHROUGH_LOCK_DIR}/${name}.lock"
     playthrough_secure_file "${path}" 600 || return 1
@@ -4037,12 +5673,13 @@ playthrough_acquire_lock() {
         playthrough_die "cannot open the '${name}' lock at ${path}"
         return 1
     fi
-    if ! flock -w "${timeout}" "${fd}"; then
+    if ! flock "${flag}" -w "${timeout}" "${fd}"; then
         exec {fd}>&-
         playthrough_die "another process has held the '${name}' lock" \
-            "for more than ${timeout}s (${path}).  Two runs of this" \
-            "stage over one checkout would corrupt what they share," \
-            "so this one stops rather than racing it."
+            "against an acquisition of it as '${mode}' for more than" \
+            "${timeout}s (${path}).  Two stages working over one" \
+            "checkout at once would corrupt what they share, so this" \
+            "one stops rather than racing it."
         return 1
     fi
     PLAYTHROUGH_LOCK_FD="${fd}"
@@ -4072,9 +5709,20 @@ playthrough_acquire_lock() {
 #   keeps the spawn a single code path instead of two nearly identical
 #   ones that would drift apart.
 #
+#   TWO DESCRIPTORS, because there are two locks a stage can be holding
+#   when it spawns: its own stage lock (PLAYTHROUGH_LOCK_FD) and the
+#   checkout's mutation lock (PLAYTHROUGH_MUTATION_LOCK_FD).  The engine
+#   inheriting the second would hold the whole checkout shared for its
+#   entire life, and every checkpoint -- including the `creation` one the
+#   requirements mandate WHILE THE GAME IS RUNNING -- would then block for
+#   its full timeout and refuse.  So both are withheld, and both are
+#   borrowed from /dev/null when not held, which keeps the spawn one code
+#   path instead of four.
+#
 #   Usage:
 #       playthrough_child_close_fd
-#       setsid nohup CMD ... {PLAYTHROUGH_CHILD_CLOSE_FD}>&- &
+#       setsid nohup CMD ... {PLAYTHROUGH_CHILD_CLOSE_FD}>&- \
+#           {PLAYTHROUGH_CHILD_CLOSE_FD2}>&- &
 #       spawned="$!"
 #       playthrough_child_close_done
 playthrough_child_close_fd() {
@@ -4088,6 +5736,18 @@ playthrough_child_close_fd() {
                 return 1
             fi
             PLAYTHROUGH_CHILD_CLOSE_BORROWED=1
+            ;;
+    esac
+    PLAYTHROUGH_CHILD_CLOSE_FD2="${PLAYTHROUGH_MUTATION_LOCK_FD:-}"
+    PLAYTHROUGH_CHILD_CLOSE_BORROWED2=0
+    case "${PLAYTHROUGH_CHILD_CLOSE_FD2}" in
+        ''|*[!0-9]*)
+            if ! exec {PLAYTHROUGH_CHILD_CLOSE_FD2}</dev/null; then
+                playthrough_die "cannot open a second descriptor to" \
+                    "withhold from a detached child"
+                return 1
+            fi
+            PLAYTHROUGH_CHILD_CLOSE_BORROWED2=1
             ;;
     esac
     return 0
@@ -4131,8 +5791,21 @@ playthrough_child_close_done() {
                 ;;
         esac
     fi
+    if [ "${PLAYTHROUGH_CHILD_CLOSE_BORROWED2:-0}" = "1" ]; then
+        case "${PLAYTHROUGH_CHILD_CLOSE_FD2:-}" in
+            ''|*[!0-9]*) ;;
+            *)
+                if [ -e "/proc/self/fd/${PLAYTHROUGH_CHILD_CLOSE_FD2}" ]
+                then
+                    exec {PLAYTHROUGH_CHILD_CLOSE_FD2}>&-
+                fi
+                ;;
+        esac
+    fi
     PLAYTHROUGH_CHILD_CLOSE_FD=""
     PLAYTHROUGH_CHILD_CLOSE_BORROWED=0
+    PLAYTHROUGH_CHILD_CLOSE_FD2=""
+    PLAYTHROUGH_CHILD_CLOSE_BORROWED2=0
     return 0
 }
 
@@ -4158,6 +5831,264 @@ playthrough_release_lock() {
     if [ "${fd}" = "${PLAYTHROUGH_LOCK_FD:-}" ]; then
         PLAYTHROUGH_LOCK_FD=""
     fi
+    return 0
+}
+
+# ---------------------------------------------------------------------
+# THE MUTATION LOCK -- ONE LOCK THE WHOLE CHECKOUT AGREES ON
+#
+# Every lock above this line serialises ONE STAGE against another copy of
+# ITSELF: two sequencers, two checkpoints, two launches, two publications
+# of the same artifact.  None of them serialises a stage against a
+# DIFFERENT stage, and that is the gap this closes.
+#
+# The gap, stated as the sequence that produced it: the gate reads the
+# whole artifact tree and passes; a producer -- a session step appending
+# a frame and a row, or a renderer republishing the movie -- changes the
+# tree; the committer then stages and publishes state that no gate ever
+# saw.  Every individual lock was held correctly throughout, because no
+# two holders were ever the same stage.  A checkpoint taken between a
+# `verify` that passed and a `commit` that ran is not evidence of
+# anything if the tree moved in between, and nothing in the arrangement
+# above could notice that it had.
+#
+# So there is one lock per checkout, and the two roles take it
+# differently:
+#
+#   PRODUCERS take it SHARED.  The session step (its whole transaction,
+#   from recovering the counter to the last append), each artifact
+#   publication, the caption mux, and the launch of the engine.  Shared
+#   holders do not exclude each other, which is right: they already
+#   exclude each other where they must, through their own stage locks.
+#
+#   THE VERIFIER AND THE COMMITTER take it EXCLUSIVE, and the sequencer
+#   holds it exclusively ACROSS both of them -- which is the only way the
+#   sequence above is closed, because two separate exclusive windows
+#   leave the same hole between them that this lock exists to remove.
+#
+# WHAT IT DOES NOT COVER, said plainly rather than left to be discovered.
+# The engine is a detached process that writes into playthrough/userdir/
+# for its whole life, and the `creation` checkpoint is mandated while it
+# is still running -- so no lock this pipeline holds can make that tree
+# quiescent, and pretending otherwise would be the dishonest version of
+# this control.  Three things bound that residue instead: the launch
+# itself holds the lock shared across the spawn and the window wait, so
+# the engine's one unbounded burst of writes (its first-run
+# configuration) cannot land inside a checkpoint; the engine advances
+# only when a step sends it a key, and a step holds the lock; and the
+# committer binds the published tree to the index it validated
+# (assert_commit_tree_matches_index in commit_artifacts.sh), so anything
+# the engine writes after staging is simply not in that commit rather
+# than silently part of it.
+#
+# RE-ENTRANCY IS A CORRECTNESS REQUIREMENT, NOT A CONVENIENCE.  A lock is
+# held by an open file description, so a child that inherits the
+# descriptor and then opens the same file again is a DIFFERENT
+# description -- and `flock` on it blocks against its own parent, for
+# ever.  The sequencer runs the verifier and the committer as children
+# while holding the lock, so without a re-entrancy path the sequencer
+# would deadlock on itself on its first run.
+#
+# The marker is not trusted, it is VERIFIED.  A child that finds
+# PLAYTHROUGH_MUTATION_LOCK_HELD in its environment proves the claim
+# before acting on it: the descriptor it names must still be open in this
+# process and must resolve to this checkout's lock file, and a
+# non-blocking exclusive probe on a FRESH descriptor must fail, which is
+# the kernel confirming that something really does hold it.  A marker
+# that cannot be proved is a REFUSAL rather than a fallback to acquiring:
+# a caller who set it by hand is either mistaken about what is running or
+# trying to make a stage skip its lock, and neither deserves a lock this
+# process would then release out from under its ancestor.
+# ---------------------------------------------------------------------
+
+PLAYTHROUGH_MUTATION_LOCK_BASENAME="mutation"
+# BOTH OF THESE ARE INITIALISED CONDITIONALLY, and the reason is the
+# whole re-entrancy mechanism.  A child sources this file too, so a plain
+# `PLAYTHROUGH_MUTATION_LOCK_FD=""` here would erase the one piece of
+# evidence the child has that its parent holds the lock -- measured: the
+# child then refused with "there is no descriptor to check the claim
+# against" while the descriptor was sitting open on its own fd 10.
+# PLAYTHROUGH_MUTATION_LOCK_OWNED is deliberately NOT exported, so the
+# `:-0` reads as 0 in every child and as itself on a re-source: a child
+# must never believe it owns what it merely inherited, because releasing
+# it would leave the ancestor thinking it still had the tree to itself.
+PLAYTHROUGH_MUTATION_LOCK_FD="${PLAYTHROUGH_MUTATION_LOCK_FD:-}"
+PLAYTHROUGH_MUTATION_LOCK_OWNED="${PLAYTHROUGH_MUTATION_LOCK_OWNED:-0}"
+# How long to wait for the other role.  Generous, because a render or a
+# long session legitimately holds it for minutes, and an unbounded wait
+# is a hang nobody can diagnose.
+PLAYTHROUGH_MUTATION_LOCK_TIMEOUT_DEFAULT=900
+
+# playthrough_mutation_lock_path
+#   This checkout's mutation lock file.  Derived from the same digest the
+#   sequencer and the checkpoint locks use, so two clones do not contend
+#   and two runs over one tree always do.
+playthrough_mutation_lock_path() {
+    local name=""
+    name="$(playthrough_checkout_lock_name \
+        "${PLAYTHROUGH_MUTATION_LOCK_BASENAME}")" || return 1
+    printf '%s/%s.lock' "${PLAYTHROUGH_LOCK_DIR}" "${name}"
+    return 0
+}
+
+# playthrough_mutation_lock_satisfies WANT HAVE
+#   True when a lock already held in mode HAVE covers a request for mode
+#   WANT.  Exclusive covers both; shared covers only shared.
+#
+#   The asymmetry is the whole point: a stage that needs the tree to
+#   itself must NOT proceed on the strength of a shared hold, because a
+#   producer could be writing beside it at that very moment.  flock can
+#   convert a shared hold to an exclusive one on the same descriptor, but
+#   two holders converting at once deadlock, so an upgrade is refused as
+#   the programming error it is rather than attempted.
+playthrough_mutation_lock_satisfies() {
+    case "${2-}:${1-}" in
+        exclusive:exclusive|exclusive:shared|shared:shared) return 0 ;;
+    esac
+    return 1
+}
+
+# playthrough_mutation_lock_inherited MODE
+#   0  an ancestor holds a lock that covers MODE, proved
+#   1  nothing claims to hold one
+#   2  something claims to and the claim did not hold up (diagnosed)
+playthrough_mutation_lock_inherited() {
+    local want="${1-}" have="${PLAYTHROUGH_MUTATION_LOCK_HELD:-}"
+    local fd="${PLAYTHROUGH_MUTATION_LOCK_FD:-}" path="" link=""
+    [ -n "${have}" ] || return 1
+    case "${have}" in
+        exclusive|shared) ;;
+        *)
+            playthrough_die "PLAYTHROUGH_MUTATION_LOCK_HELD is" \
+                "'${have}', which is not a lock mode.  It is set by" \
+                "playthrough_acquire_mutation_lock and read by every" \
+                "stage this one starts; a value nothing produced means" \
+                "the environment was edited, so this stage refuses" \
+                "rather than deciding for itself whether the tree is" \
+                "quiescent."
+            return 2
+            ;;
+    esac
+    if ! playthrough_mutation_lock_satisfies "${want}" "${have}"; then
+        playthrough_die "this stage needs the mutation lock" \
+            "${want}ly and an ancestor holds it ${have}ly.  A shared" \
+            "hold does not make the tree quiescent -- another producer" \
+            "may be writing under it right now -- and upgrading in" \
+            "place deadlocks when two holders upgrade at once.  Run" \
+            "this stage outside the shared window instead."
+        return 2
+    fi
+    if ! path="$(playthrough_mutation_lock_path)"; then
+        playthrough_die "an ancestor claims to hold the mutation lock" \
+            "but this checkout's lock path could not be derived, so" \
+            "the claim cannot be checked"
+        return 2
+    fi
+    case "${fd}" in
+        ''|*[!0-9]*)
+            playthrough_die "an ancestor claims to hold the mutation" \
+                "lock ${have}ly but PLAYTHROUGH_MUTATION_LOCK_FD is" \
+                "'${fd}', so there is no descriptor to check the claim" \
+                "against"
+            return 2
+            ;;
+    esac
+    link="$(readlink "/proc/self/fd/${fd}" 2>/dev/null || true)"
+    if [ "${link}" != "${path}" ]; then
+        playthrough_die "an ancestor claims to hold the mutation lock" \
+            "on descriptor ${fd}, but that descriptor is" \
+            "'${link:-not open}' rather than ${path}.  An inherited" \
+            "descriptor is the only evidence a child has that its" \
+            "parent holds the lock, and this one is not it."
+        return 2
+    fi
+    if ! playthrough_lock_is_held "${path}"; then
+        playthrough_die "an ancestor claims to hold the mutation lock" \
+            "at ${path}, but the kernel says nothing holds it.  The" \
+            "claim is stale or false; either way this stage will not" \
+            "proceed as though the tree were quiescent."
+        return 2
+    fi
+    return 0
+}
+
+# playthrough_acquire_mutation_lock MODE [TIMEOUT_SECONDS]
+#   Take this checkout's mutation lock, or prove an ancestor already
+#   holds one strong enough and do nothing.
+#
+#   PLAYTHROUGH_LOCK_FD is saved and restored around the acquisition, so
+#   a caller that already holds its own stage lock through that variable
+#   keeps it: the mutation descriptor lives in its own variable precisely
+#   because two locks held at once must not share one name.
+playthrough_acquire_mutation_lock() {
+    local mode="${1:-exclusive}" timeout="" name="" saved=""
+    case "${mode}" in
+        exclusive|shared) ;;
+        *)
+            playthrough_die "'${mode}' is not a mutation lock mode;" \
+                "producers take it 'shared' and the verifier and the" \
+                "committer take it 'exclusive'"
+            return 1
+            ;;
+    esac
+    timeout="${2:-${PLAYTHROUGH_MUTATION_LOCK_TIMEOUT:-\
+${PLAYTHROUGH_MUTATION_LOCK_TIMEOUT_DEFAULT}}}"
+    playthrough_validate_int "${timeout}" \
+        "the mutation lock timeout" 0 86400 || return 1
+    timeout="${PLAYTHROUGH_INT}"
+    playthrough_mutation_lock_inherited "${mode}"
+    case "$?" in
+        0)
+            playthrough_log "the mutation lock is already held" \
+                "${PLAYTHROUGH_MUTATION_LOCK_HELD}ly by a verified" \
+                "ancestor, so this stage inherits the quiescence it" \
+                "would otherwise have taken for itself"
+            return 0
+            ;;
+        2) return 1 ;;
+    esac
+    if ! name="$(playthrough_checkout_lock_name \
+            "${PLAYTHROUGH_MUTATION_LOCK_BASENAME}")"; then
+        playthrough_die "the mutation lock name for this checkout" \
+            "could not be derived, so this stage cannot be kept apart" \
+            "from a producer or a committer running over the same tree"
+        return 1
+    fi
+    saved="${PLAYTHROUGH_LOCK_FD:-}"
+    if ! playthrough_acquire_lock "${name}" "${timeout}" "${mode}"; then
+        PLAYTHROUGH_LOCK_FD="${saved}"
+        playthrough_die "the mutation lock '${name}' could not be" \
+            "taken ${mode}ly within ${timeout}s.  Producers hold it" \
+            "shared and the verifier and committer hold it exclusive," \
+            "so this is a stage of the other kind still running over" \
+            "THIS checkout -- wait for it rather than working beside it."
+        return 1
+    fi
+    PLAYTHROUGH_MUTATION_LOCK_FD="${PLAYTHROUGH_LOCK_FD}"
+    PLAYTHROUGH_MUTATION_LOCK_OWNED=1
+    PLAYTHROUGH_LOCK_FD="${saved}"
+    export PLAYTHROUGH_MUTATION_LOCK_HELD="${mode}"
+    export PLAYTHROUGH_MUTATION_LOCK_FD
+    playthrough_log "holding the mutation lock '${name}' ${mode}ly;" \
+        "the digest in that name is derived from THIS checkout's path," \
+        "so a stage running over a different working tree is not" \
+        "serialised against this one"
+    return 0
+}
+
+# playthrough_release_mutation_lock
+#   Drop the mutation lock IF THIS SHELL TOOK IT.  A shell that merely
+#   inherited an ancestor's hold releases nothing: releasing a lock this
+#   process did not take would leave the ancestor believing it still had
+#   the tree to itself, which is worse than never having locked at all.
+playthrough_release_mutation_lock() {
+    if [ "${PLAYTHROUGH_MUTATION_LOCK_OWNED:-0}" != "1" ]; then
+        return 0
+    fi
+    PLAYTHROUGH_MUTATION_LOCK_OWNED=0
+    playthrough_release_lock "${PLAYTHROUGH_MUTATION_LOCK_FD:-}" || true
+    PLAYTHROUGH_MUTATION_LOCK_FD=""
+    unset PLAYTHROUGH_MUTATION_LOCK_HELD
     return 0
 }
 
@@ -4418,6 +6349,95 @@ playthrough_platform_waiver() {
     printf '%s' "${clean}"
 }
 
+# playthrough_check_path_ancestry
+#   Refuse a run whose own evidence or runtime state is reached through a
+#   directory another local account may re-pave.  Returns 0 when both
+#   roads are safe or the waiver is set, 1 when it refuses.
+#
+#   WHAT IT MEASURES, AND WHY A MODE CHECK ON THE DESTINATION IS NOT IT.
+#   A security review found this tree checking the type, owner and mode of
+#   every directory it wrote into, and of every ancestor BELOW its own
+#   verified anchor -- and stopping there.  On a host whose /tmp is mode
+#   2777 (world-writable and NOT sticky; measured on the provisioning
+#   host, where a conventional /tmp is 1777) that leaves the road open:
+#   in a world-writable non-sticky directory ANY account with write
+#   permission may rename or unlink ANY entry regardless of who owns it,
+#   so the anchor's own 0700 says nothing about whether the NAME will
+#   still resolve to it at the next use.  Two roads matter, for two
+#   different reasons:
+#
+#     * the RUNTIME anchor holds the X authority cookie -- a credential
+#       that authenticates a client to the display being photographed --
+#       plus the pid files, the locks and any in-flight journal;
+#     * the REPOSITORY holds the evidence itself: the frames, the save,
+#       the films, the ledgers.
+#
+#   THE ASYMMETRY IN WHAT CAN BE DONE ABOUT THEM IS THE REASON THIS IS A
+#   REFUSAL WITH A WAIVER RATHER THAN EITHER A HARD ERROR OR A WARNING.
+#   The runtime anchor is this pipeline's own choice and it moves itself
+#   to a root-owned /run address when the conventional one is unsafe and
+#   holds nothing (see THE ANCHOR IS CHOSEN, above).  The repository is
+#   where the caller put it; nothing here can relocate a checkout, and a
+#   hard error would make the pipeline unrunnable on a host it is
+#   otherwise perfectly able to run on.  So the run REFUSES by default --
+#   which is what a fail-closed control means -- and
+#   PLAYTHROUGH_ALLOW_UNSAFE_PATH_ANCESTRY=<reason> proceeds, as a
+#   registered TRUST BYPASS: setting it moves PLAYTHROUGH_TRUST_STATE to
+#   diagnostic through the ordinary machinery, so a production capture is
+#   refused and every report says why.
+#
+#   Called from playthrough_headless_up, beside playthrough_check_platform
+#   and for the same reason: a launch is the moment evidence starts being
+#   produced, and sourcing this file must stay inert.
+playthrough_check_path_ancestry() {
+    local waiver="${PLAYTHROUGH_ALLOW_UNSAFE_PATH_ANCESTRY-}"
+    local repo_unsafe=""
+    if ! repo_unsafe="$(playthrough_untrusted_ancestor \
+            "${PLAYTHROUGH_REPO_ROOT}")"; then
+        repo_unsafe=""
+    fi
+    export PLAYTHROUGH_REPO_UNTRUSTED_ANCESTOR="${repo_unsafe}"
+    if [ -z "${PLAYTHROUGH_RUNTIME_UNTRUSTED_ANCESTOR-}" ] &&
+       [ -z "${repo_unsafe}" ]; then
+        return 0
+    fi
+    local -a offenders=()
+    if [ -n "${PLAYTHROUGH_RUNTIME_UNTRUSTED_ANCESTOR-}" ]; then
+        offenders+=("the runtime anchor '${XDG_RUNTIME_DIR}' through \
+'${PLAYTHROUGH_RUNTIME_UNTRUSTED_ANCESTOR}'")
+    fi
+    if [ -n "${repo_unsafe}" ]; then
+        offenders+=("the checkout '${PLAYTHROUGH_REPO_ROOT}' through \
+'${repo_unsafe}'")
+    fi
+    if [ -n "${waiver}" ] && [ "${waiver}" != "0" ]; then
+        playthrough_warn "proceeding with an unsafe path ancestry" \
+            "because PLAYTHROUGH_ALLOW_UNSAFE_PATH_ANCESTRY is set" \
+            "(${waiver}): ${offenders[*]}.  Each of those is" \
+            "group- or world-writable and NOT sticky, so any local" \
+            "account may rename or replace a component of the path" \
+            "between one check and the next use.  The trust state is" \
+            "diagnostic for as long as this is set"
+        playthrough_trust_refresh || true
+        return 0
+    fi
+    playthrough_die "refusing to launch: ${offenders[*]}.  A" \
+        "group- or world-writable directory WITHOUT the sticky bit" \
+        "lets any account with write permission rename or unlink any" \
+        "entry in it regardless of who owns it, so the mode of the" \
+        "destination cannot make the PATH to it trustworthy.  For the" \
+        "runtime anchor, remove it while no session is running so this" \
+        "pipeline can re-anchor under the root-owned /run, or nominate" \
+        "PLAYTHROUGH_XDG_ANCHOR at a directory whose whole ancestry is" \
+        "owner- or root-controlled.  For the checkout, move it" \
+        "somewhere with a safe road -- nothing here can relocate a" \
+        "working tree.  To proceed anyway, set" \
+        "PLAYTHROUGH_ALLOW_UNSAFE_PATH_ANCESTRY=<reason>, which is a" \
+        "registered trust bypass and holds the trust state at" \
+        "diagnostic."
+    return 1
+}
+
 playthrough_check_platform() {
     # NOTHING HERE IS MEMOISED, AND THAT IS A FIX RATHER THAN A COST.
     # The classification used to be cached in exported variables behind a
@@ -4671,6 +6691,8 @@ playthrough_env_summary() {
         "${PLAYTHROUGH_TRUST_BYPASSES:-<none>}"
         "PLAYTHROUGH_TRUST_UNVERIFIED"
         "${PLAYTHROUGH_TRUST_UNVERIFIED:-<none>}"
+        "PLAYTHROUGH_RUNTIME_UNTRUSTED_ANCESTOR"
+        "${PLAYTHROUGH_RUNTIME_UNTRUSTED_ANCESTOR:-<none>}"
     )
     printf '%s\n' "playthrough environment contract" || return 1
     # EVERY VALUE GOES THROUGH playthrough_redact, for the same reason

@@ -2112,6 +2112,114 @@ class TestTheLockRefusesABusyCheckout(unittest.TestCase):
                     env=env)
                 self.assertEqual(result.returncode, EX_USAGE)
 
+    def test_a_hostile_mutation_timeout_is_a_usage_error_too(self):
+        # It would otherwise surface as EX_BUSY, telling an operator who
+        # mistyped a number that somebody else holds the checkout.
+        env = dict(os.environ)
+        env.setdefault("PLAYTHROUGH_ALLOW_EOL_PLATFORM", "timeout")
+        for value in ("$(id)", "abc", "-1", "86401"):
+            with self.subTest(value=value):
+                env["PLAYTHROUGH_MUTATION_LOCK_TIMEOUT"] = value
+                result = subprocess.run(
+                    ["/bin/bash", "--noprofile", "--norc", SEQUENCER,
+                     "--only", "timeline"],
+                    cwd=REPO_ROOT, capture_output=True, timeout=TIMEOUT,
+                    env=env)
+                self.assertEqual(result.returncode, EX_USAGE)
+
+
+class TestTheSequencerHoldsTheCheckoutQuiescent(unittest.TestCase):
+    """The gap between a gate that passed and a commit that ran.
+
+    The pipeline lock keeps two sequencers apart, which was never the
+    whole problem: a session step, a standalone producer or a standalone
+    gate could change the tree BETWEEN two stages of one run, and the
+    checkpoint would then publish state no gate ever measured.  So the
+    sequencer takes one checkout-wide lock exclusively and holds it across
+    the whole plan, and every stage it starts inherits that hold.
+    """
+
+    def setUp(self):
+        for tool in ("flock", "sleep"):
+            if not shutil.which(tool):
+                self.skipTest("%s is needed to hold a lock" % tool)
+
+    def mutation_lock_path(self):
+        script = ('set -eu\n'
+                  '. "%s/env.sh"\n'
+                  'playthrough_mutation_lock_path\n') % TOOLING
+        env = dict(os.environ)
+        env.setdefault("PLAYTHROUGH_ALLOW_EOL_PLATFORM", "lock path")
+        result = subprocess.run(
+            ["/bin/bash", "--noprofile", "--norc", "-c", script],
+            cwd=REPO_ROOT, capture_output=True, timeout=TIMEOUT, env=env)
+        path = result.stdout.decode("utf-8", "replace").strip()
+        self.assertTrue(
+            path, msg=result.stderr.decode("utf-8", "replace"))
+        return path
+
+    def test_it_is_taken_after_the_pipeline_lock_and_before_the_gates(
+            self):
+        source = sequencer_source()
+        body = source.split("    trap '_rp_on_exit' EXIT\n")[-1]
+        order = [
+            body.index("acquire_pipeline_lock"),
+            body.index("acquire_mutation_lock"),
+            body.index("assert_dependency_closure"),
+        ]
+        self.assertEqual(order, sorted(order),
+                         msg="the quiescence has to be in place before "
+                             "anything is measured or written")
+
+    def test_it_is_released_however_the_run_ends(self):
+        source = sequencer_source()
+        handler = source.split("_rp_on_exit() {")[-1].split("\n}")[0]
+        self.assertIn("playthrough_release_mutation_lock", handler)
+        self.assertIn("MUTATION_LOCK_HELD", handler)
+
+    def test_it_is_taken_exclusively(self):
+        source = sequencer_source()
+        body = source.split("acquire_mutation_lock() {")[-1]
+        body = body.split("\n}")[0]
+        self.assertIn("playthrough_acquire_mutation_lock exclusive",
+                      body)
+
+    def test_a_producer_holding_the_checkout_refuses_the_run(self):
+        path = self.mutation_lock_path()
+        holder = subprocess.Popen(
+            [shutil.which("flock"), "--shared", path,
+             shutil.which("sleep"), "60"])
+
+        def release():
+            holder.kill()
+            holder.wait(timeout=30)
+
+        self.addCleanup(release)
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            probe = subprocess.run(
+                [shutil.which("flock"), "--nonblock", path,
+                 shutil.which("true")], capture_output=True, timeout=60)
+            if probe.returncode != 0:
+                break
+            time.sleep(0.1)
+        else:
+            self.fail("the lock holder never acquired %s" % path)
+        env = dict(os.environ)
+        env.setdefault("PLAYTHROUGH_ALLOW_EOL_PLATFORM", "busy tree")
+        env["PLAYTHROUGH_MUTATION_LOCK_TIMEOUT"] = "2"
+        env.pop("PLAYTHROUGH_MUTATION_LOCK_HELD", None)
+        env.pop("PLAYTHROUGH_MUTATION_LOCK_FD", None)
+        result = subprocess.run(
+            ["/bin/bash", "--noprofile", "--norc", SEQUENCER,
+             "--only", "timeline"],
+            cwd=REPO_ROOT, capture_output=True, timeout=TIMEOUT, env=env)
+        self.assertEqual(result.returncode, EX_BUSY)
+        message = result.stderr.decode("utf-8", "replace")
+        self.assertIn("mutation lock", message)
+        name = os.path.basename(path)[: -len(".lock")]
+        self.assertRegex(name, r"^mutation-[0-9a-f]{8}$")
+
 
 class TestTheLifecyclePreflight(PlanFixture):
     """A checkpoint that cannot be taken is refused before stage 1.

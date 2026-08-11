@@ -82,16 +82,68 @@ PLAYTHROUGH_ALLOW_UNVERIFIED_TILESET_PACK \
 PLAYTHROUGH_ALLOW_TILESET_FALLBACK \
 PLAYTHROUGH_ALLOW_VULNERABLE_PILLOW \
 PLAYTHROUGH_ALLOW_ANY_COMPILER \
+PLAYTHROUGH_ALLOW_UNSAFE_PATH_ANCESTRY \
 PLAYTHROUGH_ALLOW_EOL_PLATFORM"
 
+# escape_controls TEXT -- TEXT with every control byte shown as <NN>.
+#
+# A LOCAL COPY OF env.sh's, and for the same reason the trust-bypass list
+# above is one: this script deliberately does NOT source env.sh, because
+# sourcing it on an end-of-life host is the refusal this script exists to
+# route around.  So the helper is restated rather than imported.
+#
+# It matters here because what reaches these diagnostics comes from
+# docker -- container ids, image names, labels, mount listings -- and a
+# name carrying a newline forges a whole extra line of output, while ESC-[
+# or the single-byte C1 CSI (0x9B) repaints the reader's terminal.  The
+# byte ranges cover C0, DEL and the C1 block encoded as UTF-8, and leave
+# legitimate non-ASCII alone.
+# A local LC_ALL makes the walk bytewise whatever the caller's locale
+# is -- see env.sh's copy for the measurement that made that necessary
+# (in the C locale a character-wise walk silently DELETED the two-byte
+# C1 sequence instead of escaping it).  test_supported_env.py asserts
+# this copy and env.sh's produce identical output.
+escape_controls() {
+    local LC_ALL=C
+    local out="" rest="${1-}" byte second
+    case "${rest}" in
+        *[$'\001'-$'\037']*|*$'\177'*) ;;
+        *$'\302'[$'\200'-$'\237']*) ;;
+        *) printf '%s' "${rest}" ; return 0 ;;
+    esac
+    while [ -n "${rest}" ]; do
+        byte="${rest:0:1}"
+        case "${byte}" in
+            $'\302')
+                second="${rest:1:1}"
+                case "${second}" in
+                    [$'\200'-$'\237'])
+                        out+="$(printf '<%02X>' "'${second}")"
+                        rest="${rest:2}"
+                        continue
+                        ;;
+                esac
+                ;;
+            [$'\001'-$'\037']|$'\177')
+                out+="$(printf '<%02X>' "'${byte}")"
+                rest="${rest:1}"
+                continue
+                ;;
+        esac
+        out+="${byte}"
+        rest="${rest:1}"
+    done
+    printf '%s' "${out}"
+}
+
 log() {
-    printf 'playthrough: %s\n' "$*" >&2
+    printf 'playthrough: %s\n' "$(escape_controls "$*")" >&2
 }
 
 die() {
     local status="$1"
     shift
-    printf 'playthrough: FATAL: %s\n' "$*" >&2
+    printf 'playthrough: FATAL: %s\n' "$(escape_controls "$*")" >&2
     exit "${status}"
 }
 
@@ -119,6 +171,85 @@ image_exists() {
     docker image inspect "${IMAGE_TAG}" >/dev/null 2>&1
 }
 
+# build_inputs_digest -- one sha256 over the TRACKED files the image is
+# built from, in a fixed order.
+#
+# These are exactly the three files do_build stages into the build
+# context and nothing else, so this digest changes if and only if the
+# declared environment changes.  It is what turns "an image with the
+# right tag" into "the image this checkout declares", and it is baked
+# into the image as a label at build time so the comparison can be made
+# later without the build context still existing.
+#
+# `sha256sum` is fed the files by name in a fixed order and its own
+# output is hashed again, so the value depends on the CONTENTS and on
+# the order, never on the paths -- which differ between checkouts.
+build_inputs_digest() {
+    { sha256sum < "${ENVIRONMENT_DIR}/Dockerfile"
+      sha256sum < "${SCRIPT_DIR}/requirements.txt"
+      sha256sum < "${SCRIPT_DIR}/requirements.lock"
+    } | sha256sum | cut -c1-64
+}
+
+# resolve_image_id -- the immutable identity behind the tag.
+#
+# A TAG IS A MUTABLE POINTER AND MUST NEVER BE THE THING COMPARED.  A
+# security review made the point exactly: `docker tag` can point
+# playthrough-capture:26.04 at any image on the host, and this driver
+# then mounts the checkout READ-WRITE into whatever it names.  So the tag
+# is resolved to an image ID ONCE, and everything downstream -- the
+# provenance check, the container it starts, the adoption check -- uses
+# that ID.
+#
+# .Id is the digest of the image config, which is what identifies a
+# LOCALLY BUILT image.  RepoDigests is deliberately not used: measured on
+# this host, the built image reports `RepoDigests=[]`, because an image
+# that was never pushed or pulled has no registry digest at all, and a
+# check keyed on one would be vacuous exactly where it is needed.
+resolve_image_id() {
+    local id
+    id="$(docker image inspect "${IMAGE_TAG}" \
+        --format '{{.Id}}' 2>/dev/null || printf '')"
+    case "${id}" in
+        sha256:*) printf '%s' "${id}" ; return 0 ;;
+    esac
+    return 1
+}
+
+# assert_image_provenance -- the image was built from THIS checkout.
+#
+# The tag says what somebody called it; the label says what it was built
+# from. Without this, `supported_env.sh run` will happily execute an
+# arbitrary toolchain that carries the expected tag, with the checkout
+# mounted read-write -- which is the finding, stated as a capability.
+assert_image_provenance() {
+    local id="$1"
+    local stamped expected
+    expected="$(build_inputs_digest)"
+    stamped="$(docker image inspect "${id}" \
+        --format "{{index .Config.Labels \"${LABEL_BUILD}\"}}" \
+        2>/dev/null || printf '')"
+    if [ -z "${stamped}" ] || [ "${stamped}" = "<no value>" ]; then
+        die "${EX_MISSING}" "the image ${IMAGE_TAG} (${id}) carries no \
+${LABEL_BUILD} label, so it cannot say which Dockerfile and which \
+requirements files it was built from.  Images built before that label \
+existed are indistinguishable from an arbitrary image wearing this \
+tag, and this driver mounts the checkout read-write into what it \
+starts, so it is REFUSED rather than trusted.  Rebuild it: \
+'playthrough/tooling/supported_env.sh build'."
+    fi
+    if [ "${stamped}" != "${expected}" ]; then
+        die "${EX_MISSING}" "the image ${IMAGE_TAG} (${id}) was built \
+from build inputs digesting ${stamped}, and this checkout's \
+Dockerfile, requirements.txt and requirements.lock digest to \
+${expected}.  The declared environment and the built one are not the \
+same thing, so the image is REFUSED: a session proved against one \
+environment and recorded in another is not proved at all.  Rebuild it: \
+'playthrough/tooling/supported_env.sh build'."
+    fi
+    return 0
+}
+
 # The build context this process created, and the handler that removes
 # it.  Declared at file scope so `set -u` reports a missing definition
 # rather than treating it as empty, and so the EXIT trap can be a bare
@@ -133,12 +264,26 @@ cleanup_build_context() {
     return 0
 }
 
+# require_image -- the image exists, is resolved to an immutable id, and
+# was built from this checkout.
+#
+# IMAGE_ID is published for every caller, so nothing downstream has to
+# re-resolve the tag -- re-resolving it would reintroduce the window
+# this exists to close, where the tag moves between the check and the
+# use.
+IMAGE_ID=""
 require_image() {
     image_exists ||
         die "${EX_MISSING}" "the image ${IMAGE_TAG} has not been built. \
 Run 'playthrough/tooling/supported_env.sh build' first; it takes the \
 Dockerfile in playthrough/tooling/environment and needs network access \
 for apt and pip."
+    IMAGE_ID="$(resolve_image_id)" ||
+        die "${EX_MISSING}" "the image ${IMAGE_TAG} exists but docker \
+reports no image id for it, so there is no immutable identity to run \
+and nothing this driver is willing to mount the checkout into."
+    assert_image_provenance "${IMAGE_ID}"
+    return 0
 }
 
 # build -- build the image from the TRACKED Dockerfile.
@@ -176,17 +321,29 @@ declared environment cannot be built"
         die "${EX_MISSING}" "cannot stage requirements.txt and \
 requirements.lock, which the image installs the pipeline's pinned \
 closure from"
+    local stamp
+    stamp="$(build_inputs_digest)"
     log "building ${IMAGE_TAG} from \
-playthrough/tooling/environment/Dockerfile"
-    docker build --tag "${IMAGE_TAG}" "${context}"
-    log "built ${IMAGE_TAG}; 'supported_env.sh inventory' lists what \
-it contains"
+playthrough/tooling/environment/Dockerfile; build inputs digest \
+${stamp}"
+    # THE LABEL IS THE IMAGE SAYING WHAT IT WAS BUILT FROM.  It is
+    # written once, here, at the only moment the answer is known for
+    # certain, and it is what assert_image_provenance compares later
+    # against the tracked files themselves.
+    docker build --tag "${IMAGE_TAG}" \
+        --label "${LABEL_BUILD}=${stamp}" "${context}"
+    local built
+    built="$(resolve_image_id)" || built="<unresolved>"
+    log "built ${IMAGE_TAG} as ${built}; 'supported_env.sh inventory' \
+lists what it contains"
 }
 
 do_inventory() {
     require_docker
     require_image
-    docker run --rm "${IMAGE_TAG}" cat "${INVENTORY_PATH}"
+    # BY ID, because require_image resolved and vouched for that
+    # id; the tag could have moved since.
+    docker run --rm "${IMAGE_ID}" cat "${INVENTORY_PATH}"
 }
 
 # docker_run TTY_FLAGS… -- the common invocation.
@@ -313,7 +470,7 @@ docker_run() {
         "${CONTRACT_ARGS[@]}" \
         "${cleared[@]}" \
         "${extra[@]}" \
-        "${IMAGE_TAG}" \
+        "${IMAGE_ID}" \
         "$@"
 }
 
@@ -377,6 +534,10 @@ readonly LABEL_CHECKOUT="playthrough.checkout"
 readonly LABEL_CLONE="playthrough.clone"
 readonly LABEL_ROLE="playthrough.role"
 readonly ROLE_SESSION="capture-session"
+# The IMAGE's own label, written by do_build and read by
+# assert_image_provenance.  It is the only one of these that describes
+# the image rather than a container.
+readonly LABEL_BUILD="playthrough.build"
 
 # THE VALIDATED CLONE INDEX, resolved ONCE in the current shell.
 #
@@ -469,16 +630,27 @@ inspect_field() {
 assert_session_container() {
     local id="$1"
     local image mounted user expected_user
-    image="$(inspect_field "${id}" '{{.Config.Image}}')"
-    if [ "${image}" != "${IMAGE_TAG}" ]; then
+    # THE IMAGE ID, NOT THE IMAGE NAME.  This compared
+    # `{{.Config.Image}}` -- the TAG TEXT the container was started with
+    # -- against IMAGE_TAG, and a security review was right that this
+    # proves nothing: `docker tag playthrough-capture:26.04 <anything>`
+    # makes an arbitrary toolchain answer to that name, and an adopted
+    # container then has the checkout mounted read-write.  `.Image` is
+    # the resolved image ID the container is ACTUALLY running, and
+    # IMAGE_ID is what require_image resolved and proved the provenance
+    # of, so the two together say "the same image, and one we vouched
+    # for" rather than "a matching string".
+    image="$(inspect_field "${id}" '{{.Image}}')"
+    if [ "${image}" != "${IMAGE_ID}" ]; then
         die "${EX_MISSING}" "the container ${id} carries this \
-checkout's session labels but runs the image '${image}' where this \
-driver runs '${IMAGE_TAG}'.  It is REFUSED rather than adopted: the \
-supported environment is the one the preflight proved, and a session \
-hosted in a different image is a session proved on one environment and \
-recorded on another.  Remove that container, or point \
-\$PLAYTHROUGH_SUPPORTED_IMAGE at the image it runs if that is what you \
-intend."
+checkout's session labels but runs image ${image:-<unreadable>} where \
+this driver runs ${IMAGE_ID} for ${IMAGE_TAG}.  It is REFUSED rather \
+than adopted: the supported environment is the one the preflight \
+proved, and a session hosted in a different image is a session proved \
+on one environment and recorded on another.  Note that the tag is not \
+what is compared -- retagging cannot make a different image acceptable \
+here.  Remove that container, or point \$PLAYTHROUGH_SUPPORTED_IMAGE at \
+the image it runs if that is what you intend."
     fi
     # THE TEMPLATE IS TRIVIAL AND THE COMPARISON IS BASH, deliberately.
     # It used to be one `{{if and (eq .Source "…") (eq .Destination
@@ -554,6 +726,18 @@ display nothing is photographing, and the frames would be of the other \
 session.  Stop the ones that are not yours -- 'docker stop <id>' -- and \
 run this again."
     fi
+    # THE IDENTITY IS RESOLVED HERE, ONCE, RATHER THAN AT EVERY CALLER.
+    # assert_session_container compares the container against IMAGE_ID,
+    # and three of the five paths that reach this function -- the
+    # teardown and the two exec paths -- did not call require_image
+    # first, so IMAGE_ID was empty and the comparison refused every
+    # container against nothing.  Measured, as a `down` that could not
+    # adopt the session it had just started.
+    #
+    # Requiring it on the teardown path too is deliberate rather than
+    # incidental: refusing to stop a container this driver cannot PROVE
+    # is its own is the same property as refusing to exec into one.
+    [ -n "${IMAGE_ID}" ] || require_image
     assert_session_container "${found[0]}"
     SESSION_ID="${found[0]}"
     return 0
@@ -591,7 +775,7 @@ do_up() {
             --label "${LABEL_CLONE}=$(clone_index)" \
             "${CONTRACT_ARGS[@]}" \
             "${cleared[@]}" \
-            "${IMAGE_TAG}" \
+            "${IMAGE_ID}" \
             sleep infinity)"; then
         die "${EX_MISSING}" "the session container could not be" \
             "started; docker's own diagnosis is above."

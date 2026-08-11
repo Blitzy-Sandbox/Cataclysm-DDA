@@ -558,7 +558,15 @@ umask 077
 die() {
     local code="$1"
     shift
-    printf 'playthrough: FATAL: %s\n' "$*" >&2
+    # THE MESSAGE IS ESCAPED, because some of what reaches it is
+    # chosen elsewhere -- a world name, a directory name, an
+    # environment variable -- and a diagnostic that printed those
+    # bytes raw would perform the injection it is reporting: a
+    # newline forges a whole extra line of output, and ESC-[ or the
+    # single-byte C1 CSI repaints the terminal of whoever is
+    # reading the run.  playthrough_escape_controls is env.sh's,
+    # sourced far above this definition.
+    printf 'playthrough: FATAL: %s\n' "$(playthrough_escape_controls "$*")" >&2
     exit "${code}"
 }
 
@@ -1312,6 +1320,18 @@ playthrough_assert_display || exit "${EX_GEOMETRY}"
 if ! mkdir -p "${PLAYTHROUGH_FRAMES_DIR}"; then
     die "${EX_CAPTURE}" "cannot create ${PLAYTHROUGH_FRAMES_DIR}"
 fi
+
+# AND NOBODY ELSE MAY WRITE INTO IT.  `mkdir -p` on a directory that
+# already exists is a no-op, so a frames directory created earlier under a
+# permissive umask keeps its mode forever -- which a security review
+# measured on the delivered tree as 2777, world-writable, holding the
+# whole capture set.  Whoever can write a directory can replace or delete
+# any file in it, so that is substitutable evidence however careful this
+# file is with the frames themselves.  Repaired and announced here, on
+# every capture, because this is the one stage that runs three hundred
+# times and is therefore the one that would notice.
+playthrough_deny_foreign_write "${PLAYTHROUGH_FRAMES_DIR}" \
+    "the frames directory" || exit "${EX_CAPTURE}"
 
 # THE DESTINATION IS PROVED, NOT ASSUMED.
 #

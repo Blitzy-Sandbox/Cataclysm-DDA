@@ -92,7 +92,26 @@
 # proves the declared path end to end.
 # ---------------------------------------------------------------------
 
-FROM ubuntu:26.04
+# THE BASE IS PINNED BY DIGEST, NOT BY TAG.
+#
+# `ubuntu:26.04` is a MUTABLE pointer: the publisher moves it at every
+# point release, and anything able to reach the registry cache or the
+# daemon can move it somewhere else entirely.  A build that names a tag
+# therefore builds a different image on different days and cannot say
+# which one it built -- and this image is the declared production
+# environment for a pipeline whose entire output is evidence.
+#
+# The digest below is the OCI image INDEX digest, resolved from the
+# registry on 2026-08-11 with `docker buildx imagetools inspect
+# ubuntu:26.04`, whose linux/amd64 manifest is
+# sha256:7b202b0e2e0028c6250f5fcf41d04df492d145a1654c6995a6553f0c1f6f1960.
+# The index rather than that manifest is named so the build still
+# resolves per-architecture, while remaining immutable.
+#
+# The tag is kept in the comment because a digest alone tells a reader
+# nothing about WHICH release it is, and `docker buildx imagetools
+# inspect ubuntu:26.04` is how the next person re-resolves it.
+FROM ubuntu@sha256:678c6550cc43645e08669028bc177f50be4e7c5b8cca677067b1914d4afc7a03
 
 # Every apt call in this file is non-interactive; a build that waited
 # for a confirmation would hang rather than fail.
@@ -211,9 +230,35 @@ RUN apt-get update \
 # wholesale, and env.sh refuses one there.
 # ---------------------------------------------------------------------
 COPY requirements.txt requirements.lock /opt/playthrough-requirements/
+# THE BOOTSTRAP IS NOT UPGRADED, AND THAT IS THE FIX.
+#
+# This step used to begin `pip install --upgrade pip setuptools wheel`,
+# which is a floating, UNHASHED download of three packages from the
+# network -- executed with the full privileges of the build, immediately
+# before the step whose whole purpose is to install nothing that is not
+# hash-pinned.  A security review was right to call it out, and the
+# remedy is not to hash-pin that download but to stop making it:
+#
+#   * pip comes from ensurepip, which is BUNDLED INSIDE the CPython
+#     tarball verified by sha256 above.  On 3.12.13 that is pip 25.0.1.
+#     So the installer is already pinned, transitively and by digest,
+#     to an artifact this file verifies -- a stronger guarantee than a
+#     separate hash list, because there is no second download to pin.
+#   * setuptools and wheel are NOT NEEDED AT ALL.  requirements.lock
+#     carries --only-binary :all:, so every artifact is a wheel and no
+#     build backend is ever invoked.  Installing a build backend to
+#     install nothing that needs building added two undeclared
+#     distributions and, with them, the one executable .pth in the
+#     closure -- setuptools ships distutils-precedence.pth, whose line
+#     begins `import` and therefore runs at EVERY interpreter start,
+#     before any pipeline code.  Removing this upgrade removes that
+#     startup hook along with the unhashed download.
+#
+# env.sh check 7 refuses any distribution the lock does not name, and
+# check 8 refuses any executable .pth it does not allow by digest, so
+# this decision is enforced at run time and not merely made here.
 RUN /opt/python3.12/bin/python3.12 -m venv /opt/playthrough-venv \
- && /opt/playthrough-venv/bin/pip install --no-cache-dir \
-      --upgrade pip setuptools wheel \
+ && /opt/playthrough-venv/bin/pip --version \
  && /opt/playthrough-venv/bin/pip install --no-cache-dir --no-deps \
       -r /opt/playthrough-requirements/requirements.lock \
  && /opt/playthrough-venv/bin/pip check

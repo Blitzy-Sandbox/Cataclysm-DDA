@@ -86,6 +86,7 @@ binary.
 import ast
 import contextlib
 import copy
+import fcntl
 import hashlib
 import io
 import json
@@ -6752,7 +6753,20 @@ class TestTheArtifactLock(unittest.TestCase):
             tempfile.mkdtemp(prefix="blitzy_lock_"))
         self.addCleanup(_remove_tree, self.directory)
         self.runtime = os.path.join(self.directory, "runtime")
-        self.env = _environment(PLAYTHROUGH_RUNTIME_DIR=self.runtime)
+        # THE INHERITED RE-ENTRANCY MARKER IS CLEARED, and it has to be.
+        # env.sh exports PLAYTHROUGH_MUTATION_LOCK_HELD so that a child
+        # stage which inherits an already-held checkout lock does not
+        # try to take it again and deadlock against its own parent.  The
+        # acceptance gate takes that lock EXCLUSIVE and then runs this
+        # suite as a child, so without this the eight tests below would
+        # inherit "the lock is already held", skip the acquisition they
+        # exist to measure, and error -- measured exactly that way, as
+        # eight errors inside a gate run and none outside it.  A suite
+        # that tests acquisition must own that variable rather than
+        # inherit a claim about it.
+        self.env = _environment(PLAYTHROUGH_RUNTIME_DIR=self.runtime,
+                                PLAYTHROUGH_MUTATION_LOCK_HELD=None,
+                                PLAYTHROUGH_MUTATION_LOCK_FD=None)
         self.env.__enter__()
         self.addCleanup(self.env.__exit__, None, None, None)
 
@@ -6815,6 +6829,140 @@ class TestTheArtifactLock(unittest.TestCase):
         with timeline.ArtifactLock("movie", self.directory):
             pass
         self.assertTrue(os.path.isfile(path))
+
+    # -- and the checkout's quiescence, taken with it -----------------
+
+    def mutation_path(self):
+        return manifest.mutation_lock_path(self.directory)
+
+    def test_a_publication_holds_the_checkouts_mutation_lock(self):
+        with timeline.ArtifactLock("movie", self.directory):
+            self.assertTrue(
+                manifest._mutation_is_held(self.mutation_path()),
+                msg="a publication must exclude the gate that measures "
+                    "the artifact and the checkpoint that commits it")
+        self.assertFalse(
+            manifest._mutation_is_held(self.mutation_path()))
+
+    def test_it_is_taken_shared_so_another_producer_may_run(self):
+        with timeline.ArtifactLock("movie", self.directory):
+            descriptor = os.open(self.mutation_path(),
+                                 os.O_RDWR | os.O_CREAT, 0o600)
+            self.addCleanup(os.close, descriptor)
+            fcntl.flock(descriptor, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+            with self.assertRaises(OSError):
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def test_a_gate_holding_the_checkout_stops_a_publication(self):
+        descriptor = os.open(self.mutation_path(),
+                             os.O_RDWR | os.O_CREAT, 0o600)
+        self.addCleanup(os.close, descriptor)
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        with self.assertRaises(timeline.TimelineError) as caught:
+            with timeline.ArtifactLock("movie", self.directory,
+                                       timeout=0.2):
+                pass
+        self.assertIn("could not join", str(caught.exception))
+
+    def test_the_artifact_lock_is_free_when_the_checkout_is_refused(
+            self):
+        # Mutation first, artifact second, everywhere -- so a refusal of
+        # the outer lock must leave the inner one untaken, or a busy
+        # checkout would wedge the next publication as well.
+        descriptor = os.open(self.mutation_path(),
+                             os.O_RDWR | os.O_CREAT, 0o600)
+        self.addCleanup(os.close, descriptor)
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        with self.assertRaises(timeline.TimelineError):
+            with timeline.ArtifactLock("movie", self.directory,
+                                       timeout=0.2):
+                pass
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        with timeline.ArtifactLock("movie", self.directory, timeout=0.2):
+            pass
+
+    def test_two_artifact_locks_share_one_quiescence(self):
+        # Nested publications in one process: the inner one must find the
+        # outer one's own hold and reuse it rather than taking a second
+        # descriptor, which would be a shared-beside-shared no-op here but
+        # is a deadlock the moment either side is exclusive.
+        with timeline.ArtifactLock("movie", self.directory):
+            with timeline.ArtifactLock("transcripts", self.directory,
+                                       timeout=0.2):
+                self.assertTrue(
+                    manifest._mutation_is_held(self.mutation_path()))
+        self.assertFalse(
+            manifest._mutation_is_held(self.mutation_path()))
+
+
+class TestGenerationJournalDurability(unittest.TestCase):
+    """A journal that is not whole, or not durable, is not a journal."""
+
+    def setUp(self):
+        self.directory = os.path.realpath(
+            tempfile.mkdtemp(prefix="blitzy_journal_"))
+        self.addCleanup(_remove_tree, self.directory)
+        self.runtime = os.path.join(self.directory, "runtime")
+        self.env = _environment(PLAYTHROUGH_RUNTIME_DIR=self.runtime)
+        self.env.__enter__()
+        self.addCleanup(self.env.__exit__, None, None, None)
+
+    def test_a_short_write_is_retried_rather_than_refused(self):
+        # A partial os.write is ORDINARY -- it is why the call returns a
+        # count.  Treating it as a failed publication conflated "the
+        # device took what it could" with "the device cannot take it".
+        original = os.write
+
+        def dribble(descriptor, data):
+            return original(descriptor, data[:1])
+
+        os.write = dribble
+        self.addCleanup(setattr, os, "write", original)
+        timeline.write_generation_journal(
+            "movie", {"version": timeline.GENERATION_VERSION},
+            self.directory)
+        os.write = original
+        record = timeline.read_generation_journal("movie", self.directory)
+        self.assertEqual(record["version"], timeline.GENERATION_VERSION)
+
+    def test_a_write_that_makes_no_progress_is_refused(self):
+        original = os.write
+
+        def stall(descriptor, data):
+            return 0
+
+        os.write = stall
+        self.addCleanup(setattr, os, "write", original)
+        with self.assertRaises(timeline.TimelineError) as caught:
+            timeline.write_generation_journal(
+                "movie", {"version": timeline.GENERATION_VERSION},
+                self.directory)
+        os.write = original
+        self.assertIn("no further progress", str(caught.exception))
+
+    def test_a_failing_directory_flush_is_reported_not_swallowed(self):
+        timeline.write_generation_journal(
+            "movie", {"version": timeline.GENERATION_VERSION},
+            self.directory)
+        original = os.fsync
+
+        def refuse(descriptor):
+            raise OSError(5, "I/O error")
+
+        os.fsync = refuse
+        self.addCleanup(setattr, os, "fsync", original)
+        with self.assertRaises(timeline.TimelineError) as caught:
+            timeline.clear_generation_journal("movie", self.directory)
+        os.fsync = original
+        self.assertIn("could not flush", str(caught.exception))
+        self.assertIsNone(
+            timeline.read_generation_journal("movie", self.directory),
+            msg="the unlink succeeded; what is reported is that it may "
+                "not survive a crash")
+
+    def test_clearing_an_absent_journal_is_silent(self):
+        timeline.clear_generation_journal("movie", self.directory)
 
 
 class TestTheDocumentCanBeReadWithoutBeingHeld(unittest.TestCase):

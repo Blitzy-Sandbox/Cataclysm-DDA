@@ -2266,6 +2266,14 @@ class TestTheTrustState(CaptureFixture):
         # under it.  It forces the diagnostic state now, and the four
         # stages that make production media refuse under it.
         "PLAYTHROUGH_ALLOW_EOL_PLATFORM",
+        # ADDED BY THE SAME REVIEW, one finding later.  A component of
+        # the path to this run's own evidence or runtime state can be
+        # renamed or replaced by another local account, so a frame, a
+        # save or a lock may not be the one this pipeline wrote.
+        # playthrough_check_path_ancestry refuses a launch on it; this is
+        # the waiver that proceeds, and it belongs here for the same
+        # reason the platform one does.
+        "PLAYTHROUGH_ALLOW_UNSAFE_PATH_ANCESTRY",
     )
 
     def test_the_registry_is_the_one_env_sh_publishes(self):

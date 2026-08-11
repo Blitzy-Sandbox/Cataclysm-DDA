@@ -1647,8 +1647,9 @@ class TestTheModuleKeepsItsPromises(unittest.TestCase):
         # the clock-statement parser have ONE implementation, in the
         # module that also refuses a row at write time; timeline.py
         # already imports it, so it is not a new dependency.
-        allowed = ("argparse", "hashlib", "json", "math", "os", "re",
-                   "sys", "tempfile", "textwrap", "typing", "timeline",
+        allowed = ("argparse", "hashlib", "json", "math", "os",
+                   "re", "sys", "tempfile", "textwrap",
+                   "unicodedata", "typing", "timeline",
                    "manifest")
         for node in ast.walk(ast.parse(module_source())):
             if isinstance(node, ast.Import):
@@ -1681,6 +1682,121 @@ class TestTheModuleKeepsItsPromises(unittest.TestCase):
             sorted(flat for pair in options for flat in pair),
             sorted(["-h", "--help", "--timeline", "--srt", "--md",
                     "-n", "--dry-run", "-q", "--quiet"]))
+
+
+class TestTheNameIsANameAndNotMarkup(unittest.TestCase):
+    """A dossier heading was written into Markdown unescaped.
+
+    playthrough/transcript.md is titled with the dossier's first
+    level-one heading, and that heading went into the document verbatim.
+    Markdown passes raw HTML through to the renderer, so a dossier opening
+    `# <img src=x onerror=...>` produced a transcript that executes script
+    in any permissive viewer -- and the dossier is a file inside the tree
+    this pipeline commits.
+
+    THE FIX IS A GRAMMAR, NOT AN ESCAPE, and the choice is the
+    interesting part.  Escaping publishes the payload in a different
+    spelling: a title reading `&lt;img src=x onerror=...&gt;` is neither a
+    name nor a refusal, and this artifact is evidence about a person. So a
+    heading that is not shaped like a name is reported as a fault.
+    """
+
+    def test_the_delivered_survivor_name_still_passes(self):
+        """The grammar must not refuse the record that exists.
+
+        The committed dossier names a real survivor, and if the grammar
+        refused it the whole transcript could no longer be regenerated --
+        which would make this a breaking change dressed as a fix.
+        """
+        make_srt.assert_survivor_name_grammar("Odette Vachon",
+                                              "the delivered dossier")
+
+    def test_real_names_in_several_scripts_are_accepted(self):
+        """Refusing a name for not being English would not be safety."""
+        for name in ("Odette Vachon",
+                     "Mar\u00eda Jos\u00e9 Garc\u00eda",
+                     "O'Brien",
+                     "Jean\u2019s Kin",
+                     "Marie-Claire",
+                     "Smith, Jr.",
+                     "\u0410\u043d\u043d\u0430 \u041f\u0435\u0442\u0440"
+                     "\u043e\u0432\u0430",
+                     "\u674e \u5c0f\u9f8d"):
+            with self.subTest(name=name):
+                make_srt.assert_survivor_name_grammar(name, "probe")
+
+    def test_the_reviews_own_payload_is_refused(self):
+        with self.assertRaises(make_srt.TranscriptError) as caught:
+            make_srt.assert_survivor_name_grammar(
+                "<img src=x onerror=alert(1)>", "probe")
+        self.assertIn("not shaped like a name", str(caught.exception))
+        self.assertIn("U+003C", str(caught.exception))
+
+    def test_every_markup_metacharacter_is_refused(self):
+        """Excluded as a consequence of the grammar, not as a list.
+
+        Nothing here enumerates HTML or Markdown syntax; these all fail
+        because they are neither letters, marks, nor the small punctuation
+        set a name uses.
+        """
+        for char in "<>&\"`[]()*_!|#\\/{}~^$@+=;:%":
+            with self.subTest(char=char):
+                with self.assertRaises(make_srt.TranscriptError):
+                    make_srt.assert_survivor_name_grammar(
+                        "Odette%sVachon" % char, "probe")
+
+    def test_digits_are_refused(self):
+        """Nothing needs them, and excluding them closes `&#60;`."""
+        with self.assertRaises(make_srt.TranscriptError):
+            make_srt.assert_survivor_name_grammar("Odette 3", "probe")
+
+    def test_a_control_character_is_refused(self):
+        with self.assertRaises(make_srt.TranscriptError):
+            make_srt.assert_survivor_name_grammar("Odette\nVachon",
+                                                  "probe")
+
+    def test_the_refusal_names_the_position_and_the_codepoint(self):
+        """An actionable diagnosis, not "invalid name"."""
+        with self.assertRaises(make_srt.TranscriptError) as caught:
+            make_srt.assert_survivor_name_grammar("Odette <b>", "probe")
+        message = str(caught.exception)
+        self.assertIn("character 8", message)
+        self.assertIn("U+003C", message)
+
+    def test_a_dossier_carrying_markup_is_refused_end_to_end(self):
+        """Through the real derivation, not only the helper."""
+        with workspace() as root:
+            seed_dossier(root, name="<img src=x onerror=alert(1)>")
+            with self.assertRaises(make_srt.TranscriptError) as caught:
+                make_srt.read_survivor_name(root=root)
+            self.assertIn("not shaped like a name",
+                          str(caught.exception))
+
+    # -- and the path that derives nothing ----------------------------
+
+    def test_a_supplied_header_is_held_to_the_same_gate(self):
+        """The docstring promised this; now it is true.
+
+        write_markdown accepts a header instead of deriving one, and that
+        path never passes through read_survivor_name -- so the name
+        grammar does not see it.  The markup gate is what closes it.
+        """
+        for payload in ("# <img onerror=alert(1)> - what I did",
+                        "# Odette &amp; Vachon - what I did",
+                        "# Odette <b>V</b> - what I did"):
+            with self.subTest(header=payload):
+                with self.assertRaises(make_srt.TranscriptError):
+                    make_srt.assert_no_raw_markup(payload, "the header")
+
+    def test_an_event_handler_attribute_is_named_as_one(self):
+        with self.assertRaises(make_srt.TranscriptError) as caught:
+            make_srt.assert_no_raw_markup("# Odette onload = boom()",
+                                          "the header")
+        self.assertIn("event-handler", str(caught.exception))
+
+    def test_a_clean_header_passes(self):
+        make_srt.assert_no_raw_markup(
+            "# Odette Vachon \u2014 what I did, and why", "the header")
 
 
 class TestTheSuiteIsHermetic(unittest.TestCase):

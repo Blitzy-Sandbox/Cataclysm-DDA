@@ -1600,6 +1600,21 @@ if ! playthrough_acquire_lock captions "${LOCK_TIMEOUT}"; then
     exit "${EX_MUX}"
 fi
 
+# AND JOIN THE CHECKOUT'S QUIESCENCE, as a producer: SHARED, because
+# this stage may legitimately run beside another producer -- it has
+# its own exclusive lock above for the one thing it must not share --
+# but it must NOT run beside the gate that measures the film it is
+# replacing, or the checkpoint that commits it.  A run started by
+# run_pipeline.sh proves and inherits the sequencer's exclusive hold
+# instead of blocking against it; see env.sh's mutation lock section.
+if ! playthrough_acquire_mutation_lock shared "${LOCK_TIMEOUT}"; then
+    die "${EX_MUX}" "the caption mux could not join THIS" \
+        "checkout's quiescence: a gate or a checkpoint holds the" \
+        "mutation lock exclusively, and publishing a new container" \
+        "under one of those would leave it measuring or committing" \
+        "a film that changed while it looked.  Nothing was written."
+fi
+
 # ---------------------------------------------------------------------
 # THE STAGING FILE and the scratch cue file.
 #
@@ -1646,6 +1661,7 @@ _ec_cleanup() {
     # helper's default, so nothing here depends on this script's own
     # positional parameters reaching it.
     playthrough_release_lock "${PLAYTHROUGH_LOCK_FD:-}" || true
+    playthrough_release_mutation_lock || true
 }
 trap _ec_cleanup EXIT
 
@@ -2770,6 +2786,17 @@ if [ "${_ec_retained}" -eq 1 ]; then
     "${RM}" -f -- "${RETAINED_FILE}" || true
 fi
 unset _ec_retained
+
+# NOBODY ELSE MAY REWRITE THE FILM.  ffmpeg creates the staging container
+# under whatever umask this process inherited, and a security review
+# measured the consequence on the delivered tree: the captioned film was
+# published at mode 0666, so any local account could have replaced the
+# one artifact this stage exists to produce -- after every check on it
+# had passed.  The mode is therefore asserted here, on the PUBLISHED
+# path, rather than left to the environment.  Read access is untouched:
+# this file is committed to a git repository and is meant to be read.
+playthrough_deny_foreign_write "${OUTPUT_MOVIE}" \
+    "the captioned film" || exit "${EX_VERIFY}"
 
 {
     printf '%s\n' "--- ffprobe, caption stream(s) of \

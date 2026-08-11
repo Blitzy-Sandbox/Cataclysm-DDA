@@ -50,6 +50,35 @@ was wanted *for*: the identity **resolves**, and it **agrees with every commit i
 the history**. Both are asserted by the acceptance gate rather than claimed here.
 This divergence is recorded in full in `TECHNICAL_NOTES.md`.
 
+**And the gate now calls it a divergence rather than a pass.** It previously
+reported this check as `PASS` with the caveat in its prose — the sentence was
+truthful and the verdict was not, and a reader or a script that took the verdict
+at face value was told this element of R1 was met. A review named exactly that:
+the report *"records missing local identity as PASS"*. The gate has a third
+verdict class for it now, and this is what a real run prints:
+
+```console
+DIVERGENCE  git has an identity to commit these artifacts under, and the
+            history agrees with it
+      observed: … It is NOT repository-local: 'git config --local --get
+                user.name' answers nothing here
+      the plan requires: a repository-local pair … per §0.3.1 and §0.10.2
+      why it stands: the execution environment … PROHIBITS running 'git config
+                user.name' or 'user.email' at any scope …
+SUMMARY  … checks passed with 1 DIVERGENCE(S) from the plan …  Nothing FAILED,
+         but the run does not claim full compliance
+VERIFY_DIVERGENCES=1
+VERIFY=pass-with-divergence
+```
+
+A divergence is neither a pass nor a failure. It counts toward the declared check
+inventory, so it cannot be lost by being reclassified; it does **not** change the
+exit status, because a non-zero exit for an environment-imposed and permanent
+divergence would block every future checkpoint for good; and the summary sentence
+stops claiming full compliance for the run as a whole. `VERIFY=pass-with-divergence`
+is a token a caller that only understands pass and fail treats as neither, which
+is the correct default for something it has no rule for.
+
 **The session is bracketed by commits, as required — one after the survivor was
 created, one after it closed.** Both name the same survivor and the second
 descends from the first. Two further checkpoints carry what only exists after
@@ -308,6 +337,54 @@ both transcripts and the requirements file — is tracked. `git status
 --porcelain -- playthrough/` is empty. No frame was decimated, sampled,
 deduplicated or downscaled to save space: where repository size and completeness
 conflicted, completeness won.
+
+### The security controls this record rests on
+
+A review found this report *"omits security controls"* — and the omission
+mattered for a specific reason. Everything above is a count or a digest, and a
+count reads identically whether or not anything was defending it. A reader could
+not tell a run with these controls from a run without them, which is the same
+failure mode as a report that gets shorter: indistinguishable from a complete one
+to anyone who does not already know the number.
+
+So the controls are named here, and — more importantly — they are **inventoried by
+the gate itself**. `check_security_controls` holds a table of `label|file|marker`
+rows and asserts each control is still present in the file that implements it,
+printing the list into `acceptance-report.txt` as observed evidence. A control
+that is removed or renamed now **fails a check** instead of quietly disappearing
+from the prose. The marker is a function name, never a phrase, so rewording a
+comment cannot satisfy it and refactoring cannot silently void it.
+
+| What it defends | Control | Where |
+| --- | --- | --- |
+| The push credential | the git config carrying the token is owner-only, asserted before any commit | `commit_artifacts.sh` |
+| The commit itself | no hook runs on a mutating git command; the published tree is bound to the validated index | `commit_artifacts.sh` |
+| What gets staged | per-path provenance — owner, regular file, single link, same device; and a secret and credential scan over every path | `commit_artifacts.sh` |
+| The runtime root | a group- or world-writable non-sticky ancestor is refused, and a trusted anchor is chosen ahead of any `/tmp` fallback | `env.sh` |
+| Every artifact | created owner-only; foreign writability anywhere under `playthrough/` is refused | `env.sh` |
+| Child processes | the inherited environment is sanitised — 31 named variables refused — before anything runs | `env.sh` |
+| Concurrent runs | one checkout-wide mutation lock, shared for producers and exclusive for the verifier and committer | `env.sh` |
+| The display | the X server is identified by process identity, socket and cookie digest, not by a pid; a fresh cookie per server generation | `env.sh` |
+| Values from outside | a bounded printable record-token grammar, and control-byte escaping on every diagnostic | `env.sh` |
+| The evidence | the ledgers are hash-chained and each row carries the git blob name of what it seals | `manifest.py` |
+| The journal | writes are verified and durability failures propagate rather than being swallowed | `session.py` |
+| The payload | a chosen value cannot forge a `KEY=value` record or a log line | `session.py` |
+| The decoders | provenance checked before decode; the decode runs under CPU limits with core dumps forbidden | `ocr_clock.py`, `make_transitions.py` |
+| The transcript | the survivor name is held to a conservative grammar rather than escaped after the fact | `make_srt.py` |
+| The container | identified by image id and a build-inputs digest, never by a mutable tag | `supported_env.sh` |
+
+Five of these are **documented divergences from the guidance that prompted them**,
+recorded with their reasons rather than quietly dropped: signalling the X server
+uses a verify-immediately-before-`kill` sequence rather than a pidfd, because bash
+has none — the window is narrowed to a few syscalls, not closed; apt inputs are
+not snapshotted, because the value of an in-support release *is* its updates, and
+the build records its inventory and binds it to the image identity instead; engine
+files are classified by position and refused by property rather than by an
+explicit filename schema; the evidence ledger is hash-chained, git-anchored and
+published in a commit trailer rather than signed, because no key management exists
+here and a private key committed to the tree it signs proves nothing; and the
+repository-local git identity is reported as a divergence rather than created, for
+the reason given at the top of this section.
 
 ## B) Character Creation
 

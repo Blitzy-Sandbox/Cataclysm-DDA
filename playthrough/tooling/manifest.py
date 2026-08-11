@@ -137,6 +137,7 @@ import os
 import re
 import stat
 import sys
+import time
 
 
 # The schema, in the order rows are written.  Exactly these six keys,
@@ -848,6 +849,330 @@ def approved_root(root=None):
     if not os.path.isdir(resolved):
         raise ManifestError("no approved root at %s" % resolved)
     return resolved
+
+
+# ---------------------------------------------------------------------
+# THE MUTATION LOCK -- THE PYTHON HALF OF ONE CHECKOUT-WIDE LOCK
+#
+# env.sh owns the shell half and documents the whole design; this is the
+# same lock, at the same path, so that a Python producer and a shell
+# committer genuinely exclude each other.  It lives HERE rather than in
+# session.py or timeline.py because both of those import this module and
+# neither imports the other -- and two implementations of one lock is
+# two locks.
+#
+# THE PATH HAS TO AGREE WITH THE SHELL'S TO THE BYTE, or the two halves
+# lock different files and the exclusion is imaginary.  The shell builds
+# it as $PLAYTHROUGH_LOCK_DIR/mutation-<d>.lock where <d> is the first
+# eight hex digits of the sha256 of $PLAYTHROUGH_REPO_ROOT; the
+# derivation below is the same expression with the same inputs, taking
+# the checkout as the parent of the approved root -- which is what
+# $PLAYTHROUGH_REPO_ROOT is, verified by measurement rather than assumed.
+# Passing `root` gives a test its own lock for its own temporary tree,
+# exactly as it gives it its own approved root.
+#
+# READING PLAYTHROUGH_LOCK_DIR FROM THE ENVIRONMENT IS DELIBERATE, and it
+# is not the trust approved_root() refuses to place in a variable.  This
+# is the RUNTIME directory -- scratch, locks, the cookie -- not the
+# evidence tree; session.py and timeline.py already resolve their scratch
+# the same way, for the same reason, and it is the only way a sourced
+# pipeline and a bare invocation can agree on where the lock is.  A
+# nominated directory is still verified before use.
+# ---------------------------------------------------------------------
+
+ENV_LOCK_DIR = "PLAYTHROUGH_LOCK_DIR"
+ENV_RUNTIME_DIR = "PLAYTHROUGH_RUNTIME_DIR"
+ENV_XDG_RUNTIME_DIR = "XDG_RUNTIME_DIR"
+ENV_MUTATION_HELD = "PLAYTHROUGH_MUTATION_LOCK_HELD"
+ENV_MUTATION_FD = "PLAYTHROUGH_MUTATION_LOCK_FD"
+
+RUNTIME_DIR_NAME = "playthrough"
+LOCK_DIR_NAME = "lock"
+MUTATION_LOCK_BASENAME = "mutation"
+MUTATION_SHARED = "shared"
+MUTATION_EXCLUSIVE = "exclusive"
+
+# Generous, because the other role legitimately holds it for minutes: a
+# render, a long checkpoint, a gate reading every frame.  An unbounded
+# wait would be a hang nobody could diagnose.
+MUTATION_LOCK_TIMEOUT = 900.0
+MUTATION_LOCK_POLL = 0.1
+
+
+def _verified_runtime_dir(path, label):
+    """Create `path` mode 0700 and refuse a link or a foreign owner.
+
+    The same rule env.sh's playthrough_secure_dir applies: a directory
+    another account can write to is a directory another account can plant
+    a lock in, and a lock somebody else can plant is not a lock.
+    """
+    try:
+        os.makedirs(path, mode=0o700, exist_ok=True)
+    except OSError as err:
+        raise ManifestError(
+            "cannot create %s at %s: %s" % (label, path, err)) from err
+    try:
+        info = os.lstat(path)
+    except OSError as err:
+        raise ManifestError(
+            "cannot inspect %s at %s: %s" % (label, path, err)) from err
+    if stat.S_ISLNK(info.st_mode):
+        raise ManifestError(
+            "%s at %s is a symbolic link; refused, because a link there "
+            "redirects whatever is written through it" % (label, path))
+    if not stat.S_ISDIR(info.st_mode):
+        raise ManifestError(
+            "%s at %s is not a directory" % (label, path))
+    if info.st_uid != os.getuid():
+        raise ManifestError(
+            "%s at %s is owned by uid %d, not by uid %d"
+            % (label, path, info.st_uid, os.getuid()))
+    if info.st_mode & 0o022:
+        try:
+            os.chmod(path, info.st_mode & ~0o022)
+        except OSError as err:
+            raise ManifestError(
+                "%s at %s is mode %04o, so another account can write "
+                "into it, and it could not be tightened: %s"
+                % (label, path, info.st_mode & 0o7777, err)) from err
+    return path
+
+
+def mutation_lock_dir():
+    """Return the verified directory this checkout's locks live in."""
+    nominated = os.environ.get(ENV_LOCK_DIR, "").strip()
+    if nominated:
+        return _verified_runtime_dir(nominated, "the pipeline lock "
+                                                "directory")
+    runtime = os.environ.get(ENV_RUNTIME_DIR, "").strip()
+    if not runtime:
+        xdg = os.environ.get(ENV_XDG_RUNTIME_DIR, "").strip()
+        if xdg:
+            runtime = os.path.join(xdg, RUNTIME_DIR_NAME)
+        else:
+            runtime = os.path.join(
+                "/tmp", "%s-%d" % (RUNTIME_DIR_NAME, os.getuid()))
+    _verified_runtime_dir(runtime, "the pipeline runtime directory")
+    return _verified_runtime_dir(
+        os.path.join(runtime, LOCK_DIR_NAME),
+        "the pipeline lock directory")
+
+
+def mutation_lock_path(root=None):
+    """Return this checkout's mutation lock file."""
+    checkout = os.path.dirname(approved_root(root))
+    digest = hashlib.sha256(
+        checkout.encode("utf-8")).hexdigest()[:8]
+    return os.path.join(
+        mutation_lock_dir(),
+        "%s-%s.lock" % (MUTATION_LOCK_BASENAME, digest))
+
+
+def _mutation_mode(mode):
+    """Return `mode` as one of the two words, or refuse it."""
+    if mode not in (MUTATION_SHARED, MUTATION_EXCLUSIVE):
+        raise ManifestError(
+            "%r is not a mutation lock mode; producers take it %r and "
+            "the verifier and the committer take it %r"
+            % (mode, MUTATION_SHARED, MUTATION_EXCLUSIVE))
+    return mode
+
+
+def _mutation_satisfies(want, have):
+    """True when a hold in mode `have` covers a request for `want`.
+
+    Exclusive covers both; shared covers only shared.  The asymmetry is
+    the point: a stage that needs the tree to itself must not proceed on
+    a shared hold, because a producer may be writing beside it.
+    """
+    if have == MUTATION_EXCLUSIVE:
+        return True
+    return want == MUTATION_SHARED
+
+
+def mutation_lock_inherited(mode, root=None):
+    """Return True when a verified ancestor already holds this lock.
+
+    False means nothing claims to.  A claim that does not hold up is a
+    ManifestError rather than a False: a caller who set the marker by
+    hand is either mistaken about what is running or trying to make a
+    stage skip its lock, and a stage that quietly acquired one instead
+    would release it out from under whoever really held it.
+
+    The claim is PROVED, not believed: the descriptor named must still be
+    open in this process and must resolve to this checkout's lock file,
+    and the kernel must agree that something holds it.  An inherited
+    descriptor is the only evidence a child can have.
+    """
+    want = _mutation_mode(mode)
+    have = os.environ.get(ENV_MUTATION_HELD, "").strip()
+    if not have:
+        return False
+    if have not in (MUTATION_SHARED, MUTATION_EXCLUSIVE):
+        raise ManifestError(
+            "%s is %r, which is not a lock mode.  It is set by the "
+            "stage that takes the mutation lock and read by every stage "
+            "that stage starts; a value nothing produced means the "
+            "environment was edited, so this stage refuses rather than "
+            "deciding for itself whether the tree is quiescent"
+            % (ENV_MUTATION_HELD, have))
+    if not _mutation_satisfies(want, have):
+        raise ManifestError(
+            "this stage needs the mutation lock %sly and an ancestor "
+            "holds it %sly.  A shared hold does not make the tree "
+            "quiescent -- another producer may be writing under it right "
+            "now -- and upgrading in place deadlocks when two holders "
+            "upgrade at once" % (want, have))
+    raw = os.environ.get(ENV_MUTATION_FD, "").strip()
+    if not raw.isdigit():
+        raise ManifestError(
+            "an ancestor claims to hold the mutation lock %sly but %s "
+            "is %r, so there is no descriptor to check the claim against"
+            % (have, ENV_MUTATION_FD, raw))
+    path = mutation_lock_path(root)
+    try:
+        link = os.readlink("/proc/self/fd/%s" % raw)
+    except OSError:
+        link = ""
+    if link != path:
+        raise ManifestError(
+            "an ancestor claims to hold the mutation lock on descriptor "
+            "%s, but that descriptor is %s rather than %s.  An "
+            "inherited descriptor is the only evidence a child has that "
+            "its parent holds the lock, and this one is not it"
+            % (raw, link or "not open", path))
+    if not _mutation_is_held(path):
+        raise ManifestError(
+            "an ancestor claims to hold the mutation lock at %s, but "
+            "the kernel says nothing holds it.  The claim is stale or "
+            "false; either way this stage will not proceed as though "
+            "the tree were quiescent" % path)
+    return True
+
+
+def _mutation_is_held(path):
+    """True when some process holds `path`, asked on a fresh handle."""
+    try:
+        descriptor = os.open(
+            path,
+            os.O_RDWR | os.O_CREAT | os.O_CLOEXEC,
+            0o600)
+    except OSError:
+        return False
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return True
+    else:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        return False
+    finally:
+        os.close(descriptor)
+
+
+class MutationLock:
+    """This checkout's quiescence, taken as a context manager.
+
+    Producers take it :data:`MUTATION_SHARED`; the shell's gate and
+    committer take it exclusively.  A stage whose ancestor already holds
+    one strong enough does nothing at all -- see
+    :func:`mutation_lock_inherited` for why re-acquiring would deadlock
+    against its own parent, and why the inherited claim is proved rather
+    than trusted.
+    """
+
+    def __init__(self, mode=MUTATION_SHARED, root=None,
+                 timeout=MUTATION_LOCK_TIMEOUT):
+        self.mode = _mutation_mode(mode)
+        self.timeout = float(timeout)
+        self._root = root
+        self._path = None
+        self._descriptor = None
+        self._inherited = False
+
+    @property
+    def path(self):
+        """The lock file, once resolved."""
+        return self._path
+
+    @property
+    def inherited(self):
+        """True when an ancestor's hold was proved and reused."""
+        return self._inherited
+
+    @property
+    def held(self):
+        """True while this object is inside its critical section."""
+        return self._descriptor is not None or self._inherited
+
+    def acquire(self):
+        """Take the lock, or prove an ancestor already holds one."""
+        if self.held:
+            return self
+        if mutation_lock_inherited(self.mode, self._root):
+            self._inherited = True
+            self._path = mutation_lock_path(self._root)
+            return self
+        self._path = mutation_lock_path(self._root)
+        try:
+            descriptor = os.open(
+                self._path,
+                os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC,
+                0o600)
+        except OSError as err:
+            raise ManifestError(
+                "cannot open the mutation lock %s: %s"
+                % (self._path, err)) from err
+        operation = (fcntl.LOCK_SH if self.mode == MUTATION_SHARED
+                     else fcntl.LOCK_EX)
+        deadline = time.monotonic() + self.timeout
+        while True:
+            try:
+                fcntl.flock(descriptor, operation | fcntl.LOCK_NB)
+                self._descriptor = descriptor
+                return self
+            except OSError as err:
+                if err.errno not in (errno.EACCES, errno.EAGAIN):
+                    os.close(descriptor)
+                    raise ManifestError(
+                        "could not lock %s: %s"
+                        % (self._path, err)) from err
+            if time.monotonic() >= deadline:
+                os.close(descriptor)
+                raise ManifestError(
+                    "another stage has held this checkout's mutation "
+                    "lock %s against a %s acquisition for more than "
+                    "%.0fs.  Producers hold it shared and the gate and "
+                    "the checkpoint hold it exclusive, so this is a "
+                    "stage of the other kind still running over the "
+                    "same working tree -- wait for it rather than "
+                    "working beside it"
+                    % (self._path, self.mode, self.timeout))
+            time.sleep(MUTATION_LOCK_POLL)
+
+    def release(self):
+        """Drop the lock, if this object took it.  Idempotent.
+
+        A hold that was INHERITED is not released here: releasing a lock
+        this process did not take would leave the ancestor believing it
+        still had the tree to itself, which is worse than never having
+        locked at all.
+        """
+        self._inherited = False
+        descriptor, self._descriptor = self._descriptor, None
+        if descriptor is None:
+            return
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        finally:
+            os.close(descriptor)
+
+    def __enter__(self):
+        return self.acquire()
+
+    def __exit__(self, kind, value, trace):
+        self.release()
+        return False
 
 
 def _within(path, root):
@@ -3624,6 +3949,738 @@ def verify_frame_digests(rows, digests=None, frames_dir=None,
             "the digest ledger attests frame %d, which the record does "
             "not carry" % index)
     return problems
+
+
+# ---------------------------------------------------------------------
+# THE EVIDENCE ANCHOR: A HASH CHAIN, AND A NAME GIT CAN RE-DERIVE
+#
+# Everything above this line is SELF-ATTESTATION.  The record says what
+# was pressed, the digest ledger says what each frame hashed to, the
+# amendment ledger says what was corrected -- and every one of those
+# files sits in the same directory as the evidence it vouches for, under
+# the same permissions, writable by whatever wrote them.  A review put
+# it exactly: "every attestation is mutable with its evidence".  Edit a
+# frame and its digest row together and nothing above notices; edit the
+# record and recompute the timeline and every arithmetic check still
+# passes.  Same-domain attestation cannot answer "was this changed after
+# the fact", because the answer would have to come from the thing being
+# asked about.
+#
+# So this section adds a SECOND, INDEPENDENT domain, and it does it
+# without inventing a trust root of its own:
+#
+#   1. A HASH CHAIN.  Each row seals one artifact and carries the
+#      previous row's chain hash, so the rows are ordered by
+#      construction and no row can be removed, reordered or altered
+#      without breaking every chain value after it.  Appending a
+#      plausible row is not enough either: the head has to match what
+#      the history says it was.
+#
+#   2. THE GIT BLOB NAME, BESIDE THE SHA256.  Git is content-addressed:
+#      the name of a blob IS a hash of its bytes, computed by a program
+#      nobody here wrote, and `git hash-object <path>` re-derives it on
+#      any host.  Recording it turns "trust this ledger's sha256" into
+#      "compare these bytes against git's own name for them".  It is
+#      computed in pure Python here -- sha1 over `blob <len>\0<bytes>`,
+#      git's documented object format -- so sealing needs no subprocess
+#      and works before anything has been added to the index.  Verified
+#      against `git hash-object` on this checkout's own record, timeline,
+#      acknowledgment ledger and film: identical on all four.
+#
+#   3. THE CHAIN HEAD IN A COMMIT MESSAGE.  commit_artifacts.sh writes
+#      the head as a `Playthrough-Evidence-Anchor:` trailer at each
+#      checkpoint.  A commit object's name is a hash of its own content,
+#      so the trailer cannot be edited without rewriting history and
+#      changing every commit id after it.  THAT is what makes the anchor
+#      independent: an attacker who rewrites an artifact must also
+#      rewrite this ledger, and then also rewrite published history.
+#
+# WHY SEALING THE DIGEST LEDGER SEALS ALL 307 FRAMES.  The frames are
+# not sealed one by one -- build/frame_digests.jsonl already holds a
+# sha256 per frame, and that file is sealed here.  So a substituted
+# frame breaks its digest row, and repairing the digest row breaks the
+# ledger's own seal, and repairing the seal breaks the chain and the
+# committed trailer.  One row covers the whole capture set, transitively,
+# which is why the set below is small enough to read.
+#
+# THE sha1 HERE IS A NAME, NOT A SECURITY CLAIM, and it is spelled with
+# `usedforsecurity=False` so that intent is in the code rather than in a
+# comment somebody has to find.  The integrity claim in every row is the
+# sha256 beside it; the blob name exists so a reader can put a second,
+# independently written implementation of hashing against the same bytes.
+# ---------------------------------------------------------------------
+ANCHOR_REL_PARTS = ("build", "evidence_anchor.jsonl")
+
+ANCHOR_VERSION = 1
+
+ANCHOR_FIELDS = (
+    "version",
+    # The row's position in the chain, 1-based and contiguous.  A gap is
+    # a removed row, which the chain would also reveal -- both are
+    # checked, because a reader is better served by "row 4 is missing"
+    # than by "the chain broke somewhere".
+    "seq",
+    "sealed_at",
+    # Which act sealed it: a checkpoint name, or "remediation" for a row
+    # added while repairing the evidence rather than while producing it.
+    # Bounded and lowercase so it can be written into a commit trailer
+    # and a report without escaping.
+    "sealed_by",
+    # The artifact, spelled relative to the approved tree -- so
+    # "build/frame_digests.jsonl", not an absolute path and not a
+    # repository-relative one.
+    #
+    # RELATIVE TO THE TREE RATHER THAN TO THE REPOSITORY, and that is a
+    # correction rather than a preference.  The first version of this
+    # used relative_to_repo(), which resolves against the REAL
+    # repository root: sealing a copy of the evidence under a temporary
+    # root therefore stored every row as
+    # "<outside the checkout>/frame_digests.jsonl" -- the directory
+    # component gone, so build/x and a top-level x would collide, and
+    # the path no longer resolvable, so verification reported fifteen
+    # spurious "not under the approved tree" findings.  Measured, not
+    # hypothetical.  Approved-root-relative is correct in production AND
+    # under a relocated root, which means a test exercises the same code
+    # path a session does, and it discloses no host location at all.
+    "path",
+    "sha256",
+    "bytes",
+    # Git's own name for these exact bytes; `git hash-object <path>`
+    # prints it.
+    "git_blob",
+    # The previous row's `chain`, or "" for the first row.
+    "prev_chain",
+    # sha256 over prev_chain, a newline, and this row's other fields in
+    # the order above, serialised compactly.  See anchor_chain_hash.
+    "chain",
+)
+
+# The evidence this anchor seals, in a fixed order so that two runs over
+# an unchanged tree produce the same chain.  Repository-relative parts
+# rather than absolute paths, so the set is meaningful in any checkout.
+#
+# IT IS THE EVIDENCE SET, NOT EVERY FILE.  The captures are covered
+# transitively through the digest ledger (see above); the tooling is
+# covered by git itself, because it is tracked source that a reviewer
+# reads as a diff.  What is here is what a session ASSERTS: what was
+# pressed, when, what it hashed to, what was corrected, what was
+# acknowledged, what the pacing was computed to be, and what was
+# published as the film and the transcripts.
+ANCHOR_SEALED = (
+    ("manifest.jsonl",),
+    ("amendments.jsonl",),
+    ("timeline.json",),
+    ("build", "frame_digests.jsonl"),
+    ("build", "observations.jsonl"),
+    ("build", "frame_dates.jsonl"),
+    ("build", "acknowledgments.jsonl"),
+    ("build", "concat.txt"),
+    ("build", "transitions.json"),
+    ("build", "movie.json"),
+    ("transcript.srt",),
+    ("transcript.md",),
+    ("cata-play.mp4",),
+    ("cata-play-cc.mp4",),
+    ("dossier.md",),
+)
+
+# Who may be recorded as having sealed a row.  A bounded lowercase token,
+# because it is written into a commit trailer and quoted in reports.
+ANCHOR_SEALED_BY_RE = re.compile(r"\A[a-z][a-z0-9-]{0,31}\Z")
+
+# The label for a row appended while repairing evidence rather than while
+# producing it.  Named here so the one honest use of it is spelled the
+# same everywhere.
+ANCHOR_REMEDIATION = "remediation"
+
+
+def git_blob_name(path, label="artifact"):
+    """Return git's own object name for a file's exact bytes.
+
+    Git names a blob by hashing `blob <byte count>\\0` followed by the
+    content, so this is `git hash-object <path>` computed here -- no
+    subprocess, and correct before the file has been added to anything.
+
+    The digest is sha1 because that is the object format git uses; it is
+    a NAME and not a security claim, which is what
+    `usedforsecurity=False` records, and every row carries a sha256 of
+    the same bytes beside it.
+    """
+    resolved = _validated_path(path, "%s path" % label)
+    digest = hashlib.sha1(usedforsecurity=False)
+    try:
+        size = os.path.getsize(resolved)
+    except OSError as err:
+        raise ManifestError(
+            "could not measure %s to name it as git would: %s"
+            % (resolved, err)) from err
+    digest.update(b"blob %d\0" % size)
+    descriptor = _open_nofollow(resolved, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        with os.fdopen(descriptor, "rb") as handle:
+            descriptor = None
+            read = 0
+            while True:
+                block = handle.read(DIGEST_BLOCK)
+                if not block:
+                    break
+                read += len(block)
+                digest.update(block)
+    except OSError as err:
+        raise ManifestError(
+            "could not read %s to name it as git would: %s"
+            % (resolved, err)) from err
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+    if read != size:
+        # THE HEADER COMMITS TO A LENGTH, so a file that changed size
+        # while it was being read would produce a name for bytes that
+        # never existed together.  Refused rather than published.
+        raise ManifestError(
+            "%s was %d byte(s) when it was measured and %d when it was "
+            "read, so no single set of bytes can be named: seal it "
+            "again once whatever is writing to it has finished"
+            % (resolved, size, read))
+    return digest.hexdigest()
+
+
+def anchor_chain_hash(prev_chain, row):
+    """Return the chain hash for `row` following `prev_chain`.
+
+    Pure, and deliberately simple enough to reimplement: sha256 over the
+    previous chain value, a newline, and this row's fields -- every field
+    of ANCHOR_FIELDS except `chain` itself, in that order, serialised
+    with no incidental whitespace.  A reader who distrusts this module
+    can recompute it from the published rows in any language.
+    """
+    if not isinstance(prev_chain, str):
+        raise ManifestError(
+            "the previous chain value is text or empty, got %r"
+            % (prev_chain,))
+    ordered = {}
+    for name in ANCHOR_FIELDS:
+        if name == "chain":
+            continue
+        if name not in row:
+            raise ManifestError(
+                "an anchor row cannot be chained without its %r field"
+                % name)
+        ordered[name] = row[name]
+    payload = json.dumps(ordered, ensure_ascii=False,
+                         separators=(",", ":"))
+    return hashlib.sha256(
+        ("%s\n%s" % (prev_chain, payload)).encode("utf-8")).hexdigest()
+
+
+def _validated_seq(value):
+    """Return a 1-based chain position, or raise."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ManifestError(
+            "an anchor row's position in the chain is an integer, got "
+            "%r" % (value,))
+    if value < 1:
+        raise ManifestError(
+            "an anchor row's position in the chain starts at 1, got %d"
+            % value)
+    return value
+
+
+def _validated_sealed_by(value):
+    """Return the sealing act's name, or raise."""
+    if not isinstance(value, str) or not ANCHOR_SEALED_BY_RE.match(
+            value):
+        raise ManifestError(
+            "an anchor row records WHICH act sealed it as a short "
+            "lowercase token (%s), got %r.  It is written into a commit "
+            "trailer, so anything else could reshape the message it "
+            "lands in" % (ANCHOR_SEALED_BY_RE.pattern, value))
+    return value
+
+
+def _validated_sealed_path(value):
+    """Return an approved-root-relative artifact path, or raise.
+
+    A pure SHAPE check, because build_anchor_row is pure: relative, no
+    parent traversal, no empty component, and printable.  Resolving a
+    real path to this spelling is seal_artifacts' job, where the root is
+    known.
+    """
+    if not isinstance(value, str) or not value:
+        raise ManifestError(
+            "a sealed artifact's path is a non-empty string, got %r"
+            % (value,))
+    if value.startswith("/") or value.startswith("\\"):
+        raise ManifestError(
+            "a sealed artifact's path is relative to the approved tree, "
+            "so it may not begin at the filesystem root: %r" % value)
+    parts = value.split("/")
+    for part in parts:
+        if not part or part in (".", ".."):
+            raise ManifestError(
+                "a sealed artifact's path may not contain an empty or "
+                "traversing component: %r" % value)
+    if any(character < " " or character == "\x7f" for character in
+           value):
+        raise ManifestError(
+            "a sealed artifact's path carries a control character, "
+            "which cannot appear in an artifact of this pipeline: %r"
+            % value)
+    return value
+
+
+def _validated_sealed_bytes(value, label):
+    """Return a positive byte count, or raise.
+
+    Zero is refused as well as negative: a sealed artifact of no bytes is
+    a file that was truncated between being produced and being sealed,
+    and sealing it would publish that state as though it were evidence.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ManifestError(
+            "%s is %r, not an integer" % (label, value))
+    if value <= 0:
+        raise ManifestError(
+            "%s is %d; a sealed artifact is not empty" % (label, value))
+    return value
+
+
+def _validated_chain_value(value, label, allow_empty=False):
+    """Return a sha256 chain value, or raise."""
+    if allow_empty and value == "":
+        return ""
+    if not isinstance(value, str) or not SHA256_RE.match(value):
+        raise ManifestError(
+            "%s is a 64-character sha256 in lower-case hex%s, got %r"
+            % (label, " or empty" if allow_empty else "", value))
+    return value
+
+
+def build_anchor_row(seq, sealed_by, path, sha256, byte_count, git_blob,
+                     prev_chain, sealed_at=None):
+    """Build one sealed-artifact row, chain value included.  Pure.
+
+    `path` is stored repository-relative so the row means the same thing
+    in every checkout; everything else is validated exactly as the
+    digest ledger's fields are, because a seal that accepted a malformed
+    digest would be a seal over nothing.
+    """
+    row = {
+        "version": ANCHOR_VERSION,
+        "seq": _validated_seq(seq),
+        "sealed_at": canonical_real_ts(
+            sealed_at if sealed_at else utc_timestamp()),
+        "sealed_by": _validated_sealed_by(sealed_by),
+        "path": _validated_sealed_path(path),
+        "sha256": _validated_digest(sha256, "a sealed artifact's "
+                                            "sha256"),
+        "bytes": _validated_sealed_bytes(
+            byte_count, "a sealed artifact's byte count"),
+        "git_blob": _validated_git_object(
+            git_blob, "a sealed artifact's git blob name"),
+        "prev_chain": _validated_chain_value(
+            prev_chain, "the previous chain value", allow_empty=True),
+    }
+    if row["git_blob"] is None:
+        raise ManifestError(
+            "a sealed artifact must carry git's own name for its bytes: "
+            "it is the independently computed half of the claim, and a "
+            "row without it asks a reader to trust this module's sha256 "
+            "alone")
+    row["chain"] = anchor_chain_hash(row["prev_chain"], row)
+    return row
+
+
+def encode_anchor_row(row):
+    """Return one anchor row as the exact line to be written."""
+    ordered = {name: row[name] for name in ANCHOR_FIELDS}
+    return json.dumps(ordered, ensure_ascii=False) + "\n"
+
+
+def default_anchor_path():
+    """Return the evidence anchor ledger's path.
+
+    Honours PLAYTHROUGH_EVIDENCE_ANCHOR for the same reason the other
+    defaults honour their exports; the value is then held to the same
+    containment rules.
+    """
+    from_env = os.environ.get("PLAYTHROUGH_EVIDENCE_ANCHOR")
+    if from_env and from_env.strip():
+        return os.path.abspath(from_env)
+    return os.path.join(_playthrough_dir(), *ANCHOR_REL_PARTS)
+
+
+def _anchor_default(root=None):
+    """Return the anchor's default path, honouring a relocated root.
+
+    The sibling ledgers derive their default from this module's own
+    location and leave a relocated caller to pass the path explicitly.
+    That is a trap worth closing here rather than repeating: this
+    ledger's three entry points all take `root`, and a default that
+    ignored it would resolve to the REAL tree while the rest of the call
+    worked in a temporary one -- so a test, or a caller sealing a copy,
+    would append rows about somebody else's evidence into the live
+    ledger and be refused only by the containment check.
+    """
+    if root is not None:
+        return os.path.join(approved_root(root), *ANCHOR_REL_PARTS)
+    return default_anchor_path()
+
+
+def _validated_anchor_target(value, root=None):
+    """Return an absolute anchor path this module may touch.
+
+    The same four conditions the other ledgers are held to: contained in
+    the approved root, no symlinked component, EXACTLY
+    <approved root>/build/evidence_anchor.jsonl, and a regular file.
+    """
+    resolved = _validated_path(value, "evidence anchor path")
+    approved = _assert_within_root(
+        resolved, "the evidence anchor path", root)
+    _assert_no_symlink(resolved, approved, "the evidence anchor path")
+    canonical = os.path.join(approved, *ANCHOR_REL_PARTS)
+    if os.path.realpath(resolved) != canonical:
+        raise ManifestError(
+            "the evidence anchor is %s and nothing else, but %s was "
+            "given.  Appending seal rows onto another artifact would "
+            "corrupt it and would report success."
+            % (canonical, resolved))
+    if os.path.exists(resolved) and not os.path.isfile(resolved):
+        raise ManifestError(
+            "the evidence anchor path is not a regular file: %s"
+            % resolved)
+    return resolved
+
+
+def read_anchor_rows(anchor_path=None, root=None):
+    """Return the anchor's rows, in the order they were written.
+
+    An absent ledger yields an empty tuple: a tree sealed before this
+    ledger existed legitimately has none, and the CONSUMERS decide
+    whether that is acceptable -- the gate treats an unsealed tree as a
+    failure, which is where that judgement belongs.
+    """
+    path = _validated_anchor_target(
+        _anchor_default(root) if anchor_path is None else anchor_path,
+        root)
+    if not os.path.isfile(path):
+        return ()
+    rows = []
+    descriptor = _open_nofollow(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        with os.fdopen(descriptor, "r", encoding="utf-8",
+                       newline="") as handle:
+            descriptor = None
+            for number, raw in enumerate(handle, start=1):
+                if not raw.strip():
+                    continue
+                rows.append(_decode_line(raw, number, path))
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+    return tuple(rows)
+
+
+def anchor_head(rows):
+    """Return the chain head of `rows`, or "" for an empty chain.
+
+    The head is what a commit trailer publishes and what the gate
+    compares against, so it has exactly one definition and this is it.
+    """
+    if not rows:
+        return ""
+    last = rows[-1]
+    value = last.get("chain") if isinstance(last, dict) else None
+    return value if isinstance(value, str) else ""
+
+
+def anchor_chain_problems(rows):
+    """Return every way `rows` fails to be a well formed chain.
+
+    Structure, numbering, linkage and each row's own recomputed chain
+    value.  It says nothing about the artifacts -- verify_anchor does
+    that -- so a broken chain and a mutated artifact are two different
+    findings with two different remedies.
+    """
+    problems = []
+    previous = ""
+    for position, row in enumerate(rows, start=1):
+        if not isinstance(row, dict):
+            problems.append(
+                "anchor row %d is a %s, not an object"
+                % (position, type(row).__name__))
+            previous = ""
+            continue
+        missing = [name for name in ANCHOR_FIELDS if name not in row]
+        if missing:
+            problems.append(
+                "anchor row %d is missing %s"
+                % (position, ", ".join(missing)))
+            previous = ""
+            continue
+        extra = sorted(set(row) - set(ANCHOR_FIELDS))
+        if extra:
+            problems.append(
+                "anchor row %d carries %s, which the schema does not "
+                "declare" % (position, ", ".join(extra)))
+        if row["seq"] != position:
+            problems.append(
+                "anchor row %d records seq=%r, so a row has been "
+                "removed, reordered or inserted"
+                % (position, row["seq"]))
+        if row["prev_chain"] != previous:
+            problems.append(
+                "anchor row %d follows %r but the row before it ends "
+                "%r, so the chain is broken here"
+                % (position, _short(row["prev_chain"]),
+                   _short(previous)))
+        try:
+            expected = anchor_chain_hash(row["prev_chain"], row)
+        except ManifestError as err:
+            problems.append(
+                "anchor row %d cannot be re-chained: %s"
+                % (position, err))
+            previous = ""
+            continue
+        if row["chain"] != expected:
+            problems.append(
+                "anchor row %d declares chain %r but its own fields "
+                "hash to %r, so the row was altered after it was sealed"
+                % (position, _short(row["chain"]), _short(expected)))
+        previous = row["chain"]
+    return problems
+
+
+def _short(value):
+    """Return a chain value abbreviated for a diagnostic."""
+    if not isinstance(value, str) or not value:
+        return "<empty>"
+    return value[:16]
+
+
+def _tree_relative(path, base):
+    """Return `path` spelled relative to the approved tree `base`.
+
+    Forward slashes, and a refusal rather than a traversal for anything
+    outside the tree: the anchor's `path` column is meaningful only as a
+    location inside the evidence tree, and "../.." would be neither
+    meaningful nor safe to resolve later.
+    """
+    resolved = os.path.normpath(os.path.abspath(path))
+    root = os.path.normpath(base)
+    if resolved == root or not resolved.startswith(root + os.sep):
+        raise ManifestError(
+            "%s is not inside the evidence tree %s, so it cannot be "
+            "sealed by an anchor whose paths are relative to that tree"
+            % (resolved, root))
+    return resolved[len(root) + 1:].replace(os.sep, "/")
+
+
+def sealed_artifact_paths(root=None):
+    """Return the absolute path of every artifact the anchor seals.
+
+    In ANCHOR_SEALED's order, whether or not each exists: the caller
+    decides what an absent artifact means, and the gate is where that
+    judgement lives.
+    """
+    base = approved_root(root)
+    return tuple(os.path.join(base, *parts) for parts in ANCHOR_SEALED)
+
+
+def seal_artifacts(sealed_by, paths=None, anchor_path=None,
+                   require_durable=True, root=None):
+    """Append one chained row per artifact and return (rows, absent).
+
+    The rows are appended in `paths` order, each chained onto the last,
+    so a second seal of an unchanged tree extends the chain rather than
+    replacing it -- this ledger is append-only for the same reason every
+    other one here is: a seal that can be rewritten seals nothing.
+
+    An artifact that does not exist is NOT sealed and NOT invented; its
+    path comes back in `absent` for the caller to report.
+    """
+    target = _validated_anchor_target(
+        _anchor_default(root) if anchor_path is None else anchor_path,
+        root)
+    parent = os.path.dirname(target)
+    if not os.path.isdir(parent):
+        raise ManifestError(
+            "the directory for the evidence anchor does not exist: %s"
+            % parent)
+    base = approved_root(root)
+    candidates = (sealed_artifact_paths(root) if paths is None
+                  else tuple(paths))
+    existing = read_anchor_rows(target, root)
+    problems = anchor_chain_problems(existing)
+    if problems:
+        raise ManifestError(
+            "the evidence anchor already on disk is not a sound chain, "
+            "so nothing was added to it: %s" % problems[0])
+    chain = anchor_head(existing)
+    seq = len(existing)
+    written = []
+    absent = []
+    for candidate in candidates:
+        relative = _tree_relative(candidate, base)
+        if not os.path.isfile(candidate):
+            absent.append(relative)
+            continue
+        seq += 1
+        row = build_anchor_row(
+            seq, sealed_by, relative,
+            file_digest(candidate, "sealed artifact"),
+            os.path.getsize(candidate),
+            git_blob_name(candidate, "sealed artifact"), chain)
+        _append_anchor_row(target, row, require_durable)
+        chain = row["chain"]
+        written.append(row)
+    return (tuple(written), tuple(absent))
+
+
+def _append_anchor_row(path, row, require_durable=True):
+    """Append one validated anchor row under the module's discipline.
+
+    O_NOFOLLOW, a mandatory exclusive flock, the end-of-file
+    measurement, one whole-line write with rollback, and an fsync before
+    the row is reported as stored -- the same machinery the record and
+    the digest ledger use, for the same reason.
+    """
+    payload = encode_anchor_row(row).encode("utf-8")
+    descriptor = _open_nofollow(
+        path, os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW)
+    try:
+        _lock_exclusively(descriptor, path)
+        try:
+            committed = os.lseek(descriptor, 0, os.SEEK_END)
+        except OSError as err:
+            raise ManifestError(
+                "could not measure the end of the evidence anchor %s "
+                "(%s), so the seal of %s was not written"
+                % (path, err, row["path"])) from err
+        _assert_row_boundary(descriptor, committed, path, row["seq"])
+        _append_whole_row(descriptor, payload, committed, path,
+                          row["seq"])
+        _fsync(descriptor, path, row["seq"], require_durable)
+    finally:
+        try:
+            os.close(descriptor)
+        except OSError as err:
+            _warn_once(
+                "anchor-close",
+                "could not close the evidence anchor %s after appending "
+                "(%s); the row itself was written and forced to the "
+                "device before this point" % (path, err))
+    return row
+
+
+def verify_anchor(anchor_path=None, root=None, require_all=True):
+    """Hold every sealed artifact to the seal, and return the problems.
+
+    Three questions, kept apart so a failure names its own cause:
+      * is the chain itself sound (anchor_chain_problems);
+      * does each sealed artifact STILL hash to what its newest row
+        says, both as sha256 and as git's own blob name;
+      * is every artifact in ANCHOR_SEALED that exists on disk actually
+        sealed, so a file cannot escape the anchor by being left out of
+        it.
+
+    The NEWEST row for a path is the one that binds, because the ledger
+    is append-only: a later seal of a legitimately regenerated artifact
+    is recorded by appending, and the earlier row stays as history.
+    """
+    rows = read_anchor_rows(anchor_path, root)
+    problems = list(anchor_chain_problems(rows))
+    if not rows:
+        return (["the evidence anchor is empty or absent, so nothing "
+                 "vouches for the evidence from outside itself"]
+                if require_all else [])
+    newest = {}
+    for row in rows:
+        if isinstance(row, dict) and isinstance(row.get("path"), str):
+            newest[row["path"]] = row
+    base = approved_root(root)
+    for relative, row in sorted(newest.items()):
+        # The row stores a path relative to the approved tree, so it
+        # is resolved against that tree and then held to it -- a row
+        # naming something outside is a finding, not something to read.
+        try:
+            _validated_sealed_path(relative)
+        except ManifestError as err:
+            problems.append(
+                "anchor row %s names %r, which is not a path inside "
+                "the approved tree: %s"
+                % (row.get("seq"), relative, err))
+            continue
+        absolute = os.path.normpath(
+            os.path.join(base, *relative.split("/")))
+        if absolute != base and not absolute.startswith(base + os.sep):
+            problems.append(
+                "the anchor seals %r, which is not under the approved "
+                "tree" % relative)
+            continue
+        if not os.path.isfile(absolute):
+            problems.append(
+                "%s is sealed by anchor row %s and is not on disk"
+                % (relative, row.get("seq")))
+            continue
+        size = os.path.getsize(absolute)
+        actual = file_digest(absolute, "sealed artifact")
+        if actual != row.get("sha256"):
+            problems.append(
+                "%s hashes to %s and the anchor sealed %s, so it "
+                "changed after it was sealed"
+                % (relative, _short(actual),
+                   _short(row.get("sha256"))))
+            continue
+        if size != row.get("bytes"):
+            problems.append(
+                "%s is %d byte(s) and the anchor sealed %r"
+                % (relative, size, row.get("bytes")))
+            continue
+        blob = git_blob_name(absolute, "sealed artifact")
+        if blob != row.get("git_blob"):
+            problems.append(
+                "%s is git object %s and the anchor sealed %s -- the "
+                "sha256 matched, so this is the independent half of the "
+                "claim disagreeing"
+                % (relative, _short(blob),
+                   _short(row.get("git_blob"))))
+    if require_all:
+        for relative in unsealed_artifacts(anchor_path, root, rows):
+            problems.append(
+                "%s exists and no anchor row seals it, so it is "
+                "outside the chain" % relative)
+    return problems
+
+
+def unsealed_artifacts(anchor_path=None, root=None, rows=None):
+    """Return the artifacts that exist on disk and carry no seal.
+
+    Coverage, reported apart from drift, because the two answer to
+    different phases.  Drift -- a sealed artifact whose bytes no longer
+    match its seal -- is always a finding.  Coverage is a question about
+    ORDER: the committer seals at each checkpoint, so an artifact
+    produced after the last checkpoint is legitimately unsealed until
+    the next one, and a caller measuring a tree mid-pipeline needs to
+    say so without calling it a failure.
+
+    `rows` is accepted so a caller that has already read the ledger does
+    not read it twice.
+    """
+    if rows is None:
+        rows = read_anchor_rows(anchor_path, root)
+    sealed = {row["path"] for row in rows
+              if isinstance(row, dict) and isinstance(row.get("path"),
+                                                      str)}
+    base = approved_root(root)
+    pending = []
+    for absolute in sealed_artifact_paths(root):
+        if not os.path.isfile(absolute):
+            continue
+        relative = _tree_relative(absolute, base)
+        if relative not in sealed:
+            pending.append(relative)
+    return tuple(pending)
 
 
 def _decode_line(raw, number, path):

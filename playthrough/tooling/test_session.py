@@ -63,6 +63,7 @@ artifacts were untouched.  Standard library only.
 
 import argparse
 import dataclasses
+import fcntl
 import hashlib
 import inspect
 import io
@@ -4971,6 +4972,716 @@ def _fingerprint(path):
     if stat.S_ISDIR(info.st_mode):
         return len(os.listdir(path))
     return info.st_size
+
+
+class TestTheAcknowledgmentLedgerIsReconciled(unittest.TestCase):
+    """A second reading of one frame must name the one it replaces.
+
+    A review found the ledger of the delivered session carrying TWO
+    acknowledgments of frame 298 -- the second explicitly a correction of
+    the first -- with nothing in either row saying so, and the reader
+    collapsing the pair into a dictionary keyed by frame index, which
+    silently kept whichever line came last.  The relationship between two
+    readings of one frame was real, was recorded in prose inside the
+    `observed` text, and was invisible to every machine that read the
+    file.
+
+    The fix cannot be to edit or delete a row: this ledger is append-only
+    because it is evidence.  So a correction is an APPENDED row that
+    declares, in `supersedes`, the acknowledged_at of every earlier row
+    for that frame -- and a duplicate that declares nothing is refused
+    rather than resolved by parse order.
+
+    These tests hold the pure functions, so what is being measured is the
+    RULE rather than a session's plumbing around it.
+    """
+
+    FIRST = "2026-08-11T01:56:06.592Z"
+    SECOND = "2026-08-11T01:56:27.129Z"
+    THIRD = "2026-08-11T12:15:40.767Z"
+
+    def ack(self, frame, at, supersedes=(), observed=None):
+        """One acknowledgment row, as the ledger stores it."""
+        return {
+            "version": session.ACK_VERSION,
+            "frame": frame,
+            "file": manifest.frame_file(frame),
+            "frame_sha256": "",
+            "acknowledged_at": at,
+            "expected": "",
+            "verdict": "unchanged",
+            "modals": [],
+            "observed": observed or ("a reading of frame %d that is "
+                                     "long enough to be a reading"
+                                     % frame),
+            "supersedes": list(supersedes),
+        }
+
+    def ledger_of(self, rows):
+        """Write `rows` to a ledger in a temporary tree; return (path, root).
+
+        acknowledged_frames reads a FILE, and confines it to the approved
+        tree, so a test of it has to hand it a real ledger at the
+        production layout rather than a list of rows.
+        """
+        root = tempfile.mkdtemp(prefix="blitzy_acks_")
+        self.addCleanup(shutil.rmtree, root, True)
+        os.mkdir(os.path.join(root, "build"))
+        path = session.default_acknowledgments_path(root)
+        with open(path, "w", encoding="utf-8", newline="\n") as handle:
+            for row in rows:
+                handle.write(json.dumps(row) + "\n")
+        return path, root
+
+    # -- the grammar of the column itself ---------------------------
+
+    def test_no_supersession_reads_as_an_empty_list(self):
+        for value in (None, "", (), []):
+            with self.subTest(value=value):
+                self.assertEqual(session.validate_supersedes(value), [])
+
+    def test_a_single_timestamp_may_be_given_bare(self):
+        self.assertEqual(session.validate_supersedes(self.FIRST),
+                         [self.FIRST])
+
+    def test_several_timestamps_are_kept_in_order(self):
+        self.assertEqual(
+            session.validate_supersedes([self.FIRST, self.SECOND]),
+            [self.FIRST, self.SECOND])
+
+    def test_a_timestamp_the_ledger_would_never_write_is_refused(self):
+        for value in ("yesterday", "2026-13-01T00:00:00.000Z", 17, {},
+                      ["2026-08-11T01:56:06.592Z", "nonsense"]):
+            with self.subTest(value=value):
+                with self.assertRaises(session.RecordError):
+                    session.validate_supersedes(value)
+
+    def test_a_spelling_variant_is_normalised_not_rejected(self):
+        """So a correction cannot fail to match by punctuation alone."""
+        self.assertEqual(
+            session.validate_supersedes("2026-08-11T01:56:06Z"),
+            ["2026-08-11T01:56:06.000Z"])
+
+    # -- the rule ---------------------------------------------------
+
+    def test_one_reading_per_frame_is_sound(self):
+        rows = [self.ack(1, self.FIRST), self.ack(2, self.SECOND)]
+        self.assertEqual(session.acknowledgment_problems(rows), [])
+
+    def test_an_undeclared_duplicate_is_a_problem(self):
+        rows = [self.ack(298, self.FIRST), self.ack(298, self.SECOND)]
+        problems = session.acknowledgment_problems(rows)
+        self.assertEqual(len(problems), 1)
+        self.assertIn("298", problems[0])
+        self.assertIn(self.FIRST, problems[0])
+
+    def test_a_declared_supersession_is_sound(self):
+        rows = [self.ack(298, self.FIRST),
+                self.ack(298, self.SECOND, supersedes=[self.FIRST])]
+        self.assertEqual(session.acknowledgment_problems(rows), [])
+
+    def test_the_last_row_must_account_for_every_earlier_one(self):
+        """Naming one of two earlier readings is not reconciliation."""
+        rows = [self.ack(298, self.FIRST),
+                self.ack(298, self.SECOND),
+                self.ack(298, self.THIRD, supersedes=[self.SECOND])]
+        problems = session.acknowledgment_problems(rows)
+        self.assertEqual(len(problems), 1)
+        self.assertIn(self.FIRST, problems[0])
+
+    def test_naming_all_the_earlier_readings_reconciles_them(self):
+        """How frame 298 is actually closed: by appending a third row."""
+        rows = [self.ack(298, self.FIRST),
+                self.ack(298, self.SECOND),
+                self.ack(298, self.THIRD,
+                         supersedes=[self.FIRST, self.SECOND])]
+        self.assertEqual(session.acknowledgment_problems(rows), [])
+
+    def test_the_order_the_supersessions_are_named_in_does_not_matter(self):
+        rows = [self.ack(298, self.FIRST),
+                self.ack(298, self.SECOND),
+                self.ack(298, self.THIRD,
+                         supersedes=[self.SECOND, self.FIRST])]
+        self.assertEqual(session.acknowledgment_problems(rows), [])
+
+    def test_naming_a_reading_that_does_not_exist_is_a_problem(self):
+        rows = [self.ack(298, self.FIRST),
+                self.ack(298, self.SECOND,
+                         supersedes=["2026-01-01T00:00:00.000Z"])]
+        self.assertTrue(session.acknowledgment_problems(rows))
+
+    def test_a_first_reading_may_not_claim_to_supersede_anything(self):
+        rows = [self.ack(12, self.FIRST, supersedes=[self.SECOND])]
+        self.assertTrue(session.acknowledgment_problems(rows))
+
+    def test_two_frames_corrected_independently_are_both_sound(self):
+        rows = [self.ack(10, self.FIRST),
+                self.ack(11, self.SECOND),
+                self.ack(10, self.THIRD, supersedes=[self.FIRST]),
+                self.ack(11, self.THIRD, supersedes=[self.SECOND])]
+        self.assertEqual(session.acknowledgment_problems(rows), [])
+
+    def test_a_row_missing_the_column_is_read_as_declaring_nothing(self):
+        """Rows written before the column existed are still readable."""
+        row = self.ack(1, self.FIRST)
+        del row["supersedes"]
+        self.assertEqual(session.acknowledgment_problems([row]), [])
+
+    # -- what the rule is FOR: one standing reading per frame --------
+
+    def test_the_standing_reading_is_the_last_one(self):
+        rows = [self.ack(298, self.FIRST, observed="the first look at it"),
+                self.ack(298, self.SECOND, supersedes=[self.FIRST],
+                         observed="the corrected look at it")]
+        standing = session.effective_acknowledgments(rows)
+        self.assertEqual(list(standing), [298])
+        self.assertEqual(standing[298]["observed"],
+                         "the corrected look at it")
+
+    def test_every_frame_keeps_exactly_one_standing_reading(self):
+        rows = [self.ack(1, self.FIRST), self.ack(2, self.SECOND),
+                self.ack(2, self.THIRD, supersedes=[self.SECOND])]
+        self.assertEqual(sorted(session.effective_acknowledgments(rows)),
+                         [1, 2])
+
+    def test_acknowledged_frames_fails_closed_on_an_unreconciled_ledger(self):
+        """The defect that made this necessary, refused at the reader.
+
+        Collapsing a duplicate silently is what let one of two real
+        readings of frame 298 disappear.  The caller of this function is
+        the guard that refuses the next keystroke until the previous
+        frame was read, so answering "yes, it was read" from an
+        ambiguous ledger is the worst available outcome.
+        """
+        path, root = self.ledger_of(
+            [self.ack(298, self.FIRST), self.ack(298, self.SECOND)])
+        with self.assertRaises(session.RecordError):
+            session.acknowledged_frames(path, root)
+
+    def test_acknowledged_frames_answers_a_reconciled_ledger(self):
+        path, root = self.ledger_of(
+            [self.ack(1, self.FIRST), self.ack(2, self.SECOND),
+             self.ack(2, self.THIRD, supersedes=[self.SECOND])])
+        self.assertEqual(
+            sorted(session.acknowledged_frames(path, root)), [1, 2])
+
+    # -- the writer -------------------------------------------------
+
+    def test_the_row_the_builder_makes_carries_the_column(self):
+        row = session.acknowledgment_row(
+            5, "a reading long enough to count as one", "unchanged",
+            supersedes=[self.FIRST])
+        self.assertEqual(row["supersedes"], [self.FIRST])
+
+    def test_the_builders_columns_are_the_declared_schema(self):
+        """ACK_FIELDS is load-bearing rather than documentation."""
+        row = session.acknowledgment_row(
+            5, "a reading long enough to count as one", "unchanged")
+        self.assertEqual(tuple(row), session.ACK_FIELDS)
+        self.assertIn("supersedes", session.ACK_FIELDS)
+
+    def test_the_builder_refuses_a_supersession_it_cannot_parse(self):
+        with self.assertRaises(session.RecordError):
+            session.acknowledgment_row(
+                5, "a reading long enough to count as one", "unchanged",
+                supersedes=["not a timestamp"])
+
+
+class TestTheDeliveredLedgerIsReconciled(unittest.TestCase):
+    """The real ledger, held to the rule the review's finding named.
+
+    The other tests in this file work in temporary trees.  This one reads
+    the committed evidence, because the finding was not about a
+    hypothetical ledger: it was about THIS one, and the repair is only
+    real if the delivered file passes.
+    """
+
+    def setUp(self):
+        self.path = os.path.join(
+            os.path.dirname(os.path.abspath(session.__file__)),
+            os.pardir, "build", session.ACKNOWLEDGMENTS_NAME)
+        if not os.path.isfile(self.path):
+            self.skipTest("no delivered acknowledgment ledger to read")
+        self.rows = session.read_acknowledgments(self.path)
+
+    def test_the_delivered_ledger_has_no_unreconciled_duplicate(self):
+        self.assertEqual(session.acknowledgment_problems(self.rows), [])
+
+    def test_the_frame_the_review_named_twice_is_reconciled(self):
+        """Frame 298 carried two readings and declared neither."""
+        rows = [row for row in self.rows if row.get("frame") == 298]
+        if len(rows) < 2:
+            self.skipTest("this generation did not read 298 twice")
+        self.assertTrue(rows[-1].get("supersedes"))
+        named = set(rows[-1]["supersedes"])
+        self.assertEqual(
+            named,
+            {row["acknowledged_at"] for row in rows[:-1]},
+            msg="the last reading must account for every earlier one")
+
+    def test_every_capture_carries_exactly_one_standing_reading(self):
+        standing = session.effective_acknowledgments(self.rows)
+        frames = sorted(standing)
+        self.assertEqual(frames, list(range(1, len(frames) + 1)),
+                         msg="the standing readings must be contiguous "
+                             "from frame 1 with no gap")
+
+    def test_the_final_capture_is_acknowledged(self):
+        """The one an ack travelling with the NEXT keystroke misses."""
+        standing = session.effective_acknowledgments(self.rows)
+        self.assertIn(max(standing), standing)
+        record = os.path.join(os.path.dirname(self.path), os.pardir,
+                              "manifest.jsonl")
+        if not os.path.isfile(record):
+            self.skipTest("no delivered record to count against")
+        captures = manifest.count_rows(record)
+        self.assertIn(captures, standing,
+                      msg="frame %d is the last capture and has no "
+                          "standing reading" % captures)
+
+
+class TestTheQuiescenceLock(SessionFixture):
+    """A step joins the checkout's quiescence, and joins it SHARED.
+
+    The step lock keeps two STEPS apart, which was never the whole
+    problem.  A step appends a frame, a manifest row and a telemetry row;
+    the gate reads all three in sequence and the checkpoint stages them,
+    so a step landing between the gate's frame count and its manifest
+    count turns a real disagreement into a pass, and a step landing
+    between staging and committing puts a row in the commit whose frame
+    is not in it.  Every lock was correctly held throughout, because no
+    two holders were ever the same stage.
+    """
+
+    def lock_path(self):
+        return manifest.mutation_lock_path(self.root)
+
+    def hold(self, operation):
+        """Hold this checkout's mutation lock from the test itself."""
+        descriptor = os.open(self.lock_path(),
+                             os.O_RDWR | os.O_CREAT, 0o600)
+        self.addCleanup(os.close, descriptor)
+        fcntl.flock(descriptor, operation)
+        return descriptor
+
+    def test_an_open_session_holds_the_mutation_lock(self):
+        opened = self.open_session()
+        self.assertTrue(
+            manifest._mutation_is_held(self.lock_path()),
+            msg="an open session must exclude the gate and the "
+                "checkpoint for as long as it can advance the counter")
+        opened.close()
+        self.assertFalse(
+            manifest._mutation_is_held(self.lock_path()),
+            msg="a closed session must release the checkout")
+
+    def test_it_is_taken_shared_so_two_producers_coexist(self):
+        opened = self.open_session()
+        self.addCleanup(opened.close)
+        descriptor = os.open(self.lock_path(),
+                             os.O_RDWR | os.O_CREAT, 0o600)
+        self.addCleanup(os.close, descriptor)
+        # A second SHARED holder is welcome; an exclusive one is not.
+        fcntl.flock(descriptor, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        with self.assertRaises(OSError):
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def test_a_gate_holding_the_checkout_stops_a_session_opening(self):
+        self.hold(fcntl.LOCK_EX)
+        with self.assertRaises(manifest.ManifestError) as caught:
+            session.Session(
+                manifest_path=self.manifest,
+                frames_dir=self.frames,
+                observations_path=self.observations,
+                capture_script=self.capture,
+                window_id=None,
+                root=self.root,
+                mutation_timeout=1)
+        self.assertIn("mutation lock", str(caught.exception))
+
+    def test_the_step_lock_is_free_when_the_checkout_is_refused(self):
+        # The acquisition order is mutation-then-step, so a refusal of
+        # the outer lock must leave the inner one untaken: otherwise a
+        # busy checkout would also wedge the next step.
+        self.hold(fcntl.LOCK_EX)
+        with self.assertRaises(manifest.ManifestError):
+            session.Session(
+                manifest_path=self.manifest,
+                frames_dir=self.frames,
+                observations_path=self.observations,
+                capture_script=self.capture,
+                window_id=None,
+                root=self.root,
+                mutation_timeout=1)
+        step = session.step_lock_path(self.root)
+        if os.path.exists(step):
+            descriptor = os.open(step, os.O_RDWR | os.O_CREAT, 0o600)
+            self.addCleanup(os.close, descriptor)
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+
+    def test_a_verified_inherited_hold_is_reused_rather_than_retaken(
+            self):
+        # THE DEADLOCK THIS AVOIDS IS REAL AND IS DEMONSTRATED HERE: the
+        # lock is held EXCLUSIVELY by this very process, so a session
+        # that opened a second descriptor and asked for it would block
+        # against its own parent until the timeout.  With the marker
+        # proved, it does not ask.
+        descriptor = self.hold(fcntl.LOCK_EX)
+        os.set_inheritable(descriptor, True)
+        os.environ[manifest.ENV_MUTATION_HELD] = (
+            manifest.MUTATION_EXCLUSIVE)
+        os.environ[manifest.ENV_MUTATION_FD] = str(descriptor)
+        self.addCleanup(os.environ.pop, manifest.ENV_MUTATION_HELD, None)
+        self.addCleanup(os.environ.pop, manifest.ENV_MUTATION_FD, None)
+        opened = session.Session(
+            manifest_path=self.manifest,
+            frames_dir=self.frames,
+            observations_path=self.observations,
+            capture_script=self.capture,
+            window_id=None,
+            root=self.root,
+            mutation_timeout=1)
+        self.addCleanup(opened.close)
+        self.assertTrue(opened._mutation.inherited)
+
+    def test_a_marker_the_kernel_does_not_back_is_refused(self):
+        # Nothing holds the lock; the marker claims something does.
+        descriptor = os.open(self.lock_path(),
+                             os.O_RDWR | os.O_CREAT, 0o600)
+        self.addCleanup(os.close, descriptor)
+        os.environ[manifest.ENV_MUTATION_HELD] = manifest.MUTATION_SHARED
+        os.environ[manifest.ENV_MUTATION_FD] = str(descriptor)
+        self.addCleanup(os.environ.pop, manifest.ENV_MUTATION_HELD, None)
+        self.addCleanup(os.environ.pop, manifest.ENV_MUTATION_FD, None)
+        with self.assertRaises(manifest.ManifestError) as caught:
+            session.Session(
+                manifest_path=self.manifest,
+                frames_dir=self.frames,
+                observations_path=self.observations,
+                capture_script=self.capture,
+                window_id=None,
+                root=self.root,
+                mutation_timeout=1)
+        self.assertIn("nothing holds it", str(caught.exception))
+
+    def test_an_inherited_hold_is_not_released_by_the_session(self):
+        descriptor = self.hold(fcntl.LOCK_EX)
+        os.environ[manifest.ENV_MUTATION_HELD] = (
+            manifest.MUTATION_EXCLUSIVE)
+        os.environ[manifest.ENV_MUTATION_FD] = str(descriptor)
+        self.addCleanup(os.environ.pop, manifest.ENV_MUTATION_HELD, None)
+        self.addCleanup(os.environ.pop, manifest.ENV_MUTATION_FD, None)
+        opened = session.Session(
+            manifest_path=self.manifest,
+            frames_dir=self.frames,
+            observations_path=self.observations,
+            capture_script=self.capture,
+            window_id=None,
+            root=self.root,
+            mutation_timeout=1)
+        opened.close()
+        # Still held: closing a session must not release a lock it only
+        # inherited, or the stage that took it loses the tree.
+        self.assertTrue(manifest._mutation_is_held(self.lock_path()))
+
+
+class TestTheStepLockIsHeldOnAnInodeNotAName(SessionFixture):
+    """A lock file that is replaced under a holder stops being a lock.
+
+    Unlink the file while a session holds it and the lock keeps working
+    perfectly -- on a file nothing can reach.  The next session creates a
+    fresh one at the same name, takes it, and both then send a keystroke
+    for one index while the counts still tally afterwards.
+    """
+
+    def test_a_removed_lock_file_stops_the_counter(self):
+        opened = self.open_session()
+        self.addCleanup(opened.close)
+        os.unlink(session.step_lock_path(self.root))
+        with self.assertRaises(session.SessionError) as caught:
+            opened._lock.assert_held()
+        self.assertIn("no longer exists", str(caught.exception))
+
+    def test_a_replaced_lock_file_stops_the_counter(self):
+        opened = self.open_session()
+        self.addCleanup(opened.close)
+        path = session.step_lock_path(self.root)
+        os.unlink(path)
+        replacement = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+        os.close(replacement)
+        with self.assertRaises(session.SessionError) as caught:
+            opened._lock.assert_held()
+        self.assertIn("has been replaced", str(caught.exception))
+
+    def test_an_untouched_lock_file_is_accepted(self):
+        opened = self.open_session()
+        self.addCleanup(opened.close)
+        opened._lock.assert_held()
+
+
+class TestTheMachinePayloadCannotBeForged(unittest.TestCase):
+    """The Python half of a channel later stages parse as KEY=value.
+
+    `session.py probe` emits PLAYTHROUGH_SAVE_WORLD, and the world is a
+    directory name under the save tree -- so any local account able to
+    create a directory there chooses it.  A name containing a newline
+    wrote a SECOND line that nothing wrote, and run_pipeline.sh and the
+    capture stage cannot tell it from a fact.  That is how a save tree
+    could have asserted its own trust state.
+
+    launch_game.sh's `emit` refuses the same two properties. Two halves
+    of one channel have to agree, so the ceiling is compared against
+    env.sh's below rather than trusted to stay in step.
+    """
+
+    def emit(self, key, value):
+        """Capture what _emit writes, or the refusal it raises."""
+        stream = io.StringIO()
+        saved = sys.stdout
+        sys.stdout = stream
+        try:
+            session._emit(key, value)
+        finally:
+            sys.stdout = saved
+        return stream.getvalue()
+
+    def test_an_ordinary_value_is_written(self):
+        self.assertEqual(self.emit("PLAYTHROUGH_SAVE_WORLD", "Sunnyside"),
+                         "PLAYTHROUGH_SAVE_WORLD=Sunnyside\n")
+
+    def test_an_empty_value_is_permitted(self):
+        """It is meaningful here: an absent world is the empty string.
+
+        A guard that refused emptiness would refuse a correct emission,
+        which is why the stricter grammar lives where the name is derived
+        rather than on the channel.
+        """
+        self.assertEqual(self.emit("PLAYTHROUGH_SAVE_WORLD", ""),
+                         "PLAYTHROUGH_SAVE_WORLD=\n")
+
+    def test_a_newline_cannot_forge_a_second_line(self):
+        with self.assertRaises(session.RecordError) as caught:
+            self.emit("PLAYTHROUGH_SAVE_WORLD",
+                      "Evil\nPLAYTHROUGH_TRUST_STATE=trusted")
+        message = str(caught.exception)
+        self.assertIn("carries a control character", message)
+        # The diagnosis shows the bytes rather than reproducing them.
+        self.assertIn("<0A>", message)
+        self.assertNotIn("\n", message)
+
+    def test_every_control_class_is_refused(self):
+        for label, value in (("carriage return", "a\rb"),
+                             ("tab", "a\tb"),
+                             ("escape", "a\x1b[31mb"),
+                             ("nul", "a\x00b"),
+                             ("delete", "a\x7fb"),
+                             ("c1 CSI", "a\u009bb")):
+            with self.subTest(control=label):
+                with self.assertRaises(session.RecordError):
+                    self.emit("PLAYTHROUGH_SAVE_WORLD", value)
+
+    def test_legitimate_non_ascii_is_written(self):
+        self.assertEqual(
+            self.emit("PLAYTHROUGH_SAVE_WORLD", "Sunnysid\u00e9"),
+            "PLAYTHROUGH_SAVE_WORLD=Sunnysid\u00e9\n")
+
+    def test_a_value_past_the_ceiling_is_refused(self):
+        with self.assertRaises(session.RecordError) as caught:
+            self.emit("PLAYTHROUGH_SAVE_WORLD",
+                      "x" * (session.MAX_RECORD_TOKEN + 1))
+        self.assertIn("past the", str(caught.exception))
+
+    def test_the_ceiling_agrees_with_the_shell_half(self):
+        """One channel, two implementations, one bound.
+
+        env.sh states it as PLAYTHROUGH_MAX_RECORD_TOKEN and this module
+        restates it because it runs as its own program and sources no
+        shell.  A restated constant that nothing compares is a second
+        definition waiting to drift.
+        """
+        tooling = os.path.dirname(os.path.abspath(__file__))
+        with io.open(os.path.join(tooling, "env.sh"),
+                     encoding="utf-8") as handle:
+            env = handle.read()
+        match = re.search(r"PLAYTHROUGH_MAX_RECORD_TOKEN=(\d+)", env)
+        self.assertIsNotNone(
+            match, msg="env.sh no longer states the ceiling, so this "
+                       "module's copy has nothing to agree with")
+        self.assertEqual(int(match.group(1)), session.MAX_RECORD_TOKEN)
+
+    def test_an_inventory_key_is_exempt_from_the_ceiling(self):
+        """The regression that broke `audit`, asserted from both sides.
+
+        The ceiling was applied to every key, and one of them does not
+        carry a token: DEBUG_ACTIONS_CHECKED is every debug action id this
+        module refuses, joined, and it measures 180 characters.  Bounding
+        it made `session.py audit` exit non-zero -- the one command whose
+        purpose is to prove no debug binding exists -- for a value
+        composed from this module's own constants.
+        """
+        long_value = ",".join(
+            session.DEBUG_ACTION_IDS + session.DEBUG_DIALOGUE_ACTION_IDS)
+        self.assertGreater(len(long_value), session.MAX_RECORD_TOKEN,
+                           msg="this test measures nothing if the "
+                               "inventory now fits under the ceiling")
+        self.assertEqual(
+            self.emit("DEBUG_ACTIONS_CHECKED", long_value),
+            "DEBUG_ACTIONS_CHECKED=%s\n" % long_value)
+
+    def test_the_exemption_is_the_ceiling_and_not_the_controls(self):
+        """The exemption must not become a hole.
+
+        The ceiling is a bound on a token.  The CONTROL refusal is what
+        stops a value forging a record line, so it applies to every key
+        including the exempt ones -- otherwise the allowlist would be a
+        list of keys through which a line could be forged.
+        """
+        for key in sorted(session._COMPOSED_INVENTORY_KEYS):
+            with self.subTest(key=key):
+                with self.assertRaises(session.RecordError):
+                    self.emit(key, "a\nFORGED=yes")
+
+    def test_the_exemption_is_narrow_and_fails_closed(self):
+        """A key nobody allowed is still bounded.
+
+        Which is what makes forgetting safe: a new emission that is too
+        long is refused rather than admitted, so the mistake falls on the
+        side that gets noticed.
+        """
+        self.assertNotIn("PLAYTHROUGH_SAVE_WORLD",
+                         session._COMPOSED_INVENTORY_KEYS)
+        with self.assertRaises(session.RecordError) as caught:
+            self.emit("SOME_NEW_KEY",
+                      "x" * (session.MAX_RECORD_TOKEN + 1))
+        # And the diagnosis says where a real inventory belongs, so the
+        # next person does not reach for a bigger ceiling.
+        self.assertIn("_COMPOSED_INVENTORY_KEYS", str(caught.exception))
+
+    def test_every_exempt_key_carries_only_module_constants(self):
+        """The allowlist is auditable, not a matter of trust.
+
+        An exemption is only safe if the value really is composed here.
+        Each allowlisted key is checked against the constants `audit`
+        builds it from, so a key added to the list whose value came from
+        outside this module would leave one of these comparisons failing
+        rather than silently unbounding an untrusted value.
+        """
+        composed = {
+            "DEBUG_ACTIONS_CHECKED": ",".join(
+                session.DEBUG_ACTION_IDS +
+                session.DEBUG_DIALOGUE_ACTION_IDS),
+            "REFUSED_CHORDS": ",".join(
+                sorted(session.PROHIBITED_CHORDS)),
+            "REFUSED_MODIFIERS": ",".join(
+                sorted(session.REFUSED_MODIFIER_KEYS)),
+        }
+        self.assertEqual(set(composed), session._COMPOSED_INVENTORY_KEYS,
+                         msg="an exempt key is not accounted for here, "
+                             "so nothing proves its value is composed "
+                             "from this module's own constants")
+        for key, value in sorted(composed.items()):
+            with self.subTest(key=key):
+                self.assertEqual(self.emit(key, value),
+                                 "%s=%s\n" % (key, value))
+
+
+class TestJournalDurability(SessionFixture):
+    """A durability claim this module makes in writing is not one it may
+    quietly decline on the way out.
+    """
+
+    def journal_target(self):
+        return session.journal_path(self.root)
+
+    def test_a_short_write_is_retried_until_the_record_is_whole(self):
+        original = os.write
+
+        def dribble(descriptor, data):
+            """One byte at a time, as a slow device would."""
+            return original(descriptor, data[:1])
+
+        os.write = dribble
+        self.addCleanup(setattr, os, "write", original)
+        text = json.dumps({"phase": "sending", "frame": 12}) + "\n"
+        session._write_durably(self.journal_target(), text)
+        os.write = original
+        with open(self.journal_target(), encoding="utf-8") as handle:
+            self.assertEqual(handle.read(), text)
+
+    def test_a_write_that_makes_no_progress_is_refused(self):
+        original = os.write
+
+        def stall(descriptor, data):
+            """Write nothing, as a full device would."""
+            return 0
+
+        os.write = stall
+        self.addCleanup(setattr, os, "write", original)
+        with self.assertRaises(session.SessionError) as caught:
+            session._write_durably(self.journal_target(), "{}\n")
+        os.write = original
+        self.assertIn("could not record", str(caught.exception))
+        self.assertFalse(
+            os.path.exists(self.journal_target()),
+            msg="a journal that was not written whole must not exist")
+
+    def test_a_truncated_journal_never_reaches_the_reader(self):
+        # The reason the loop matters: JSON truncated at a byte boundary
+        # sometimes still parses, and read_journal would then describe a
+        # keystroke with the wrong frame.
+        original = os.write
+
+        def half(descriptor, data):
+            return original(descriptor, data[:max(1, len(data) // 2)])
+
+        os.write = half
+        self.addCleanup(setattr, os, "write", original)
+        record = {"phase": "sending", "frame": 41, "key": "j"}
+        session.write_journal(self.journal_target(), record)
+        os.write = original
+        self.assertEqual(
+            session.read_journal(self.journal_target())["frame"], 41)
+
+    def test_a_failing_directory_flush_is_reported_not_swallowed(self):
+        path = self.journal_target()
+        session.write_journal(path, {"phase": "sending", "frame": 1})
+        original = os.fsync
+
+        def refuse(descriptor):
+            raise OSError(5, "I/O error")
+
+        os.fsync = refuse
+        self.addCleanup(setattr, os, "fsync", original)
+        with self.assertRaises(session.RecordError) as caught:
+            session.clear_journal(path)
+        os.fsync = original
+        self.assertIn("not durable", str(caught.exception))
+        self.assertFalse(
+            os.path.exists(path),
+            msg="the unlink itself succeeded; what is reported is that "
+                "it may not survive a crash")
+
+    def test_a_directory_that_cannot_be_opened_is_reported(self):
+        path = self.journal_target()
+        session.write_journal(path, {"phase": "sending", "frame": 1})
+        original = os.open
+
+        def refuse(target, flags, *rest):
+            if flags & os.O_DIRECTORY:
+                raise OSError(13, "permission denied")
+            return original(target, flags, *rest)
+
+        os.open = refuse
+        self.addCleanup(setattr, os, "open", original)
+        with self.assertRaises(session.RecordError) as caught:
+            session.clear_journal(path)
+        os.open = original
+        self.assertIn("could not be", str(caught.exception))
+
+    def test_clearing_a_journal_that_is_not_there_is_silent(self):
+        session.clear_journal(self.journal_target())
 
 
 if __name__ == "__main__":

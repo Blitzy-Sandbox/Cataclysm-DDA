@@ -88,6 +88,13 @@ try:
 except ImportError:  # pragma: no cover - guarded, like the module's own
     numpy = None
 
+try:
+    # POSIX only, and guarded exactly as the module under test guards it,
+    # so the limit tests skip rather than error where it is absent.
+    import resource
+except ImportError:  # pragma: no cover - POSIX only
+    resource = None
+
 
 # The capture geometry the pipeline runs at, and the crop over it.
 FRAME_WIDTH = 1920
@@ -2298,6 +2305,199 @@ class TestEveryImageComesThroughOneDoor(unittest.TestCase):
 
 
 @unittest.skipUnless(os.path.isfile(TERMINUS), "needs the font")
+class TestTheDecoderIsEnteredUnderConditions(unittest.TestCase):
+    """The pin's own justification, made into a check.
+
+    Pillow 11.3.0 is pinned because moviepy 2.2.1 declares
+    ``pillow<12.0``, and 11.3.0 carries published advisories in native
+    decoders first fixed in 12.1.1.  requirements.txt accepts that risk
+    on ONE stated ground: the only images this pipeline decodes are PNGs
+    it captured itself, on the machine doing the decoding.
+
+    A security review found the ground was not enforced -- 151 frames at
+    mode 0666 and 15 directories at 02777, so any local account could
+    substitute a crafted PNG between the capture and the decode.  The
+    modes were repaired, but a mode set at creation is a fact about the
+    past.  These tests are about the check that runs at the moment the
+    bytes reach the parser.
+    """
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="blitzy_decode_")
+        self.addCleanup(shutil.rmtree, self.root, True)
+
+    def frame(self, name="frame_00001.png", mode=0o600):
+        """A real, decodable PNG, owned by this account."""
+        path = os.path.join(self.root, name)
+        if Image is None:                       # pragma: no cover
+            self.skipTest("needs Pillow")
+        Image.new("RGB", (8, 8), (10, 20, 30)).save(path, "PNG")
+        os.chmod(path, mode)
+        return path
+
+    # -- the door admits what it should ------------------------------
+
+    @unittest.skipIf(Image is None, "needs Pillow")
+    def test_an_owner_only_capture_is_admitted(self):
+        """The control must not refuse the ordinary case."""
+        image = ocr_clock.open_png(self.frame())
+        self.assertEqual(image.size, (8, 8))
+
+    # -- and refuses each property, one at a time --------------------
+
+    @unittest.skipIf(Image is None, "needs Pillow")
+    def test_a_world_writable_capture_is_refused(self):
+        """The exact condition the review measured."""
+        with self.assertRaises(ocr_clock.FrameUnreadableError) as caught:
+            ocr_clock.open_png(self.frame(mode=0o666))
+        self.assertIn("writable beyond its owner", str(caught.exception))
+
+    @unittest.skipIf(Image is None, "needs Pillow")
+    def test_a_group_writable_capture_is_refused(self):
+        """A group is still somebody else."""
+        with self.assertRaises(ocr_clock.FrameUnreadableError) as caught:
+            ocr_clock.open_png(self.frame(mode=0o660))
+        self.assertIn("writable beyond its owner", str(caught.exception))
+
+    @unittest.skipIf(Image is None, "needs Pillow")
+    def test_a_symlink_is_refused(self):
+        """The name checked and the bytes decoded must be one decision."""
+        target = self.frame()
+        link = os.path.join(self.root, "link.png")
+        os.symlink(target, link)
+        with self.assertRaises(ocr_clock.FrameUnreadableError) as caught:
+            ocr_clock.open_png(link)
+        self.assertIn("symbolic link", str(caught.exception))
+
+    def test_a_fifo_is_refused(self):
+        """Reading it is an operation on something else entirely."""
+        fifo = os.path.join(self.root, "fifo.png")
+        os.mkfifo(fifo, 0o600)
+        with self.assertRaises(ocr_clock.FrameUnreadableError) as caught:
+            ocr_clock.open_png(fifo)
+        self.assertIn("not a regular file", str(caught.exception))
+
+    @unittest.skipIf(Image is None, "needs Pillow")
+    @unittest.skipIf(os.geteuid() != 0, "chown needs privilege")
+    def test_a_capture_owned_by_another_account_is_refused(self):
+        """Then its owner chooses what this decoder parses."""
+        path = self.frame()
+        os.chown(path, 12345, 12345)
+        with self.assertRaises(ocr_clock.FrameUnreadableError) as caught:
+            ocr_clock.open_png(path)
+        self.assertIn("owned by uid 12345", str(caught.exception))
+
+    def test_a_missing_file_says_so_before_decoding(self):
+        with self.assertRaises(ocr_clock.FrameUnreadableError) as caught:
+            ocr_clock.open_png(os.path.join(self.root, "absent.png"))
+        self.assertIn("could not be examined", str(caught.exception))
+
+    # -- the limits around the decode --------------------------------
+
+    @unittest.skipIf(resource is None, "needs POSIX resource limits")
+    def test_a_core_dump_is_forbidden_during_a_decode(self):
+        """A native crash must not write the frames to disk.
+
+        The advisories the pinned Pillow carries are memory-safety ones,
+        so a segfault mid-decode is the failure mode to plan for.  A core
+        file would contain the decoded frame and everything else
+        resident, and it lands wherever the host core pattern points --
+        not a path this pipeline controls or cleans.
+        """
+        with ocr_clock.decode_limits():
+            soft, _hard = resource.getrlimit(resource.RLIMIT_CORE)
+        self.assertEqual(soft, 0)
+
+    @unittest.skipIf(resource is None, "needs POSIX resource limits")
+    def test_cpu_time_is_bounded_during_a_decode(self):
+        with ocr_clock.decode_limits():
+            soft, _hard = resource.getrlimit(resource.RLIMIT_CPU)
+        self.assertNotEqual(soft, resource.RLIM_INFINITY)
+
+    @unittest.skipIf(resource is None, "needs POSIX resource limits")
+    def test_the_cpu_bound_is_relative_to_what_was_already_used(self):
+        """RLIMIT_CPU is cumulative over the process, not per call.
+
+        A fixed absolute value would fire partway through a long run for
+        no reason at all, and a control that fires on legitimate work
+        gets removed rather than fixed.
+        """
+        usage = resource.getrusage(resource.RUSAGE_SELF)
+        used = int(usage.ru_utime + usage.ru_stime)
+        with ocr_clock.decode_limits():
+            soft, _hard = resource.getrlimit(resource.RLIMIT_CPU)
+        self.assertGreaterEqual(soft, used + ocr_clock.DECODE_CPU_SECONDS)
+
+    @unittest.skipIf(resource is None, "needs POSIX resource limits")
+    def test_every_limit_is_restored_afterwards(self):
+        """Nothing here changes the process for the next stage."""
+        before = [resource.getrlimit(limit) for limit in
+                  (resource.RLIMIT_CORE, resource.RLIMIT_CPU)]
+        with ocr_clock.decode_limits():
+            pass
+        after = [resource.getrlimit(limit) for limit in
+                 (resource.RLIMIT_CORE, resource.RLIMIT_CPU)]
+        self.assertEqual(before, after)
+
+    @unittest.skipIf(resource is None, "needs POSIX resource limits")
+    def test_the_limits_are_restored_even_when_the_body_raises(self):
+        before = resource.getrlimit(resource.RLIMIT_CORE)
+        with self.assertRaises(ValueError):
+            with ocr_clock.decode_limits():
+                raise ValueError("the decode failed")
+        self.assertEqual(resource.getrlimit(resource.RLIMIT_CORE),
+                         before)
+
+    @unittest.skipIf(resource is None, "needs POSIX resource limits")
+    def test_a_tighter_existing_limit_is_left_alone(self):
+        """An operator's own bound is a decision, not an obstacle.
+
+        A guard that RAISED a limit somebody else had lowered would be a
+        hole wearing the name of a control.
+        """
+        original = resource.getrlimit(resource.RLIMIT_CPU)
+        self.addCleanup(resource.setrlimit, resource.RLIMIT_CPU,
+                        original)
+        tighter = 5
+        resource.setrlimit(resource.RLIMIT_CPU, (tighter, original[1]))
+        with ocr_clock.decode_limits():
+            soft, _hard = resource.getrlimit(resource.RLIMIT_CPU)
+        self.assertEqual(soft, tighter)
+
+    @unittest.skipIf(resource is None, "needs POSIX resource limits")
+    def test_a_real_decode_runs_and_leaves_no_trace_of_the_limits(self):
+        """The guard is exercised through the door, not only directly."""
+        before = resource.getrlimit(resource.RLIMIT_CORE)
+        ocr_clock.open_png(self.frame())
+        self.assertEqual(resource.getrlimit(resource.RLIMIT_CORE),
+                         before)
+
+    def test_the_address_space_is_deliberately_not_bounded(self):
+        """A measurement, recorded as a test so it is not "fixed".
+
+        RLIMIT_AS looks like the obvious control here and is useless for
+        it, which is worth pinning down so a future reader does not add
+        it back believing it does something.  Importing this module
+        reserves about 2.6 GiB of virtual address space before any decode
+        happens -- numpy accounts for roughly 2.5 GiB of it -- so a
+        ceiling tight enough to bound a 64-megapixel decode refuses the
+        import, and one loose enough to import bounds nothing.  Measured
+        on this host: with RLIMIT_AS lowered to 300 MiB AFTER import, a
+        full 1920x1080 decode still completed, because the limit
+        constrains new mappings and the mappings were already made.
+
+        The pixel ceiling is what bounds allocation instead, and it does
+        it at the only layer that can tell a legitimate frame from a
+        bomb.
+        """
+        limits = ocr_clock.decode_limits()
+        names = [name for name, _value in limits._targets()]
+        self.assertNotIn("RLIMIT_AS", names)
+        self.assertIn("RLIMIT_CORE", names)
+        self.assertIn("RLIMIT_CPU", names)
+        self.assertEqual(ocr_clock.MAX_PIXELS, 64 * 1024 * 1024)
+
+
 class TestTheFontIsTheOneThisRepositoryShips(unittest.TestCase):
     """FreeType is a native parser; the face it parses is attested.
 

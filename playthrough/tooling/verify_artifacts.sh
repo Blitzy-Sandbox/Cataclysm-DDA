@@ -79,7 +79,7 @@
 # ---------------------------------------------------------------------
 # THE TWO PHASES, AND WHY A SINGLE-PHASE GATE COULD NEVER PASS
 #
-# FOURTEEN of the properties below are properties OF THE COMMIT: the
+# FIFTEEN of the properties below are properties OF THE COMMIT: the
 # save is tracked, every artifact class is tracked, the tracked capture
 # count equals the on-disk one, nothing under playthrough/ is left
 # uncommitted, the checkpoints are ordered and are about the survivor in
@@ -93,7 +93,7 @@
 # the lint -- is a property OF THE ARTIFACTS, and holds the instant the
 # render finishes, with nothing committed at all.
 #
-# Run as one undivided gate ahead of a commit, those fourteen fail on
+# Run as one undivided gate ahead of a commit, those fifteen fail on
 # any tree that is not already fully committed, and a sequencer that
 # puts the gate before the checkpoint can therefore never reach the
 # checkpoint.  That is not a hypothetical: it was measured, on a genuine
@@ -106,7 +106,7 @@
 #            commit         commit_artifacts.sh takes the checkpoint
 #     --phase post-commit   ...and the history now says so
 #
-#   pre-commit    every property of the ARTIFACTS.  The fourteen
+#   pre-commit    every property of the ARTIFACTS.  The fifteen
 #                 commit-shaped ones are deferred, and the deferral is
 #                 REPORTED as an informational note naming them, so a
 #                 shorter report explains its own length instead of
@@ -154,7 +154,9 @@
 #                                 state, and that every artifact this
 #                                 gate reads is present and readable
 #   2  one frame per keystroke    frames == rows, contiguous indices,
-#                                 the six-key record schema
+#                                 the six-key record schema, the
+#                                 acknowledgment ledger and the
+#                                 hash-chained evidence anchor
 #   3  the timeline               the 0.25 s floor, the 10 s ceiling,
 #                                 the transition flag, the materialised
 #                                 transition groups, the invariant
@@ -197,6 +199,9 @@
 #   2  usage error -- an unknown option or a malformed value
 #   3  layout error -- this file cannot locate itself, or env.sh is
 #      missing or refused to load
+#   4  busy -- another stage is mutating this checkout, so there is
+#      no fixed tree to measure.  Distinct from 3 because nothing
+#      is wrong: the same command succeeds once that stage finishes
 #
 # Requires bash: BASH_SOURCE, arrays and `local` are all used.
 # ---------------------------------------------------------------------
@@ -225,6 +230,7 @@ readonly EX_OK=0
 readonly EX_FAILED=1
 readonly EX_USAGE=2
 readonly EX_LAYOUT=3
+readonly EX_BUSY=4
 
 # ---------------------------------------------------------------------
 # LOCATING THIS FILE, AND THE ENVIRONMENT CONTRACT
@@ -646,6 +652,14 @@ readonly -a REQUIRED_ATTRIBUTES=(
 # they are, because this gate READS a history somebody else wrote and
 # must not import the committer's code to do it.
 readonly CHECKPOINT_TRAILER_KEY="Playthrough-Checkpoint"
+
+# The trailer that carries the evidence anchor's chain head, for the same
+# reason and read the same way.  A commit object's name is a hash of its
+# own content, so a head published here cannot be edited without
+# rewriting history -- which is the whole of what makes the anchor an
+# INDEPENDENT domain rather than one more mutable file beside the
+# evidence.
+readonly ANCHOR_TRAILER_KEY="Playthrough-Evidence-Anchor"
 readonly CHECKPOINT_CREATION_NAME="creation"
 readonly CHECKPOINT_FINAL_NAME="final"
 
@@ -732,18 +746,18 @@ readonly VERDICT_SEPARATOR=$'\037'
 # the pre-commit phase defers:
 #
 #                                        all   pre   post
-#    1  the measuring environment         11    11    11
-#    2  one frame per keystroke           16    16     -
+#    1  the measuring environment         14    14    14
+#    2  one frame per keystroke           20    20     -
 #    3  the timeline                      19    19     -
 #    4  the container and its inputs      20    20     -
 #    5  the caption track                 20    20     -
 #    6  the luminance gate                 5     5     -
-#    7  version control                   17     4    17
+#    7  version control                   20     6    20
 #    8  no cheating                        3     3     -
-#    9  the binary, artwork and hygiene    10     9     2
+#    9  the binary, artwork and hygiene    12    11     2
 #   10  the inventory of this report        1     1     1
 #                                        ----  ----  ----
-#                                         122   108    31
+#                                         134   119    37
 #
 # The post-commit column is group 1 (a gate reports what it can measure
 # before it reports what it measured), the whole of group 7, group 9's
@@ -751,7 +765,7 @@ readonly VERDICT_SEPARATOR=$'\037'
 # The artifact groups are absent because the commit did not touch the
 # artifacts; `--phase all` is how they are re-measured deliberately.
 #
-# The FOURTEEN the pre-commit phase defers, each named by the property
+# The FIFTEEN the pre-commit phase defers, each named by the property
 # it reports, are:
 #
 #   group 7   the world's own save file is tracked
@@ -768,6 +782,7 @@ readonly VERDICT_SEPARATOR=$'\037'
 #             the lifecycle checkpoints are about the survivor in the
 #             tree
 #             the recording in the tree has a checkpoint pair of its own
+#             the evidence anchor's head is published in the history
 #   group 9   the change surface is only the two ignore files and
 #             playthrough/
 #
@@ -775,10 +790,10 @@ readonly VERDICT_SEPARATOR=$'\037'
 # here makes this assertion fail, which is the intended direction of that
 # mistake.
 readonly -a GROUP_CHECKS_ALL=(
-    0 11 16 19 20 20 5 17 3 10 1
+    0 14 20 19 20 20 5 20 3 12 1
 )
 readonly -a GROUP_CHECKS_PRE_COMMIT=(
-    0 11 16 19 20 20 5 4 3 9 1
+    0 14 20 19 20 20 5 6 3 11 1
 )
 # The third phase, and the reason it is a THIRD count rather than a
 # synonym for `all`: `post-commit` used to resolve to the whole audit, so
@@ -789,7 +804,7 @@ readonly -a GROUP_CHECKS_PRE_COMMIT=(
 # inventory -- and `--phase all` remains how the artifacts are
 # re-measured deliberately.
 readonly -a GROUP_CHECKS_POST_COMMIT=(
-    0 11 0 0 0 0 0 17 0 2 1
+    0 14 0 0 0 0 0 20 0 2 1
 )
 # The names, for a discrepancy that can say WHICH group is short rather
 # than only that the total is.  Index 0 is unused so that the index is
@@ -876,6 +891,10 @@ readonly PHASE_DEFAULT="${PHASE_ALL}"
 PASSES=0
 FAILURES=0
 INFOS=0
+# Verdicts that are neither: the delivered code departs from what
+# the plan requires, knowingly, and the departure cannot be closed
+# from inside this pipeline.  See record_divergence.
+DIVERGENCES=0
 GROUP=0
 SCRATCH=""
 BASE_COMMIT=""
@@ -1085,6 +1104,46 @@ record_fail() {
     say '      expected: %s\n' "${3:-<see the check name>}"
 }
 
+# record_divergence NAME OBSERVED REQUIRED WHY
+#   The delivered code knowingly departs from what the plan requires,
+#   and the departure cannot be closed from inside this pipeline.
+#
+#   WHY THIS IS ITS OWN VERDICT RATHER THAN A PASS OR A FAIL.  A review
+#   found this gate reporting a KNOWN divergence from the plan as PASS,
+#   with the reason written honestly in the observed text beside it -- so
+#   the prose was truthful and the verdict was not, and the acceptance
+#   report and REPORT.md then inherited "PASS" and dropped the prose.
+#   That is the defect: not the divergence, which is documented and
+#   forced, but a report that reads as compliance.
+#
+#   It is not a FAIL either, and that distinction is deliberate rather
+#   than lenient.  A failure says "this is wrong and fixing it is the
+#   work"; this says "this is not what the plan asked for, here is what
+#   was delivered instead, and here is why the difference cannot be
+#   closed here".  Collapsing the two would either hide a real failure
+#   among permanent divergences or make the gate permanently red for
+#   something no run of it can change.
+#
+#   IT DOES NOT AFFECT THE EXIT STATUS, and that is the one judgement
+#   worth arguing with.  This gate runs before the commit stage, so a
+#   non-zero exit for an environment-imposed and permanent divergence
+#   would block every checkpoint for good rather than reporting anything.
+#   Instead the run is impossible to MISREAD: the verdict line becomes
+#   VERIFY=pass-with-divergence, the count is published as
+#   VERIFY_DIVERGENCES, and the summary sentence stops claiming the
+#   artifacts are what they claim to be.
+#
+#   It DOES register as a check, because it is a judgement about the
+#   artifacts and the declared inventory must continue to account for it.
+record_divergence() {
+    DIVERGENCES=$((DIVERGENCES + 1))
+    register_check "$1"
+    say 'DIVERGENCE  %s\n' "$1"
+    say '      observed: %s\n' "${2:-<nothing>}"
+    say '      the plan requires: %s\n' "${3:-<see the check name>}"
+    say '      why it stands: %s\n' "${4:-<unexplained>}"
+}
+
 record_info() {
     INFOS=$((INFOS + 1))
     say 'INFO  %s: %s\n' "$1" "${2:-<empty>}"
@@ -1104,7 +1163,7 @@ record_warn() {
 #   therefore cannot hold until the checkpoint has been taken.
 #
 #   One predicate, called at each of the two group call sites, rather
-#   than an `if` inside each of the fourteen checks: a check that decides
+#   than an `if` inside each of the fifteen checks: a check that decides
 #   for itself whether to run is a check that can be talked out of
 #   running, and this way the classification is visible in one place
 #   beside the group it belongs to.
@@ -1636,7 +1695,7 @@ Options:
                       all           everything, artifacts and history.
                                     THE DEFAULT, and the full audit.
                       pre-commit    every property of the ARTIFACTS,
-                                    deferring the fourteen that are
+                                    deferring the fifteen that are
                                     properties of the COMMIT and
                                     cannot hold before it is taken.
                                     This is the phase that runs AHEAD
@@ -1955,8 +2014,40 @@ _va_cleanup() {
     if [ -n "${SCRATCH}" ] && [ -d "${SCRATCH}" ]; then
         "${RM}" -rf -- "${SCRATCH}"
     fi
+    # Releases ONLY if this process took it; a run started by the
+    # sequencer inherited the sequencer's hold and must leave it
+    # exactly where it found it.
+    playthrough_release_mutation_lock || true
 }
 trap _va_cleanup EXIT
+
+# take_mutation_lock -- measure a tree that is standing still.
+#
+# A GATE THAT PASSES SAYS NOTHING IF THE TREE MOVED WHILE IT WAS READING.
+# Every group here reads the artifacts in sequence -- the frame count,
+# then the manifest, then the timeline, then the films -- and a producer
+# appending a frame between the first and the second turns a real
+# disagreement into a pass, or a real pass into a disagreement, with no
+# way afterwards to tell which happened.  Worse, the verdict this gate
+# prints is what the checkpoint that follows it relies on: a `verify`
+# that passed and a `commit` that ran are only evidence together if
+# nothing changed in between.
+#
+# So the lock is taken EXCLUSIVELY, which excludes every shared producer,
+# and it is held for the whole run through the EXIT trap.  A run started
+# by run_pipeline.sh finds the sequencer's own exclusive hold already in
+# place, proves it, and inherits it -- so the gate and the checkpoint the
+# sequencer runs after it sit inside ONE window rather than two.
+take_mutation_lock() {
+    playthrough_acquire_mutation_lock exclusive ||
+        die "${EX_BUSY}" "this gate could not take THIS checkout's" \
+            "mutation lock exclusively, so the tree it would measure is" \
+            "being written to while it reads.  A verdict taken over a" \
+            "moving tree is not a measurement of anything, so no checks" \
+            "were run and nothing was reported.  Wait for the session" \
+            "step, producer or checkpoint that holds it and run this" \
+            "again."
+}
 
 open_scratch() {
     local base="${PLAYTHROUGH_RUNTIME_DIR}"
@@ -1974,7 +2065,16 @@ open_scratch() {
     # THE OWNER, RECORDED INSIDE THE GENERATION.  It is what lets the
     # next run tell a generation whose audit is still working from one
     # whose audit was killed; see THE SCRATCH GENERATION above.
-    printf '%s\n' "$$" >"${SCRATCH}/${SCRATCH_OWNER_FILE}"
+    # THE PID AND ITS START TIME, because a pid alone is not an identity:
+    # Linux recycles them, so "the pid this file names is alive" and "the
+    # process this file named is alive" are different claims, and the
+    # sweep below acts on the answer by removing a directory.  The pair
+    # is unique for the life of a boot.  A start time the kernel will not
+    # report leaves the pid on its own, which is exactly the older
+    # format's behaviour and is judged the same way.
+    printf '%s %s\n' "$$" \
+        "$(playthrough_proc_start_time "$$" || printf '')" \
+        >"${SCRATCH}/${SCRATCH_OWNER_FILE}"
     sweep_stale_scratch "${base}"
     # THE DURABLE COPY STARTS HERE, one line behind stdout, so that every
     # verdict printed from this point on is also written down.  It is
@@ -1998,11 +2098,24 @@ open_scratch() {
 # BOTH say it is gone, because the cost of being wrong in that direction
 # is another audit's working directory.
 owner_is_alive() {
-    local pid="$1"
-    if kill -0 "${pid}" 2>/dev/null; then
-        return 0
+    local pid="$1" recorded="${2-}" current=""
+    if ! kill -0 "${pid}" 2>/dev/null && [ ! -d "/proc/${pid}" ]; then
+        return 1
     fi
-    [ -d "/proc/${pid}" ]
+    # A RECORDED START TIME TURNS "a pid" INTO "that process".  Without
+    # it, a recycled pid makes a killed audit's generation look live and
+    # it is kept for ever; with it, the generation is correctly swept.
+    # The check only ever moves the verdict in that direction: an
+    # unreadable or absent start time falls back to existence alone,
+    # which keeps the directory, and keeping somebody else's working
+    # directory is the safe way to be wrong here.
+    if [ -n "${recorded}" ]; then
+        current="$(playthrough_proc_start_time "${pid}" || printf '')"
+        if [ -n "${current}" ] && [ "${current}" != "${recorded}" ]; then
+            return 1
+        fi
+    fi
+    return 0
 }
 
 # scratch_is_stale DIR -- whether a generation with no live owner may be
@@ -2011,14 +2124,20 @@ owner_is_alive() {
 scratch_is_stale() {
     local dir="$1"
     local owner="${dir}/${SCRATCH_OWNER_FILE}"
-    local pid="" modified="" now="${EPOCHSECONDS:-}"
+    local pid="" started="" modified="" now="${EPOCHSECONDS:-}"
     if [ -f "${owner}" ]; then
-        IFS= read -r pid <"${owner}" 2>/dev/null || pid=""
+        # One line, "PID [STARTTIME]".  The second field is absent in the
+        # format an older version of this file wrote, and a generation
+        # from one of those is judged exactly as it was then.
+        IFS=' ' read -r pid started <"${owner}" 2>/dev/null || pid=""
         case "${pid}" in
             ''|*[!0-9]*) pid="" ;;
         esac
+        case "${started}" in
+            ''|*[!0-9]*) started="" ;;
+        esac
         if [ -n "${pid}" ]; then
-            if owner_is_alive "${pid}"; then
+            if owner_is_alive "${pid}" "${started}"; then
                 return 1
             fi
             return 0
@@ -2104,6 +2223,18 @@ act, not this measurement's"
         printf 'REPORT  could not be written to %s\n' "${target}"
         return 0
     fi
+    # NOBODY ELSE MAY REWRITE THE REPORT.  The redirection above creates
+    # the file under whatever umask this gate inherited, and a security
+    # review measured the delivered acceptance report at mode 0666 -- an
+    # audit record any local account could edit after it was signed off.
+    # Read access is left alone: the report is committed and is meant to
+    # be read.  A failure to tighten it is reported and does not fail the
+    # run, because the verdict on the ARTIFACTS has already been printed
+    # and a note about this file is not evidence about them.
+    playthrough_deny_foreign_write "${target}" \
+        "the published acceptance report" ||
+        printf 'REPORT  %s\n' "could not be made unwritable by other \
+accounts at ${target}; see the reason above"
     lines="$("${WC}" -l <"${target}" | "${TR}" -d ' ')"
     # THE OUTCOME IS NAMED BESIDE THE PATH, because this file is written
     # whether the run passed or failed.  It used to be written only on a
@@ -2113,7 +2244,9 @@ act, not this measurement's"
     # attestation checkpoint is what refuses to commit a failing one.
     printf 'REPORT  %s\n' "${target} -- ${lines} lines, the verdict set \
 this run measured (VERIFY $(if [ "${FAILURES}" -ne 0 ]; then \
-printf 'fail'; else printf 'pass'; fi), phase '${PHASE}')"
+printf 'fail'; elif [ "${DIVERGENCES}" -ne 0 ]; then \
+printf 'pass-with-divergence'; else printf 'pass'; fi), phase \
+'${PHASE}')"
 }
 
 # report_publication_target
@@ -2345,8 +2478,15 @@ check_dependency_closure() {
     local script="${SCRATCH}/closure.py"
     if ! playthrough_write_closure_checker "${script}"; then
         # ONE FAILURE PER DECLARED VERDICT, so a gate that cannot run
-        # this checker reports the same five properties as unmeasured
-        # rather than reporting four fewer checks than it declares.
+        # this checker reports the same eight properties as unmeasured
+        # rather than reporting seven fewer checks than it declares.
+        #
+        # THESE NAMES MUST MATCH THE CHECKER'S OWN, BYTE FOR BYTE.  They
+        # are the fallback for a checker that could not be written, so
+        # they stand in for verdicts that would otherwise be absent; a
+        # name that drifted would report a property nothing measures
+        # under a name nothing else uses.  test_verify_artifacts.py
+        # asserts the correspondence.
         local name=""
         for name in \
             "the interpreter is the CPython \
@@ -2356,7 +2496,13 @@ ${PLAYTHROUGH_PYTHON_ABI} the lock was built for" \
 version" \
             "every declared library imports" \
             "every installed distribution has its own requirements \
-met"; do
+met" \
+            "the render stack still forces the Pillow pin it is held \
+at" \
+            "nothing is installed that requirements.lock does not \
+name" \
+            "nothing runs at interpreter startup that was not \
+allowed"; do
             record_fail "${name}" \
                 "the shared closure checker could not be written to \
 the scratch directory, so nothing about the closure was measured" \
@@ -3923,6 +4069,223 @@ Quit path, and its last keystroke was capturable" \
     esac
 }
 
+# ---------------------------------------------------------------------
+# THE EVIDENCE AUTHENTICITY CHECKS
+#
+# Everything else in this group asks whether the record is INTERNALLY
+# consistent.  These four ask the question that consistency cannot
+# answer: whether any of it was changed after the fact.
+#
+# A review put the gap precisely -- "every attestation is mutable with
+# its evidence" -- and found two live consequences of nothing looking:
+# frame 298 had been read TWICE with neither row saying it replaced the
+# other (and a dict keyed by frame index silently kept whichever came
+# last), while frame 307, the final capture of the session, had no
+# acknowledgment at all.  Both were invisible to a gate that reported
+# VERIFY=pass.
+#
+# So: two checks on the acknowledgment ledger, and two on the hash chain
+# that seals the evidence from outside itself.  The chain's own head is
+# published as a commit trailer, and THAT comparison is a property of the
+# commit, so it lives in group 7 with the rest of the history.
+# ---------------------------------------------------------------------
+emit_evidence_checker() {
+    emit_checker evidence <<'PY'
+"""Assert the acknowledgment ledger and the evidence anchor."""
+
+import sys
+
+SEP = "\x1f"
+
+
+def verdict(kind, name, observed="", expected=""):
+    fields = [kind, name, str(observed), str(expected)]
+    print(SEP.join(f.replace(SEP, " ").replace("\n", " ")
+                   for f in fields))
+
+
+def ok(name, observed=""):
+    verdict("PASS", name, observed)
+
+
+def bad(name, observed, expected):
+    verdict("FAIL", name, observed, expected)
+
+
+def summarise(items, limit=4):
+    shown = "; ".join(str(i) for i in items[:limit])
+    if len(items) > limit:
+        shown += "; ... (%d more)" % (len(items) - limit)
+    return shown
+
+
+RECONCILED = ("the acknowledgment ledger is reconciled -- a second "
+              "reading of a frame names the one it replaces")
+COVERED = ("every capture has a standing acknowledgment, the final "
+           "frame included")
+CHAIN = "the evidence anchor is a sound hash chain"
+SEALED = ("every sealed artifact still hashes to its seal, as sha256 "
+          "AND as git's own blob name")
+
+
+def check_ledger(session, manifest, acks_path, captures):
+    """The two acknowledgment properties."""
+    try:
+        rows = session.read_acknowledgments(acks_path)
+    except Exception as err:                          # noqa: BLE001
+        bad(RECONCILED, "the ledger could not be read: %s" % err,
+            "a readable append-only acknowledgment ledger")
+        bad(COVERED, "the ledger could not be read: %s" % err,
+            "one standing reading per capture")
+        return
+    problems = session.acknowledgment_problems(rows)
+    if problems:
+        bad(RECONCILED, summarise(problems),
+            "every frame read more than once carrying, in its LAST "
+            "row's `supersedes`, the acknowledged_at of every earlier "
+            "row for that frame.  The ledger is append-only, so a "
+            "correction is an appended row that names what it corrects "
+            "-- a duplicate with no declared relationship leaves two "
+            "readings of one frame and nothing to say which stands")
+    else:
+        standing = session.effective_acknowledgments(rows)
+        superseded = len(rows) - len(standing)
+        ok(RECONCILED,
+           "%d row(s) resolving to %d standing reading(s); %d earlier "
+           "reading(s) explicitly superseded"
+           % (len(rows), len(standing), superseded))
+
+    standing = session.effective_acknowledgments(rows)
+    if captures is None:
+        bad(COVERED, "the capture count was not available to compare "
+                     "against", "a capture count from group 2")
+        return
+    missing = [index for index in range(1, captures + 1)
+               if index not in standing]
+    if missing:
+        # THE LAST FRAME IS NAMED SEPARATELY.  It is the one an
+        # acknowledgment discipline that travels with the NEXT keystroke
+        # structurally cannot cover -- there is no next key -- which is
+        # exactly why frame 307 was missing and why this check exists.
+        tail = (" -- including the FINAL capture %d, which no "
+                "acknowledgment travelling with a following keystroke "
+                "could ever cover, because there is no following "
+                "keystroke" % captures) if captures in missing else ""
+        bad(COVERED,
+            "%d capture(s) have no standing reading: %s%s"
+            % (len(missing), summarise(missing, 8), tail),
+            "one standing acknowledgment for each of the %d captures.  "
+            "Record the missing one with `session.py ack --frame N "
+            "--observed '...'` after actually looking at the frame"
+            % captures)
+        return
+    ok(COVERED,
+       "all %d captures carry a standing reading, frame %d included"
+       % (captures, captures))
+
+
+def check_anchor(manifest, anchor_path):
+    """The two hash-chain properties."""
+    try:
+        rows = manifest.read_anchor_rows(anchor_path)
+    except Exception as err:                          # noqa: BLE001
+        bad(CHAIN, "the anchor could not be read: %s" % err,
+            "a readable append-only evidence anchor")
+        bad(SEALED, "the anchor could not be read: %s" % err,
+            "every sealed artifact held to its seal")
+        return
+    if not rows:
+        bad(CHAIN,
+            "there is no evidence anchor, so nothing vouches for the "
+            "evidence from outside itself",
+            "a chained seal over the record, the ledgers, the timeline, "
+            "the transcripts and the films -- written by "
+            "`commit_artifacts.sh` at each checkpoint")
+        bad(SEALED, "there is no evidence anchor to hold anything to",
+            "one seal row per evidence artifact")
+        return
+    problems = manifest.anchor_chain_problems(rows)
+    if problems:
+        bad(CHAIN, summarise(problems),
+            "%d row(s) whose seq is contiguous, whose prev_chain is the "
+            "row before it, and whose chain is the sha256 of its own "
+            "fields -- a break here means a row was altered, removed or "
+            "reordered after it was sealed" % len(rows))
+    else:
+        head = manifest.anchor_head(rows)
+        sealed = sorted({row.get("path") for row in rows})
+        ok(CHAIN,
+           "%d row(s) over %d artifact(s), chained and re-derived; head "
+           "%s" % (len(rows), len(sealed), head[:16]))
+
+    # The artifacts themselves, against the newest seal for each.
+    #
+    # DRIFT IS FAILED HERE; COVERAGE IS REPORTED, NOT FAILED -- and that
+    # is an ordering fact rather than leniency.  The committer seals at
+    # each checkpoint, and the pipeline REGENERATES the timeline, the
+    # transition inputs, the film and the transcript pair after the last
+    # session checkpoint and before this gate runs.  So on a legitimate
+    # first run those artifacts exist and are not yet sealed, and failing
+    # on that would make the gate refuse every honest pipeline.  What
+    # closes the gap is group 7 at post-commit: an artifact produced
+    # after the last checkpoint leaves the tree dirty, which `nothing
+    # under playthrough/ is left uncommitted` reports, and the checkpoint
+    # that commits it seals it and publishes the new head in its own
+    # trailer.  An artifact that IS sealed and no longer matches its seal
+    # is failed here, unconditionally.
+    try:
+        broken = manifest.verify_anchor(anchor_path, require_all=False)
+        pending = manifest.unsealed_artifacts(anchor_path, rows=rows)
+    except Exception as err:                          # noqa: BLE001
+        bad(SEALED, "the seal could not be checked: %s" % err,
+            "every sealed artifact re-hashed and unchanged")
+        return
+    structural = set(manifest.anchor_chain_problems(rows))
+    broken = [problem for problem in broken if problem not in structural]
+    if broken:
+        bad(SEALED, summarise(broken),
+            "every sealed artifact unchanged since it was sealed.  The "
+            "sha256 and git's own blob name are computed by different "
+            "code over the same bytes, so a disagreement in either is a "
+            "post-hoc edit rather than a rounding difference")
+        return
+    paths = sorted({row.get("path") for row in rows})
+    ok(SEALED,
+       "%d artifact(s) re-hashed and unchanged: %s%s"
+       % (len(paths), ", ".join(paths[:6]) +
+          (", ..." if len(paths) > 6 else ""),
+          ("; %d awaiting the next checkpoint's seal (%s)"
+           % (len(pending), summarise(list(pending), 4)))
+          if pending else "; none awaiting a seal"))
+
+
+def main(argv):
+    tooling_dir, acks_path, anchor_path, captures_text = argv[1:5]
+    sys.path.insert(0, tooling_dir)
+    try:
+        import manifest
+        import session
+    except Exception as err:                          # noqa: BLE001
+        for name in (RECONCILED, COVERED, CHAIN, SEALED):
+            bad(name, "the producing modules could not be imported: %s"
+                % err,
+                "session.py and manifest.py beside this gate, which own "
+                "the ledger and the anchor")
+        return 0
+    try:
+        captures = int(captures_text)
+    except (TypeError, ValueError):
+        captures = None
+    check_ledger(session, manifest, acks_path or None, captures)
+    check_anchor(manifest, anchor_path or None)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
+PY
+}
+
 group_record() {
     group 2 "one frame per keystroke"
     check_no_outstanding_step
@@ -3935,6 +4298,15 @@ group_record() {
         "$(rel "${PLAYTHROUGH_TIMELINE}")" \
         "$(rel "${PLAYTHROUGH_FRAME_DIGESTS}")" \
         "$(in_game_file)"
+    # AFTER the record checker, because it reads the capture count that
+    # checker publishes as a fact -- "every capture is acknowledged" is a
+    # comparison against a number, and deriving that number twice is how
+    # two checks come to disagree about the same session.
+    run_checker evidence \
+        "${PLAYTHROUGH_TOOLING_DIR}" \
+        "$(rel "${PLAYTHROUGH_ACKNOWLEDGMENTS}")" \
+        "$(rel "${PLAYTHROUGH_EVIDENCE_ANCHOR}")" \
+        "$(fact capture_count)"
 }
 
 
@@ -7689,6 +8061,85 @@ checkout to '$(rel "${PLAYTHROUGH_REPO_ROOT}")'" \
         "the same directory -- every check below reads git from here"
 }
 
+# WHETHER THIS CHECKOUT'S GIT CREDENTIAL IS READABLE BY ANYBODY ELSE.
+#
+# A review found a live bearer token in this checkout's own
+# .git/config -- a push URL of the shape
+# https://x-access-token:<secret>@host/... -- in a file that was mode
+# 0644.  Two halves of that, and only one is anybody's to fix here.
+#
+# The token's PRESENCE is the platform's arrangement.  `credential.helper`
+# is set empty in this checkout and `credential.interactive` is false, so
+# the URL is the repository's only authentication path; removing the
+# credential from it would break publication outright, and revoking or
+# rotating the token is the platform's act and not this pipeline's.  So
+# this gate does not demand that it be gone.
+#
+# The token's REACH is a file mode, and that is measurable and fixable.
+# A group- or world-readable config hands the token to every local
+# account, every child process and every git hook, so this FAILS on one.
+# The check is deliberately conditional on a credential actually being
+# present: a config with nothing secret in it has nothing for its mode to
+# expose, and failing it would be noise that trains a reader to ignore
+# the line that matters.
+#
+# commit_artifacts.sh asserts the same property before it commits, so
+# this is the audit of a control rather than the only place it is
+# applied.
+check_git_config_credential_mode() {
+    local name="git's own configuration does not expose this \
+checkout's credential to other accounts"
+    local dir="" config="" mode=""
+    dir="$("${GIT}" rev-parse --absolute-git-dir 2>/dev/null || true)"
+    if [ -z "${dir}" ] || [ ! -d "${dir}" ]; then
+        record_fail "${name}" \
+            "git could not report its own directory, so its \
+configuration file could not be located" \
+            "a readable git directory -- whether a credential is \
+exposed cannot be answered without one"
+        return 0
+    fi
+    config="${dir}/config"
+    if [ ! -f "${config}" ]; then
+        record_pass "${name}" \
+            "this checkout has no $(rel "${config}") at all, so it \
+holds no credential"
+        return 0
+    fi
+    mode="$(playthrough_permission_bits "${config}")" || mode=""
+    if ! "${GREP}" -Eq -- '://[^/@[:space:]]*:[^/@[:space:]]*@' \
+            "${config}" 2>/dev/null; then
+        record_pass "${name}" \
+            "$(rel "${config}") embeds no credential in a remote URL \
+(mode ${mode:-unreadable}), so there is nothing in it for its mode to \
+expose"
+        return 0
+    fi
+    if [ -z "${mode}" ]; then
+        record_fail "${name}" \
+            "$(rel "${config}") carries a credential in a remote URL \
+and its mode could not be read" \
+            "a readable mode -- an unmeasurable one is not the same \
+fact as a safe one"
+        return 0
+    fi
+    if [ $(( 8#${mode} & 8#077 )) -ne 0 ]; then
+        record_fail "${name}" \
+            "$(rel "${config}") carries a credential in a remote URL \
+and is mode ${mode}, so group or other can read it" \
+            "owner-only (600).  The credential itself is the \
+platform's to rotate and cannot be removed from the URL -- \
+credential.helper is empty here, so that URL is the only \
+authentication this repository has -- but its file mode is this \
+checkout's to hold shut"
+        return 0
+    fi
+    record_pass "${name}" \
+        "$(rel "${config}") carries a credential and is mode ${mode} \
+-- readable only by its owner.  Rotating that token is the platform's \
+act, not this pipeline's; the reach of it is what is measured here"
+}
+
 # character_save_paths -- the TRACKED character save files, in either
 # accepted shape.  Printed one per line; empty when there are none.
 character_save_paths() {
@@ -8169,6 +8620,131 @@ interpreter call adds -B, and the .gitignore negation deliberately adds \
 no re-exclusion, so a stray file here WOULD become trackable"
 }
 
+# WHAT EACH PATH IS, AND WHAT IT CARRIES.
+#
+# The committer refuses both of these before it stages anything, and that
+# is the right place for a control whose job is to stop a bad commit from
+# being taken.  It is not sufficient on its own, for a reason this very
+# remediation demonstrates: NOT EVERY COMMIT IN THIS HISTORY IS TAKEN BY
+# commit_artifacts.sh.  A tooling change is committed with ordinary git,
+# and a checkpoint's gates say nothing about a commit that never ran them.
+#
+# So the gate asks the same questions of the tree it is measuring,
+# independently of who committed it -- and asks them BY RUNNING THE
+# COMMITTER'S OWN read-only `scan`, rather than by restating eleven
+# regular expressions and a reviewed baseline here.  Two copies of a rule
+# set are two things to keep in step, and they answer differently the
+# first time one of them is updated.  `scan` takes no lock (it is a
+# reporter, like `status`), so it cannot deadlock against the exclusive
+# hold this gate is running under.
+#
+# What it establishes, in one property because the diagnosis names which
+# half of it failed:
+#
+#   * a hard link into this tree publishes bytes that live somewhere else
+#     and is an ordinary regular file to every other test here;
+#   * a symlink is invisible to a `find -type f` sweep entirely;
+#   * a file owned by another account was put here by somebody else;
+#   * another filesystem mounted inside the tree is a whole tree of
+#     content nobody in this pipeline produced;
+#   * and an innocuously named file holding a credential satisfies every
+#     structural question either of those asks.
+#
+# It is artifact-shaped, so the pre-commit phase answers it; a commit does
+# not change what a path is or what it contains, and `--phase all` is how
+# it is re-measured deliberately.
+check_staging_soundness() {
+    local name="every artifact is a single-linked regular file this \
+account owns, carrying no secret material"
+    local committer="${PLAYTHROUGH_TOOLING_DIR}/commit_artifacts.sh"
+    local output="" status=0
+    if [ ! -x "${committer}" ]; then
+        record_fail "${name}" \
+            "$(rel "${committer}"), which owns the provenance rules and \
+the reviewed secret baseline, is not beside this gate or is not \
+executable" \
+            "the committer present, so that ONE rule set answers this \
+question wherever it is asked"
+        return 0
+    fi
+    set +e
+    output="$(bounded "${BOUND_SUITE_SECONDS}" "/bin/bash" --noprofile \
+        --norc "${committer}" scan 2>&1)"
+    status=$?
+    set -e
+    # THE LAST LINE ONLY, and that is about the committed report rather
+    # than about brevity.  `scan` re-asserts the repository first, so its
+    # output opens with the branch name and the git-configuration
+    # containment note -- both true, neither an answer to THIS question,
+    # and the branch name in particular would make a committed acceptance
+    # report differ between branches while measuring an identical tree.
+    # The conclusion is the last line either way: the soundness statement
+    # when it holds, the refusal's own diagnosis when it does not.
+    output="$(printf '%s\n' "${output}" | "${SED}" -e '/^[[:space:]]*$/d' \
+        -e 's/^playthrough: //' -e 's/^FATAL: //' | "${TAIL}" -n 1)"
+    if [ "${status}" -eq 0 ]; then
+        record_pass "${name}" "${output:-the committer reported nothing}"
+        return 0
+    fi
+    record_fail "${name}" "exit ${status}: ${output:-<no diagnosis>}" \
+        "directories and single-linked regular files only, all owned by \
+this account and all on the checkout's own filesystem, and no path \
+carrying credential material outside the committer's reviewed baseline.  \
+The engine names its own files and this gate does not second-guess those \
+names -- but WHAT a path is, and what it holds, has to hold regardless of \
+what it is called"
+}
+
+# NOBODY BUT THE OWNER MAY WRITE TO THE EVIDENCE.
+#
+# A security review measured the delivered tree and found FIFTEEN
+# directories at mode 2777 and a hundred and fifty-one files at 0666 --
+# the survivor's save and its log, the engine's options and keybindings,
+# the captioned film and the acceptance report among them.  Every one of
+# those was rewritable, and every one of those directories was a place
+# any local account could delete a frame from and put another in its
+# place.  Nothing in the pipeline said so, because nothing looked.
+#
+# THE PROPERTY IS WRITE, NOT READ, and that distinction is the whole
+# reason this is a fair check rather than an unachievable one.  This tree
+# is committed to a git repository and is meant to be read; making it
+# owner-only would protect nothing that is not about to be published.
+# What may never be true of evidence is that somebody else can change it.
+#
+# The producers enforce it as they go -- playthrough_mkdirs on the
+# artifact directories, capture.sh on the frames directory, launch_game.sh
+# via the engine's umask, embed_captions.sh on the captioned film,
+# publish_report on the report -- and this is the sweep that proves they
+# all did, over every path rather than over the ones somebody remembered.
+check_no_foreign_write() {
+    local name="nothing under playthrough/ is writable by any account \
+but its owner"
+    local -a offenders=()
+    local path="" total=0
+    while IFS= read -r path; do
+        [ -n "${path}" ] || continue
+        total=$((total + 1))
+        if [ "${#offenders[@]}" -lt 5 ]; then
+            offenders+=("$(rel "${path}") ($(
+                playthrough_permission_bits "${path}" || printf '?'))")
+        fi
+    done < <("${FIND}" "${PLAYTHROUGH_DIR}" \
+        \( -type f -o -type d \) -perm /022 -print 2>/dev/null || true)
+    if [ "${total}" -eq 0 ]; then
+        record_pass "${name}" \
+            "every file and directory under $(rel "${PLAYTHROUGH_DIR}") \
+withholds write access from group and other"
+        return 0
+    fi
+    record_fail "${name}" \
+        "${total} path(s) grant write access to group or other, \
+including ${offenders[*]}" \
+        "none.  A frame, a save or a film another account can rewrite is \
+substitutable, so it is not evidence about this session -- run 'chmod -R \
+go-w $(rel "${PLAYTHROUGH_DIR}")' and find out which producer left it \
+open"
+}
+
 # THE COMMIT ORDER.  Ancestry, not dates: a timestamp can be anything,
 # whereas "this commit is reachable from that one" is a fact about the
 # graph.  The dossier had to exist before the first gameplay frame, so its
@@ -8305,6 +8881,7 @@ requirement is an order rather than a coexistence"
 check_git_identity() {
     local ident="" configured="" committed=""
     local local_name="" local_email="" scope="" caveat=""
+    local observed_new="" observed_ok=""
     local_name="$("${GIT}" config --local --get user.name \
         2>/dev/null || true)"
     local_email="$("${GIT}" config --local --get user.email \
@@ -8322,18 +8899,14 @@ check_git_identity() {
         # by cutting at the last "> ", then put the bracket back.
         configured="${ident%> *}>"
     fi
+    local repository_local="no"
     if [ -n "${local_name}" ] && [ -n "${local_email}" ]; then
         scope="this checkout's own .git/config"
+        repository_local="yes"
     elif [ -n "${configured}" ]; then
         scope="a broader scope than this checkout"
         caveat=".  It is NOT repository-local: 'git config --local \
---get user.name' answers nothing here.  That is a KNOWN AND DELIBERATE \
-divergence from the plan's sections 0.3.1 and 0.10.2, which ask for a \
-repository-local pair -- the execution environment this record was \
-produced in forbids running 'git config user.name' or 'user.email' at \
-any scope and fixes the committer identity itself, so creating one \
-would have been a violation rather than a compliance.  It is recorded \
-in playthrough/TECHNICAL_NOTES.md rather than papered over"
+--get user.name' answers nothing here"
     fi
     if [ -z "${configured}" ]; then
         record_fail "git has an identity to commit these artifacts \
@@ -8348,11 +8921,29 @@ and the film cannot become the committed evidence R1 and R3 require"
     committed="$("${GIT}" log --max-count=1 --format='%an <%ae>' \
         HEAD -- "${PLAYTHROUGH_DIR}" 2>/dev/null || true)"
     if [ -z "${committed}" ]; then
-        record_pass "git has an identity to commit these artifacts \
-under, and the history agrees with it" \
-            "${configured}, resolved from ${scope}; no commit has \
-touched $(rel "${PLAYTHROUGH_DIR}") yet, so there is no committed \
-identity to compare it against${caveat}"
+        observed_new="${configured}, resolved from ${scope}; no \
+commit has touched $(rel "${PLAYTHROUGH_DIR}") yet, so there is no \
+committed identity to compare it against${caveat}"
+        if [ "${repository_local}" = "yes" ]; then
+            record_pass "git has an identity to commit these artifacts \
+under, and the history agrees with it" "${observed_new}"
+        else
+            record_divergence "git has an identity to commit these artifacts \
+under, and the history agrees with it" "${observed_new}" \
+                "a repository-local pair -- 'git config --local user.name' and \
+'user.email' set in this checkout's own .git/config, per the \
+plan's sections 0.3.1 and 0.10.2" \
+                "the execution environment this record was produced in FIXES the \
+committer identity itself and PROHIBITS running 'git config \
+user.name' or 'user.email' at any scope, so creating the pair the \
+plan asks for would have been a violation rather than a \
+compliance.  The property the plan wanted it FOR does hold and is \
+measured above: an identity resolves, and it is the one the \
+history was committed under.  What does not hold is where it is \
+configured.  This is reported as a divergence rather than a pass \
+because a report that reads as compliance is the defect; it is \
+recorded in playthrough/TECHNICAL_NOTES.md as well"
+        fi
         return 0
     fi
     # BEING RESOLVABLE IS NOT THE WHOLE REQUIREMENT.  An identity that
@@ -8362,11 +8953,29 @@ identity to compare it against${caveat}"
     # playthrough/.  This is the half of the old check that was always
     # the load-bearing one, and it is kept exactly.
     if [ "${configured}" = "${committed}" ]; then
-        record_pass "git has an identity to commit these artifacts \
-under, and the history agrees with it" \
-            "${configured}, resolved from ${scope}, and the newest \
-commit touching $(rel "${PLAYTHROUGH_DIR}") is authored by the same \
-identity${caveat}"
+        observed_ok="${configured}, resolved from ${scope}, and \
+the newest commit touching $(rel "${PLAYTHROUGH_DIR}") is authored by \
+the same identity${caveat}"
+        if [ "${repository_local}" = "yes" ]; then
+            record_pass "git has an identity to commit these artifacts \
+under, and the history agrees with it" "${observed_ok}"
+        else
+            record_divergence "git has an identity to commit these artifacts \
+under, and the history agrees with it" "${observed_ok}" \
+                "a repository-local pair -- 'git config --local user.name' and \
+'user.email' set in this checkout's own .git/config, per the \
+plan's sections 0.3.1 and 0.10.2" \
+                "the execution environment this record was produced in FIXES the \
+committer identity itself and PROHIBITS running 'git config \
+user.name' or 'user.email' at any scope, so creating the pair the \
+plan asks for would have been a violation rather than a \
+compliance.  The property the plan wanted it FOR does hold and is \
+measured above: an identity resolves, and it is the one the \
+history was committed under.  What does not hold is where it is \
+configured.  This is reported as a divergence rather than a pass \
+because a report that reads as compliance is the defect; it is \
+recorded in playthrough/TECHNICAL_NOTES.md as well"
+        fi
         return 0
     fi
     record_fail "git has an identity to commit these artifacts under, \
@@ -8837,12 +9446,93 @@ evidence, because a bundled single commit cannot prove the order the \
 requirement is about"
 }
 
+# check_evidence_anchor_trailer -- the chain head, in the history.
+#
+# THE HALF OF THE ANCHOR THAT MAKES IT INDEPENDENT.  Group 2 proves the
+# chain is internally sound and that every sealed artifact still matches
+# its seal.  Both of those read files that sit in the same tree as the
+# evidence, so an attacker who rewrites an artifact and then rewrites the
+# ledger to match satisfies them -- the chain would be recomputed from
+# the forged rows and agree with itself.
+#
+# What that attacker cannot recompute is a COMMIT.  A commit object's
+# name is a hash of its own content, including its message, so the head
+# published in this trailer is fixed the moment the checkpoint is taken:
+# changing it changes the commit id and every id after it, which is a
+# rewrite of published history rather than an edit of a file.  So the
+# comparison here -- the head the ledger ends on against the head the
+# newest checkpoint commit declared -- is the one that cannot be
+# satisfied by editing the working tree.
+#
+# A COMMIT WITH NO TRAILER IS A FAILURE, not an exemption.  The trailer
+# is written by commit_artifacts.sh at every checkpoint; a checkpoint
+# without one is either an older commit from before the anchor existed --
+# in which case the current head has never been published and the anchor
+# proves nothing about this history -- or a checkpoint taken by something
+# other than the committer.  Both are worth reporting rather than
+# passing.
+check_evidence_anchor_trailer() {
+    local name="the evidence anchor's head is published in the history"
+    local commit="" declared="" head="" subject=""
+    head="$(bounded "${BOUND_PROBE_SECONDS}" "${PYTHON}" -B -c '
+import sys
+
+sys.path.insert(0, sys.argv[1])
+import manifest
+
+print(manifest.anchor_head(manifest.read_anchor_rows(
+    sys.argv[2] or None)))
+' "${PLAYTHROUGH_TOOLING_DIR}" \
+        "$(rel "${PLAYTHROUGH_EVIDENCE_ANCHOR}")" \
+        2>"$(tool_error_file anchor)" | "${HEAD}" -n 1 || true)"
+    if [ -z "${head}" ]; then
+        record_fail "${name}" \
+            "the evidence anchor has no chain head to compare\
+$(because anchor)" \
+            "a sealed evidence tree -- commit_artifacts.sh seals the \
+artifacts and publishes the head at each checkpoint"
+        return 0
+    fi
+    commit="$("${GIT}" log --max-count=1 --format='%H' \
+        --grep="^${ANCHOR_TRAILER_KEY}: " HEAD -- 2>/dev/null || true)"
+    if [ -z "${commit}" ]; then
+        record_fail "${name}" \
+            "the anchor ends on ${head:0:16} and no commit reachable \
+from HEAD carries a '${ANCHOR_TRAILER_KEY}:' trailer" \
+            "the newest checkpoint publishing the head, so that \
+rewriting an artifact would also require rewriting history.  A ledger \
+whose head appears nowhere in the history is one more mutable file \
+beside the evidence"
+        return 0
+    fi
+    declared="$("${GIT}" log --max-count=1 --format='%B' "${commit}" \
+        2>/dev/null | "${SED}" -n \
+        "s/^${ANCHOR_TRAILER_KEY}: //p" | "${HEAD}" -n 1 || true)"
+    subject="$("${GIT}" log --max-count=1 --format='%h %s' "${commit}" \
+        2>/dev/null || true)"
+    if [ "${declared}" = "${head}" ]; then
+        record_pass "${name}" \
+            "commit ${subject} declares ${ANCHOR_TRAILER_KEY}: \
+${declared:0:16}, which is the head the anchor ends on"
+        return 0
+    fi
+    record_fail "${name}" \
+        "the anchor ends on ${head:0:16} and the newest commit carrying \
+the trailer (${subject}) declares ${declared:0:16}" \
+        "the same value.  A newer head than the history publishes means \
+the evidence was sealed again WITHOUT a checkpoint -- take one so the \
+head is fixed in a commit object -- and a head the history does not \
+recognise at all means the ledger was rewritten after it was published"
+}
+
 group_version_control() {
     group 7 "version control -- the save is really committed"
     check_git_worktree
+    check_git_config_credential_mode
     check_git_identity
     check_nothing_ignored
     check_no_bytecode
+    check_no_foreign_write
     if tracking_phase; then
         check_save_tracked
         check_every_class_tracked
@@ -8853,6 +9543,7 @@ group_version_control() {
         check_lifecycle_checkpoints
         check_checkpoints_are_this_session
         check_head_generation_checkpoints
+        check_evidence_anchor_trailer
     else
         # The number is DERIVED from the declared table rather than
         # spelled out in prose, because a spelled-out one is a second
@@ -8877,7 +9568,8 @@ the ${PHASE_POST_COMMIT} phase" \
             "the save, the artifact classes and the captures being \
 tracked; nothing being left uncommitted; the commit order; the \
 committed ignore rules; the checkpoint anchors; whether the \
-checkpoints are about the survivor in the tree; and, from group 9, \
+checkpoints are about the survivor in the tree; whether the evidence \
+anchor's head is published in the history; and, from group 9, \
 the change surface -- none of them can hold before the checkpoint \
 that makes them true, and this phase runs ahead of it"
     fi
@@ -9648,6 +10340,104 @@ playthrough/" "${total} path(s) outside the allowance: ${shown}" \
 only for this feature"
 }
 
+# check_security_controls
+#   Every security control this tooling relies on is present, and the
+#   report says which ones they are.
+#
+#   WHY A CHECK AND NOT A PARAGRAPH.  A review found the acceptance
+#   report and REPORT.md recording a known plan divergence as a pass AND
+#   "omitting security controls" -- the two halves of one problem, which
+#   is that the report described the run in terms of counts and said
+#   nothing about what was actually being enforced.  A reader could not
+#   tell a run with these controls from a run without them.
+#
+#   So the controls are INVENTORIED HERE, by asserting each one is still
+#   in the code, and the names are printed in the observed text -- which
+#   means playthrough/acceptance-report.txt carries the list as evidence
+#   rather than as a claim somebody maintains by hand.  A control that is
+#   removed or renamed fails this check instead of quietly disappearing
+#   from the report.
+#
+#   Each entry is `label|file|marker`.  The marker is the smallest thing
+#   whose absence means the control is gone -- a function name or a
+#   verdict name -- not a fragment of prose, which could be reworded
+#   without weakening anything.
+readonly SECURITY_CONTROLS="\
+credential containment: the git config carrying the push token is \
+owner-only|commit_artifacts.sh|assert_credential_containment
+git runs no hook on a mutating command|commit_artifacts.sh|hooks_void
+the published commit tree is bound to the validated \
+index|commit_artifacts.sh|assert_commit_tree_matches_index
+staging provenance: owner, regular file, single link, same \
+device|commit_artifacts.sh|assert_staging_provenance
+a secret and credential scan over every path before it is \
+staged|commit_artifacts.sh|assert_no_secret_material
+the runtime anchor refuses a group- or world-writable non-sticky \
+ancestor|env.sh|playthrough_check_path_ancestry
+artifacts are created owner-only and foreign writability is \
+refused|env.sh|playthrough_deny_foreign_write
+the inherited environment is sanitised before any child \
+runs|env.sh|playthrough_sanitize_environment
+one checkout-wide mutation lock, shared for producers and exclusive \
+for the committer|env.sh|playthrough_acquire_lock
+the X server is identified by process identity, socket and cookie \
+digest|env.sh|playthrough_pid_identity
+a fresh X authority cookie per server generation|env.sh|\
+playthrough_ensure_xauth
+values chosen outside this pipeline are held to a record-token \
+grammar|env.sh|playthrough_assert_record_token
+every diagnostic escapes control bytes|env.sh|\
+playthrough_escape_controls
+the evidence ledgers are hash-chained and anchored to git blob \
+names|manifest.py|seal_artifacts
+journal writes are verified and durability failures \
+propagate|session.py|_write_durably
+the machine-readable payload cannot be forged by a chosen \
+value|session.py|_CONTROL_RE
+the decoder is entered only on an owner-only regular \
+file|ocr_clock.py|assert_decodable_provenance
+the decode runs under resource limits with core dumps \
+forbidden|ocr_clock.py|decode_limits
+the composer checks provenance before MoviePy decodes|make_transitions.py|\
+_assert_decodable_provenance
+the survivor name is held to a conservative grammar rather than \
+escaped|make_srt.py|assert_survivor_name_grammar
+the container is identified by image id and build-inputs \
+digest|supported_env.sh|assert_image_provenance"
+
+check_security_controls() {
+    local missing=() present=() line label file marker source
+    while IFS= read -r line; do
+        [ -n "${line}" ] || continue
+        label="${line%%|*}"
+        file="${line#*|}"
+        marker="${file#*|}"
+        file="${file%%|*}"
+        source="${PLAYTHROUGH_TOOLING_DIR}/${file}"
+        if [ ! -f "${source}" ]; then
+            missing+=("${label} (${file} is absent)")
+        elif ! "${GREP}" -q -- "${marker}" "${source}"; then
+            missing+=("${label} (${file} no longer defines ${marker})")
+        else
+            present+=("${label}")
+        fi
+    done <<EOF
+${SECURITY_CONTROLS}
+EOF
+    if [ "${#missing[@]}" -gt 0 ]; then
+        record_fail "every security control this record relies on is \
+present, and this report names them" \
+            "$(printf '%s; ' "${missing[@]}")" \
+            "each control still in the file that implements it -- a \
+control removed silently would leave this report describing \
+protections the delivered code no longer has"
+        return 0
+    fi
+    record_pass "every security control this record relies on is \
+present, and this report names them" \
+        "${#present[@]} control(s): $(printf '%s; ' "${present[@]}")"
+}
+
 group_hygiene() {
     group 9 "the binary, the required artwork and repository hygiene"
     # THE ARTIFACT-SHAPED HALF OF THIS GROUP.  The binary, the artwork,
@@ -9672,6 +10462,8 @@ group_hygiene() {
         check_lint_scoped
         check_flake8_not_weakened
         check_timeline_tests
+        check_staging_soundness
+        check_security_controls
     fi
     # The change surface is measured from a base commit to HEAD, so it
     # is a property of the COMMIT: before the checkpoint, the artifacts
@@ -9820,7 +10612,10 @@ group_inventory() {
 # report.
 # ---------------------------------------------------------------------
 summarise_run() {
-    local total=$((PASSES + FAILURES))
+    # A divergence IS a performed check -- it registered a name
+    # in the inventory -- so it is counted in the total; it is
+    # just neither a pass nor a failure.
+    local total=$((PASSES + FAILURES + DIVERGENCES))
     local message=""
     say '\n'
     # The declared inventory is printed on the summary line as well as
@@ -9831,14 +10626,27 @@ summarise_run() {
         counted="${total} of ${EXPECTED_CHECKS} declared"
     fi
     counted="${counted} for the '${PHASE}' phase"
-    if [ "${FAILURES}" -eq 0 ]; then
+    if [ "${FAILURES}" -eq 0 ] && [ "${DIVERGENCES}" -eq 0 ]; then
         message="SUMMARY  ${PASSES} of ${total} checks passed "
         message="${message}(${counted}), ${INFOS} informational "
         message="${message}note(s); the committed artifacts are what "
         message="${message}they claim to be."
+    elif [ "${FAILURES}" -eq 0 ]; then
+        # NOTHING FAILED AND THE RUN STILL DOES NOT CLAIM COMPLIANCE.
+        # The sentence a reader takes away has to say so: this used to
+        # end "the committed artifacts are what they claim to be" while
+        # a known departure from the plan sat above it reported as PASS.
+        message="SUMMARY  ${PASSES} of ${total} checks passed with "
+        message="${message}${DIVERGENCES} DIVERGENCE(S) from the plan "
+        message="${message}(${counted}), ${INFOS} informational "
+        message="${message}note(s).  Nothing FAILED, but the run does "
+        message="${message}not claim full compliance: each divergence "
+        message="${message}above prints what the plan requires, what "
+        message="${message}was delivered instead, and why it stands."
     else
         message="SUMMARY  ${FAILURES} of ${total} checks FAILED "
-        message="${message}(${PASSES} passed, ${counted}, ${INFOS} "
+        message="${message}(${PASSES} passed, ${DIVERGENCES} "
+        message="${message}divergence(s), ${counted}, ${INFOS} "
         message="${message}informational note(s)).  Each failure above "
         message="${message}prints what was observed next to what was "
         message="${message}required."
@@ -9857,6 +10665,7 @@ summarise_run() {
     note VERIFY_EXPECTED_CHECKS "${EXPECTED_CHECKS}"
     note VERIFY_PASSES "${PASSES}"
     note VERIFY_FAILURES "${FAILURES}"
+    note VERIFY_DIVERGENCES "${DIVERGENCES}"
     note VERIFY_INFOS "${INFOS}"
     note VERIFY_CAPTURES "$(fact capture_count '?')"
     note VERIFY_ROWS "$(fact manifest_rows '?')"
@@ -9873,10 +10682,20 @@ summarise_run() {
     else
         note VERIFY_REPORT none
     fi
-    if [ "${FAILURES}" -eq 0 ]; then
-        note VERIFY pass
-    else
+    # THE ONE TOKEN EVERY CALLER READS.  A third value rather than
+    # folding a divergence into `pass`: a review found this gate
+    # publishing VERIFY=pass while a known departure from the plan sat
+    # in the report above it, and the acceptance report and REPORT.md
+    # then inherited the word `pass` without the prose that qualified it.
+    # A caller that only understands pass/fail treats
+    # `pass-with-divergence` as neither, which is the correct default for
+    # something it has no rule for.
+    if [ "${FAILURES}" -ne 0 ]; then
         note VERIFY fail
+    elif [ "${DIVERGENCES}" -ne 0 ]; then
+        note VERIFY pass-with-divergence
+    else
+        note VERIFY pass
     fi
 }
 
@@ -9887,9 +10706,11 @@ main() {
     # unverified; the verdict on this is reported by check_tool_inventory
     # in group 1, where the report has begun.
     resolve_tools
+    take_mutation_lock
     open_scratch
     : >"${SCRATCH}/facts"
     emit_record_checker
+    emit_evidence_checker
     emit_timeline_checker
     emit_caption_checker
     emit_render_checker

@@ -172,11 +172,66 @@ READ_GAME_PID_CALL = 3
 # fixture has to spawn its impostors onto the same one.
 DISPLAY = ":99"
 
-# The XDG runtime root env.sh derives with no CLONE_INDEX set, and the
-# only place a nominated PLAYTHROUGH_RUNTIME_DIR may now live.  Created
-# at 0700 here so that the first source of env.sh in a run finds it
-# already private rather than having to tighten it.
-XDG_RUNTIME_ROOT = "/tmp/xdg"
+
+def _unsafe_ancestor(path):
+    """The first group/world-writable non-sticky directory at or above
+    `path`, or None.
+
+    The Python twin of env.sh's playthrough_untrusted_ancestor, restated
+    here because each suite in this directory is self-contained.  The
+    sticky bit is the deciding property: without it any account with write
+    permission may rename or unlink any entry regardless of owner, and
+    with it only the entry's owner may -- which is why a private tree
+    under a conventional 1777 /tmp is safe and one under a 2777 /tmp is
+    not.
+    """
+    entry = os.path.realpath(path)
+    while True:
+        try:
+            mode = os.stat(entry).st_mode
+        except OSError:
+            mode = None
+        if mode is not None and (mode & 0o022) and not (mode & stat.S_ISVTX):
+            return entry
+        if entry == "/":
+            return None
+        entry = os.path.dirname(entry) or "/"
+
+
+def _xdg_runtime_root():
+    """A private 0700 base whose whole ROAD is owner- or root-controlled.
+
+    This used to be the literal "/tmp/xdg", which is what env.sh derives
+    with no CLONE_INDEX set, and it is the only place a nominated
+    PLAYTHROUGH_RUNTIME_DIR may live.  A security review closed a gap that
+    changes what this fixture has to provide: env.sh now REFUSES a launch
+    whose runtime anchor or checkout is reached through a group- or
+    world-writable non-sticky directory, because in such a directory any
+    account may rename the anchor out from under the run.  On the
+    provisioning host /tmp is mode 2777, so "/tmp/xdg" is exactly that
+    case and every launch test would refuse.
+
+    Declaring the waiver would be the wrong repair: it is a registered
+    trust bypass, it forces the diagnostic state, and this suite's own
+    subject then refuses a capture launch for a different reason -- so the
+    production path would never be exercised at all.  The sandbox is built
+    to PASS the real checks, as the fixture's own comment says, so it now
+    provides a base that genuinely passes: the conventional address where
+    /tmp is sticky, and a root-owned /run address where it is not.  The
+    fixture nominates it with PLAYTHROUGH_XDG_ANCHOR, which env.sh holds
+    to exactly the same verification as its own default.
+    """
+    conventional = "/tmp/xdg"
+    if _unsafe_ancestor(conventional) is None:
+        base = conventional
+    else:
+        base = "/run/playthrough-test-%d" % os.geteuid()
+    os.makedirs(base, mode=0o700, exist_ok=True)
+    os.chmod(base, 0o700)
+    return base
+
+
+XDG_RUNTIME_ROOT = _xdg_runtime_root()
 
 MSX_ID = "MshockXottoplus"
 MSX_VIEW = "MSXotto+"
@@ -734,13 +789,38 @@ class LaunchFixture(unittest.TestCase):
         run_dir = os.path.join(self.scratch, "run")
         os.makedirs(run_dir, mode=0o700, exist_ok=True)
         record = os.path.join(run_dir, "x-ownership99")
-        self.write(
-            record,
-            "display=%s\nkind=pipeline\npid=%d\nrepo=%s\n"
-            "screen=1920x1080x24\nauthority=pipeline\n"
-            "recorded=1970-01-01T00:00:00Z\n"
-            % (DISPLAY, process.pid, self.checkout),
-            mode=0o600)
+        # THE RECORD IS WRITTEN BY THE CODE THAT WRITES THE REAL ONE,
+        # rather than by a copy of its format kept here. This method's
+        # promise is that "the record is made the way the real one is",
+        # and a hand-built record can only keep that promise until the
+        # format moves. It moved: a security review found the record
+        # carrying nothing but a pid and a command name, so it now also
+        # carries the process's start time, uid, resolved executable and
+        # argument vector, the display socket's device and inode, and a
+        # digest of the cookie the server was started with. A fixture
+        # still writing the six-field form produced a record that env.sh
+        # correctly classified `replaced` -- something IS answering and it
+        # is not what was recorded -- which held the trust state at
+        # diagnostic and refused every capture launch in this suite.
+        #
+        # Calling playthrough_record_x_ownership makes that class of
+        # failure impossible rather than merely fixed: whatever the record
+        # comes to contain, the fixture writes exactly it.
+        status, _, errors = self.run_sourced(
+            'playthrough_record_x_ownership pipeline %d\n' % process.pid)
+        # A fixture that fails to establish ownership must say so. If this
+        # were allowed to pass quietly, every test built on it would run
+        # against the `foreign` refusal and still report a green result
+        # for the path it believes it is measuring.
+        self.assertEqual(
+            status, EX_OK,
+            msg="the sandbox could not record its own display ownership, "
+                "so nothing below is measuring an owned display:\n%s"
+                % errors)
+        self.assertTrue(
+            os.path.isfile(record),
+            msg="playthrough_record_x_ownership reported success but "
+                "wrote no record at %s" % record)
         return record
 
     def stop_display_owner(self, process):
@@ -1103,6 +1183,11 @@ class LaunchFixture(unittest.TestCase):
             # tree, while a real checkout is not.  The gate and the
             # nomination both have their own coverage in test_env.py.
             "PLAYTHROUGH_OS_RELEASE": self.supported_os_release(),
+            # THE RUNTIME ANCHOR, NOMINATED RATHER THAN INHERITED.  See
+            # _xdg_runtime_root: env.sh refuses a launch whose anchor is
+            # reached through a world-writable non-sticky directory, and
+            # the sandbox satisfies that check rather than waiving it.
+            "PLAYTHROUGH_XDG_ANCHOR": XDG_RUNTIME_ROOT,
             "PLAYTHROUGH_PYTHON": interpreter,
             "PLAYTHROUGH_WINDOW_TIMEOUT": "10",
             "PLAYTHROUGH_STOP_TIMEOUT": "10",
@@ -3202,6 +3287,14 @@ class TestTheTrustState(LaunchFixture):
         # under it.  It forces the diagnostic state now, and the four
         # stages that make production media refuse under it.
         "PLAYTHROUGH_ALLOW_EOL_PLATFORM",
+        # ADDED BY THE SAME REVIEW, one finding later.  A component of
+        # the path to this run's own evidence or runtime state can be
+        # renamed or replaced by another local account, so a frame, a
+        # save or a lock may not be the one this pipeline wrote.
+        # playthrough_check_path_ancestry refuses a launch on it; this is
+        # the waiver that proceeds, and it belongs here for the same
+        # reason the platform one does.
+        "PLAYTHROUGH_ALLOW_UNSAFE_PATH_ANCESTRY",
     )
 
     def seeded(self):
@@ -4145,6 +4238,133 @@ class TestALiveInstance(LaunchFixture):
                 self.assertTrue(
                     os.path.isdir(os.path.join(self.checkout,
                                                relative)))
+
+
+class TestAWorldNameCannotForgeTheRecord(LaunchFixture):
+    """A world name is a directory name, so it is somebody else's string.
+
+    The engine writes it from what the player typed, and any local account
+    able to create a directory under the save tree writes whatever it
+    likes.  From there it reached `playthrough: WARNING: save/<name>` and
+    PLAYTHROUGH_SAVE_WORLD -- and this script's stdout is parsed as
+    KEY=value by run_pipeline.sh and by the capture stage.
+
+    So a name containing a newline emitted a line of the record that
+    nothing wrote, with no way for the parser to tell it from a fact.
+    """
+
+    def probe(self, **overrides):
+        """Run the probe subcommand and return its emitted keys.
+
+        Defined here rather than inherited from TestTheResumeProbe:
+        subclassing a TestCase re-runs every one of its tests, so the
+        two-line helper is cheaper than executing that suite twice.
+        """
+        status, out, err = self.run_launch("probe", **overrides)
+        return status, self.emitted(out), err
+
+    def test_an_ordinary_world_is_still_reported(self):
+        """The guard must not refuse the ordinary case."""
+        self.install_world("Sunnyside", ("#a.sav",))
+        status, emitted, _ = self.probe()
+        self.assertEqual(status, EX_OK)
+        self.assertEqual(emitted["PLAYTHROUGH_SAVE_WORLD"], "Sunnyside")
+
+    def test_an_accented_world_name_is_accepted(self):
+        """Refusing a name for not being English would not be safety."""
+        self.install_world("Sunnysid\u00e9", ("#a.sav",))
+        status, emitted, _ = self.probe()
+        self.assertEqual(status, EX_OK)
+        self.assertEqual(emitted["PLAYTHROUGH_SAVE_WORLD"],
+                         "Sunnysid\u00e9")
+
+    def test_a_world_whose_name_carries_a_newline_is_skipped(self):
+        """Skipped rather than fatal, and named with its bytes escaped.
+
+        One unusable directory must not make an otherwise sound save tree
+        unreadable, so the world is excluded and the run continues.
+        """
+        self.install_world("Evil\nPLAYTHROUGH_TRUST_STATE=trusted",
+                           ("#a.sav",))
+        self.install_world("Sunnyside", ("#b.sav",))
+        status, emitted, err = self.probe()
+        self.assertEqual(status, EX_OK)
+        self.assertEqual(
+            emitted["PLAYTHROUGH_SAVE_WORLD"], "Sunnyside",
+            msg="the readable world is still resolved")
+        self.assertEqual(
+            emitted["PLAYTHROUGH_SAVE_WORLD_COUNT"], "1",
+            msg="the unusable directory is not counted as a world")
+        self.assertIn("NOT treated as a world", err)
+        self.assertIn("Evil<0A>", err)
+
+    def test_the_forged_key_never_reaches_the_payload(self):
+        """The property the whole class exists for.
+
+        The parser reads stdout as KEY=value, so the test asserts on the
+        PARSED payload: the injected key must not be in it.
+        """
+        self.install_world("Evil\nPLAYTHROUGH_TRUST_STATE=trusted",
+                           ("#a.sav",))
+        _status, emitted, _err = self.probe()
+        self.assertNotIn(
+            "PLAYTHROUGH_TRUST_STATE", emitted,
+            msg="a directory name asserted a key of the record")
+
+    def test_a_diagnostic_does_not_perform_the_injection(self):
+        """A warning that printed the raw bytes would forge the line
+        it is complaining about."""
+        self.install_world("Evil\nplaythrough: FORGED", ("#a.sav",))
+        _status, _emitted, err = self.probe()
+        forged = [line for line in err.splitlines()
+                  if line.startswith("playthrough: FORGED")]
+        self.assertEqual(forged, [], msg=err)
+        self.assertIn("Evil<0A>playthrough: FORGED", err)
+
+    def test_an_ansi_sequence_in_a_world_name_is_escaped(self):
+        """It would otherwise repaint the reader's terminal."""
+        self.install_world("Evil\x1b[31mRED", ("#a.sav",))
+        _status, _emitted, err = self.probe()
+        self.assertIn("Evil<1B>[31mRED", err)
+        self.assertNotIn("\x1b[31m", err)
+
+    def test_the_emit_channel_refuses_a_control_itself(self):
+        """Belt and braces, at the channel rather than at one caller.
+
+        The caller-side grammar catches this earlier and with a better
+        diagnosis, but `emit` is where every value leaves -- so it is
+        guarded too, and a future caller that forgets cannot forge a line.
+        """
+        status, out, err = self.run_sourced(
+            'emit PLAYTHROUGH_PROBE "$(printf \'a\\nb\')"\n')
+        self.assertNotIn("PLAYTHROUGH_PROBE=a", out)
+        self.assertIn("carries a control", err)
+        # `emit` refuses through `die`, which exits -- so the sourced
+        # shell ends with the layout status rather than returning.
+        self.assertEqual(status, EX_LAYOUT)
+
+    def test_the_emit_channel_permits_an_empty_value(self):
+        """Emptiness is meaningful on this channel.
+
+        An absent world is `PLAYTHROUGH_SAVE_WORLD=` and an unresolved
+        binary is `PLAYTHROUGH_GAME_BIN=`, so a guard that refused it
+        would refuse about a dozen correct emissions.
+        """
+        _status, out, _err = self.run_sourced(
+            'emit PLAYTHROUGH_PROBE ""\n')
+        self.assertIn("PLAYTHROUGH_PROBE=", out)
+
+    def test_the_emit_channel_refuses_an_overlong_value(self):
+        # 200 characters, built with a width-padded printf and a
+        # substitution rather than by relying on format recycling -- the
+        # `printf 'x%.0s' $(seq ...)` idiom produced ONE x here and the
+        # test passed against a value the ceiling correctly accepted.
+        status, out, err = self.run_sourced(
+            'wide="$(printf \'%200s\' \'\')"\n'
+            'emit PLAYTHROUGH_PROBE "${wide// /x}"\n')
+        self.assertNotIn("PLAYTHROUGH_PROBE=x", out)
+        self.assertIn("past the", err)
+        self.assertEqual(status, EX_LAYOUT)
 
 
 class TestTheSuiteTouchesNothingReal(LaunchFixture):

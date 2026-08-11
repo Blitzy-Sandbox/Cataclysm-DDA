@@ -56,6 +56,7 @@ written, and no container is ever started.
 
 import io
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -111,6 +112,35 @@ case "$1" in
         ;;
     image)
         [ -f "${STUB_DIR}/no-image" ] && exit 1
+        # `docker image inspect` now answers TWO questions besides mere
+        # existence, because the driver stopped trusting the tag: what
+        # immutable id the tag resolves to, and what build-inputs digest
+        # the image was labelled with.  Both are answered per template
+        # for the same reason the container inspect is.
+        format=""
+        want=0
+        for one in "$@"; do
+            if [ "${want}" = "1" ]; then format="${one}"; want=0; fi
+            if [ "${one}" = "--format" ]; then want=1; fi
+        done
+        case "${format}" in
+            *Config.Labels*)
+                if [ -f "${STUB_DIR}/image-label" ]; then
+                    cat "${STUB_DIR}/image-label"
+                else
+                    printf '%s\n' '<no value>'
+                fi
+                ;;
+            *.Id*)
+                if [ -f "${STUB_DIR}/image-id" ]; then
+                    cat "${STUB_DIR}/image-id"
+                else
+                    printf '%s\n' \
+                        'sha256:1111111111111111111111111111111111\
+111111111111111111111111111111'
+                fi
+                ;;
+        esac
         exit 0
         ;;
     build)
@@ -172,6 +202,14 @@ unexpected "\\" in operand' >&2
         esac
         case "${format}" in
             *Config.Image*) file=inspect-image ;;
+            # `{{.Image}}` -- the resolved image ID a container is
+            # running, which is what the driver compares now.  It has to
+            # come BEFORE the Mounts arm only in the sense that it must
+            # exist at all; the old Config.Image arm no longer matches
+            # this template, and without this the answer fell through to
+            # inspect-other and every adoption check compared against an
+            # empty string.
+            *'{{.Image}}'*) file=inspect-container-image ;;
             *Mounts*) file=inspect-mount ;;
             *Config.User*) file=inspect-user ;;
             *) file=inspect-other ;;
@@ -298,6 +336,10 @@ class SupportedEnvFixture(unittest.TestCase):
         with open(fake_ps, "w", encoding="utf-8") as handle:
             handle.write(FAKE_PS)
         os.chmod(fake_ps, 0o755)
+        # The image is stamped as one this checkout built, because that
+        # is the ordinary state and the driver now refuses anything else.
+        # See stamp_image.
+        self.stamp_image()
 
     # -- the harness -------------------------------------------------
 
@@ -323,6 +365,60 @@ class SupportedEnvFixture(unittest.TestCase):
         with open(os.path.join(self.stub_dir, name), "w",
                   encoding="utf-8") as handle:
             handle.write(contents)
+
+    # The immutable id the stub reports for the image, and the id it
+    # reports for the container that is running it.  They are the same
+    # value on purpose: a container running the image the driver
+    # resolved is the ordinary case, and the tests that prove the
+    # refusal set them apart deliberately.
+    IMAGE_ID = ("sha256:1111111111111111111111111111111111"
+                "111111111111111111111111111111")
+
+    def build_inputs_digest(self):
+        """The digest the DRIVER computes, read from the driver.
+
+        NOT RECOMPUTED HERE.  The value is a sha256 over the sandbox
+        Dockerfile and its two requirements files, and a second
+        implementation of that in Python would be a second definition of
+        the format -- correct exactly until the driver changed how it
+        composes it, and then quietly wrong in a way that makes every
+        test in this file assert against a stale answer.  `build` logs
+        the digest it used, so the answer is asked of the thing that owns
+        it.
+        """
+        result = self.run_script("build")
+        self.assertEqual(result.returncode, 0,
+                         msg=result.stderr.decode("utf-8", "replace"))
+        text = result.stderr.decode("utf-8", "replace")
+        match = re.search(r"build inputs digest ([0-9a-f]{64})", text)
+        self.assertIsNotNone(
+            match,
+            msg="`build` no longer reports the digest it stamped, so "
+                "this fixture cannot stamp the image the way the driver "
+                "does:\n%s" % text)
+        return match.group(1)
+
+    def stamp_image(self, digest=None):
+        """Make the stub's image look like one this checkout built.
+
+        WHY EVERY TEST NEEDS THIS.  require_image now refuses an image
+        that cannot say what it was built from, so without a label the
+        driver stops before doing the thing under test and every
+        assertion here would measure the same refusal.  Tests that are
+        ABOUT that refusal clear the label instead.
+        """
+        self.control("image-id", self.IMAGE_ID + "\n")
+        self.control("inspect-container-image", self.IMAGE_ID + "\n")
+        stamp = digest or self.build_inputs_digest()
+        self.control("image-label", stamp + "\n")
+        # THE SCAFFOLDING MUST NOT APPEAR IN THE EVIDENCE.  Asking the
+        # driver for its digest runs `build`, which the stub records --
+        # and a test asserting "exactly one build was invoked" then counts
+        # this one too and fails for a reason that has nothing to do with
+        # what it measures.  Measured, as exactly that failure.  The log
+        # is truncated so every test sees only the calls IT caused.
+        with open(self.stub_log, "w", encoding="utf-8"):
+            pass
 
     def executable_body(self):
         """The script with whole-line comments removed.
@@ -399,6 +495,97 @@ class SupportedEnvFixture(unittest.TestCase):
         holder = os.path.join(self.base, "no-tools")
         os.makedirs(holder, exist_ok=True)
         return holder
+
+
+class TestTheCopiedEscaperAgreesWithEnvShs(unittest.TestCase):
+    """The second copied definition in this file, held to the same rule.
+
+    This script deliberately does not source env.sh -- doing so on an
+    end-of-life host is the refusal it exists to route around -- so both
+    the trust-bypass list and the control-character escaper are restated
+    here.  A restated definition that nothing compares is a definition
+    waiting to drift, which is why the list already has its own test and
+    why the escaper now does.
+
+    It matters because these two functions are what stop docker output --
+    container ids, image names, labels, mount listings -- from forging a
+    line of this script's diagnostics or repainting the reader's terminal.
+    """
+
+    CASES = (
+        ("plain", "Sunnyside"),
+        ("accented", "Sunnysid\u00e9"),
+        ("cyrillic", "\u0410\u043d\u043d\u0430"),
+        ("newline", "a\nb"),
+        ("tab", "a\tb"),
+        ("escape", "a\x1b[31mRED"),
+        ("delete", "a\x7fb"),
+        ("c1 CSI", "a\u009bb"),
+        ("c1 NEL", "a\u0085b"),
+        ("precomposed e-acute", "a\u00e9b"),
+    )
+
+    def escape_with(self, script, function, value, needs=()):
+        """Run one script's escaper over `value` and return its output.
+
+        `needs` names the helpers the escaper CALLS, which have to be
+        extracted alongside it.  env.sh's version early-outs through
+        playthrough_has_control, and extracting it alone left that name
+        undefined -- an undefined command exits 127, the `||` early-out
+        fired, and the function returned its input unchanged.  It looked
+        exactly like a copy that had stopped escaping.
+        """
+        extract = "".join(
+            'eval "$(sed -n "/^%s() {/,/^}/p" "$1")"\n' % helper
+            for helper in needs)
+        program = (
+            'set -u\n'
+            '%s'
+            'eval "$(sed -n "/^%s() {/,/^}/p" "$1" '
+            '| sed "s/^%s/probe/")"\n'
+            'probe "$2"\n' % (extract, function, function))
+        result = subprocess.run(
+            ["/usr/bin/env", "-i", "PATH=" + BASE_PATH,
+             "/bin/bash", "--noprofile", "--norc", "-c", program,
+             "bash", script, value],
+            cwd=REPO_ROOT, capture_output=True, timeout=180)
+        self.assertEqual(
+            result.returncode, 0,
+            msg=result.stderr.decode("utf-8", "replace"))
+        return result.stdout.decode("utf-8", "replace")
+
+    def test_both_escapers_produce_identical_output(self):
+        for label, value in self.CASES:
+            with self.subTest(case=label):
+                mine = self.escape_with(SUPPORTED_ENV, "escape_controls",
+                                        value)
+                theirs = self.escape_with(
+                    ENV_SH, "playthrough_escape_controls", value,
+                    needs=("playthrough_has_control",))
+                self.assertEqual(mine, theirs)
+
+    def test_the_escaper_actually_escapes(self):
+        """A guard on the guard: two broken copies would agree too."""
+        self.assertEqual(
+            self.escape_with(SUPPORTED_ENV, "escape_controls", "a\nb"),
+            "a<0A>b")
+        self.assertEqual(
+            self.escape_with(SUPPORTED_ENV, "escape_controls",
+                             "a\u009bb"),
+            "a<9B>b")
+
+    def test_legitimate_text_is_left_alone(self):
+        self.assertEqual(
+            self.escape_with(SUPPORTED_ENV, "escape_controls",
+                             "Sunnysid\u00e9"),
+            "Sunnysid\u00e9")
+
+    def test_the_copy_records_why_it_is_a_copy(self):
+        """So the next reader does not "helpfully" import it."""
+        with open(SUPPORTED_ENV, encoding="utf-8") as handle:
+            text = handle.read()
+        self.assertIn("A LOCAL COPY OF env.sh's", text)
+        self.assertIn("does NOT source env.sh", text)
 
 
 class TestTheBypassRegistry(SupportedEnvFixture):
@@ -764,9 +951,14 @@ class TestSessionIdentity(SupportedEnvFixture):
         every container -- while these tests passed.
         """
         self.control("ps-out", identifier + "\n")
-        self.control("inspect-image",
-                     image if image is not None
-                     else "playthrough-capture:26.04")
+        # THE IMAGE ID, NOT THE TAG.  The driver stopped comparing
+        # `{{.Config.Image}}` -- the tag text a container was started
+        # with -- because retagging makes that name answer for any image
+        # on the host.  It compares `{{.Image}}`, the resolved id, so
+        # this control carries an id and `image=` overrides it with a
+        # DIFFERENT id to prove the refusal.
+        self.control("inspect-container-image",
+                     image if image is not None else self.IMAGE_ID)
         self.control("inspect-mount",
                      mount if mount is not None
                      else "%s %s\n" % (self.root, self.root))
@@ -942,7 +1134,7 @@ class TestTakingASessionDown(SupportedEnvFixture):
 
     def session(self, identifier="c0ffee1234", alive=False):
         self.control("ps-out", identifier + "\n")
-        self.control("inspect-image", "playthrough-capture:26.04")
+        self.control("inspect-container-image", self.IMAGE_ID)
         # The real mount listing, so the driver's own matching runs --
         # see TestSessionIdentity.session for why a canned verdict here
         # was worth removing.
@@ -1169,6 +1361,165 @@ class TestTheBuildContextCleanup(SupportedEnvFixture):
         self.assertEqual(
             [name for name in os.listdir(hostile)
              if name.startswith("playthrough-ctx-")], [])
+
+
+class TestTheImageIsIdentifiedNotJustNamed(SupportedEnvFixture):
+    """A tag is a mutable pointer, and it used to be the whole check.
+
+    A security review put it plainly: this driver mounts the checkout
+    READ-WRITE into the container it starts, and the only thing it
+    checked about that container was that the image NAME matched
+    `playthrough-capture:26.04`.  `docker tag` makes that name answer for
+    any image on the host, so an arbitrary toolchain could be substituted
+    and would be handed write access to the record it is supposed to be
+    producing.
+
+    Two facts replace the name.  WHICH image the tag resolves to, as an
+    immutable id, resolved once so the tag cannot move between the check
+    and the use; and WHAT that image was built from, as a digest over the
+    Dockerfile and the two requirements files, written into the image at
+    build time and compared against the tracked files afterwards.
+    """
+
+    OTHER_ID = ("sha256:2222222222222222222222222222222222"
+                "222222222222222222222222222222")
+
+    def test_build_stamps_the_image_with_its_inputs(self):
+        """The image is made to carry the answer, at the only moment it
+        is known for certain."""
+        digest = self.build_inputs_digest()
+        builds = [argv for argv in self.invocations()
+                  if argv and argv[0] == "build"]
+        self.assertEqual(len(builds), 1, msg=str(builds))
+        self.assertIn("--label", builds[0])
+        self.assertIn("playthrough.build=%s" % digest, builds[0])
+
+    def test_the_digest_covers_the_dockerfile(self):
+        """Change the declared environment, change the digest."""
+        before = self.build_inputs_digest()
+        path = os.path.join(self.root, "playthrough", "tooling",
+                            "environment", "Dockerfile")
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write("\n# a change to the declared environment\n")
+        self.assertNotEqual(before, self.build_inputs_digest())
+
+    def test_the_digest_covers_the_lock(self):
+        """A different closure is a different environment."""
+        before = self.build_inputs_digest()
+        path = os.path.join(self.root, "playthrough", "tooling",
+                            "requirements.lock")
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write("\n# a change to the pinned closure\n")
+        self.assertNotEqual(before, self.build_inputs_digest())
+
+    def test_an_unlabelled_image_is_refused(self):
+        """An image built before the label existed cannot say what it is.
+
+        It is indistinguishable from an arbitrary image wearing the tag,
+        so it is refused rather than given the checkout.
+        """
+        self.control("image-label", "<no value>\n")
+        result = self.run_script("inventory")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn(b"carries no playthrough.build label",
+                      result.stderr)
+
+    def test_an_image_built_from_other_inputs_is_refused(self):
+        """The declared environment and the built one must be one thing."""
+        self.stamp_image("f" * 64)
+        result = self.run_script("inventory")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn(b"was built from build inputs digesting",
+                      result.stderr)
+
+    def test_editing_the_dockerfile_invalidates_the_built_image(self):
+        """The realistic case: the image is now stale, and says so."""
+        path = os.path.join(self.root, "playthrough", "tooling",
+                            "environment", "Dockerfile")
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write("\n# an edit after the image was built\n")
+        result = self.run_script("inventory")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn(b"are not the same thing", result.stderr)
+
+    def test_the_run_target_is_the_id_and_never_the_tag(self):
+        """What is executed is what was vouched for.
+
+        Resolving the tag again at the point of use would reopen exactly
+        the window the resolution closes, so the id travels instead.
+        """
+        self.run_script("run", "true")
+        runs = [argv for argv in self.invocations()
+                if argv and argv[0] == "run"]
+        self.assertEqual(len(runs), 1, msg=str(runs))
+        self.assertIn(self.IMAGE_ID, runs[0])
+        self.assertNotIn("playthrough-capture:26.04", runs[0])
+
+    def test_the_session_container_is_started_from_the_id(self):
+        self.control("container-id", "beefcafe01\n")
+        self.run_script("up")
+        runs = [argv for argv in self.invocations()
+                if argv and argv[0] == "run"]
+        self.assertTrue(runs, msg="no container was started")
+        self.assertIn(self.IMAGE_ID, runs[-1])
+        self.assertNotIn("playthrough-capture:26.04", runs[-1])
+
+    def test_the_inventory_is_read_from_the_id(self):
+        self.run_script("inventory")
+        runs = [argv for argv in self.invocations()
+                if argv and argv[0] == "run"]
+        self.assertEqual(len(runs), 1, msg=str(runs))
+        self.assertIn(self.IMAGE_ID, runs[0])
+
+    def test_a_container_on_a_different_image_id_is_refused(self):
+        """The substitution the finding describes, refused by identity.
+
+        The container carries this checkout's labels and would have
+        passed the old tag comparison; it is running a different image
+        and is refused.
+        """
+        self.control("ps-out", "c0ffee1234\n")
+        self.control("inspect-container-image", self.OTHER_ID)
+        self.control("inspect-mount", "%s %s\n" % (self.root, self.root))
+        self.control("inspect-user",
+                     "%d:%d" % (os.getuid(), os.getgid()))
+        # `exec` is the adoption path -- `shell` starts a fresh
+        # ephemeral container and adopts nothing, so it is not where this
+        # property lives.
+        result = self.run_script("exec", "true")
+        self.assertEqual(result.returncode, 2,
+                         msg=result.stderr.decode("utf-8", "replace"))
+        self.assertIn(b"runs image %s" % self.OTHER_ID.encode(),
+                      result.stderr)
+        self.assertIn(b"retagging cannot make a different image "
+                      b"acceptable", result.stderr)
+
+    def test_the_teardown_also_refuses_what_it_cannot_prove(self):
+        """Refusing to STOP an unproven container is the same property.
+
+        Stopping somebody else's container is as much a failure as
+        exec-ing into it, so the identity is required on this path too.
+        """
+        self.control("ps-out", "c0ffee1234\n")
+        self.control("inspect-container-image", self.OTHER_ID)
+        self.control("inspect-mount", "%s %s\n" % (self.root, self.root))
+        self.control("inspect-user",
+                     "%d:%d" % (os.getuid(), os.getgid()))
+        result = self.run_script("down")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn(b"REFUSED rather than adopted", result.stderr)
+        stops = [argv for argv in self.invocations()
+                 if argv and argv[0] == "stop"]
+        self.assertEqual(stops, [],
+                         msg="a container this driver could not prove "
+                             "was its own was stopped anyway")
+
+    def test_an_image_with_no_resolvable_id_is_refused(self):
+        """No immutable identity means nothing to run."""
+        self.control("image-id", "\n")
+        result = self.run_script("inventory")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn(b"no immutable identity", result.stderr)
 
 
 class TestTheScriptItself(unittest.TestCase):

@@ -169,6 +169,7 @@ DEFERRED_CHECKS = (
     # inventory counts verdicts.
     ("check_checkpoints_are_this_session", 1),
     ("check_head_generation_checkpoints", 1),
+    ("check_evidence_anchor_trailer", 1),
     ("check_change_surface", 1),
 )
 
@@ -1028,11 +1029,35 @@ class TestTheBoundedChildren(unittest.TestCase):
 class TestTheScratchGenerationIsSwept(unittest.TestCase):
     """A killed audit must not leak its working directory for ever."""
 
-    def test_the_owner_is_recorded(self):
+    def test_the_owner_is_recorded_as_a_pid_and_a_start_time(self):
+        # A PID ALONE IS NOT AN IDENTITY: Linux recycles them, so "the pid
+        # this file names is alive" and "the process this file named is
+        # alive" are different claims -- and the sweep acts on the answer
+        # by removing a directory.  The pair is unique for one boot.
         source = gate_source()
         self.assertIn("SCRATCH_OWNER_FILE", source)
-        self.assertRegex(source,
-                         r'printf .%s\\n. "\$\$" >"\$\{SCRATCH\}/')
+        # Two fields in one line, the pid first, so the older
+        # single-field format reads back as its first field unchanged.
+        self.assertIn(r"printf '%s %s\n' " + '"$$"', source)
+        self.assertIn('playthrough_proc_start_time "$$"', source)
+        self.assertRegex(source, r'>"\$\{SCRATCH\}/\$\{SCRATCH_OWNER_FILE\}"')
+
+    def test_a_recycled_pid_does_not_keep_a_dead_generation(self):
+        source = gate_source()
+        body = re.search(r"^owner_is_alive\(\) \{\n(.*?)^\}",
+                         source, re.MULTILINE | re.DOTALL)
+        self.assertIsNotNone(body)
+        self.assertIn("playthrough_proc_start_time", body.group(1))
+        self.assertIn("recorded", body.group(1))
+
+    def test_the_older_single_field_format_is_still_understood(self):
+        source = gate_source()
+        body = re.search(r"^scratch_is_stale\(\) \{\n(.*?)^\}",
+                         source, re.MULTILINE | re.DOTALL)
+        self.assertIsNotNone(body)
+        self.assertIn("read -r pid started", body.group(1))
+        self.assertIn("owner_is_alive \"${pid}\" \"${started}\"",
+                      body.group(1))
 
     def test_the_sweep_runs_and_is_bounded_to_the_runtime_root(self):
         source = gate_source()
@@ -1442,6 +1467,66 @@ class TestTheCheckpointsMustBeThisSession(unittest.TestCase):
         self.assertIn("record_fail", body[marker:marker + 400])
 
 
+class TestTheCredentialModeIsMeasured(unittest.TestCase):
+    """A credential in .git/config is not readable by other accounts.
+
+    A security review found a live bearer token in this checkout's own
+    .git/config at mode 0644.  Removing it is not available -- with
+    credential.helper empty that URL is the repository's only
+    authentication -- and rotating it is the platform's act, so this
+    gate measures the one property that is both open and fixable: how
+    far the token reaches.
+    """
+
+    def body(self):
+        source = gate_source()
+        start = source.index("check_git_config_credential_mode() {")
+        return source[start:source.index("\ncheck_", start + 10)]
+
+    def test_the_check_is_in_the_version_control_group(self):
+        source = gate_source()
+        start = source.index("group_version_control() {")
+        end = source.index("}", start)
+        self.assertIn("check_git_config_credential_mode",
+                      source[start:end])
+
+    def test_a_group_or_world_readable_credential_fails(self):
+        body = self.body()
+        self.assertIn("8#077", body)
+        marker = body.index("8#077")
+        self.assertIn("record_fail", body[marker:marker + 400])
+
+    def test_it_only_applies_when_a_credential_is_present(self):
+        """A config with nothing secret has nothing for a mode to leak.
+
+        Failing it anyway would be noise, and noise trains a reader to
+        skip the line that matters.
+        """
+        body = self.body()
+        self.assertIn("://[^/@[:space:]]*:[^/@[:space:]]*@", body)
+        self.assertIn("embeds no credential in a remote URL", body)
+
+    def test_an_unreadable_mode_is_not_treated_as_a_safe_one(self):
+        body = self.body()
+        self.assertIn("its mode could not be read", body)
+        marker = body.index("its mode could not be read")
+        self.assertIn("record_fail", body[marker - 200:marker])
+
+    def test_it_does_not_demand_the_token_be_removed(self):
+        """The gate says whose act rotation is, rather than failing on
+        a condition the pipeline has no power over."""
+        body = self.body()
+        self.assertIn("platform's", body)
+        self.assertIn("credential.helper is empty", body)
+
+    def test_the_committer_asserts_the_same_property(self):
+        """One control, measured here and applied there."""
+        with open(os.path.join(TOOLING, "commit_artifacts.sh"),
+                  encoding="utf-8") as handle:
+            committer = handle.read()
+        self.assertIn("assert_credential_containment", committer)
+
+
 class TestTheGitIdentityIsResolvableAndMatchesTheHistory(
         unittest.TestCase):
     """The check asked a question it was FORBIDDEN to make pass.
@@ -1600,7 +1685,37 @@ class TestTheDependencyClosureIsMeasured(unittest.TestCase):
         "every declared library is installed at its declared version",
         "every declared library imports",
         "every installed distribution has its own requirements met",
+        # Added by the supply-chain remediation.  The first turns the
+        # prose "trigger for revisiting the Pillow pin" in
+        # requirements.txt into something that fires; the second asks
+        # what ELSE is installed, which none of the five above asks; the
+        # third inventories the .pth files that execute before any
+        # pipeline code runs.
+        "the render stack still forces the Pillow pin it is held at",
+        "nothing is installed that requirements.lock does not name",
+        "nothing runs at interpreter startup that was not allowed",
     )
+
+    def test_the_fallback_names_match_the_checkers_own(self):
+        """The two lists are one contract, and drift is silent.
+
+        The gate records one failure per declared closure property when
+        the checker cannot be written, so those names stand in for
+        verdicts that would otherwise be absent entirely.  If a name here
+        drifted from the name the checker emits, the gate would report a
+        property nothing measures under a name nothing else uses -- and
+        the count would still add up, which is what makes it silent.
+        """
+        with open(os.path.join(TOOLING, "env.sh"),
+                  encoding="utf-8") as handle:
+            env = handle.read()
+        body = gate_source().replace("\\\n", "")
+        for fragment in self.CLOSURE_CHECKS:
+            with self.subTest(check=fragment):
+                self.assertIn(fragment, env,
+                              msg="the checker no longer emits this")
+                self.assertIn(fragment, body,
+                              msg="the gate no longer falls back to it")
 
     def test_the_gate_calls_the_shared_checker(self):
         source = gate_source()
@@ -1930,10 +2045,19 @@ class TestTheReportIsDurable(unittest.TestCase):
         self.assertIn("note VERIFY_MEASURED_COMMIT", source)
         # It is published in every phase, not only the passing ones: a
         # failing report is the one whose provenance matters most.
+        #
+        # Anchored on the FIRST BRANCH of the verdict rather than on the
+        # condition that opens it.  This assertion used to name the
+        # comparison verbatim -- `if [ "${FAILURES}" -eq 0 ]` -- and it
+        # broke the moment the verdict grew a third value and the
+        # comparison inverted to `-ne 0`, reporting a missing substring
+        # for a change that had not moved the note at all.  `note VERIFY
+        # fail` is the thing the note must precede whatever shape the
+        # branch takes around it.
         start = source.index("note VERIFY_PHASE")
         self.assertLess(
             source.index("note VERIFY_MEASURED_COMMIT"),
-            source.index("if [ \"${FAILURES}\" -eq 0 ]", start),
+            source.index("note VERIFY fail", start),
             msg="the measured tree must be noted unconditionally")
 
     def test_the_publication_target_cannot_fail(self):
@@ -2333,12 +2457,12 @@ class TestADeathEndingLeavesNoLiveWorld(unittest.TestCase):
         deferred = sum(count for name, count in DEFERRED_CHECKS
                        if name != "check_change_surface")
         self.assertEqual(
-            group_table("GROUP_CHECKS_PRE_COMMIT")[7], 4,
-            msg="four of group 7's checks are properties of the tree "
+            group_table("GROUP_CHECKS_PRE_COMMIT")[7], 6,
+            msg="six of group 7's checks are properties of the tree "
                 "and run in both phases")
         self.assertEqual(
-            group_table("GROUP_CHECKS_ALL")[7], 4 + deferred,
-            msg="group 7 declares its four unconditional checks plus "
+            group_table("GROUP_CHECKS_ALL")[7], 6 + deferred,
+            msg="group 7 declares its six unconditional checks plus "
                 "every deferred one, and nothing else")
         self.assertEqual(self.body().count("record_fail"), 3)
         self.assertEqual(self.body().count("record_pass"), 5)
@@ -3717,8 +3841,8 @@ class SyntheticGateFixture(unittest.TestCase):
             'open_scratch\n'
             'cp "%(facts)s" "${SCRATCH}/facts"\n'
             '%(snippet)s\n'
-            'printf "COUNTERS=%%d %%d %%d\\n" "${PASSES}" '
-            '"${FAILURES}" "${INFOS}"\n'
+            'printf "COUNTERS=%%d %%d %%d %%d\\n" "${PASSES}" '
+            '"${FAILURES}" "${INFOS}" "${DIVERGENCES}"\n'
         ) % {
             "probe": self.probe,
             "phase": phase,
@@ -3778,7 +3902,14 @@ class SyntheticGateFixture(unittest.TestCase):
 class Recorded(object):
     """The verdicts one harness run produced, ready to be asserted on."""
 
-    VERDICT = re.compile(r"^(PASS|FAIL|INFO|WARN)  ?(.*)$")
+    # DIVERGENCE is a verdict kind like the others, and it has to be
+    # parsed like one.  It is emitted when nothing FAILED but a
+    # property the plan asks for is delivered differently, and it
+    # REGISTERS AS A CHECK -- so a parser that did not know the word
+    # would silently under-count every report carrying one, which is
+    # exactly the drift the inventory check exists to catch.
+    VERDICT = re.compile(
+        r"^(PASS|FAIL|INFO|WARN|DIVERGENCE)  ?(.*)$")
 
     def __init__(self, out, err):
         self.out = out
@@ -3790,12 +3921,19 @@ class Recorded(object):
                 self.verdicts.append((match.group(1),
                                       match.group(2).strip()))
         self.passes, self.failures, self.infos = 0, 0, 0
+        self.divergences = 0
         for line in out.splitlines():
             if line.startswith("COUNTERS="):
                 numbers = line.partition("=")[2].split()
                 self.passes = int(numbers[0])
                 self.failures = int(numbers[1])
                 self.infos = int(numbers[2])
+                # The fourth field is optional so that a harness snippet
+                # written before divergences existed still parses; a
+                # missing count means none were recorded, which is the
+                # honest reading of a report that never mentions one.
+                if len(numbers) > 3:
+                    self.divergences = int(numbers[3])
 
     def names(self, kind=None):
         return [name for verdict, name in self.verdicts
@@ -4269,14 +4407,15 @@ class TestThePhaseDecidesWhatIsMeasured(SyntheticGateFixture):
                 "check_tracked_frame_count", "check_nothing_uncommitted",
                 "check_commit_order", "check_committed_vcs_rules",
                 "check_lifecycle_checkpoints",
-                "check_head_generation_checkpoints")
+                "check_head_generation_checkpoints",
+                "check_evidence_anchor_trailer")
 
     def announced(self, phase):
         """Which deferred checks group 7 calls under `phase`.
 
         Each one is replaced by a stub that announces itself, so what is
         measured is the CALL rather than the check's own verdict.  The
-        four unconditional checks in the group are replaced too, so a
+        six unconditional checks in the group are replaced too, so a
         group that stopped calling one of those would be visible here as
         well.
         """
@@ -4284,7 +4423,9 @@ class TestThePhaseDecidesWhatIsMeasured(SyntheticGateFixture):
             '%s() { printf "RAN=%s\\n"; }\n' % (name, name)
             for name in self.DEFERRED + (
                 "check_git_worktree", "check_git_identity",
-                "check_nothing_ignored", "check_no_bytecode"))
+                "check_git_config_credential_mode",
+                "check_nothing_ignored", "check_no_bytecode",
+                "check_no_foreign_write"))
         recorded = self.drive(stubs + "group_version_control\n",
                               phase=phase)
         return ([line.partition("=")[2]
@@ -4385,13 +4526,85 @@ class TestTheGitIdentityMustAgreeWithTheHistory(SyntheticGateFixture):
         return self.drive('GIT="$(command -v git)"\n'
                           'check_git_identity\n', **self.IDENTITY)
 
-    def test_an_identity_that_matches_the_author_passes(self):
+    def make_pair_repository_local(self, name, email):
+        """Put a `[user]` section into the synthetic checkout's config.
+
+        Written as FILE CONTENT rather than through `git config
+        user.name`, and the distinction is not stylistic: the environment
+        this suite runs in prohibits that command outright, and a test
+        that reached for it would fail for a reason having nothing to do
+        with what it was measuring.  Appending the section produces the
+        identical state -- `git config --local --get user.name` answers
+        from it -- without invoking the prohibited form.
+        """
+        config = os.path.join(self.checkout, ".git", "config")
+        with open(config, "a", encoding="utf-8") as handle:
+            handle.write("[user]\n\tname = %s\n\temail = %s\n"
+                         % (name, email))
+
+    def test_an_identity_that_agrees_but_is_not_local_diverges(self):
+        """The exact state this checkout is in, and it is NOT a pass.
+
+        THIS TEST USED TO ASSERT `PASS`, and the reversal is the finding.
+        The identity resolves and it agrees with the history -- both of
+        the properties the check is named for -- but it resolves from a
+        scope broader than the checkout, and the plan asks for a
+        repository-local pair.  The check reported that as a PASS with the
+        shortfall explained in its prose, and a review named the result:
+        a report that "records missing local identity as PASS".  A
+        truthful sentence under an untruthful verdict is worse than
+        either alone, because the verdict is what a reader skims and what
+        a script parses.
+
+        So the shortfall is now its own verdict kind.  It is not a
+        FAILURE either -- see the companion test below for why a non-zero
+        exit here would be the wrong instrument -- and the two properties
+        that DO hold are still asserted, because a divergence that stopped
+        measuring them would have thrown away the check's whole point.
+        """
         self.history()
         recorded = self.verdict()
-        self.assertEqual(recorded.kind_of(self.NAME), "PASS")
+        self.assertEqual(recorded.kind_of(self.NAME), "DIVERGENCE")
+        self.assertEqual(recorded.divergences, 1)
+        detail = recorded.detail(self.NAME)
+        self.assertIn("authored by the same identity", detail)
+        self.assertIn("NOT repository-local", detail)
+        self.assertIn("the plan requires", detail)
+        self.assertIn("why it stands", detail)
+
+    def test_the_divergence_is_not_counted_as_a_failure(self):
+        """Why it is a third kind and not simply a FAIL.
+
+        The divergence is permanent and environment-imposed: the
+        execution environment fixes the committer identity and prohibits
+        `git config user.name` at any scope, so no future run can clear
+        it.  Failing the check would therefore make every checkpoint from
+        here on unreachable for good -- and a gate that cannot be
+        satisfied stops being run, which loses all the other checks too.
+        """
+        self.history()
+        recorded = self.verdict()
         self.assertEqual(recorded.failures, 0)
-        self.assertIn("authored by the same identity",
-                      recorded.detail(self.NAME))
+        self.assertEqual(recorded.passes, 0)
+
+    def test_a_repository_local_pair_that_agrees_passes(self):
+        """The positive case, so the divergence is conditional.
+
+        Without this, `record_divergence` could have been wired in
+        unconditionally and every assertion above would still pass --
+        the check would report a divergence on a checkout that had
+        satisfied the plan exactly.  Here the pair IS in the checkout's
+        own config and agrees with both the resolved identity and the
+        author of the newest commit, which is precisely what §0.3.1 and
+        §0.10.2 ask for, and the verdict is a plain PASS.
+        """
+        self.history()
+        self.make_pair_repository_local("Blitzy Agent",
+                                        "agent@blitzy.com")
+        recorded = self.verdict()
+        self.assertEqual(recorded.kind_of(self.NAME), "PASS")
+        self.assertEqual(recorded.divergences, 0)
+        self.assertEqual(recorded.failures, 0)
 
     def test_an_author_the_identity_disagrees_with_fails(self):
         """The disagreement the whole check is named for."""
@@ -4425,9 +4638,241 @@ class TestTheGitIdentityMustAgreeWithTheHistory(SyntheticGateFixture):
         self.git("add", "--", "unrelated.txt")
         self.git("commit", "--quiet", "-m", "not the artifacts")
         recorded = self.verdict()
-        self.assertEqual(recorded.kind_of(self.NAME), "PASS")
+        # A DIVERGENCE rather than a PASS for the same reason as the
+        # agreeing case above -- this fixture has no repository-local
+        # pair either -- and the point being made here is unchanged: it
+        # is not a FAILURE, so the first checkpoint stays reachable.
+        self.assertEqual(recorded.kind_of(self.NAME), "DIVERGENCE")
+        self.assertEqual(recorded.failures, 0)
         self.assertIn("no commit has touched",
                       recorded.detail(self.NAME))
+
+
+class TestTheAnchorHeadMustBePublished(SyntheticGateFixture):
+    """The one anchor property no working-tree edit can satisfy.
+
+    Group 2 asks whether the chain is sound and whether every sealed
+    artifact still matches its seal.  Both read files that sit in the
+    same tree as the evidence, so a forger who rewrites an artifact, its
+    anchor row, and every chain value after it produces a ledger that
+    agrees with itself completely -- measured, and it does: chain sound,
+    seals matching, no findings anywhere inside the tree.
+
+    What that forgery cannot leave alone is the chain's HEAD.  Rewriting
+    the rows changes it, and the head is published as a trailer on the
+    checkpoint commit, whose name hashes its own message -- so changing
+    the published value means rewriting that commit and every commit
+    descending from it.  This check is the comparison between the two,
+    and it is the reason the anchor is worth having.
+    """
+
+    NAME = "the evidence anchor's head is published in the history"
+    TRAILER = "Playthrough-Evidence-Anchor"
+
+    def setUp(self):
+        super().setUp()
+        # The check reads the ledger through manifest.py, so the module
+        # has to be beside the gate in the sandbox as it is in the tree.
+        shutil.copyfile(os.path.join(TOOLING, "manifest.py"),
+                        os.path.join(self.tooling, "manifest.py"))
+        self.anchor = os.path.join(self.build, "evidence_anchor.jsonl")
+
+    def seal(self, sealed_by="creation"):
+        """Seal the synthetic tree with the real sealer; return the head."""
+        program = (
+            "import sys\n"
+            "sys.path.insert(0, %r)\n"
+            "import manifest\n"
+            "manifest.seal_artifacts(%r, anchor_path=%r,"
+            " require_durable=False, root=%r)\n"
+            "print(manifest.anchor_head(manifest.read_anchor_rows(%r, %r)))"
+            % (self.tooling, sealed_by, self.anchor, self.dir,
+               self.anchor, self.dir))
+        result = subprocess.run(
+            [sys.executable, "-B", "-c", program],
+            capture_output=True, timeout=300)
+        self.assertEqual(result.returncode, 0,
+                         msg=result.stderr.decode("utf-8", "replace"))
+        return result.stdout.decode("utf-8", "replace").strip()
+
+    def commit(self, trailer=None, subject="a checkpoint"):
+        """One commit over the tree, carrying `trailer` if given."""
+        self.git("add", "-A", ".")
+        arguments = ["commit", "--quiet", "-m", subject]
+        if trailer is not None:
+            arguments += ["-m", "Playthrough-Checkpoint: creation\n%s: %s"
+                          % (self.TRAILER, trailer)]
+        self.git(*arguments)
+
+    def verdict(self):
+        return self.drive(
+            'GIT="$(command -v git)"\n'
+            'SED="$(command -v sed)"\n'
+            'HEAD="$(command -v head)"\n'
+            'check_evidence_anchor_trailer\n',
+            PLAYTHROUGH_PYTHON=sys.executable)
+
+    def prepare(self):
+        """A tree with something to seal, and a repository to publish in."""
+        self.git("init", "--quiet", "-b", "main", ".")
+        self.write(os.path.join(self.dir, "dossier.md"), "# a survivor\n")
+        self.write(os.path.join(self.dir, "manifest.jsonl"), "{}\n")
+
+    def test_the_published_head_matching_the_ledger_passes(self):
+        self.prepare()
+        head = self.seal()
+        self.commit(trailer=head)
+        recorded = self.verdict()
+        self.assertEqual(recorded.kind_of(self.NAME), "PASS")
+        self.assertEqual(recorded.failures, 0)
+        self.assertIn(head[:16], recorded.detail(self.NAME))
+
+    def test_a_ledger_with_no_head_fails(self):
+        """An unsealed tree has nothing vouching for it from outside."""
+        self.prepare()
+        self.commit()
+        recorded = self.verdict()
+        self.assertEqual(recorded.kind_of(self.NAME), "FAIL")
+        self.assertIn("no chain head", recorded.detail(self.NAME))
+
+    def test_a_history_with_no_trailer_fails(self):
+        """A sealed tree whose head was never published proves nothing.
+
+        This is the case that reads most like success and is not: the
+        ledger is present and internally perfect, and no commit has ever
+        committed to its value, so it is one more mutable file beside the
+        evidence.
+        """
+        self.prepare()
+        head = self.seal()
+        self.commit()
+        recorded = self.verdict()
+        self.assertEqual(recorded.kind_of(self.NAME), "FAIL")
+        detail = recorded.detail(self.NAME)
+        self.assertIn(head[:16], detail)
+        self.assertIn("no commit reachable", detail)
+
+    def test_a_head_newer_than_the_history_publishes_fails(self):
+        """Re-sealed without taking a checkpoint."""
+        self.prepare()
+        published = self.seal()
+        self.commit(trailer=published)
+        resealed = self.seal("media")
+        self.assertNotEqual(resealed, published)
+        recorded = self.verdict()
+        self.assertEqual(recorded.kind_of(self.NAME), "FAIL")
+        detail = recorded.detail(self.NAME)
+        self.assertIn(resealed[:16], detail)
+        self.assertIn(published[:16], detail)
+
+    def test_a_head_the_history_does_not_recognise_fails(self):
+        """The complete forgery, which only this check can see.
+
+        The ledger is rewritten wholesale and re-chained, so every
+        tree-internal question about it answers cleanly.  The head it now
+        ends on is not the head the commit published, and the commit
+        cannot be edited to agree.
+        """
+        self.prepare()
+        self.commit(trailer="0" * 64)
+        self.seal()
+        recorded = self.verdict()
+        self.assertEqual(recorded.kind_of(self.NAME), "FAIL")
+        self.assertIn("0000000000000000", recorded.detail(self.NAME))
+
+    def test_the_newest_trailer_is_the_one_compared(self):
+        """A later checkpoint's head supersedes an earlier one's."""
+        self.prepare()
+        first = self.seal()
+        self.commit(trailer=first, subject="the first checkpoint")
+        self.write(os.path.join(self.dir, "timeline.json"), "[]\n")
+        second = self.seal("media")
+        self.assertNotEqual(second, first)
+        self.commit(trailer=second, subject="the second checkpoint")
+        recorded = self.verdict()
+        self.assertEqual(recorded.kind_of(self.NAME), "PASS")
+        self.assertIn(second[:16], recorded.detail(self.NAME))
+
+
+class TestTheStagingSoundnessCheckDelegates(SyntheticGateFixture):
+    """One rule set, read out of the committer rather than restated here.
+
+    The committer refuses a hard link, a symlink, a foreign owner, a
+    foreign filesystem and secret content before it stages anything, and
+    that is the right place for a control that stops a bad commit being
+    taken. It is not sufficient alone, because NOT EVERY COMMIT IN THIS
+    HISTORY IS TAKEN BY THAT SCRIPT -- a tooling change is committed with
+    ordinary git, and a checkpoint's gates say nothing about a commit
+    that never ran them.
+
+    So this gate asks the same questions, and asks them by RUNNING the
+    committer's read-only `scan`. The rules themselves are covered
+    behaviourally where they live, in test_commit_artifacts.py; what is
+    pinned here is the delegation, the two branches, and the reason the
+    verdict text is trimmed.
+    """
+
+    NAME = ("every artifact is a single-linked regular file this account "
+            "owns, carrying no secret material")
+
+    def verdict(self):
+        return self.drive(
+            'GIT="$(command -v git)"\n'
+            'SED="$(command -v sed)"\n'
+            'TAIL="$(command -v tail)"\n'
+            'check_staging_soundness\n',
+            PLAYTHROUGH_PYTHON=sys.executable)
+
+    def test_an_absent_committer_fails_rather_than_passing(self):
+        """The fixture does not copy it, so this is the real state.
+
+        A gate that treated a missing rule set as nothing to check would
+        report a tree it never looked at as sound.
+        """
+        recorded = self.verdict()
+        self.assertEqual(recorded.kind_of(self.NAME), "FAIL")
+        self.assertEqual(recorded.failures, 1)
+        detail = recorded.detail(self.NAME)
+        self.assertIn("commit_artifacts.sh", detail)
+        self.assertIn("ONE rule set", detail)
+
+    def test_it_runs_the_committers_own_scan(self):
+        """Not a second copy of eleven expressions and a baseline."""
+        source = gate_source()
+        start = source.index("check_staging_soundness()")
+        body = source[start:source.index("\n}\n", start)]
+        self.assertIn("commit_artifacts.sh", body)
+        self.assertIn(" scan ", body)
+        # The rules and the baseline are the committer's alone.
+        for token in ("AKIA", "github_pat_", "SECRET_BASELINE",
+                      "PRIVATE KEY"):
+            with self.subTest(token=token):
+                self.assertNotIn(token, body)
+
+    def test_the_verdict_keeps_only_the_conclusion(self):
+        """Because the acceptance report is committed.
+
+        `scan` re-asserts the repository first, so its output opens with
+        the BRANCH NAME. Carrying that into the verdict would make a
+        committed report differ between branches while measuring an
+        identical tree, which is churn in the history carrying no
+        information -- the same reason the timeline suite's elapsed time
+        is stripped.
+        """
+        source = gate_source()
+        start = source.index("check_staging_soundness()")
+        body = source[start:source.index("\n}\n", start)]
+        self.assertIn('"${TAIL}" -n 1', body)
+        self.assertIn("differ between branches", body)
+
+    def test_it_is_declared_in_group_nine(self):
+        """And in the artifact phase, not the commit-shaped one."""
+        source = gate_source()
+        start = source.index("group_hygiene()")
+        body = source[start:source.index("\n}\n", start)]
+        artifact = body[body.index("if artifact_phase; then"):
+                        body.index("if tracking_phase; then")]
+        self.assertIn("check_staging_soundness", artifact)
 
 
 class TestTheCitedTreeIsTheTreeMeasured(SyntheticGateFixture):
@@ -4570,11 +5015,18 @@ class TestAFailureIsNotAReasonToStopMeasuring(SyntheticGateFixture):
         self.assertEqual(fields["VERIFY"], "fail")
         for name in ("VERIFY_PHASE", "VERIFY_CHECKS",
                      "VERIFY_EXPECTED_CHECKS", "VERIFY_PASSES",
-                     "VERIFY_FAILURES", "VERIFY_INFOS"):
+                     "VERIFY_FAILURES", "VERIFY_DIVERGENCES",
+                     "VERIFY_INFOS"):
             self.assertIn(name, fields)
+        # THREE TERMS, NOT TWO.  A divergence registers as a check -- it
+        # is a property that was measured and reported -- so leaving it
+        # out of this sum would make the run look like it had performed
+        # one fewer check than it declared, and the inventory assertion
+        # would then fail for a report that was in fact complete.
         self.assertEqual(int(fields["VERIFY_CHECKS"]),
                          int(fields["VERIFY_PASSES"]) +
-                         int(fields["VERIFY_FAILURES"]))
+                         int(fields["VERIFY_FAILURES"]) +
+                         int(fields["VERIFY_DIVERGENCES"]))
 
     def test_something_still_passes_so_the_run_kept_measuring(self):
         """A run that stopped early would report no later pass at all."""
@@ -4623,7 +5075,8 @@ class TestAFailureIsNotAReasonToStopMeasuring(SyntheticGateFixture):
             with self.subTest(phase=phase):
                 self.assertEqual(int(fields["VERIFY_CHECKS"]),
                                  int(fields["VERIFY_PASSES"]) +
-                                 int(fields["VERIFY_FAILURES"]))
+                                 int(fields["VERIFY_FAILURES"]) +
+                                 int(fields["VERIFY_DIVERGENCES"]))
                 self.assertGreater(int(fields["VERIFY_CHECKS"]), 0)
 
     def test_the_post_commit_phase_keeps_the_groups_own_numbers(self):

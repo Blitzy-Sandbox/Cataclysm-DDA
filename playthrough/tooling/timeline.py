@@ -3159,6 +3159,24 @@ class ArtifactLock:
     for a whole generation rather than interleaving with half of one.
     The lock file is never unlinked: removing a lock another process is
     waiting on is how a lock stops working.
+
+    AND THE CHECKOUT'S MUTATION LOCK, SHARED, TAKEN FIRST.  This lock
+    keeps two publications of the SAME artifact apart, which was never the
+    whole problem: a gate reading the movie, or a checkpoint staging it,
+    is not another publication and was excluded by nothing.  A render that
+    lands between the gate that passed and the commit that publishes puts
+    a film in the history that no gate ever measured -- with both locks
+    correctly held throughout, because the two holders were never the same
+    stage.  Shared rather than exclusive because a producer beside this
+    one is not the hazard; the gate and the committer are, and they take
+    the same lock exclusively.
+
+    The order is fixed -- mutation first, artifact second -- and it is the
+    same order session.py uses, so no two stages can take the pair in
+    opposite orders and wedge each other.  A producer run by
+    run_pipeline.sh finds the sequencer's exclusive hold already in place,
+    proves it and reuses it rather than blocking against its own parent;
+    see manifest.mutation_lock_inherited.
     """
 
     def __init__(self, name: str, root: Optional[str] = None,
@@ -3167,8 +3185,30 @@ class ArtifactLock:
         self.path = artifact_lock_path(name, root)
         self.timeout = float(timeout)
         self._descriptor: Optional[int] = None
+        # ONE TIMEOUT FOR THE PAIR, and it is this object's own.  A
+        # caller that asks to wait 0.2 s for a publication means 0.2 s
+        # for the whole acquisition; giving the outer lock a separate,
+        # much longer default would make `timeout=` a statement about
+        # only half of what the call blocks on -- which reads as a hang.
+        self._mutation = manifest.MutationLock(
+            manifest.MUTATION_SHARED, root=root, timeout=self.timeout)
 
     def __enter__(self) -> "ArtifactLock":
+        try:
+            self._mutation.acquire()
+        except manifest.ManifestError as err:
+            raise TimelineError(
+                "the %s publication could not join THIS checkout's "
+                "quiescence: %s" % (self.name, err)) from err
+        try:
+            return self._enter_artifact_lock()
+        except BaseException:
+            self._mutation.release()
+            raise
+
+    def _enter_artifact_lock(self) -> "ArtifactLock":
+        """Take the per-artifact lock.  The mutation lock is already held.
+        """
         try:
             self._descriptor = os.open(
                 self.path, os.O_CREAT | os.O_WRONLY | os.O_CLOEXEC,
@@ -3200,11 +3240,18 @@ class ArtifactLock:
             time.sleep(LOCK_POLL)
 
     def __exit__(self, *exc_info: Any) -> None:
-        if self._descriptor is not None:
-            try:
-                fcntl.flock(self._descriptor, fcntl.LOCK_UN)
-            finally:
-                self._close()
+        try:
+            if self._descriptor is not None:
+                try:
+                    fcntl.flock(self._descriptor, fcntl.LOCK_UN)
+                finally:
+                    self._close()
+        finally:
+            # Inner lock first, then the outer one -- the reverse of the
+            # order they were taken in, so no window exists in which this
+            # process holds the artifact lock without the quiescence it
+            # was taken under.  A hold that was inherited is not released.
+            self._mutation.release()
 
     def _close(self) -> None:
         if self._descriptor is not None:
@@ -3332,12 +3379,22 @@ def write_generation_journal(name: str, record: Mapping[str, Any],
         path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC | os.O_CLOEXEC,
         0o600)
     try:
+        # A SHORT WRITE IS LEGAL AND IS RETRIED, not reported as a fault.
+        # This used to refuse the whole publication the moment os.write
+        # returned less than it was given, which conflates "the device
+        # took what it could this time" -- ordinary, and the reason the
+        # call returns a count at all -- with "the device cannot take
+        # it".  Only a call that makes NO progress is the second thing.
         data = payload.encode("utf-8")
-        written = os.write(descriptor, data)
-        if written != len(data):
-            raise TimelineError(
-                "only %d of %d bytes of the %s generation journal "
-                "reached %s" % (written, len(data), name, path))
+        offset = 0
+        while offset < len(data):
+            written = os.write(descriptor, data[offset:])
+            if written <= 0:
+                raise TimelineError(
+                    "only %d of %d bytes of the %s generation journal "
+                    "reached %s, and the device then made no further "
+                    "progress" % (offset, len(data), name, path))
+            offset += written
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
@@ -3392,12 +3449,19 @@ def clear_generation_journal(name: str,
             "could not clear the %s generation journal %s: %s.  The "
             "next run would report a publication that has completed"
             % (name, path, err)) from err
-    try:
-        fsync_directory(os.path.dirname(path))
-    except TimelineError:
-        # The unlink itself is what matters; a filesystem that will not
-        # flush the directory has not resurrected the file.
-        pass
+    # THE FLUSH IS PART OF THE REMOVAL, NOT A COURTESY AFTER IT.  This
+    # used to be swallowed on the reasoning that "the unlink itself is
+    # what matters; a filesystem that will not flush the directory has
+    # not resurrected the file".  The first half is true and the second
+    # is the mistake: an unflushed directory entry is exactly how a
+    # crash resurrects it, and the next run would then report a
+    # publication that has completed as one that was interrupted --
+    # refusing to render over a tree that is perfectly sound.  Nothing is
+    # lost either way, which is why this is reported rather than
+    # tolerated: an operator can clear a journal by hand in a second,
+    # and cannot do anything at all about a warning that was never
+    # printed.
+    fsync_directory(os.path.dirname(path) or os.curdir)
 
 
 def generation_journal_problems(name: str,

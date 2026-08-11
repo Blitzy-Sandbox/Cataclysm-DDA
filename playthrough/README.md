@@ -129,7 +129,8 @@ reviewed.
 | `manifest.jsonl` | one row per capture, six fields: `frame`, `file`, `real_ts`, `ingame_clock`, `action`, `commentary` | `session.py` |
 | `amendments.jsonl` | corrections to the record, **appended** rather than applied in place, so the original reading survives beside the correction | operator, via `session.py annotate --amend` and review |
 | `timeline.json` | the computed durations and transition flags — **the single source of truth** for both the film and the captions | `timeline.py` |
-| `build/` | intermediates and telemetry: `concat.txt`, `transitions/`, `observations.jsonl`, `frame_dates.jsonl`, `frame_digests.jsonl`, `transitions.json`, `movie.json`, `transcript.json` | the stage that owns each |
+| `build/` | intermediates and telemetry: `concat.txt`, `transitions/`, `observations.jsonl`, `frame_dates.jsonl`, `frame_digests.jsonl`, `transitions.json`, `movie.json`, `transcript.json`, `acknowledgments.jsonl` | the stage that owns each |
+| `build/evidence_anchor.jsonl` | the hash-chained, append-only seal over every evidence artifact — each row carries the artifact's sha256, its byte count and **git's own blob name**, plus the previous row's chain hash. The chain's head is published as a `Playthrough-Evidence-Anchor:` trailer on every checkpoint, which is what puts it beyond the reach of anyone editing the working tree | `commit_artifacts.sh`, at each checkpoint |
 | `cata-play.mp4` | the film: `h264`, 1920×1080, no audio stream | `render_movie.py` |
 | `cata-play-cc.mp4` | the same film with a selectable `mov_text` caption track tagged `language=eng` | `embed_captions.sh` |
 | `transcript.srt` | the caption cue file — 307 cues | `make_srt.py` |
@@ -1445,9 +1446,23 @@ repository-local pair the AAP describes (§0.3.1, §0.10.2) cannot be written by
 these passes. The gate therefore asserts the property that is both checkable and
 load-bearing: an identity RESOLVES, and it AGREES with the newest commit touching
 `playthrough/`. The requirement's substance — commits that carry a real,
-attributable identity — holds; its mechanism does not. The divergence is set out
-in `TECHNICAL_NOTES.md` under *Closed: the identity is asserted to RESOLVE and to
-match the history*.
+attributable identity — holds; its mechanism does not.
+
+**And the gate says so in its verdict, not only in its prose.** This check used
+to report `PASS` with the explanation attached — a truthful sentence under an
+untruthful verdict, which told any script reading the verdict that this element of
+R1 was met. It is now a third verdict class: `DIVERGENCE`, which prints what the
+plan requires, what was delivered instead and why it stands. A divergence counts
+toward the declared check inventory, so it cannot be lost by reclassification; it
+leaves the exit status alone, because failing the run for a permanent
+environment-imposed divergence would block every future checkpoint for good; and
+it changes the closing verdict to `VERIFY=pass-with-divergence` and the summary
+sentence to one that explicitly does not claim full compliance. `attest` publishes
+that verdict — `pass-with-divergence` is on its allow-list beside `pass`
+deliberately, because if only `pass` were publishable the honest report could
+never be committed and the dishonest one would be mandatory. `fail` is still
+unpublishable. The divergence is set out in `TECHNICAL_NOTES.md` under *Closed:
+the identity is asserted to RESOLVE and to match the history*.
 
 ### The knobs, and what each one is for
 
@@ -2113,7 +2128,22 @@ gate: "nothing under `playthrough/` is left uncommitted", for the ordinary
 reason, and the ending and history checks, until a recording has been committed.
 The identity check is not one of them any more — it asks whether an identity
 RESOLVES and whether it AGREES with the newest commit touching `playthrough/`,
-both of which hold here.
+both of which hold here, and reports the fact that the pair is not
+repository-local as a `DIVERGENCE` rather than as either a pass or a failure.
+
+**One check is about the defences rather than the artifacts.** `check_security
+_controls` inventories every security control this tooling relies on — the
+credential containment gate, the hook-void on mutating git commands, the
+commit-tree binding, staging provenance and the secret scan, the path-ancestry
+trust walk, the writable-path refusal, the environment sanitiser, the mutation
+lock, the X process-identity record and cookie rotation, the record-token grammar
+and control escaping, the hash-chained evidence ledgers, the journal durability
+propagation, the decode provenance and resource limits, the survivor-name grammar
+and the container image identity — by asserting each is still present in the file
+that implements it, and prints their names into the report. It exists because a
+review found the report *omitting* them: a count reads the same whether or not
+anything was defending it, so a removed control would otherwise vanish from the
+evidence silently instead of failing a check.
 
 What it asserts, by section: the `frames == manifest rows` identity and
 contiguous indices from `00001`; the clamp bounds on every timeline entry, the

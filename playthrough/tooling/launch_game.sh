@@ -389,13 +389,50 @@ HEADLESS_DONE=0
 die() {
     local code="$1"
     shift
-    printf 'playthrough: FATAL: %s\n' "$*" >&2
+    # THE MESSAGE IS ESCAPED, because some of what reaches it is
+    # chosen elsewhere -- a world name, a directory name, an
+    # environment variable -- and a diagnostic that printed those
+    # bytes raw would perform the injection it is reporting: a
+    # newline forges a whole extra line of output, and ESC-[ or the
+    # single-byte C1 CSI repaints the terminal of whoever is
+    # reading the run.  playthrough_escape_controls is env.sh's,
+    # sourced far above this definition.
+    printf 'playthrough: FATAL: %s\n' "$(playthrough_escape_controls "$*")" >&2
     exit "${code}"
 }
 
 # emit KEY VALUE -- the machine-readable channel, and the only thing
 # this script ever writes to stdout.
+#
+# A VALUE THAT COULD FORGE A LINE IS REFUSED HERE.  This channel is
+# parsed as KEY=value by run_pipeline.sh and by the capture stage, and
+# some of the values are chosen outside this pipeline entirely: a world
+# name is a directory name under the save tree, so any local account able
+# to create a directory chooses one.  A name containing a newline emits a
+# SECOND line that nothing wrote, and the parser cannot tell it from a
+# fact -- which is how a save tree could assert its own trust state.
+#
+# ONLY CONTROLS AND LENGTH ARE CHECKED, NOT EMPTINESS, and the
+# distinction is load-bearing rather than lenient: an empty value is
+# meaningful on this channel and several keys use it -- an absent world
+# is PLAYTHROUGH_SAVE_WORLD=, an unresolved binary is
+# PLAYTHROUGH_GAME_BIN= -- so a guard that refused emptiness would refuse
+# roughly a dozen correct emissions.  The stricter grammar, which does
+# require a value, is applied to the world name at the point it is
+# derived, where the diagnosis can name the offending directory.
 emit() {
+    if playthrough_has_control "$2"; then
+        die "${EX_LAYOUT}" "the value for $1 carries a control" \
+            "character, so writing it would forge or corrupt a line" \
+            "of the machine-readable record.  With every control byte" \
+            "shown as <NN> it is:" \
+            "$(playthrough_escape_controls "$2")"
+    fi
+    if [ "${#2}" -gt "${PLAYTHROUGH_MAX_RECORD_TOKEN}" ]; then
+        die "${EX_LAYOUT}" "the value for $1 is ${#2} characters," \
+            "past the ${PLAYTHROUGH_MAX_RECORD_TOKEN}-character" \
+            "ceiling for one line of the machine-readable record"
+    fi
     printf '%s=%s\n' "$1" "$2"
 }
 
@@ -1294,7 +1331,8 @@ build_binary() {
             RELEASE=1 TILES=1 SOUND=1 SDL3=0 ASTYLE=0 LINTJSON=0 \
             CCACHE=1 "COMPILER=${COMPILER_BIN}" \
             >>"${BUILD_LOG}" 2>&1 </dev/null \
-            {PLAYTHROUGH_CHILD_CLOSE_FD}>&- &
+            {PLAYTHROUGH_CHILD_CLOSE_FD}>&- \
+            {PLAYTHROUGH_CHILD_CLOSE_FD2}>&- &
         # disown completes the AAP's detachment idiom
         # (`setsid nohup ... < /dev/null & disown`): it drops the job
         # from this shell's job table so that the shell exiting cannot
@@ -2571,6 +2609,28 @@ probe_save_resume() {
             assert_real_save_dir "${dir}" "the world directory" ||
                 continue
             world="$(basename "${dir%/}")"
+            # THE NAME IS SOMEBODY ELSE'S CHOICE, so it is checked
+            # before it is used.  This is a directory name under the
+            # save tree: the engine writes it from what the player
+            # typed, and any local account able to create a directory
+            # there writes whatever it likes.  From here the name flows
+            # into the log AND into PLAYTHROUGH_SAVE_WORLD, which later
+            # stages parse as KEY=value -- so a name carrying a newline
+            # would append a line of the record that nothing wrote.
+            #
+            # A name that fails the grammar is SKIPPED rather than
+            # fatal, because a single unusable directory must not make
+            # an otherwise sound save tree unreadable; the warning names
+            # it with every control byte escaped, so the diagnostic
+            # cannot perform the injection it is reporting.
+            if ! playthrough_assert_record_token "${world}" \
+                    "the world directory name" 2>/dev/null; then
+                playthrough_warn "a directory under the save tree has" \
+                    "a name that cannot be written as one line of the" \
+                    "record, so it is NOT treated as a world:" \
+                    "$(playthrough_escape_controls "${world}")"
+                continue
+            fi
             if ! assert_real_save_file "${dir}master.gsav" \
                     "the world save"; then
                 playthrough_warn "save/${world} has no" \
@@ -3448,11 +3508,38 @@ launch_instance() {
     recheck_save_resume
     playthrough_child_close_fd ||
         die "${EX_LAYOUT}" "cannot prepare to detach the engine"
+    # THE ENGINE'S OWN umask, SET HERE AND NOWHERE ELSE.
+    #
+    # The engine creates the whole userdir tree itself -- save/, config/,
+    # achievements/, templates/, cache/ -- and it does so with the
+    # ordinary 0777/0666 creation modes, which means the umask it
+    # INHERITS decides who may write to the survivor's save file.  A
+    # security review measured the result of inheriting a permissive one:
+    # fifteen directories at 2777 and a hundred and fifty-one files at
+    # 0666, the character save and the committed keybindings evidence
+    # among them, all rewritable by any local account on the host.
+    #
+    # 022 rather than 077, and the asymmetry with capture.sh (which sets
+    # 077) is deliberate: this tree is committed to a git repository and
+    # is meant to be READ, while a withdrawn frame is a private
+    # photograph of the screen.  What neither may be is writable by
+    # anybody but its owner.
+    #
+    # It is set immediately before the spawn and RESTORED immediately
+    # after, in this shell rather than in a subshell: `$!` is only visible
+    # in the shell that started the job, so a subshell would cost this
+    # step the pid it has to record, and the engine is the only process
+    # here whose creation modes matter.
+    local previous_umask=""
+    previous_umask="$(umask)"
+    umask 022
     setsid nohup "${PLAYTHROUGH_GAME_BIN_ARG}" \
         --userdir "${PLAYTHROUGH_USERDIR_ARG}" \
         >>"${PLAYTHROUGH_GAME_LOG}" 2>&1 </dev/null \
-        {PLAYTHROUGH_CHILD_CLOSE_FD}>&- &
+        {PLAYTHROUGH_CHILD_CLOSE_FD}>&- \
+        {PLAYTHROUGH_CHILD_CLOSE_FD2}>&- &
     local spawned="$!"
+    umask "${previous_umask}"
     disown || true
     playthrough_child_close_done
     write_game_pidfile "${spawned}" ||
@@ -4091,6 +4178,30 @@ launch_game() {
     playthrough_acquire_lock session "${WINDOW_TIMEOUT}" ||
         die "${EX_WINDOW}" "could not take the session lock; another" \
             "launch over this checkout is in flight"
+
+    # AND THE CHECKOUT'S MUTATION LOCK, SHARED, for exactly the span this
+    # function occupies.  Starting the engine is the one unbounded burst
+    # of writes into playthrough/userdir/ -- the config tree on a first
+    # run, a save directory on a resume -- and a checkpoint that stages
+    # that tree halfway through it commits a torn options.json or a
+    # half-written save.  Shared rather than exclusive because a producer
+    # elsewhere is not the problem; a gate or a checkpoint is.
+    #
+    # AND ONLY FOR THIS SPAN, WHICH IS THE HONEST LIMIT OF IT.  The engine
+    # is detached and keeps writing for its whole life, and the `creation`
+    # checkpoint is mandated WHILE IT IS STILL RUNNING -- so this lock
+    # cannot be held until the game exits without making that checkpoint
+    # impossible, and the descriptor is deliberately withheld from the
+    # child (playthrough_child_close_fd) so the engine does not hold it by
+    # inheritance.  What remains uncovered is bounded by the session step,
+    # which takes the same lock shared around each keystroke, and by the
+    # committer binding its commit to the index it validated.
+    playthrough_acquire_mutation_lock shared "${WINDOW_TIMEOUT}" ||
+        die "${EX_WINDOW}" "could not join THIS checkout's quiescence:" \
+            "a gate or a checkpoint holds the mutation lock" \
+            "exclusively, and starting the engine under one of those" \
+            "would have it writing into the userdir while that stage" \
+            "measured or committed it.  No engine was started."
 
     probe_save_resume
 

@@ -226,7 +226,36 @@ numpy==2.5.1  # frame luminance statistics and MoviePy arrays
 # itself, and neither of those facts cancels the other.  What is NOT
 # claimed is that the native dependency is patched.
 #
-# THE TRIGGER FOR REVISITING THIS, stated so it is not left to taste:
+# THE TRIGGER IS NOW ENFORCED, NOT ONLY STATED.  Everything below this
+# paragraph was already true and was written as prose -- and prose does
+# not fire.  A security review made the point that mattered: the day a
+# moviepy release lifts the `pillow<12.0` cap, nothing here would notice,
+# and the justification for this pin would quietly become false while
+# every gate still reported green.
+#
+# So env.sh's closure checker READS moviepy's declared Pillow bound from
+# its installed metadata -- no network, nothing remembered -- and FAILS
+# the moment that bound admits 12.1.1, the first release carrying the fix
+# for the advisories accepted here.  It also fails if the bound cannot be
+# read at all, because a justification that can no longer be checked is
+# not a justification.  The check is named "the render stack still forces
+# the Pillow pin it is held at", it runs in every stage that verifies the
+# closure, and its refusal names the move to make.
+#
+# TWO CONTROLS AT THE DECODE BOUNDARY were added by the same review, and
+# they are what make the narrow-exposure argument above an enforced
+# property rather than a description.  The argument rests on "the only
+# images this pipeline decodes are ones it captured itself", and the
+# review found the captured frames group- and world-writable -- so any
+# local account could substitute a crafted PNG between the capture and
+# the decode.  Both decode doors, ocr_clock.open_png and
+# make_transitions.compose_transition_group, now refuse a frame that is
+# not a regular file, is not owned by this account, or is writable beyond
+# its owner, and both run the decode with RLIMIT_CORE at 0 and RLIMIT_CPU
+# bounded.  RLIMIT_AS is deliberately NOT imposed, for a measured reason
+# recorded in ocr_clock.decode_limits and in TECHNICAL_NOTES.md.
+#
+# The rest of this note stands as written:
 # when a moviepy release lifts the `pillow<12.0` cap, move both pins
 # together to that release and the newest Pillow it allows, re-measure
 # the advisory counts above, and re-run the transition path end to end

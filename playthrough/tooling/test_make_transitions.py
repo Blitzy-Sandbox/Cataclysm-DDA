@@ -1553,6 +1553,173 @@ class TestTheWholeRun(TransitionFixture):
             self.run_make()
 
 
+class TestTheComposerEntersTheDecoderUnderConditions(TransitionFixture):
+    """This module composes from frames it must first be able to trust.
+
+    The decode here is MoviePy's, which is Pillow's, which is the pinned
+    11.3.0 -- the same native decoders and the same advisories that
+    ocr_clock.py guards against, reached by a different route.  A
+    security review found the captured frames group- and world-writable,
+    so "we only ever decode what we captured" was an argument rather than
+    a property.  Both modules now check it at their own door.
+    """
+
+    def test_an_owner_only_pair_composes(self):
+        """The control must not refuse the ordinary case."""
+        self.captures(3)
+        self.write_timeline(3, flagged={2})
+        status, out, _ = self.main(
+            ["--timeline", self.timeline_path,
+             "--transitions-dir", self.transitions,
+             "--repo-root", REPO_ROOT])
+        self.assertEqual(status, mt.EXIT_OK, msg=out)
+
+    def refusal(self, arrange):
+        """Arrange a bad frame, run, and return the diagnosis."""
+        paths = self.captures(3)
+        self.write_timeline(3, flagged={2})
+        arrange(paths)
+        status, _out, err = self.main(
+            ["--timeline", self.timeline_path,
+             "--transitions-dir", self.transitions,
+             "--repo-root", REPO_ROOT])
+        self.assertNotEqual(status, mt.EXIT_OK,
+                            msg="the group composed from a frame that "
+                                "should have been refused")
+        return err
+
+    def test_a_world_writable_frame_is_refused(self):
+        """The exact condition the review measured, at this door."""
+        err = self.refusal(lambda paths: os.chmod(paths[1], 0o666))
+        self.assertIn("writable beyond its owner", err)
+
+    def test_a_group_writable_frame_is_refused(self):
+        err = self.refusal(lambda paths: os.chmod(paths[1], 0o660))
+        self.assertIn("writable beyond its owner", err)
+
+    def test_a_symlink_is_judged_by_what_it_points_AT(self):
+        """Where this module differs from ocr_clock, and why it is right.
+
+        This module resolves every input path before it validates it, so
+        by the time the provenance check runs it holds the real file
+        rather than the link -- which means the link itself is never what
+        gets judged.  That is the correct behaviour and not a gap: the
+        bytes the decoder will parse are the target's bytes, so the
+        target's owner and mode are the facts that matter.
+
+        Proved by pointing a frame at a world-writable file and watching
+        the refusal name the TARGET.  A test asserting "symbolic link"
+        here would have been asserting something untrue -- and did, until
+        this measured what actually happens.
+        """
+        def swap(paths):
+            target = paths[2]
+            os.chmod(target, 0o666)
+            os.unlink(paths[1])
+            os.symlink(target, paths[1])
+        err = self.refusal(swap)
+        self.assertIn("writable beyond its owner", err)
+        self.assertIn("frame_00003.png", err)
+
+    def test_a_frame_replaced_by_a_fifo_is_refused(self):
+        def swap(paths):
+            os.unlink(paths[1])
+            os.mkfifo(paths[1], 0o600)
+        self.assertIn("not a regular file", self.refusal(swap))
+
+    @unittest.skipIf(mt.resource is None, "needs POSIX resource limits")
+    def test_the_limits_hold_over_the_whole_lazy_decode(self):
+        """Where the guard has to reach, and why it is easy to get wrong.
+
+        MoviePy is LAZY: constructing an ImageClip decodes nothing, and
+        the pixels are produced during ``iter_frames``.  A guard wrapped
+        around the construction alone would have looked right and covered
+        none of the decoding, so the block extends over the iteration
+        too.  This asserts the shape structurally, because the runtime
+        symptom of getting it wrong is nothing at all.
+        """
+        source = os.path.join(TOOLING, "make_transitions.py")
+        with io.open(source, encoding="utf-8") as handle:
+            lines = handle.readlines()
+        opened = None
+        for number, line in enumerate(lines):
+            if line.strip() == "with decode_limits():":
+                opened = number
+        self.assertIsNotNone(opened, "the guard is gone")
+        indent = len(lines[opened]) - len(lines[opened].lstrip())
+        body = []
+        for line in lines[opened + 1:]:
+            if not line.strip():
+                continue
+            if len(line) - len(line.lstrip()) <= indent:
+                break
+            body.append(line)
+        text = "".join(body)
+        self.assertIn("ImageClip(source)", text)
+        self.assertIn("concatenate_videoclips(clips)", text)
+        self.assertIn("iter_frames(fps=FPS)", text)
+
+    @unittest.skipIf(mt.resource is None, "needs POSIX resource limits")
+    def test_a_core_dump_is_forbidden_and_cpu_bounded(self):
+        with mt.decode_limits():
+            core, _ = mt.resource.getrlimit(mt.resource.RLIMIT_CORE)
+            cpu, _ = mt.resource.getrlimit(mt.resource.RLIMIT_CPU)
+        self.assertEqual(core, 0)
+        self.assertNotEqual(cpu, mt.resource.RLIM_INFINITY)
+
+    @unittest.skipIf(mt.resource is None, "needs POSIX resource limits")
+    def test_the_limits_are_restored_even_when_the_body_raises(self):
+        before = mt.resource.getrlimit(mt.resource.RLIMIT_CORE)
+        with self.assertRaises(ValueError):
+            with mt.decode_limits():
+                raise ValueError("the composition failed")
+        self.assertEqual(mt.resource.getrlimit(mt.resource.RLIMIT_CORE),
+                         before)
+
+    @unittest.skipIf(mt.resource is None, "needs POSIX resource limits")
+    def test_a_tighter_existing_limit_is_left_alone(self):
+        original = mt.resource.getrlimit(mt.resource.RLIMIT_CPU)
+        self.addCleanup(mt.resource.setrlimit, mt.resource.RLIMIT_CPU,
+                        original)
+        mt.resource.setrlimit(mt.resource.RLIMIT_CPU, (5, original[1]))
+        with mt.decode_limits():
+            soft, _ = mt.resource.getrlimit(mt.resource.RLIMIT_CPU)
+        self.assertEqual(soft, 5)
+
+    def test_this_module_and_the_ocr_module_agree_on_their_caps(self):
+        """The duplication, converted into a checked property.
+
+        These two modules are standalone scripts and neither imports the
+        other, so each states the decode caps itself.  A copied constant
+        that nothing compares is a second definition waiting to drift --
+        the same shape of defect as a test fixture that copies a
+        production record format and is correct only until the format
+        moves.  So the agreement is asserted rather than assumed.
+        """
+        import ocr_clock
+        self.assertEqual(mt.MAX_PIXELS, ocr_clock.MAX_PIXELS)
+        self.assertEqual(mt.DECODE_CPU_SECONDS,
+                         ocr_clock.DECODE_CPU_SECONDS)
+        self.assertEqual(mt.PNG_MAGIC, ocr_clock.PNG_MAGIC)
+
+    def test_neither_module_bounds_the_address_space(self):
+        """Recorded so it is not helpfully added back.
+
+        numpy reserves roughly 2.5 GiB of virtual address space at import,
+        so an RLIMIT_AS tight enough to bound a decode refuses the import
+        and one loose enough to import bounds nothing -- verified by
+        lowering it to 300 MiB after import and watching a full 1920x1080
+        decode still succeed.  See ocr_clock.decode_limits.
+        """
+        for module in (mt, __import__("ocr_clock")):
+            source = os.path.join(TOOLING, module.__name__ + ".py")
+            with io.open(source, encoding="utf-8") as handle:
+                body = handle.read()
+            with self.subTest(module=module.__name__):
+                self.assertNotIn("setrlimit(resource.RLIMIT_AS", body)
+                self.assertNotIn('"RLIMIT_AS"', body)
+
+
 class TestTheCommandLine(TransitionFixture):
     """The status run_pipeline.sh reads, and the summary it prints."""
 

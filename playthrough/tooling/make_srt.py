@@ -164,6 +164,7 @@ import re
 import sys
 import tempfile
 import textwrap
+import unicodedata
 
 from typing import (Any, Dict, List, NamedTuple, Optional, Sequence,
                     Tuple)
@@ -302,6 +303,28 @@ DOSSIER_HEADING_RE = re.compile(r"^#[ \t]+(\S[^\n]*?)[ \t]*$",
 # long would not be a title; refusing it names the problem instead of
 # publishing it.
 MAX_SURVIVOR_NAME = 120
+
+# The punctuation a person's name may contain, beside letters and the
+# marks that accent them.
+#
+# A CONSERVATIVE GRAMMAR RATHER THAN AN ESCAPE.  A security review found
+# the dossier's first heading written into playthrough/transcript.md
+# unescaped, so a heading reading `# <img src=x onerror=...>` reached the
+# Markdown verbatim and executes in any permissive renderer.  Escaping it
+# was the other option and is the wrong one here: the escaped form still
+# publishes the payload, as a title reading `&lt;img src=x onerror=...&gt;`,
+# which is neither a name nor a refusal.  This artifact is evidence about
+# a person, so a heading that is not a name is a mistake to report rather
+# than a string to sanitise.
+#
+# Refusing everything else excludes the whole HTML and Markdown
+# metacharacter set as a consequence rather than as a list to maintain:
+# no `<`, `>`, `&`, `"`, backtick, `[`, `]`, `(`, `)`, `*`, `_`, `!`, `|`,
+# `#`, `\` or `/` can appear, so neither a tag, an entity, a link, an
+# image nor an emphasis run can be spelled.  Letters in any script are
+# accepted -- refusing a name for being non-English would be parochial,
+# not safe.
+SURVIVOR_NAME_PUNCTUATION = frozenset(" '\u2019-\u2010\u2011.,")
 
 # The SubRip cue separator, spelled once.  It is also what the
 # cue-count gate greps for, which is why a commentary containing it is
@@ -1112,6 +1135,12 @@ def render_markdown(cues: Sequence[Cue],
             "entries is not a record of anything")
     heading = markdown_header() if header is None else header
     assert_in_character(heading, "the transcript header")
+    # BOTH PATHS, because only one of them derives the name.  A supplied
+    # header never passes through read_survivor_name, so the name grammar
+    # there does not see it -- and this function's own docstring promises
+    # that "a supplied header is held to exactly the same gates as a
+    # derived one".  This is the gate that makes that true.
+    assert_no_raw_markup(heading, "the transcript header")
     entries = ["**%s** %s" % (cue.start, cue.commentary)
                for cue in cues]
     text = "%s\n\n%s\n" % (heading, "\n\n".join(entries))
@@ -1527,7 +1556,86 @@ def read_survivor_name(dossier_path: Optional[str] = None,
         raise TranscriptError(
             "%s opens with a heading carrying a control character"
             % relative_to_repo(resolved))
+    assert_survivor_name_grammar(name, relative_to_repo(resolved))
     return name
+
+
+def assert_no_raw_markup(text: str, label: str) -> None:
+    """Refuse text that could be rendered as HTML rather than read.
+
+    The header is written into a Markdown document, and Markdown passes
+    raw HTML straight through to the renderer.  read_survivor_name's
+    grammar already makes a derived header safe by construction, but a
+    header can also be SUPPLIED, and that path derives nothing -- so the
+    two are held to the same standard here.
+
+    Deliberately narrow: an angle bracket, an ampersand, or an
+    `onsomething=` attribute.  It is not a general HTML sanitiser and does
+    not try to be -- the header is two generated lines, and anything in it
+    resembling a tag means something has gone wrong upstream rather than
+    that a document needs cleaning.
+
+    :raises TranscriptError: naming what was found.
+    """
+    for needle, why in (
+            ("<", "an angle bracket, which opens an HTML tag"),
+            (">", "an angle bracket, which closes an HTML tag"),
+            ("&", "an ampersand, which opens an HTML entity"),
+    ):
+        if needle in text:
+            raise TranscriptError(
+                "%s contains %s (%r).  The header is written into "
+                "Markdown, which passes raw HTML to the renderer, so it "
+                "is refused rather than escaped: this artifact is "
+                "evidence, and a title carrying markup is a fault to "
+                "report rather than a string to clean"
+                % (label, why, needle))
+    if re.search(r"\bon[a-z]+\s*=", text, re.IGNORECASE):
+        raise TranscriptError(
+            "%s contains an HTML event-handler attribute, which would "
+            "execute in a permissive renderer" % label)
+
+
+def assert_survivor_name_grammar(name: str, source: str) -> None:
+    """Refuse a survivor name that is not shaped like one.
+
+    Letters and the combining marks that accent them, plus the small
+    punctuation set a person's name uses -- space, apostrophe (straight or
+    typographic), hyphen, period, comma.  Everything else is refused,
+    naming the character and its codepoint.
+
+    This is what keeps raw markup out of playthrough/transcript.md.  The
+    name is written into a Markdown heading, and a heading reading
+    `<img src=x onerror=...>` executes in a permissive renderer -- so the
+    grammar, not an escape, is the control: see
+    SURVIVOR_NAME_PUNCTUATION for why publishing an escaped payload would
+    be the wrong answer for an evidence artifact.
+
+    Digits are refused as well.  Nothing needs them -- a regnal suffix is
+    spelled in letters -- and excluding them closes numeric character
+    references without a second rule.
+
+    :raises TranscriptError: naming the first character that fails.
+    """
+    for position, char in enumerate(name, start=1):
+        if char in SURVIVOR_NAME_PUNCTUATION:
+            continue
+        category = unicodedata.category(char)
+        # L* is every letter; M* is every combining mark, which is how an
+        # accent is spelled when it is not precomposed.
+        if category[0] in ("L", "M"):
+            continue
+        raise TranscriptError(
+            "%s opens with a heading that is not shaped like a name: "
+            "character %d is %r (U+%04X, Unicode category %s), and a "
+            "survivor's name may contain only letters, the marks that "
+            "accent them, and the punctuation %r.  The heading is the "
+            "name this transcript is titled with and is written into "
+            "Markdown, so a heading carrying markup is refused rather "
+            "than escaped -- an escaped payload is still published, and "
+            "would be neither a name nor a refusal"
+            % (source, position, char, ord(char), category,
+               "".join(sorted(SURVIVOR_NAME_PUNCTUATION))))
 
 
 def markdown_header(dossier_path: Optional[str] = None,

@@ -227,6 +227,17 @@ _ca_cleanup() {
             [ -f "${_CA_PATHSPEC_FILE}" ]; then
         rm -f -- "${_CA_PATHSPEC_FILE}" 2>/dev/null || true
     fi
+    # Releases only what this process took.  A checkpoint the sequencer
+    # started inherited the sequencer's hold and leaves it in place.
+    #
+    # GUARDED ON THE HELPER'S EXISTENCE, because this trap is registered
+    # ABOVE the line that sources env.sh -- deliberately, so that a
+    # failure to find env.sh still cleans up -- and an unguarded call
+    # would print "command not found" over the top of the FATAL line that
+    # actually explains why the run stopped.
+    if command -v playthrough_release_mutation_lock >/dev/null 2>&1; then
+        playthrough_release_mutation_lock || true
+    fi
 }
 trap _ca_cleanup EXIT
 
@@ -301,7 +312,15 @@ readonly EX_PREREQ=8
 die() {
     local code="$1"
     shift
-    printf 'playthrough: FATAL: %s\n' "$*" >&2
+    # THE MESSAGE IS ESCAPED, because some of what reaches it is
+    # chosen elsewhere -- a world name, a directory name, an
+    # environment variable -- and a diagnostic that printed those
+    # bytes raw would perform the injection it is reporting: a
+    # newline forges a whole extra line of output, and ESC-[ or the
+    # single-byte C1 CSI repaints the terminal of whoever is
+    # reading the run.  playthrough_escape_controls is env.sh's,
+    # sourced far above this definition.
+    printf 'playthrough: FATAL: %s\n' "$(playthrough_escape_controls "$*")" >&2
     exit "${code}"
 }
 
@@ -367,6 +386,152 @@ readonly TR="${PLAYTHROUGH_BIN_TR}"
 readonly AWK="${PLAYTHROUGH_BIN_AWK}"
 readonly CAT="${PLAYTHROUGH_BIN_CAT}"
 
+# ---------------------------------------------------------------------
+# NO MUTATING GIT COMMAND RUNS A HOOK.
+#
+# `git commit` executes pre-commit, prepare-commit-msg, commit-msg and
+# post-commit from $GIT_DIR/hooks -- or from wherever core.hooksPath
+# points -- and every one of those is an ordinary executable file in a
+# directory this pipeline does not own the contents of.  A review named
+# the consequence precisely: a planted hook runs with this step's
+# privileges at the exact moment the credential in .git/config is
+# reachable, and it can read that credential, mutate the evidence
+# between staging and commit, or open a network connection, while the
+# commit still reports success.
+#
+# So every git invocation that CHANGES anything is run with
+# `-c core.hooksPath=<an empty directory this step created>`, which is
+# git's own documented way to say "there are no hooks".  Three
+# properties make that a control rather than a gesture:
+#
+#   * the directory is created inside the VERIFIED private runtime root
+#     (0700, owner-checked, never a symlink -- see env.sh's
+#     playthrough_secure_dir), so nothing can plant an executable in it
+#     between its creation and the commit;
+#   * it is asserted EMPTY at the moment it is nominated, so an
+#     inherited path that already held something is a refusal rather
+#     than a silent execution;
+#   * it is passed with -c on the command line, which outranks every
+#     configuration file, so a core.hooksPath written into .git/config,
+#     ~/.gitconfig or /etc/gitconfig cannot win it back.
+#
+# READING git is deliberately left alone: `git log`, `git rev-parse`,
+# `git ls-files` and friends run no hooks, and routing them through the
+# same wrapper would only make the failure surface larger.
+#
+# THE REPOSITORY'S OWN HOOKS ARE NOT DELETED OR DISABLED.  This checkout
+# carries the stock git-lfs shims, they are legitimate, and other tools
+# depend on them.  Containment here is per-invocation and leaves the
+# repository exactly as it was found.
+# ---------------------------------------------------------------------
+HOOKS_VOID=""
+
+# hooks_void -- print the path of an empty, private, verified directory.
+#
+# Memoised: the first call creates and proves it, later calls reuse the
+# same path, and a failure to establish one is fatal rather than a
+# silent fallback to the repository's hooks.
+hooks_void() {
+    if [ -n "${HOOKS_VOID}" ]; then
+        printf '%s' "${HOOKS_VOID}"
+        return 0
+    fi
+    local path="${PLAYTHROUGH_RUNTIME_DIR}/hooks-void"
+    if ! playthrough_secure_dir "${path}" 700 \
+            "the empty hooks directory"; then
+        die "${EX_PREREQ}" "the empty directory that keeps git hooks" \
+            "from running could not be established at '${path}'." \
+            "A commit is NOT taken with hooks enabled instead: a" \
+            "hook runs with this step's privileges at the moment the" \
+            "credential in .git/config is reachable."
+    fi
+    # ASSERTED EMPTY, not assumed empty.  `find -mindepth 1` prints the
+    # first entry of any kind -- file, directory, link or socket -- so a
+    # path that already held something is named rather than used.
+    local intruder
+    intruder="$("${FIND}" "${path}" -mindepth 1 -print -quit \
+        2>/dev/null || true)"
+    if [ -n "${intruder}" ]; then
+        die "${EX_PREREQ}" "the directory nominated to hold no git" \
+            "hooks (${path}) is not empty -- it contains" \
+            "'${intruder}'.  It is refused rather than emptied: this" \
+            "step does not delete files it did not create, and a" \
+            "hooks directory with contents is a hooks directory."
+    fi
+    HOOKS_VOID="${path}"
+    printf '%s' "${HOOKS_VOID}"
+    return 0
+}
+
+# git_mutate ARG... -- run one git command that changes something, with
+# hooks contained.  Exits with git's own status so every existing caller
+# keeps its own diagnosis.
+git_mutate() {
+    "${GIT}" -c "core.hooksPath=$(hooks_void)" "$@"
+}
+
+# ---------------------------------------------------------------------
+# A CREDENTIAL IN .git/config IS NOT READABLE BY ANYBODY ELSE.
+#
+# This checkout is provisioned with a push URL of the shape
+# https://x-access-token:<secret>@host/..., which puts a live bearer
+# token in a plain file.  That is the platform's arrangement and not
+# something this pipeline can change: `credential.helper` is set EMPTY
+# and `credential.interactive` false here, so the URL is the only
+# authentication path the repository has, and a step that stripped the
+# credential out of it would break the very publication this evidence
+# exists to reach.  Rotation is likewise the platform's to perform.
+#
+# WHAT IS IN THIS STEP'S POWER is the file's mode, and that is the half
+# a review found open: a 0644 config hands the token to every local
+# account, every child process and every hook.  So the mode is asserted
+# before anything is committed, and a config that carries a credential
+# while being readable by group or other is a REFUSAL -- committing
+# under it would publish evidence produced in an environment where the
+# credential had already leaked.  A config with no credential in it is
+# held to no such rule, because there is nothing there to protect.
+# ---------------------------------------------------------------------
+readonly CREDENTIAL_URL_RE='://[^/@[:space:]]*:[^/@[:space:]]*@'
+
+assert_credential_containment() {
+    local config="${GIT_DIR_PATH}/config"
+    if [ ! -f "${config}" ]; then
+        return 0
+    fi
+    if ! "${GREP}" -Eq -- "${CREDENTIAL_URL_RE}" "${config}" \
+            2>/dev/null; then
+        playthrough_log "this checkout's git configuration embeds no" \
+            "credential in a remote URL, so there is nothing in it" \
+            "for its file mode to expose"
+        return 0
+    fi
+    local mode
+    mode="$(playthrough_permission_bits "${config}")" || mode=""
+    if [ -z "${mode}" ]; then
+        die "${EX_REPO}" "this checkout's git configuration carries a" \
+            "credential in a remote URL and its file mode could not" \
+            "be read, so whether other accounts can read that" \
+            "credential is unknown.  Nothing was committed."
+    fi
+    if [ $(( 8#${mode} & 8#077 )) -ne 0 ]; then
+        die "${EX_REPO}" "this checkout's git configuration carries a" \
+            "credential in a remote URL and is mode ${mode}, so" \
+            "group or other can read it.  Every local account, every" \
+            "child process and every git hook could recover that" \
+            "token.  Run 'chmod 600 $(playthrough_rel "${config}")'" \
+            "and take the checkpoint again; nothing was committed," \
+            "because evidence produced in an environment where the" \
+            "credential had already leaked is not evidence about a" \
+            "controlled run."
+    fi
+    playthrough_log "this checkout's git configuration carries a" \
+        "credential and is mode ${mode} -- readable only by its" \
+        "owner.  Revoking or rotating that token is the platform's to" \
+        "do, not this step's; the containment this step can assert is" \
+        "the file mode, and it holds"
+    return 0
+}
+
 # The two phase words of verify_artifacts.sh that a COMMITTABLE
 # acceptance report may carry.  Named here rather than spelled at the
 # comparison, because a report from the artifacts-only phase measures
@@ -374,6 +539,33 @@ readonly CAT="${PLAYTHROUGH_BIN_CAT}"
 # history now proves.
 readonly GATE_HISTORY_PHASE="post-commit"
 readonly GATE_EVERY_PHASE="all"
+# THE TWO VERDICTS A REPORT MAY BE PUBLISHED UNDER, and why there are
+# two rather than one.
+#
+# This used to demand the single token `pass`, which was right while the
+# gate had only two verdicts to give.  It then grew a third:
+# `pass-with-divergence`, emitted when nothing FAILED but some property
+# the plan asks for is delivered differently and the gate says so in
+# full -- what the plan requires, what was delivered instead, and why it
+# stands.  A review had found the opposite handling of exactly one such
+# property, a known and permanent divergence recorded as a PASS, and
+# named the report that resulted as the defect.
+#
+# Refusing to publish `pass-with-divergence` would recreate that defect
+# from the other side.  The only report the checkpoint could then commit
+# would be one that called the divergence a pass, so the honest verdict
+# would be unpublishable and the dishonest one required -- which is a
+# strong incentive to go back to lying, expressed as a gate.
+#
+# `fail` remains unpublishable.  The distinction being drawn is between
+# "a property was measured and did not hold" and "a property was
+# measured, does not hold as WRITTEN, and the report says so out loud":
+# the first is a defect in the artifacts, the second is a documented
+# divergence, and only the first is a reason to withhold the evidence.
+readonly -a GATE_PUBLISHABLE_VERDICTS=(
+    "pass"
+    "pass-with-divergence"
+)
 
 # ---------------------------------------------------------------------
 # The lifecycle vocabulary.
@@ -817,6 +1009,13 @@ assert_repository() {
                 "it first.  Nothing was committed."
         fi
     done
+    # THE CREDENTIAL GATE, here rather than at the commit, because the
+    # question it asks -- "has this repository's token already been
+    # exposed to every account on the host" -- is a property of the
+    # environment the whole checkpoint is produced in and not of the
+    # commit command.  GIT_DIR_PATH is resolved just above, which is why
+    # this is its first possible call site.
+    assert_credential_containment
     playthrough_log "committing on branch ${BRANCH}"
     return 0
 }
@@ -2352,13 +2551,33 @@ assert_acceptance_report() {
             "committed."
     fi
     verdict="$(report_note "${source}" VERIFY)"
-    if [ "${verdict}" != "pass" ]; then
+    local publishable="" candidate=""
+    for candidate in "${GATE_PUBLISHABLE_VERDICTS[@]}"; do
+        if [ "${verdict}" = "${candidate}" ]; then
+            publishable="yes"
+            break
+        fi
+    done
+    if [ -z "${publishable}" ]; then
         die "${EX_EVIDENCE}" "the acceptance report at ${source}" \
             "records VERIFY=${verdict:-none}, so the artifacts did not" \
             "satisfy the gate.  Committing it would archive a failing" \
             "measurement as the evidence of a compliant run.  Fix what" \
             "the report reports, run the gate again, then take this" \
-            "checkpoint.  Nothing was committed."
+            "checkpoint.  Nothing was committed.  The verdicts that MAY" \
+            "be published are ${GATE_PUBLISHABLE_VERDICTS[*]} --" \
+            "'pass-with-divergence' is among them deliberately, because" \
+            "a report that names a documented divergence honestly is" \
+            "evidence and a report that calls one a pass is the defect."
+    fi
+    if [ "${verdict}" != "pass" ]; then
+        local diverged=""
+        diverged="$(report_note "${source}" VERIFY_DIVERGENCES)"
+        playthrough_log "the acceptance report records" \
+            "VERIFY=${verdict} with ${diverged:-an unstated number of}" \
+            "divergence(s) from the plan, each printed in full in the" \
+            "report itself; publishing it because a named divergence is" \
+            "evidence, not a failure"
     fi
     phase="$(report_note "${source}" VERIFY_PHASE)"
     if [ "${phase}" != "${GATE_HISTORY_PHASE}" ] &&
@@ -3072,7 +3291,7 @@ classify_path() {
             PATH_CLASS="build" ; return 0 ;;
         build/frame_digests.jsonl|build/frame_dates.jsonl)
             PATH_CLASS="build" ; return 0 ;;
-        build/acknowledgments.jsonl)
+        build/acknowledgments.jsonl|build/evidence_anchor.jsonl)
             PATH_CLASS="build" ; return 0 ;;
         tooling/environment/Dockerfile)
             PATH_CLASS="tooling" ; return 0 ;;
@@ -3142,6 +3361,328 @@ playthrough_files() {
             printf '%s\0' "${path}"
         fi
     done < <("${GIT}" ls-files -z -- "${PLAYTHROUGH_DIR}" 2>/dev/null)
+}
+
+# ---------------------------------------------------------------------
+# WHAT A PATH IS, AS OPPOSED TO WHERE IT IS.
+#
+# The classification above answers "is this evidence" by POSITION, and
+# for the engine's own tree that is the only answer available: the engine
+# writes `#<b64>.sav`, `.seen.0.-1`, `.mm1` directories and
+# `<name>-<serial>.json.-4651329699267.fb` caches, so a per-filename
+# allowlist over somebody else's output would refuse a correct checkpoint
+# the first time a new engine version wrote a new shape.
+#
+# A review found what position alone cannot see.  `playthrough_files`
+# enumerates with `find -type f`, and `-type f` is true of a HARD LINK to
+# a file anywhere else on the same filesystem -- so a second link to
+# something outside this tree, dropped into a directory the engine owns,
+# is classified as engine state by position and `git add` commits its
+# whole content.  The same sweep cannot see a symlink at all (`-type f`
+# is false of one), so a symlink is an unclassified path that the
+# classification refusal never gets to refuse.  And nothing anywhere
+# looked at the CONTENT: an innocuously named file holding a credential
+# passes every structural question this script asks.
+#
+# So two properties are established before anything is staged, and both
+# are asked of the whole tree rather than of a list somebody maintains:
+#
+#   1. PROVENANCE -- every entry is a directory or a regular file, owned
+#      by this account, with exactly one link, on the same filesystem as
+#      the checkout.  Anything else is refused by what it IS, which is a
+#      question the engine's freedom to name its own files does not
+#      affect.
+#   2. CONTENT -- no path about to be committed carries secret material.
+#
+# Neither replaces the classification; both run beside it.
+# ---------------------------------------------------------------------
+
+# assert_staging_provenance -- the tree is what it appears to be.
+#
+# ONE `find` FOR THE WHOLE TREE, printing four facts per entry, because
+# the realistic shape of this tree is ten thousand captures and one
+# `stat` per path would be ten thousand forks.  The fields are the entry
+# type, the owning uid, the link count and the device number; GNU find
+# prints all four, and the device is compared against the checkout's own
+# so a filesystem grafted in under this tree is refused rather than
+# followed.
+assert_staging_provenance() {
+    local kind uid links device path
+    local expected_uid expected_device
+    local wrong=0
+    local -a named=()
+    expected_uid="$(id -u)"
+    # THE SAME TOOL THAT READS THE TREE READS THE REFERENCE, so the two
+    # device numbers are produced by one implementation and cannot
+    # disagree over their spelling -- and `find` is already a required
+    # tool, where `stat` would be a new dependency for one field.
+    expected_device="$("${FIND}" "${PLAYTHROUGH_REPO_ROOT}" -maxdepth 0 \
+        -printf '%D\n' 2>/dev/null || true)"
+    if [ -z "${expected_device}" ]; then
+        die "${EX_REPO}" "the checkout's own filesystem could not be" \
+            "identified, so a path grafted in from another one cannot" \
+            "be told apart from an ordinary file.  Nothing was" \
+            "committed."
+    fi
+    while IFS=' ' read -r kind uid links device path; do
+        [ -n "${path}" ] || continue
+        local why=""
+        case "${kind}" in
+            d) ;;
+            f)
+                if [ "${links}" != "1" ]; then
+                    # CWE-59.  A second link means these bytes are also
+                    # reachable under another name, and the other name is
+                    # the one whose content would be published.
+                    why="has ${links} hard links, so its content is \
+also reachable outside this tree"
+                fi
+                ;;
+            l) why="is a symbolic link, which the classification sweep \
+cannot see and git would commit as a pointer" ;;
+            *) why="is not a regular file or a directory (find reports \
+type '${kind}')" ;;
+        esac
+        if [ -z "${why}" ] && [ "${uid}" != "${expected_uid}" ]; then
+            why="is owned by uid ${uid} and this run is uid \
+${expected_uid}, so it was placed here by somebody else"
+        fi
+        if [ -z "${why}" ] && [ "${device}" != "${expected_device}" ]; then
+            why="is on device ${device} and the checkout is on \
+${expected_device}, so another filesystem is mounted inside this tree"
+        fi
+        [ -n "${why}" ] || continue
+        wrong=$((wrong + 1))
+        if [ "${#named[@]}" -lt "${DIAGNOSTIC_LIMIT}" ]; then
+            named+=("$(rel "${path}") ${why}")
+        fi
+    done < <("${FIND}" "${PLAYTHROUGH_DIR}" \
+        -printf '%y %U %n %D %p\n' 2>/dev/null || true)
+    if [ "${wrong}" -gt 0 ]; then
+        local more=""
+        if [ "${wrong}" -gt "${#named[@]}" ]; then
+            more=" (and $((wrong - ${#named[@]})) more)"
+        fi
+        die "${EX_SCOPE}" "${wrong} path(s) under" \
+            "$(rel "${PLAYTHROUGH_DIR}") are not what a captured" \
+            "session's evidence looks like: ${named[*]}${more}." \
+            "The engine names its own files and this script does not" \
+            "second-guess those names -- but WHAT a path is has to" \
+            "hold regardless of what it is called, because" \
+            ".gitignore's terminal '!/playthrough/**' negation means" \
+            "anything here is committable and a commit cannot be" \
+            "un-published.  Nothing was committed."
+    fi
+    playthrough_log "every path under $(rel "${PLAYTHROUGH_DIR}") is a" \
+        "directory or a single-linked regular file, owned by uid" \
+        "${expected_uid}, on the checkout's own filesystem"
+    return 0
+}
+
+# The secret scanner, as data so the interpreter is handed a fixed
+# program.  It reads NUL-separated paths on stdin and prints one
+# TAB-separated finding per line: relative path, rule name, and the
+# sha256 of the matched text.  The text itself never leaves the program.
+#
+# IT LOOKS FOR SECRET VALUES, NOT SECRET VOCABULARY, and that distinction
+# was measured rather than assumed.  A first version of this scan was run
+# over the real tree and reported twelve findings, every one of them a
+# false positive on THIS FEATURE'S OWN DOCUMENTATION of the hazard: the
+# string `MIT-MAGIC-COOKIE-1` appears nine times as the name of an X
+# authentication protocol, in prose and in `xauth` arguments, and
+# `https://x-access-token:<secret>@` appears as a redacted placeholder
+# inside the credential-containment refusal itself.  A scan that refuses
+# a checkpoint because the tree explains how credentials are contained is
+# a scan nobody can leave switched on.
+#
+# So: the cookie rule requires the protocol name followed by its
+# thirty-two hex digits (a bare 32-hex rule would fire on every MD5 sum
+# in the notes, of which there are several); the URL rule ignores a
+# password that is bracketed, shell-expanded, starred or literally the
+# word "secret"; and the remaining rules are vendor token shapes and
+# private-key armour, which have no innocent reading.
+#
+# Verified in both directions on real data.  Over the delivered tree,
+# exactly one finding remains and it is baselined below.  Over a planted
+# tree of twelve files under the engine's own subtrees, all eight
+# credentials were caught -- including one in a file called
+# `cache/innocuous.json`, which is the review's stated vector -- while
+# the protocol name in prose, an MD5 sum and the redacted placeholder
+# were correctly passed over.
+readonly SECRET_SCANNER='
+import hashlib
+import os
+import re
+import sys
+
+PLACEHOLDER = re.compile(
+    r"\A(?:<[^>]*>|\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*|\**|x+|X+"
+    r"|REDACTED|redacted|TOKEN|token|PASSWORD|password|secret|SECRET)\Z")
+
+RULES = (
+    ("url-credential",
+     r"[a-zA-Z][a-zA-Z0-9+.-]*://[^/\s:@]+:([^/\s@]+)@"),
+    ("github-token", r"gh[pousr]_[A-Za-z0-9]{16,}"),
+    ("github-pat", r"github_pat_[A-Za-z0-9_]{20,}"),
+    ("aws-access-key", r"AKIA[0-9A-Z]{16}"),
+    ("google-api-key", r"AIza[0-9A-Za-z_-]{35}"),
+    ("slack-token", r"xox[baprs]-[A-Za-z0-9-]{10,}"),
+    ("private-key", r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY"),
+    # A CHARACTER CLASS FOR ONE LETTER, and it is load-bearing rather
+    # than decorative: written as a plain literal, this pattern MATCHES
+    # ITSELF, and the scan then reports the scanner as carrying a key.
+    # Measured exactly that way before this was changed.  The class is
+    # equivalent to the letter for matching and is not the letter for
+    # searching, which is the whole difference.
+    ("putty-key", r"P[u]TTY-User-Key-File-"),
+    ("x-magic-cookie", r"MIT-MAGIC-COOKIE-1\W{0,8}[0-9a-f]{32}"),
+    ("http-basic", r"[Aa]uthorization:\s*Basic\s+[A-Za-z0-9+/=]{16,}"),
+    ("http-bearer",
+     r"[Aa]uthorization:\s*Bearer\s+[A-Za-z0-9._~+/-]{20,}"),
+)
+COMPILED = tuple((name, re.compile(pattern, re.MULTILINE))
+                 for name, pattern in RULES)
+
+# A quarter of a megabyte per file.  The captures and the films are
+# megabytes of binary and are skipped on their first NUL anyway; this
+# bounds the one shape that is neither -- a large text file -- so the
+# scan cannot be made slow by planting one.
+WINDOW = 262144
+root = sys.argv[1]
+
+for path in sys.stdin.buffer.read().split(b"\0"):
+    if not path:
+        continue
+    name = os.fsdecode(path)
+    try:
+        with open(name, "rb") as handle:
+            blob = handle.read(WINDOW)
+    except OSError as err:
+        sys.stderr.write("could not read %s: %s\n" % (name, err))
+        raise SystemExit(2)
+    # A NUL byte means this is not text.  Every captured PNG, both films
+    # and the engine save files land here, which is why the scan is
+    # affordable over a tree of ten thousand captures.
+    if b"\0" in blob:
+        continue
+    text = blob.decode("utf-8", "replace")
+    relative = os.path.relpath(name, root)
+    for rule, expression in COMPILED:
+        for found in expression.finditer(text):
+            if rule == "url-credential":
+                secret = found.group(1)
+                if PLACEHOLDER.match(secret):
+                    continue
+            # THE VALUE NEVER LEAVES THIS PROGRAM.  What is reported is
+            # a sha256 of the matched text, which is enough to compare
+            # against a reviewed baseline and useless to anybody
+            # reading a log, a terminal or a CI transcript.  It also
+            # keeps the baseline itself free of credential-shaped
+            # strings -- a baseline that quoted the value it excuses
+            # would be one more copy of the value.
+            digest = hashlib.sha256(
+                found.group(0).encode("utf-8")).hexdigest()
+            print("%s\t%s\t%s" % (relative, rule, digest))
+'
+
+# The findings that are reviewed and accounted for, as
+# <path>|<rule>|<sha256 of the matched text>.  An entry pins all three,
+# so a NEW occurrence -- even in the same file, even under the same rule
+# -- is refused rather than covered by its neighbour.
+#
+# BY DIGEST RATHER THAN BY VALUE, for the same reason the refusal does
+# not print the match: a baseline that quoted the credential it excuses
+# would be one more copy of that credential, sitting in a tracked file.
+# It would also match its own rule and make the scanner report itself,
+# which is not hypothetical -- it was measured before this was changed.
+#
+# There is exactly one entry, and it is a test fixture:
+# test_commit_artifacts.py constructs a remote URL in the shape the
+# credential-containment refusal exists to catch, in order to drive that
+# refusal.  A scanner that could not see it could not be trusted to see
+# the real thing either, so it is accounted for rather than excluded.
+# The value it names authenticates nothing.
+readonly -a SECRET_BASELINE=(
+    "playthrough/tooling/test_commit_artifacts.py|url-credential|\
+04d64837b370e0f16f95903626e4d1a5f69dcb6c53689fd90a695f9ed5c9175e"
+)
+
+# assert_no_secret_material -- the content question, before staging.
+assert_no_secret_material() {
+    local relative rule digest entry known
+    local unaccounted=0 accounted=0
+    local -a named=()
+    local scan="" status=0
+    set +e
+    scan="$("${FIND}" "${PLAYTHROUGH_DIR}" -type f -print0 2>/dev/null |
+        "${PLAYTHROUGH_PYTHON}" -B -c "${SECRET_SCANNER}" \
+            "${PLAYTHROUGH_REPO_ROOT}" 2>&1)"
+    status=$?
+    set -e
+    if [ "${status}" -ne 0 ]; then
+        die "${EX_SCOPE}" "the secret scan over" \
+            "$(rel "${PLAYTHROUGH_DIR}") could not be completed" \
+            "(exit ${status}): ${scan:-<no diagnosis>}.  A checkpoint" \
+            "is not taken over a tree nobody could read, because the" \
+            "whole point of the scan is that a published credential" \
+            "cannot be un-published.  Nothing was committed."
+    fi
+    while IFS=$'\t' read -r relative rule digest; do
+        [ -n "${relative}" ] || continue
+        known="no"
+        for entry in "${SECRET_BASELINE[@]}"; do
+            if [ "${relative}|${rule}|${digest}" = "${entry}" ]; then
+                known="yes"
+                break
+            fi
+        done
+        if [ "${known}" = "yes" ]; then
+            accounted=$((accounted + 1))
+            continue
+        fi
+        unaccounted=$((unaccounted + 1))
+        if [ "${#named[@]}" -lt "${DIAGNOSTIC_LIMIT}" ]; then
+            # THE RULE AND THE PATH, NOT THE VALUE.  Those are what an
+            # operator needs in order to go and look; echoing the value
+            # into a log, a terminal and a CI transcript would publish
+            # the very thing this refusal exists to keep out of the
+            # history.  The scanner never emitted it in the first place,
+            # so there is nothing here that could leak it by accident.
+            named+=("$(printf '%s (%s)' "${relative}" "${rule}")")
+        fi
+    done <<< "${scan}"
+    if [ "${unaccounted}" -gt 0 ]; then
+        local more=""
+        if [ "${unaccounted}" -gt "${#named[@]}" ]; then
+            more=" (and $((unaccounted - ${#named[@]})) more)"
+        fi
+        die "${EX_SCOPE}" "${unaccounted} path(s) under" \
+            "$(rel "${PLAYTHROUGH_DIR}") carry secret material:" \
+            "${named[*]}${more}.  The values are deliberately NOT" \
+            "printed and were never read out of the scanner." \
+            "Remove the credential, rotate whatever it" \
+            "authenticates, and take the checkpoint again -- a secret" \
+            "that reaches a commit cannot be withdrawn from the" \
+            "history by deleting the file afterwards.  If the match is" \
+            "genuinely not a credential, add it to SECRET_BASELINE in" \
+            "this script with the reason.  Nothing was committed."
+    fi
+    playthrough_log "the secret scan found nothing unaccounted for" \
+        "under $(rel "${PLAYTHROUGH_DIR}") (${accounted} reviewed" \
+        "finding(s) in the baseline)"
+    return 0
+}
+
+# assert_staging_is_sound -- both questions, in the order whose failure
+# is cheaper to diagnose.
+#
+# Provenance first: "this is a hard link to somewhere else" explains
+# itself, where a secret finding on the same file would only say the
+# content is wrong without saying why the file is there at all.
+assert_staging_is_sound() {
+    assert_staging_provenance
+    assert_no_secret_material
+    return 0
 }
 
 # assert_every_path_is_classified -- the refusal that replaces the
@@ -3276,6 +3817,14 @@ stage_artifacts() {
     #    it unanswerable -- it staged whatever was there.
     assert_index_hygiene
     assert_no_ignored_paths
+    #    Then WHAT each path is and WHAT IT CONTAINS, before the
+    #    classification asks where it lives.  A hard link into this tree
+    #    is classified as engine state by position and would be committed
+    #    whole; a symlink is invisible to the classification sweep
+    #    entirely; and an innocuously named credential satisfies every
+    #    structural question either of them asks.  See
+    #    assert_staging_is_sound.
+    assert_staging_is_sound
     assert_every_path_is_classified
     # 1. The authored tooling, including requirements.txt -- the
     #    dependency declaration the requirement wants kept out of the
@@ -3567,6 +4116,133 @@ state")
     return 0
 }
 
+# ---------------------------------------------------------------------
+# SEALING THE EVIDENCE, AND PUBLISHING THE SEAL'S HEAD
+#
+# A review found that every attestation in this tree was mutable with the
+# evidence it attested to: the digest ledger vouches for the frames, and
+# an attacker who rewrites a frame rewrites its digest row in the same
+# breath.  Recomputing the ledger from the forged frames agrees with
+# itself, so no amount of internal consistency can answer the question.
+#
+# The answer has to come from outside the tree, and a commit is the only
+# thing here that qualifies.  A commit object's name is a hash of its own
+# content INCLUDING its message, so a value written into a commit message
+# is fixed the moment the checkpoint is taken -- changing it changes the
+# commit id and every id descending from it, which is a rewrite of
+# published history rather than an edit of a file.
+#
+# So each checkpoint does two things beyond committing:
+#
+#   1. SEALS the evidence -- appends one chained row per artifact to
+#      playthrough/build/evidence_anchor.jsonl, each row carrying the
+#      artifact's sha256, its byte count, GIT'S OWN blob name for it, and
+#      the previous row's chain hash.  The chain is append-only for the
+#      same reason every other ledger here is.
+#   2. PUBLISHES the chain's head as a trailer beside the checkpoint's
+#      own, so the ledger cannot be rewritten without also rewriting the
+#      history that names its head.
+#
+# THE ORDER IS LOAD-BEARING.  The seal is taken before the index is read
+# for assert_commit_tree_matches_index, and the ledger is staged into the
+# SAME commit that publishes its head -- so the commit contains both the
+# seal and the claim about it, and the two cannot be separated afterwards.
+#
+# SEALING IS TRANSITIVE, which is why fifteen rows cover ten thousand
+# frames.  build/frame_digests.jsonl carries a digest for every capture,
+# so sealing that one file seals them all: substituting a frame breaks its
+# digest row, repairing the digest row breaks the seal over the ledger,
+# and repairing the seal breaks the chain and the head this commit
+# published.
+#
+# A checkpoint that stages nothing seals nothing, and that is correct
+# rather than a gap: an unchanged tree is already covered by the seal the
+# previous checkpoint took.
+readonly ANCHOR_TRAILER_KEY="Playthrough-Evidence-Anchor"
+
+# The sealer, kept as data so the interpreter is handed a fixed program
+# rather than an assembled one.  It reports three facts on stdout in
+# KEY=value form: the head to publish, how many rows it added, and which
+# artifacts do not exist yet -- the last so an early checkpoint can say
+# what it could not seal instead of being silent about it.
+readonly ANCHOR_SEALER='
+import sys
+
+sys.path.insert(0, sys.argv[1])
+import manifest
+
+written, absent = manifest.seal_artifacts(sys.argv[2])
+rows = manifest.read_anchor_rows()
+problems = manifest.anchor_chain_problems(rows)
+if problems:
+    sys.stderr.write("the chain is unsound after sealing: %s\n"
+                     % problems[0])
+    raise SystemExit(1)
+head = manifest.anchor_head(rows)
+if not head:
+    sys.stderr.write("sealing produced no chain head\n")
+    raise SystemExit(1)
+print("HEAD=%s" % head)
+print("ADDED=%d" % len(written))
+print("TOTAL=%d" % len(rows))
+print("ABSENT=%s" % ",".join(absent))
+'
+
+ANCHOR_HEAD=""
+
+# seal_evidence NAME
+#   Seal every artifact that exists, stage the ledger, and leave the
+#   chain's head in ANCHOR_HEAD for the trailer.
+#
+#   FAIL-CLOSED.  A checkpoint whose seal could not be taken is not
+#   committed at all: publishing evidence without the one artifact that
+#   vouches for it from outside would leave the history asserting
+#   something no later run could check.
+seal_evidence() {
+    local name="$1"
+    local reading="" line="" added="" total="" unsealed=""
+    ANCHOR_HEAD=""
+    if ! reading="$("${PLAYTHROUGH_PYTHON}" -B -c "${ANCHOR_SEALER}" \
+            "${PLAYTHROUGH_TOOLING_DIR}" "${name}" 2>&1)"; then
+        die "${EX_COMMIT}" "the evidence could not be sealed for the" \
+            "'${name}' checkpoint, so nothing was committed:" \
+            "${reading:-<no diagnosis>}"
+    fi
+    while IFS= read -r line; do
+        case "${line}" in
+            HEAD=*) ANCHOR_HEAD="${line#HEAD=}" ;;
+            ADDED=*) added="${line#ADDED=}" ;;
+            TOTAL=*) total="${line#TOTAL=}" ;;
+            ABSENT=*) unsealed="${line#ABSENT=}" ;;
+        esac
+    done <<< "${reading}"
+    if [ -z "${ANCHOR_HEAD}" ]; then
+        die "${EX_COMMIT}" "the evidence was sealed for the '${name}'" \
+            "checkpoint but the chain head could not be read back, so" \
+            "there is nothing to publish and nothing was committed."
+    fi
+    # The ledger belongs in the commit that publishes its head.  It is a
+    # `build` path, so classify_path already accounts for it and
+    # assert_tree_fully_staged would refuse the checkpoint if this add
+    # were missing -- which is the intended direction of that mistake.
+    if ! git_mutate add -- "$(rel "${PLAYTHROUGH_EVIDENCE_ANCHOR}")"
+    then
+        die "${EX_COMMIT}" "git refused to stage the evidence anchor" \
+            "for the '${name}' checkpoint.  Nothing was committed."
+    fi
+    if [ -n "${unsealed}" ]; then
+        playthrough_log "sealed the evidence for '${name}':" \
+            "${added} row(s) added, ${total} in the chain, head" \
+            "${ANCHOR_HEAD:0:16}.  Not yet on disk and so not sealed:" \
+            "${unsealed//,/, }"
+    else
+        playthrough_log "sealed the evidence for '${name}':" \
+            "${added} row(s) added, ${total} in the chain, head" \
+            "${ANCHOR_HEAD:0:16}; every sealed artifact was present"
+    fi
+    return 0
+}
+
 # commit_checkpoint NAME SUBJECT
 #   Take the commit, or report that there was nothing to take.
 #
@@ -3590,6 +4266,10 @@ commit_checkpoint() {
         COMMIT_HASH=""
         return 0
     fi
+    # SEALED BEFORE THE MESSAGE IS BUILT, because the message publishes
+    # the seal's head, and STAGED before staged_classes is read, so the
+    # body describes an index that already includes the ledger.
+    seal_evidence "${name}"
     while IFS= read -r class; do
         [ -n "${class}" ] || continue
         body+=("- ${class}")
@@ -3602,8 +4282,20 @@ commit_checkpoint() {
     fi
     message+=("-m" "${WORLD_NAME} / ${CHARACTER_NAME}, \
 ${ROW_COUNT} keystroke(s) captured.")
-    message+=("-m" "${TRAILER_KEY}: ${name}")
-    if ! "${GIT}" commit --quiet "${message[@]}"; then
+    # BOTH TRAILERS IN ONE PARAGRAPH so git reads them as a trailer
+    # block: a blank line between them would make the second one body
+    # text, and `git log --grep` would still find it while `git
+    # interpret-trailers` would not.
+    message+=("-m" "${TRAILER_KEY}: ${name}
+${ANCHOR_TRAILER_KEY}: ${ANCHOR_HEAD}")
+    # THE INDEX AS IT STANDS, READ BEFORE THE COMMIT.  Compared against
+    # the tree the commit actually produced immediately afterwards, so
+    # the window a review identified -- something mutating between the
+    # validation and the publication -- cannot pass unnoticed even if it
+    # somehow slipped past the quiescence lock.
+    local staged_before
+    staged_before="$(index_blobs)"
+    if ! git_mutate commit --quiet "${message[@]}"; then
         die "${EX_COMMIT}" "git refused the '${name}' checkpoint" \
             "commit.  The index is left staged so the failure can be" \
             "inspected; nothing was rewritten."
@@ -3613,10 +4305,98 @@ ${ROW_COUNT} keystroke(s) captured.")
             "but its hash could not be read back, so it cannot be" \
             "verified."
     fi
+    assert_commit_tree_matches_index "${name}" "${staged_before}"
     COMMITTED="yes"
     playthrough_log "committed the '${name}' checkpoint as" \
         "${COMMIT_HASH}"
     return 0
+}
+
+# ---------------------------------------------------------------------
+# BINDING THE STAGED BLOBS TO THE COMMIT THAT PUBLISHED THEM.
+#
+# Every gate in this file runs against the index, and the commit is a
+# separate operation afterwards.  A review put the gap plainly: mutation
+# can occur after validation and staging and before the commit, and
+# `git commit` reporting success says nothing about WHICH bytes it
+# published -- only that it published the index it found, whatever that
+# had become.
+#
+# The quiescence lock (see THE MUTATION LOCK) is the primary control and
+# closes that window by excluding every producer.  This is the check
+# that the window stayed closed, and the two are not redundant: a lock
+# proves nobody else was allowed in, and this proves nobody got in.
+#
+# The comparison is on object names, not on file contents, so it is
+# exact and cheap: `git ls-files --stage` names the blob for every index
+# entry, `git ls-tree -r HEAD` names the blob for every entry of the
+# published tree, and for the paths this checkpoint stages the two must
+# agree object-for-object.  A path whose blob differs was rewritten
+# between the two operations; a path that vanished from the tree was
+# unstaged behind this step's back.
+# ---------------------------------------------------------------------
+
+# index_blobs -- "<mode> <object> <path>" for every index entry under
+# this checkpoint's pathspecs, in a stable order.
+index_blobs() {
+    # SC2016: the single quotes are deliberate and required.  This is an
+    # awk PROGRAM, and its '$' field references belong to awk; letting
+    # the shell expand them would rewrite the program before awk saw it.
+    # shellcheck disable=SC2016
+    "${GIT}" ls-files --stage -- "${PATHSPECS[@]}" 2>/dev/null |
+        "${AWK}" '{ mode = $1; object = $2; $1 = ""; $2 = ""; $3 = "";
+                    sub(/^[ \t]+/, "");
+                    printf "%s %s %s\n", mode, object, $0 }' |
+        "${SORT}"
+}
+
+# tree_blobs COMMIT -- the same shape, read out of a published tree.
+tree_blobs() {
+    # SC2016: the single quotes are deliberate and required.  This is an
+    # awk PROGRAM, and its '$' field references belong to awk; letting
+    # the shell expand them would rewrite the program before awk saw it.
+    # shellcheck disable=SC2016
+    "${GIT}" ls-tree -r --full-tree "$1" -- "${PATHSPECS[@]}" \
+        2>/dev/null |
+        "${AWK}" '{ mode = $1; object = $3; $1 = ""; $2 = ""; $3 = "";
+                    sub(/^[ \t]+/, "");
+                    printf "%s %s %s\n", mode, object, $0 }' |
+        "${SORT}"
+}
+
+assert_commit_tree_matches_index() {
+    local name="$1" before="$2"
+    local after
+    after="$(tree_blobs "${COMMIT_HASH}")"
+    if [ "${before}" = "${after}" ]; then
+        local count
+        count="$(printf '%s\n' "${before}" | "${GREP}" -c . || true)"
+        playthrough_log "the '${name}' checkpoint published exactly" \
+            "the ${count:-0} object(s) that were staged when it was" \
+            "validated -- compared blob by blob against" \
+            "${COMMIT_HASH}, not assumed from the commit's exit status"
+        return 0
+    fi
+    # The FIRST disagreement is named, because a reader needs a path to
+    # start from and the whole listing can be hundreds of lines.
+    local differing=""
+    # SC2016: the single quotes are deliberate and required.  This is an
+    # awk PROGRAM, and its '$' field references belong to awk; letting
+    # the shell expand them would rewrite the program before awk saw it.
+    # shellcheck disable=SC2016
+    differing="$(printf '%s\n' "${before}" "${after}" | "${SORT}" |
+        "${AWK}" '{ seen[$0]++ } END { for (row in seen)
+            if (seen[row] == 1) { print row; exit } }' || true)"
+    die "${EX_COMMIT}" "the '${name}' checkpoint commit" \
+        "${COMMIT_HASH} does not publish the objects that were" \
+        "staged when its gates ran.  The first disagreement is" \
+        "'${differing:-<none reported>}'.  Something changed the" \
+        "index or the working tree between the validation and the" \
+        "commit, so what was checked and what was published are not" \
+        "the same bytes.  The commit EXISTS -- it is not rewritten" \
+        "here, because rewriting history to hide a race is worse than" \
+        "reporting it -- and it must be inspected before it is" \
+        "trusted as evidence."
 }
 
 # ---------------------------------------------------------------------
@@ -3625,12 +4405,20 @@ ${ROW_COUNT} keystroke(s) captured.")
 # the fact that the commit command succeeded.
 # ---------------------------------------------------------------------
 
-# verify_attribution_and_trailer NAME -- the two properties EVERY
-# checkpoint has, whatever else it carries.  Shared, so the dossier
+# verify_attribution_and_trailer NAME [ANCHOR_HEAD] -- the properties
+# EVERY checkpoint has, whatever else it carries.  Shared, so the dossier
 # commit is held to the same attribution rule as the other two rather
 # than to a looser one written beside it.
+#
+# ANCHOR_HEAD is optional because one milestone legitimately has none:
+# `integration` commits the two repository-wide rule files and touches no
+# evidence, so it seals nothing and publishes nothing.  Every checkpoint
+# that DID seal passes the head it sealed to, and gets it read back out of
+# the commit -- because "the trailer was in the argv we handed git" is not
+# the same claim as "the trailer is in the published history", and it is
+# the second one the acceptance gate will make.
 verify_attribution_and_trailer() {
-    local name="$1"
+    local name="$1" anchor="${2:-}"
     local author committer message
     author="$("${GIT}" log -1 --format='%an <%ae>' HEAD)"
     committer="$("${GIT}" log -1 --format='%cn <%ce>' HEAD)"
@@ -3657,6 +4445,20 @@ verify_attribution_and_trailer() {
                 "in the lifecycle does not."
             ;;
     esac
+    if [ -n "${anchor}" ]; then
+        case $'\n'"${message}"$'\n' in
+            *$'\n'"${ANCHOR_TRAILER_KEY}: ${anchor}"$'\n'*) ;;
+            *)
+                die "${EX_COMMIT}" "the commit does not carry" \
+                    "'${ANCHOR_TRAILER_KEY}: ${anchor:0:16}...', so the" \
+                    "evidence anchor's head was sealed into the tree" \
+                    "and never published into the history.  A ledger" \
+                    "whose head appears nowhere in the history is one" \
+                    "more mutable file beside the evidence it is" \
+                    "supposed to vouch for."
+                ;;
+        esac
+    fi
     return 0
 }
 
@@ -3935,7 +4737,7 @@ assert_dossier_precedes_captures() {
 
 verify_commit() {
     local name="$1"
-    verify_attribution_and_trailer "${name}"
+    verify_attribution_and_trailer "${name}" "${ANCHOR_HEAD}"
     local leftover
     # The same flags the pre-commit sweep uses, so "clean" means the
     # same thing on both sides of the commit: every untracked file
@@ -3983,7 +4785,8 @@ verify_commit() {
 # make the first step of the lifecycle impossible to take, which is the
 # shape of the defect this whole subcommand exists to remove.
 verify_dossier_commit() {
-    verify_attribution_and_trailer "${CHECKPOINT_DOSSIER}"
+    verify_attribution_and_trailer "${CHECKPOINT_DOSSIER}" \
+        "${ANCHOR_HEAD}"
     if ! "${GIT}" ls-files --error-unmatch -- \
             "${PLAYTHROUGH_DOSSIER}" >/dev/null 2>&1; then
         die "${EX_COMMIT}" "the commit was taken but git still does" \
@@ -4322,7 +5125,7 @@ do_integration() {
     local -a message=("-m" "${SUBJECT_INTEGRATION}")
     message+=("-m" "$(printf -- '- %s\n' "${staged[@]}")")
     message+=("-m" "${TRAILER_KEY}: ${CHECKPOINT_INTEGRATION}")
-    if ! "${GIT}" commit --quiet "${message[@]}"; then
+    if ! git_mutate commit --quiet "${message[@]}"; then
         die "${EX_COMMIT}" "git refused the" \
             "'${CHECKPOINT_INTEGRATION}' milestone commit.  The index" \
             "is left staged so the failure can be inspected; nothing" \
@@ -4383,6 +5186,13 @@ do_dossier() {
     fi
     # ONE path, by name.  A dossier commit that also swept up the tooling
     # or the notes would be the bundled commit this step exists to split.
+    #
+    # THE SOUNDNESS QUESTIONS ARE STILL ASKED OF THE WHOLE TREE, even
+    # though only one path is staged: this checkpoint also seals the
+    # evidence, and a tree carrying a hard link or a planted credential
+    # is not one whose dossier should be sealed and published as the
+    # thing that came before play.
+    assert_staging_is_sound
     stage_batch "the survivor's dossier" "${PLAYTHROUGH_DOSSIER}"
     commit_checkpoint "${CHECKPOINT_DOSSIER}" "${SUBJECT_DOSSIER}"
     if [ "${COMMITTED}" = "yes" ]; then
@@ -4690,6 +5500,34 @@ assess_final_eligibility() {
     return 0
 }
 
+# do_scan -- the two soundness questions, on their own.
+#
+# WHY THIS EXISTS AS A SUBCOMMAND.  The acceptance gate asks the same two
+# questions of the tree it measures, and it has to: not every commit in
+# this history is taken by this script -- a tooling change is committed
+# with ordinary git, and this script's gates say nothing about a commit
+# that never ran them.  Restating eleven regular expressions and a
+# reviewed baseline inside the gate would be two copies of one rule set,
+# which answer differently the first time either is updated.  So the gate
+# runs this.
+#
+# READ-ONLY, AND IT TAKES NO LOCK, like `status` beside it.  That is not
+# tidiness: the gate holds this checkout's mutation lock EXCLUSIVELY while
+# it measures, so a subcommand that acquired it would deadlock against
+# its own caller.  Nothing here writes, stages or commits, so there is
+# nothing for a lock to protect.
+#
+# It refuses on the first failure rather than reporting both, because the
+# two are not independent -- a hard link into the tree is a reason to stop
+# looking at content and go and find out how it got there.
+do_scan() {
+    assert_repository
+    assert_staging_is_sound
+    playthrough_log "the tree is sound to stage: provenance and content" \
+        "both hold"
+    return "${EX_OK}"
+}
+
 do_status() {
     # Read-only by construction, and it REPORTS what a checkpoint would
     # refuse rather than refusing itself -- an operator runs `status`
@@ -4885,6 +5723,8 @@ derived from it" \
             "attest" "commit the acceptance report and the \
 three-section report" \
             "status" "report the lifecycle, changing nothing" \
+            "scan" "check the tree's provenance and content for \
+secret material, changing nothing" \
             "help" "this text"
         printf '%s\n' ""
         printf '%s\n' "THE SIX MUTATING STEPS ARE ORDERED AND EACH \
@@ -5044,6 +5884,26 @@ ${CHECKPOINT_LOCK_TIMEOUT_DEFAULT}}" \
         "the digest in that name is derived from THIS checkout's path," \
         "so a checkpoint running over a different working tree is not" \
         "serialised against this one"
+    # AND THE CHECKOUT'S MUTATION LOCK, EXCLUSIVELY.  The lock above
+    # keeps two checkpoints apart, which was never the whole problem: a
+    # session step appending a frame, or a producer republishing the
+    # movie, could land between the gate that passed and the commit that
+    # publishes -- and the commit would then carry a tree no gate ever
+    # saw, with every individual lock correctly held throughout because
+    # no two holders were ever the same stage.  Taken here, once, for
+    # every MUTATING subcommand, so the staging sweep, the validation and
+    # the commit all sit inside one window.  `status` does not reach this
+    # function, and must not: a read that blocks behind a producer is a
+    # reporting tool that stops working exactly when it is needed.
+    if ! playthrough_acquire_mutation_lock exclusive "${timeout}"; then
+        die "${EX_PREREQ}" "this checkpoint could not take THIS" \
+            "checkout's mutation lock exclusively within ${timeout}s," \
+            "so it cannot promise that the tree it would commit is the" \
+            "tree the gate measured.  A session step, a producer or a" \
+            "standalone gate is still running over the same working" \
+            "tree.  NOTHING WAS COMMITTED; wait for that stage and run" \
+            "this again."
+    fi
     return 0
 }
 
@@ -5085,6 +5945,9 @@ main() {
             ;;
         status)
             do_status
+            ;;
+        scan)
+            do_scan
             ;;
         '')
             usage 2

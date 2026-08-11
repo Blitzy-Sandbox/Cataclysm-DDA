@@ -141,6 +141,13 @@ import sys
 import tempfile
 import time
 
+try:
+    # POSIX only; see decode_limits for what it is used for and
+    # for the one limit that is deliberately NOT imposed.
+    import resource
+except ImportError:            # pragma: no cover - POSIX only
+    resource = None            # type: ignore[assignment]
+
 from typing import (Any, Dict, Iterable, List, Mapping, NamedTuple,
                     Optional, Sequence, Set, Tuple)
 
@@ -372,6 +379,17 @@ PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 # window these captures photograph is 1920x1080 = 2 073 600 pixels, so
 # 64 megapixels is generous by a factor of thirty.
 MAX_PIXELS = 64 * 1024 * 1024
+
+# The CPU budget, in seconds, granted to one composition.
+#
+# DELIBERATELY THE SAME VALUE ocr_clock.py uses, and asserted to
+# be by test_make_transitions.py.  The two modules each own their
+# own decode door -- they are standalone scripts and neither
+# imports the other -- so the caps are stated twice, and the
+# agreement between them is a CHECKED property rather than a
+# convention somebody has to remember.  A copied constant that
+# nothing compares is a second definition waiting to drift.
+DECODE_CPU_SECONDS = 30
 
 # The sha256 of data/font/Terminus.ttf as this repository ships it.
 #
@@ -1209,6 +1227,115 @@ def expected_size() -> Tuple[int, int]:
     return width, height
 
 
+def _assert_decodable_provenance(path: str) -> None:
+    """Refuse to compose from a file anybody but this account can rewrite.
+
+    The counterpart of ocr_clock.assert_decodable_provenance, which
+    carries the full reasoning; the short version is that the pinned
+    Pillow 11.3.0 has published advisories in native decoders, and the
+    stated ground for accepting that risk is that this pipeline only ever
+    decodes PNGs it captured itself.  A security review found the frames
+    group- and world-writable, so that ground did not hold, and a mode
+    set at creation is a fact about the past.  This checks it at the
+    moment the bytes reach MoviePy.
+
+    :raises TransitionError: naming the property that failed.
+    """
+    try:
+        info = os.lstat(path)
+    except OSError as err:
+        raise TransitionError(
+            "%s could not be examined before composing: %s"
+            % (path, err)) from err
+    if stat.S_ISLNK(info.st_mode):
+        raise TransitionError(
+            "%s is a symbolic link, so the name checked and the bytes "
+            "decoded are two separate decisions" % path)
+    if not stat.S_ISREG(info.st_mode):
+        raise TransitionError(
+            "%s is not a regular file (mode %#o), so reading it is an "
+            "operation on something other than a capture"
+            % (path, info.st_mode))
+    if info.st_uid != os.geteuid():
+        raise TransitionError(
+            "%s is owned by uid %d and this process runs as uid %d, so "
+            "its owner rather than this pipeline decides what the "
+            "decoder parses" % (path, info.st_uid, os.geteuid()))
+    if info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        raise TransitionError(
+            "%s is mode %04o, which is writable beyond its owner, so "
+            "its contents can be replaced between the capture that "
+            "wrote it and this composition"
+            % (path, stat.S_IMODE(info.st_mode)))
+
+
+class decode_limits(object):
+    """Bound one composition in CPU time, and forbid a core dump.
+
+    The counterpart of ocr_clock.decode_limits, and identical in
+    behaviour -- see that class for the full reasoning, including the
+    measurement that made RLIMIT_AS the wrong instrument here (numpy
+    reserves 2.5 GiB of address space at import, so a ceiling tight
+    enough to bound a decode refuses the import, and one loose enough to
+    import bounds nothing; verified by lowering it to 300 MiB after
+    import and watching a full decode still succeed).
+
+    RLIMIT_CORE is 0 so a native decoder that segfaults on a malformed
+    PNG writes no core file containing the decoded frames.  RLIMIT_CPU is
+    the time already used plus DECODE_CPU_SECONDS, because the limit is
+    cumulative over the process rather than per call.  Both are restored
+    on exit, including when the body raises.
+    """
+
+    def __init__(self) -> None:
+        self._saved: List[Tuple[int, Tuple[int, int]]] = []
+
+    def __enter__(self) -> "decode_limits":
+        if resource is None:            # pragma: no cover - POSIX only
+            return self
+        used = 0.0
+        try:
+            usage = resource.getrusage(resource.RUSAGE_SELF)
+            used = usage.ru_utime + usage.ru_stime
+        except (OSError, ValueError):        # pragma: no cover
+            used = 0.0
+        targets = [
+            ("RLIMIT_CORE", 0),
+            ("RLIMIT_CPU", int(used) + DECODE_CPU_SECONDS),
+        ]
+        for name, wanted in targets:
+            limit = getattr(resource, name, None)
+            if limit is None:           # pragma: no cover - POSIX only
+                continue
+            try:
+                soft, hard = resource.getrlimit(limit)
+            except (OSError, ValueError):    # pragma: no cover
+                continue
+            # A limit is never RAISED and the hard limit is never
+            # touched: an environment that already bounds this process
+            # more tightly has made a decision this must not undo.
+            target = wanted if hard == resource.RLIM_INFINITY \
+                else min(wanted, hard)
+            if soft != resource.RLIM_INFINITY and soft <= target:
+                continue
+            try:
+                resource.setrlimit(limit, (target, hard))
+            except (OSError, ValueError):    # pragma: no cover
+                continue
+            self._saved.append((limit, (soft, hard)))
+        return self
+
+    def __exit__(self, *_exc: object) -> bool:
+        if resource is not None:
+            for limit, original in reversed(self._saved):
+                try:
+                    resource.setrlimit(limit, original)
+                except (OSError, ValueError):   # pragma: no cover
+                    pass
+        self._saved = []
+        return False
+
+
 def _image_size(path: str) -> Tuple[int, int]:
     """Return a PNG's (width, height) without decoding its pixels.
 
@@ -1481,6 +1608,11 @@ def compose_transition_group(
         successor, "the frame being faded in to", root)
     _assert_capture_size(source, geometry)
     _assert_capture_size(target, geometry)
+    # PROVENANCE BEFORE THE DECODER.  _assert_capture_size reads only the
+    # IHDR header; these two frames are about to be handed to MoviePy,
+    # which hands them to Pillow, which is where the advisories are.
+    _assert_decodable_provenance(source)
+    _assert_decodable_provenance(target)
 
     paths = group_frame_paths(prefix)
     clips: List[Any] = []
@@ -1492,42 +1624,43 @@ def compose_transition_group(
         # than composited, because a cross-fade applied through the
         # compositing clip class renders WITHOUT the fade and reports
         # nothing at all.
-        clips = [
-            ImageClip(source).with_duration(FADE_SECONDS)
-            .with_effects([vfx.FadeOut(FADE_SECONDS)]),
-            title_card(face, geometry, CARD_SECONDS),
-            ImageClip(target).with_duration(FADE_SECONDS)
-            .with_effects([vfx.FadeIn(FADE_SECONDS)]),
-        ]
-        segment = concatenate_videoclips(clips)
-        if segment.size is not None and \
-                tuple(int(value) for value in segment.size) != geometry:
-            raise TransitionError(
-                "the composed segment is %sx%s but the film is cut at "
-                "%dx%d"
-                % (segment.size[0], segment.size[1], geometry[0],
-                   geometry[1]))
-        # STREAMED, NEVER MATERIALISED.  list(iter_frames(...)) holds
-        # all twelve 1920x1080 arrays at once, and the faded ones come
-        # back as float64, so the raw arrays alone reach roughly 570
-        # MiB before the clips, the card buffers and the Pillow objects
-        # on top -- measured at 553.9 MiB peak RSS for one group
-        # against 223.0 MiB streaming.  Each frame is converted and
-        # written as it is produced and only the COUNT is kept, so the
-        # exact-twelve assertion below still refuses a short segment AND
-        # a long one while one frame is resident at a time.
-        written = 0
-        for ordinal, frame in enumerate(segment.iter_frames(fps=FPS)):
-            if ordinal >= FRAMES_PER_GROUP:
-                # Keep consuming so the reported count is the true one,
-                # but write nothing past the plan.
+        with decode_limits():
+            clips = [
+                ImageClip(source).with_duration(FADE_SECONDS)
+                .with_effects([vfx.FadeOut(FADE_SECONDS)]),
+                title_card(face, geometry, CARD_SECONDS),
+                ImageClip(target).with_duration(FADE_SECONDS)
+                .with_effects([vfx.FadeIn(FADE_SECONDS)]),
+            ]
+            segment = concatenate_videoclips(clips)
+            if segment.size is not None and \
+                    tuple(int(value) for value in segment.size) != geometry:
+                raise TransitionError(
+                    "the composed segment is %sx%s but the film is cut at "
+                    "%dx%d"
+                    % (segment.size[0], segment.size[1], geometry[0],
+                       geometry[1]))
+            # STREAMED, NEVER MATERIALISED.  list(iter_frames(...)) holds
+            # all twelve 1920x1080 arrays at once, and the faded ones come
+            # back as float64, so the raw arrays alone reach roughly 570
+            # MiB before the clips, the card buffers and the Pillow objects
+            # on top -- measured at 553.9 MiB peak RSS for one group
+            # against 223.0 MiB streaming.  Each frame is converted and
+            # written as it is produced and only the COUNT is kept, so the
+            # exact-twelve assertion below still refuses a short segment AND
+            # a long one while one frame is resident at a time.
+            written = 0
+            for ordinal, frame in enumerate(segment.iter_frames(fps=FPS)):
+                if ordinal >= FRAMES_PER_GROUP:
+                    # Keep consuming so the reported count is the true one,
+                    # but write nothing past the plan.
+                    written += 1
+                    continue
+                staged_frame = paths[ordinal] + STAGED_FRAME_SUFFIX
+                _write_png(_frame_to_rgb8(frame, ordinal), staged_frame)
+                _assert_written(staged_frame, geometry)
+                staged_frames.append((staged_frame, paths[ordinal]))
                 written += 1
-                continue
-            staged_frame = paths[ordinal] + STAGED_FRAME_SUFFIX
-            _write_png(_frame_to_rgb8(frame, ordinal), staged_frame)
-            _assert_written(staged_frame, geometry)
-            staged_frames.append((staged_frame, paths[ordinal]))
-            written += 1
     except TransitionError:
         _discard_staged_frames(staged_frames)
         raise

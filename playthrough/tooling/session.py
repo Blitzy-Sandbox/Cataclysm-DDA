@@ -264,6 +264,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import errno
 import fcntl
 import itertools
 import json
@@ -1697,6 +1698,16 @@ PHASE_INDEX_VERSION = 1
 DEFAULT_LOCK_TIMEOUT = 120
 ENV_LOCK_TIMEOUT = "PLAYTHROUGH_SESSION_LOCK_TIMEOUT"
 
+# How long a step waits for THE CHECKOUT'S mutation lock, which is a
+# different question from the one above.  The step lock is contended
+# only by another step -- seconds of work -- while the mutation lock
+# is contended by the gate and the checkpoint, which legitimately
+# read every frame or commit a whole session and take minutes doing
+# it.  A step that refused after two minutes of a running checkpoint
+# would be reporting a stuck pipeline that was working perfectly.
+DEFAULT_MUTATION_TIMEOUT = 900
+ENV_MUTATION_TIMEOUT = "PLAYTHROUGH_MUTATION_LOCK_TIMEOUT"
+
 # THE JOURNAL'S THREE PHASES, AND WHY THERE ARE THREE.
 #
 # There used to be two, `intent` and `captured`, and `intent` was
@@ -1877,6 +1888,9 @@ class StepLock:
         self._path = path
         self._timeout = int(timeout)
         self._descriptor: Optional[int] = None
+        # (device, inode) of the file this lock was actually taken on.
+        # See assert_held for what it is compared against and why.
+        self._identity: Optional[Tuple[int, int]] = None
 
     @property
     def path(self) -> str:
@@ -1912,6 +1926,17 @@ class StepLock:
                 fcntl.flock(descriptor,
                             fcntl.LOCK_EX | fcntl.LOCK_NB)
                 self._descriptor = descriptor
+                try:
+                    info = os.fstat(descriptor)
+                except OSError as err:
+                    self._descriptor = None
+                    os.close(descriptor)
+                    raise SessionError(
+                        "the step lock %s was taken but could not be "
+                        "identified: %s.  A lock this session cannot "
+                        "recognise later is a lock it cannot prove it "
+                        "still holds" % (self._path, err)) from err
+                self._identity = (info.st_dev, info.st_ino)
                 return
             except OSError:
                 if time.monotonic() >= deadline:
@@ -1928,6 +1953,7 @@ class StepLock:
 
     def release(self) -> None:
         """Release the lock and close its descriptor."""
+        self._identity = None
         descriptor, self._descriptor = self._descriptor, None
         if descriptor is None:
             return
@@ -1960,6 +1986,39 @@ class StepLock:
                 "the step lock %s is not held, so the frame counter "
                 "must not move.  This is a programming error in the "
                 "session, not a condition to retry" % self._path)
+        # AND THE FILE AT THAT PATH IS STILL THE FILE THIS LOCK IS ON.
+        #
+        # A LOCK IS HELD ON AN INODE, NOT ON A NAME.  Unlink the file
+        # while this session holds it and the lock keeps working
+        # perfectly -- on a file nothing can reach.  The next session
+        # creates a fresh one at the same name, locks that, and the two
+        # of them then both hold "the step lock" while neither can see
+        # the other: two keystrokes for one index, which is the exact
+        # unrecoverable break this class exists to prevent, and the
+        # counts would still tally afterwards so nothing would reveal
+        # it.  The runtime pruner is careful never to do this
+        # (playthrough_path_in_use in env.sh), but a hand-run `rm -rf`
+        # of the runtime root is not, and this is the cheap check that
+        # turns that into a refusal instead of a corrupted record.
+        if self._identity is not None:
+            try:
+                current = os.stat(self._path)
+            except OSError as err:
+                raise SessionError(
+                    "the step lock %s no longer exists (%s), so the "
+                    "lock this session holds is on a file nothing else "
+                    "can reach: another session would create a new one "
+                    "at that path, take it, and send a second keystroke "
+                    "for this index.  The counter must not move"
+                    % (self._path, err)) from err
+            if (current.st_dev, current.st_ino) != self._identity:
+                raise SessionError(
+                    "the step lock %s has been replaced since this "
+                    "session took it, so the lock it holds no longer "
+                    "excludes anything: another session can take the "
+                    "file now at that path and send a second keystroke "
+                    "for this index.  The counter must not move"
+                    % self._path)
 
 
 def _write_durably(path: str, text: str,
@@ -1985,7 +2044,24 @@ def _write_durably(path: str, text: str,
             os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,
             0o600)
         try:
-            os.write(descriptor, text.encode("utf-8"))
+            # os.write IS ALLOWED TO WRITE LESS THAN IT WAS GIVEN, and it
+            # reports how much by returning it.  Ignoring that return is
+            # not a theoretical bug here: a short write leaves a journal
+            # that PARSES -- JSON truncated mid-object does not, but a
+            # truncated *record* that happens to close its braces does --
+            # and read_journal would then describe a keystroke with the
+            # wrong frame or the wrong key.  So the write is a loop that
+            # ends only when every byte is on the descriptor.
+            payload = text.encode("utf-8")
+            offset = 0
+            while offset < len(payload):
+                written = os.write(descriptor, payload[offset:])
+                if written <= 0:
+                    raise OSError(
+                        errno.EIO,
+                        "wrote %d of %d bytes and then made no further "
+                        "progress" % (offset, len(payload)))
+                offset += written
             os.fsync(descriptor)
         finally:
             os.close(descriptor)
@@ -2062,15 +2138,35 @@ def clear_journal(path: str) -> None:
             "could not clear the step journal %s: %s.  It would be "
             "replayed by the next session against a step that is "
             "already recorded" % (path, err)) from err
+    # THE UNLINK IS NOT DURABLE UNTIL THE DIRECTORY ENTRY IS, and both of
+    # these failures used to be swallowed -- the open with a bare
+    # `return`, the fsync with a bare `pass`.  What that hid is the one
+    # thing worth reporting: the file is gone from this kernel's view and
+    # may come BACK after a crash, and the next session would then replay
+    # a journal describing a step that is already completely recorded.
+    # Settlement does handle that case correctly, so the risk is not
+    # corruption -- it is that nobody would ever know the pipeline had
+    # been through it.  A durability claim this module makes in writing
+    # (`_write_durably`) is not one it may quietly decline on the way out.
+    directory = os.path.dirname(path) or os.curdir
     try:
-        parent = os.open(os.path.dirname(path),
-                         os.O_RDONLY | os.O_DIRECTORY)
-    except OSError:
-        return
+        parent = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+    except OSError as err:
+        raise RecordError(
+            "the step journal %s was removed, but %s could not be "
+            "opened to flush that removal to the device: %s.  The "
+            "journal is gone from this kernel's view and could return "
+            "after a crash, which would have the next session reconcile "
+            "a step that is already recorded"
+            % (path, directory, err)) from err
     try:
         os.fsync(parent)
-    except OSError:
-        pass
+    except OSError as err:
+        raise RecordError(
+            "the step journal %s was removed, but flushing %s to the "
+            "device failed: %s.  The removal is not durable, so a crash "
+            "could resurrect a journal for a step that is already "
+            "recorded" % (path, directory, err)) from err
     finally:
         os.close(parent)
 
@@ -5306,10 +5402,97 @@ def validate_modal_token(token: object) -> str:
         "are: %s" % (token, ", ".join(MODAL_TOKENS)))
 
 
+# ---------------------------------------------------------------------
+# A SECOND READING OF THE SAME FRAME MUST SAY SO
+#
+# A review found this ledger with 307 rows covering 306 frames: frame 298
+# appears twice -- the second row an honest, plainly-worded correction of
+# the first -- and frame 307, the last capture of the session, has no
+# acknowledgment at all.  Neither was reported by anything, and the
+# reason is one line of code: acknowledged_frames() built a dict keyed by
+# frame index, so `seen[index] = digest` SILENTLY DISCARDED the earlier
+# reading.  A dictionary conversion that overwrites is not a record of
+# two readings; it is a record of whichever came last, presented as
+# though it were the only one.
+#
+# THE RULE, and it is chosen so that an append-only ledger can still be
+# reconciled honestly: for a frame with more than one row, the LAST row
+# must declare, in `supersedes`, the `acknowledged_at` of EVERY earlier
+# row for that frame.  So
+#
+#   * a first reading carries supersedes: [] and nothing changes;
+#   * a correction must name what it corrects, or the ledger is refused;
+#   * a historical undeclared duplicate -- which cannot be edited,
+#     because this ledger is append-only and evidence is never rewritten
+#     -- is reconciled by APPENDING one row that accounts for both of
+#     the rows before it.  That is how frame 298 is closed: not by
+#     touching either existing row, but by adding a third that states
+#     the relationship between them.
+#
+# The effective reading for a frame is therefore always its LAST row,
+# and now that is a fact the file states rather than a side effect of how
+# it happened to be parsed.
+ACK_FIELDS = (
+    "version",
+    "frame",
+    "file",
+    "frame_sha256",
+    "acknowledged_at",
+    "expected",
+    "verdict",
+    "modals",
+    "observed",
+    # The `acknowledged_at` of every earlier row for this frame that this
+    # row replaces.  Empty for a first reading.  Absent in rows written
+    # before this column existed, which is read as empty -- an old row
+    # cannot be expected to declare a relationship nobody asked it for.
+    "supersedes",
+)
+
+
+def validate_supersedes(value: object) -> List[str]:
+    """Return a list of superseded timestamps, or refuse the value.
+
+    Each entry is normalised through the record's own timestamp
+    canonicaliser, so a row cannot name a moment in a spelling the
+    ledger would never have written and thereby match nothing.
+    """
+    if value is None or value == "":
+        return []
+    if isinstance(value, str):
+        candidates: Sequence[object] = (value,)
+    elif isinstance(value, (list, tuple)):
+        candidates = value
+    else:
+        raise RecordError(
+            "`supersedes` names the earlier readings this one replaces, "
+            "as a list of their acknowledged_at timestamps; got %r"
+            % (value,))
+    resolved: List[str] = []
+    for candidate in candidates:
+        if not isinstance(candidate, str) or not candidate.strip():
+            raise RecordError(
+                "`supersedes` entries are acknowledged_at timestamps; "
+                "got %r" % (candidate,))
+        try:
+            moment = manifest.canonical_real_ts(candidate)
+        except manifest.ManifestError as err:
+            raise RecordError(
+                "`supersedes` entry %r is not a timestamp this ledger "
+                "would have written (%s)" % (candidate, err)) from err
+        if moment in resolved:
+            raise RecordError(
+                "`supersedes` names %s twice; each earlier reading is "
+                "replaced once" % moment)
+        resolved.append(moment)
+    return resolved
+
+
 def acknowledgment_row(frame: int, observed: str, verdict: object,
                        modals: Sequence[str] = (),
                        digest: Optional[str] = None,
-                       expectation: Optional[str] = None
+                       expectation: Optional[str] = None,
+                       supersedes: object = ()
                        ) -> Dict[str, object]:
     """Build one acknowledgment row.  Pure -- nothing is written.
 
@@ -5317,8 +5500,11 @@ def acknowledgment_row(frame: int, observed: str, verdict: object,
     acknowledgment cannot later be read as being about a different
     capture: the digest is the same one the capture attestation ledger
     holds for that index.
+
+    `supersedes` names the earlier readings of this frame that this one
+    replaces; see the note above for why a second reading has to say so.
     """
-    return {
+    row: Dict[str, object] = {
         "version": ACK_VERSION,
         "frame": validated_frame(frame),
         "file": manifest.frame_file(validated_frame(frame)),
@@ -5328,7 +5514,21 @@ def acknowledgment_row(frame: int, observed: str, verdict: object,
         "verdict": verdict_of(verdict),
         "modals": list(modals),
         "observed": validate_observed(observed),
+        "supersedes": validate_supersedes(supersedes),
     }
+    # THE DECLARED SCHEMA IS THE BUILT SCHEMA, checked rather than
+    # assumed.  ACK_FIELDS is what the reconciler, the gate and this
+    # file's own prose all describe; a column built here without being
+    # named there -- or named there and never built -- would leave three
+    # readers describing a ledger this function does not write.  Checked
+    # with a raise rather than an `assert`, because `assert` is the one
+    # statement an optimised interpreter is allowed to discard.
+    if tuple(row) != ACK_FIELDS:
+        raise RecordError(
+            "an acknowledgment row was built with the columns %r and "
+            "the declared schema is %r, so the two have drifted apart"
+            % (tuple(row), ACK_FIELDS))
+    return row
 
 
 def append_acknowledgment(path: str, row: Mapping[str, object],
@@ -5387,6 +5587,88 @@ def read_acknowledgments(path: Optional[str] = None,
     return tuple(rows)
 
 
+def acknowledgment_problems(
+        rows: Sequence[Mapping[str, object]]) -> List[str]:
+    """Return every way the acknowledgment ledger is not well formed.
+
+    Two properties, and both were unchecked when a review looked:
+
+      * EVERY ROW NAMES A FRAME.  A row whose index is not an integer
+        cannot be about a capture at all.
+      * A SECOND READING OF A FRAME ACCOUNTS FOR THE FIRST.  For a frame
+        with k > 1 rows, the last row's `supersedes` must name exactly
+        the `acknowledged_at` of the k-1 rows before it.  Anything else
+        is two readings of one frame with no stated relationship, which
+        is what silently discarding one used to look like.
+
+    Read-only, and it returns findings rather than raising, so a caller
+    can report all of them at once -- the gate does exactly that.
+    """
+    problems: List[str] = []
+    order: List[int] = []
+    grouped: Dict[int, List[Mapping[str, object]]] = {}
+    for position, row in enumerate(rows, start=1):
+        index = row.get("frame")
+        if isinstance(index, bool) or not isinstance(index, int):
+            problems.append(
+                "acknowledgment %d records %r as its frame index"
+                % (position, index))
+            continue
+        if index not in grouped:
+            grouped[index] = []
+            order.append(index)
+        grouped[index].append(row)
+    for index in order:
+        group = grouped[index]
+        if len(group) == 1:
+            declared = group[0].get("supersedes") or []
+            if declared:
+                problems.append(
+                    "frame %d has one acknowledgment and it declares "
+                    "that it supersedes %s, which is not in the ledger"
+                    % (index, ", ".join(str(v) for v in declared)))
+            continue
+        earlier = [str(row.get("acknowledged_at") or "")
+                   for row in group[:-1]]
+        last = group[-1]
+        declared_raw = last.get("supersedes") or []
+        if isinstance(declared_raw, str):
+            declared_raw = [declared_raw]
+        declared = [str(value) for value in declared_raw]
+        if sorted(declared) != sorted(earlier):
+            problems.append(
+                "frame %d carries %d acknowledgments and the last one "
+                "declares that it supersedes %s, but the earlier "
+                "reading(s) were recorded at %s.  A second reading of "
+                "one frame must name every reading it replaces: "
+                "otherwise the ledger holds two answers to one question "
+                "and a reader cannot tell which is current -- which is "
+                "exactly what a dictionary keyed by frame index used to "
+                "hide"
+                % (index, len(group),
+                   ", ".join(declared) or "nothing",
+                   ", ".join(earlier)))
+    return problems
+
+
+def effective_acknowledgments(
+        rows: Sequence[Mapping[str, object]]
+) -> Dict[int, Mapping[str, object]]:
+    """Return {frame: the reading that stands} for each frame.
+
+    The LAST row for a frame, which is the current reading by the rule
+    above -- and only ever consulted once acknowledgment_problems has
+    found nothing, so "the last row" and "the row that accounts for the
+    others" are the same row.
+    """
+    current: Dict[int, Mapping[str, object]] = {}
+    for row in rows:
+        index = row.get("frame")
+        if not isinstance(index, bool) and isinstance(index, int):
+            current[index] = row
+    return current
+
+
 def acknowledged_frames(path: Optional[str] = None,
                         root: Optional[str] = None) -> Dict[int, str]:
     """Return {frame: digest} for every acknowledged capture.
@@ -5394,15 +5676,30 @@ def acknowledged_frames(path: Optional[str] = None,
     The digest travels with the index so a caller can prove the reading
     was about the bytes that are on disk now, rather than about a frame
     of the same number in an earlier, discarded attempt.
+
+    IT REFUSES AN UNRECONCILED LEDGER rather than collapsing it.  This
+    function used to be the place a duplicate reading disappeared: it
+    assigned into a dict keyed by frame, so a second row for frame 298
+    replaced the first without a word.  Now an unaccounted duplicate is a
+    RecordError, for the same reason an unparsable ledger is one -- the
+    question "was the previous capture read, and by which reading" has no
+    trustworthy answer, and a session must not proceed as though it had.
+
+    :raises RecordError: when the ledger is not well formed.
     """
+    rows = read_acknowledgments(path, root)
+    problems = acknowledgment_problems(rows)
+    if problems:
+        raise RecordError(
+            "the acknowledgment ledger %s is not reconciled, so which "
+            "reading stands for which frame is UNKNOWN: %s.  Append a "
+            "row that declares what it supersedes -- the ledger is "
+            "append-only and neither existing row may be edited"
+            % (manifest.relative_to_repo(
+                path or default_acknowledgments_path(root)),
+               "; ".join(problems[:3])))
     seen: Dict[int, str] = {}
-    for row in read_acknowledgments(path, root):
-        index = row.get("frame")
-        if isinstance(index, bool) or not isinstance(index, int):
-            raise RecordError(
-                "an acknowledgment in %s records %r as its frame index"
-                % (manifest.relative_to_repo(
-                    path or default_acknowledgments_path(root)), index))
+    for index, row in effective_acknowledgments(rows).items():
         digest = row.get("frame_sha256")
         seen[index] = digest if isinstance(digest, str) else ""
     return seen
@@ -6212,6 +6509,7 @@ class Session:
                  require_durable: bool = True,
                  root: Optional[str] = None,
                  lock_timeout: Optional[int] = None,
+                 mutation_timeout: Optional[int] = None,
                  requested_world: Optional[str] = None,
                  settle_journal: bool = True) -> None:
         """Open a session against an existing or an empty record.
@@ -6360,7 +6658,38 @@ class Session:
             step_lock_path(root),
             _timeout(ENV_LOCK_TIMEOUT, DEFAULT_LOCK_TIMEOUT)
             if lock_timeout is None else int(lock_timeout))
-        self._lock.acquire()
+        # AND THE CHECKOUT'S MUTATION LOCK, SHARED, OUTSIDE THE STEP LOCK.
+        #
+        # The step lock keeps two STEPS apart, and that was never the
+        # whole problem.  A step appends a frame, a manifest row and a
+        # telemetry row; the gate reads all three in sequence and the
+        # checkpoint stages them -- so a step landing between the gate's
+        # frame count and its manifest count turns a real disagreement
+        # into a pass, and a step landing between staging and committing
+        # puts a row in the commit whose frame is not in it.  Every lock
+        # was correctly held throughout, because no two holders were ever
+        # the same stage.
+        #
+        # SHARED, because a step does not need to exclude another
+        # producer -- the step lock already does that, exactly -- it needs
+        # to exclude the gate and the checkpoint, which take the same lock
+        # exclusively.  OUTSIDE the step lock, so that the acquisition
+        # order is the same everywhere and no pair of stages can take the
+        # two in opposite orders.  A step run by a stage that already
+        # holds a strong enough lock proves that hold and reuses it; see
+        # manifest.mutation_lock_inherited.
+        self._mutation = manifest.MutationLock(
+            manifest.MUTATION_SHARED, root=root,
+            timeout=(_timeout(ENV_MUTATION_TIMEOUT,
+                              DEFAULT_MUTATION_TIMEOUT)
+                     if mutation_timeout is None
+                     else int(mutation_timeout)))
+        self._mutation.acquire()
+        try:
+            self._lock.acquire()
+        except BaseException:
+            self._mutation.release()
+            raise
         try:
             # STALE STAGING FILES ARE CLEARED FIRST, under the lock.  The
             # retired rewrite of either evidence file wrote a sibling and
@@ -6412,6 +6741,7 @@ class Session:
             self._screens: Dict[int, str] = {}
         except BaseException:
             self._lock.release()
+            self._mutation.release()
             raise
 
     # -- the transaction --------------------------------------------
@@ -6425,8 +6755,15 @@ class Session:
         closes.  A long-lived instance works identically and holds the
         lock for its whole life, which is the correct exclusion for a
         capture loop.
+
+        The checkout's mutation lock goes with it, and in that
+        order: the step lock is the inner one, so it is dropped
+        first.  A hold that was INHERITED from a stage which
+        started this one is not released -- see
+        manifest.MutationLock.release.
         """
         self._lock.release()
+        self._mutation.release()
 
     def __enter__(self) -> "Session":
         """Support `with Session() as session:`."""
@@ -8746,7 +9083,8 @@ class Session:
         return digest if isinstance(digest, str) else ""
 
     def acknowledge(self, frame: int, observed: str,
-                    expectation: Optional[str] = None
+                    expectation: Optional[str] = None,
+                    supersedes: object = ()
                     ) -> Dict[str, object]:
         """Record that a capture was read, and what it showed.
 
@@ -8760,6 +9098,13 @@ class Session:
         are recorded beside the reading, so the ledger shows what the
         machine measured next to what the operator said, and a
         disagreement between them is visible afterwards.
+
+        `supersedes` names the earlier readings of this frame that
+        this one replaces.  A SECOND reading of a frame must name the
+        first: the ledger is append-only, so a correction is an
+        appended row rather than an edit, and without the declaration
+        the file would hold two answers to one question with nothing
+        to say which stands.
 
         :raises RecordError: when the capture does not exist.
         :raises ObservationRequired: when there is no usable reading.
@@ -8779,7 +9124,7 @@ class Session:
             index, observed, recorded,
             modals=detect_modals(read_modal_text(path)),
             digest=self._frame_digest_of(index),
-            expectation=expectation)
+            expectation=expectation, supersedes=supersedes)
         appended = append_acknowledgment(
             self._acks, row, require_durable=self._require_durable,
             root=self._root)
@@ -9074,7 +9419,25 @@ class Session:
                 % (index, self._observations, err))
             raise
         self._attest_capture(index, payload, recovered)
-        clear_journal(self._journal)
+        # THE STEP IS COMPLETE BY THIS POINT -- frame, row, telemetry and
+        # attestation are all on the device -- so a failure to clear the
+        # journal is not a failure of the step.  It is a failure of the
+        # DURABILITY of the clearing, which means a crash could resurrect
+        # a journal for a step that is already recorded.  Settlement
+        # handles that safely, so nothing is corrupt; what would be lost
+        # is any knowledge that it happened.  The session therefore
+        # aborts loudly and re-raises, exactly as the telemetry-append
+        # failure above does, rather than degrading in silence: the
+        # counter has advanced, the evidence is sound, and an operator
+        # must be told which of those two facts is at risk.
+        try:
+            clear_journal(self._journal)
+        except RecordError as err:
+            self._abort(
+                "frame %d is captured, recorded and attested, but its "
+                "step journal at %s could not be cleared durably: %s"
+                % (index, self._journal, err))
+            raise
         self._row = dict(row)
         self._observation = dict(observation)
         self._effect = effect
@@ -9860,6 +10223,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--observed", required=True, metavar="TEXT",
         help="what the capture shows, in enough words to identify the "
              "screen; this is the durable record that it was looked at")
+    ack.add_argument(
+        "--supersedes", action="append", default=None,
+        metavar="TIMESTAMP",
+        help="the acknowledged_at of an earlier reading of this frame "
+             "that this one replaces; repeat the option to name more "
+             "than one.  REQUIRED once a frame has been acknowledged "
+             "before: this ledger is append-only, so a correction is an "
+             "appended row that NAMES what it corrects rather than an "
+             "edit of the row it replaces, and without the declaration "
+             "the ledger holds two readings of one frame with nothing "
+             "to say which stands")
 
     probe = sub.add_parser(
         "probe", help="report create-versus-resume, before any play")
@@ -9945,14 +10319,105 @@ def _configure_logging(verbosity: int) -> None:
         format="playthrough: %(levelname)s: %(message)s")
 
 
+# Everything C0, DEL and C1 -- the characters that cannot appear in one
+# line of the machine payload without forging or corrupting it.  C1 is
+# included because 0x9B is a single-byte CSI that some terminals honour
+# exactly as they honour ESC-[.
+_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+# The ceiling env.sh states as PLAYTHROUGH_MAX_RECORD_TOKEN, restated
+# here because this module is run as its own program and does not source
+# shell.  test_session.py asserts the two agree.
+MAX_RECORD_TOKEN = 128
+
+# THE KEYS WHOSE VALUE IS AN INVENTORY RATHER THAN A TOKEN.
+#
+# The ceiling above bounds a TOKEN -- a world name, a survivor name, a
+# path component -- and its justification is that a name that long is not
+# a name.  It is NOT what stops a value forging a record line: the forging
+# vector is a newline or a control byte, and that refusal is unconditional
+# below and applies to every key including these.
+#
+# `audit` reports the inventories it checked against, and they are long by
+# nature: DEBUG_ACTIONS_CHECKED is every debug action id this module
+# refuses, joined, and measures 180 characters today.  Applying a
+# token ceiling to it broke `session.py audit` outright -- the command
+# whose entire purpose is to prove no debug binding exists -- for a value
+# composed from this module's own module-level constants, which no other
+# account can influence.
+#
+# So the exemption is an EXPLICIT, NARROW ALLOWLIST rather than a raised
+# ceiling or a per-element bound.  A raised ceiling would weaken the
+# bound on every genuine token; a per-element bound would let an
+# untrusted value carrying commas through at any length.  This way the
+# default is fail-closed -- a key not named here is bounded, so a new
+# emission cannot slip past by being forgotten -- and
+# test_session.py asserts that every key named here really is derived
+# from this module's constants and nothing else.
+#
+# REFUSED_CHORDS measures 87 characters and REFUSED_MODIFIERS 19, so
+# neither exceeds the ceiling today.  Both are named anyway, because they
+# are inventories of the same kind and growing either one by a few entries
+# would otherwise break the audit for exactly the reason above.
+_COMPOSED_INVENTORY_KEYS = frozenset({
+    "DEBUG_ACTIONS_CHECKED",
+    "REFUSED_CHORDS",
+    "REFUSED_MODIFIERS",
+})
+
+
 def _emit(key: str, value: object) -> None:
-    """Write one KEY=value line of the machine payload."""
+    """Write one KEY=value line of the machine payload.
+
+    A VALUE THAT COULD FORGE A LINE IS REFUSED.  This channel is parsed as
+    KEY=value by run_pipeline.sh and by the capture stage, and not every
+    value on it is chosen by this pipeline: PLAYTHROUGH_SAVE_WORLD is a
+    directory name under the save tree, so any local account able to
+    create a directory there chooses one.  A name containing a newline
+    writes a SECOND line that nothing wrote, and the parser cannot tell
+    it from a fact -- which is how a save tree could assert its own trust
+    state.
+
+    Emptiness is permitted, because it is meaningful here: an absent
+    world is `PLAYTHROUGH_SAVE_WORLD=`.  The stricter grammar that also
+    requires a value belongs where the name is derived, not on the
+    channel.
+
+    launch_game.sh's `emit` refuses exactly the same two properties; the
+    two halves of one channel have to agree, and test_session.py asserts
+    the ceiling does.
+
+    The length ceiling is skipped for the keys in
+    `_COMPOSED_INVENTORY_KEYS`, which carry inventories this module
+    composes from its own constants rather than tokens chosen elsewhere.
+    The control-character refusal is NOT skipped for anything: that is
+    the one that stops a line being forged.
+
+    :raises RecordError: naming the key and showing the offending bytes.
+    """
     if value is None:
         text = ""
     elif isinstance(value, bool):
         text = "yes" if value else "no"
     else:
         text = str(value)
+    if _CONTROL_RE.search(text):
+        raise RecordError(
+            "the value for %s carries a control character, so writing "
+            "it would forge or corrupt a line of the machine-readable "
+            "record.  With every control byte shown as an escape it is: "
+            "%s" % (key, _CONTROL_RE.sub(
+                lambda m: "<%02X>" % ord(m.group(0)), text)))
+    if (len(text) > MAX_RECORD_TOKEN and
+            key not in _COMPOSED_INVENTORY_KEYS):
+        raise RecordError(
+            "the value for %s is %d characters, past the "
+            "%d-character ceiling for one line of the machine-readable "
+            "record.  The ceiling bounds a TOKEN -- a world or survivor "
+            "name -- and a value composed by this module from its own "
+            "constants belongs in _COMPOSED_INVENTORY_KEYS instead of "
+            "being squeezed under it"
+            % (key, len(text), MAX_RECORD_TOKEN))
     sys.stdout.write("%s=%s\n" % (key, text))
 
 
@@ -10018,13 +10483,17 @@ def _command_ack(args: argparse.Namespace) -> int:
     reading a picture is not the act that should resolve it.
     """
     with _open_session(args, None, settle_journal=False) as session:
-        row = session.acknowledge(args.frame, args.observed)
+        row = session.acknowledge(
+            args.frame, args.observed,
+            supersedes=getattr(args, "supersedes", None) or ())
         _emit("FRAME_INDEX", row["frame"])
         _emit("FRAME_FILE", row["file"])
         _emit("FRAME_SHA256", row["frame_sha256"])
         _emit("EFFECT", row["verdict"])
         _emit("MODALS", ",".join(str(one) for one in row["modals"]))
         _emit("OBSERVED", row["observed"])
+        _emit("SUPERSEDES",
+              ",".join(str(one) for one in row["supersedes"]))
         _emit("ACKNOWLEDGMENTS",
               manifest.relative_to_repo(session.acknowledgments_path))
     return EXIT_OK

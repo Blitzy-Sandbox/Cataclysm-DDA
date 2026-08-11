@@ -209,7 +209,8 @@ survivor and is kept for the engine behaviour it pins down.
 | `playthrough/manifest.jsonl` | **307** rows, one per keystroke |
 | `playthrough/amendments.jsonl` | **156** append-only amendments — one action note and 155 commentaries, composed in a single pass to fit the caption geometry |
 | `playthrough/build/frame_digests.jsonl` | **307** attestations, each at or after its own row |
-| `playthrough/build/acknowledgments.jsonl` | **307** acknowledgments over **306** distinct frames; frame 298 carries two, the second correcting the first |
+| `playthrough/build/acknowledgments.jsonl` | **309** acknowledgments resolving to **307** standing readings, one per capture; frame 298 carries three — two original readings and one appended at the security-review checkpoint that declares it supersedes both — and frame 307 carries the reading it had been missing. See *The evidence anchor, and the two ledger repairs* |
+| `playthrough/build/evidence_anchor.jsonl` | **15** hash-chained seal rows, one per evidence artifact, chain head `468793a63e813a78…`. Each row carries the artifact's sha256, its byte count and **git's own blob name** for it, plus the previous row's chain hash |
 | `playthrough/timeline.json` | **307** entries; **288.500 s** of captures + **12.000 s** of transitions = **300.500 s**; floor 0.25 s, ceiling 10.0 s; **114** exact clock readings and **193** reconciled |
 | transitions | **12** flagged entries — frames **170, 279, 283, 284, 285, 286, 296, 298, 299, 303, 304, 305** — materialised as twelve images each, **144** in total, under `build/transitions/` and never in `frames/` |
 | `playthrough/cata-play.mp4` | h264, 1920×1080, `yuv420p`, **452** encoded frames from 307 captures + 144 transition images, container **300.560 s**, **20 047 349** bytes |
@@ -8354,6 +8355,15 @@ plus agreement with the history — and never invents an identity. A human who
 wants the repository-local record can add the pair themselves; the committer will
 then confirm it agrees with the commits and say so, and refuse if it does not.
 
+**And the gate no longer records that divergence as a `PASS`.** It did when this
+section was written, with the explanation in the prose beside the verdict, and a
+later security review named the result: a report that *"records missing local
+identity as PASS"*. The check now emits a `DIVERGENCE` — a third verdict class
+that counts toward the declared inventory, leaves the exit status alone, and
+turns the run's own verdict into `VERIFY=pass-with-divergence`. The reasoning,
+and the one ripple it caused in `attest`, are in *A truthful sentence under an
+untruthful verdict* at the end of this file.
+
 ### Closed: R11's exit, by recording the other of its two endings
 
 This section used to be headed *Open: R11's exit, and why neither remedy was
@@ -8601,9 +8611,261 @@ append-only with **no** amendment mechanism, so an acknowledgment written in
 error is corrected by a later one that says so. Frame 298 came back
 pixel-identical to 297 and was acknowledged as a key that had not registered;
 the live clock then showed 20:00:00 → 21:16:12, proving it *had* registered. A
-corrective acknowledgment was appended. That is why the ledger holds **307
-acknowledgments across 306 distinct frames**: one frame carries two, and both
-are readable, in the order they were written.
+corrective acknowledgment was appended.
+
+**A later security review found that arrangement insufficient, and it was
+right.** Two readings of one frame existed, the relationship between them was
+recorded only in the prose of the `observed` text, and no machine could see it:
+the reader built a dictionary keyed by frame index, so the second row silently
+replaced the first and the gate reported `VERIFY=pass` over an ambiguity. The
+same review found frame 307 — the last capture of the session — carrying no
+acknowledgment at all, which is a structural consequence of a discipline that
+travels with the *next* keystroke: there is no keystroke after the last one.
+Both are now closed, and how they were closed is the subject of the next
+section.
+
+### The evidence anchor, and the two ledger repairs
+
+A security review put the weakness of this whole tree in one sentence: **every
+attestation is mutable with its evidence.** The digest ledger vouches for the
+frames, the observation sidecar vouches for what was on screen, the timeline
+vouches for the film — and all of them are files sitting beside the things they
+vouch for. Rewrite `frame_00042.png` and rewrite its digest row in the same
+breath, and the ledger, recomputed from the forged frame, agrees with itself
+perfectly. No amount of internal consistency can answer the question, because
+internal consistency is exactly what the forger is producing.
+
+**The answer has to come from outside the tree, and in this repository only one
+thing qualifies: a commit.** A commit object's name is a hash of its own
+content, message included. So a value written into a checkpoint's message is
+fixed the moment the checkpoint is taken — changing it changes the commit id and
+every id descending from it, which is a rewrite of published history rather than
+an edit of a file.
+
+`playthrough/build/evidence_anchor.jsonl` is therefore a hash-chained,
+append-only ledger of fifteen rows, one per evidence artifact:
+
+| Column | What it is |
+| --- | --- |
+| `seq` | 1-based and contiguous, so a removed or inserted row is arithmetic |
+| `sealed_at`, `sealed_by` | when, and which checkpoint took the seal |
+| `path` | relative to `playthrough/`, never absolute and never `..` |
+| `sha256`, `bytes` | this module's own description of the artifact |
+| `git_blob` | **git's** name for the same bytes, derived independently |
+| `prev_chain`, `chain` | the link, and this row's own hash |
+
+`chain` is `sha256(prev_chain + "\n" + <the row's other fields as compact
+JSON>)`, deliberately simple enough that an auditor can re-derive the whole
+chain from the published rows in any language without this module.
+
+**Why `git_blob` is there, when a sha256 is already in the row.** A second
+digest computed by the same code over the same bytes adds nothing — it fails and
+succeeds in precisely the cases the first one does. Git's blob name is different
+in kind: `sha1("blob " + len + "\0" + bytes)` is the name the *repository* will
+use for that content, and `manifest.git_blob_name` reimplements it rather than
+shelling out. Agreement between the two columns is agreement between two
+independent descriptions. Measured on all fifteen delivered artifacts against
+`git hash-object`: **15 of 15 identical, 0 mismatches.**
+
+**Fifteen rows cover three hundred and seven frames, because sealing is
+transitive.** `build/frame_digests.jsonl` holds a digest for every capture, so
+sealing that one file seals them all. The escalation was driven end to end on a
+throwaway copy of the real evidence, and each step is a different layer
+reporting:
+
+| Step | Digest ledger | Seal | Chain |
+| --- | --- | --- | --- |
+| frame 42's bytes altered | **reports it** | ok | ok |
+| its digest row repaired to match | quiet | **reports it** | ok |
+| its anchor row repaired to match | quiet | quiet | **reports it** |
+
+And the fourth step is the one that matters. A forger who does the *complete*
+job — forge the artifact, forge its anchor row, and re-chain every row after it
+— produces a ledger with no chain findings and no seal findings: measured, and
+it comes back clean on every question that can be asked inside the tree. What
+that forgery cannot leave alone is the chain's **head**, which was measured
+moving from `9aa0d24c5f31c16a` to `bda234dedac45948`. The head is published as a
+`Playthrough-Evidence-Anchor:` trailer on the checkpoint commit, so making the
+history agree with the forgery means rewriting that commit and every commit
+after it. That comparison is the gate's `the evidence anchor's head is published
+in the history` check, and it is the reason the anchor is worth having.
+
+**A deliberate divergence from the review's wording.** The review asked for an
+"independent signed/hash-chained append-only anchor". This is hash-chained,
+append-only and independent; it is **not** cryptographically signed, and that is
+a decision rather than an omission. This repository has no key management, no
+keyring and no trusted signer, and a private key stored in the tree it signs
+proves nothing an attacker with write access to that tree cannot reproduce.
+Publication in an immutable commit object supplies the independence a signature
+would have supplied, using a root of trust — git's own content addressing — that
+the project already depends on for everything else. If a signing identity ever
+exists outside this checkout, signing the chain head is a two-line addition on
+top of what is here.
+
+**The seal is taken by the committer, at every checkpoint.**
+`commit_artifacts.sh` seals immediately before it builds the commit message, and
+stages the ledger into the *same* commit that publishes its head — so the seal
+and the claim about it cannot be separated afterwards. It is fail-closed: a seal
+that cannot be taken, or a chain already unsound, refuses the checkpoint rather
+than committing evidence with nothing vouching for it. The `integration`
+milestone is the one commit that seals nothing, because it carries the two
+repository-wide rule files and touches no evidence at all.
+
+**Coverage is reported; drift is failed.** An artifact that exists and carries
+no seal is the normal mid-pipeline state — the committer seals at each
+checkpoint and the render stages write the timeline, the film and the transcripts
+*after* the last session checkpoint — so the gate names such an artifact as
+awaiting the next seal rather than calling it tampering. An artifact that **is**
+sealed and no longer matches is failed unconditionally. The coverage gap closes
+at post-commit, where a file produced after the last checkpoint leaves the tree
+dirty and `nothing under playthrough/ is left uncommitted` reports it.
+
+#### The two ledger repairs, and why neither rewrote a row
+
+Both defects the review found in `build/acknowledgments.jsonl` were repaired by
+**appending**, because this ledger is evidence and evidence is not edited. The
+rule the file now enforces: for a frame read more than once, the *last* row must
+declare, in a new `supersedes` column, the `acknowledged_at` of every earlier
+row for that frame. A duplicate that declares nothing is refused —
+`acknowledged_frames()` raises rather than collapsing it, which matters because
+its only caller is the guard that refuses the next keystroke until the previous
+frame has been read, and answering "yes, it was read" from an ambiguous ledger is
+the worst available outcome.
+
+* **Frame 298** now carries a third row naming both earlier readings. It was
+  written after opening `frame_00298.png` again: the query box *You have trouble
+  sleeping, keep trying?* is still over its three options, with *trying to fall
+  asleep…* and *Press . or S to interrupt* on the map behind it and the sidebar
+  reading Thursday May 28, thirst *Very thirsty*, wielding the pro fishing rod.
+  So the first reading was right about the pixels and wrong in the inference it
+  drew from them, the second reading's conclusion is the correct one, and the
+  committed record is what carries the proof — frame 299's clock is `22:00:00`
+  against `20:00:00` here, so the sleep did continue.
+* **Frame 307** now carries the reading it never had, taken by opening the file:
+  the game's main menu, ASCII title art in white and blue on black, a `[MOTD]`
+  tab, `Version: 421659a9cf`, the row `[New Game] [World] [Tutorial Game]
+  [Settings] [Help]`, and *Bugs? Suggestions? Use links in MOTD to report them.*
+  No sidebar is drawn, which is why this frame's clock column is null. That is
+  the screen `ACTION_SAVE` returns to once *Save and quit?* is answered yes, so
+  it corroborates R11's first branch independently of the frames before it.
+
+Both rows say plainly, in their own text, that they were recorded during
+remediation rather than between keystrokes. Neither reading was inferred from
+the record: each was taken by looking at the frame. The ledger now holds **309
+rows resolving to 307 standing readings** with zero reconciliation problems, and
+the gate asserts both properties — one standing reading per frame, and the final
+frame among them.
+
+### Staging provenance, and the content nobody was looking at
+
+The engine's own tree under `playthrough/userdir/` is classified **by
+position**, and it has to be: the engine writes `#<b64>.sav`,
+`.seen.0.-1`, `.ano.json`, `.mm1` *directories* and
+`<name>-<serial>.json.-4651329699267.fb` caches, so a per-filename
+allowlist over somebody else's output would refuse a perfectly correct
+checkpoint the first time a new engine version wrote a shape nobody had
+enumerated. What is pinned is *where* the engine may write — the eleven
+subtrees it creates.
+
+A security review found what position alone cannot see, and the finding
+is worth stating precisely because two of its three parts are invisible
+rather than merely unchecked:
+
+* `playthrough_files` enumerates with `find -type f`, and **`-type f` is
+  true of a hard link.** A second link to a file anywhere else on the
+  same filesystem, dropped into a directory the engine owns, is an
+  ordinary regular file by every test the classification makes — and
+  `git add` commits its whole content. That is CWE-59, and nothing looked.
+* The same sweep **cannot see a symlink at all** (`-type f` is false of
+  one), so a symlink under this tree is an unclassified path that the
+  classification refusal never gets the chance to refuse.
+* And nothing anywhere read the **content**. An innocuously named file
+  holding an access token satisfies every structural question this
+  pipeline asks. `.gitignore`'s terminal `!/playthrough/**` negation makes
+  it worse rather than better, because "it would have been ignored" is
+  not a fallback that exists inside this tree.
+
+Two properties are now established before anything is staged, both asked
+of the whole tree rather than of a list somebody maintains.
+
+**Provenance.** One `find` printing four facts per entry — type, owning
+uid, link count, device — because the realistic shape of this tree is ten
+thousand captures and one `stat` per path would be ten thousand forks.
+Every entry must be a directory or a regular file, owned by this account,
+with exactly one link, on the same filesystem as the checkout. The
+reference device is read with the same tool, so the two numbers cannot
+disagree over their spelling. Measured on the delivered tree: 665 regular
+files, 19 directories, all uid 0, all `nlink == 1`, all on device 66305,
+no symlink and no special file.
+
+**Content.** Eleven high-precision rules over every path about to be
+staged: a URL credential, the GitHub token and PAT shapes, an AWS access
+key id, a Google API key, a Slack token, private-key armour, a PuTTY key,
+an X magic cookie with its digits, and HTTP Basic and Bearer headers. A
+file whose first bytes carry a NUL is not text and is skipped, which is
+what makes the sweep affordable across the captures and both films.
+
+**The scan looks for secret values, not secret vocabulary, and that
+distinction was measured rather than assumed.** A first version was run
+over the real tree and reported **twelve findings, every one of them a
+false positive on this feature's own documentation of the hazard**: the
+string `MIT-MAGIC-COOKIE-1` appears nine times as the *name* of an X
+authentication protocol, in prose and in `xauth` arguments, and
+`https://x-access-token:<secret>@` appears as a redacted placeholder
+inside the credential-containment refusal itself. A scan that refuses a
+checkpoint because the tree explains how credentials are contained is a
+scan nobody can leave switched on. So the cookie rule requires the
+protocol name *followed by its thirty-two hex digits* — a bare 32-hex
+rule would fire on every MD5 sum in these notes, of which there are
+several — and the URL rule ignores a password that is bracketed,
+shell-expanded, starred or literally the word "secret".
+
+**Two self-references had to be written around, and both were measured
+rather than predicted.**
+
+* Written as a plain literal, the PuTTY rule **matches its own source**,
+  and the scan reported the scanner as carrying a key. The pattern is now
+  `P[u]TTY-User-Key-File-`: equivalent to the letter for matching, and not
+  the letter for searching.
+* The test fixtures that prove each rule works must *contain* the shape
+  each rule looks for. Written as whole literals they did, and the scan
+  reported the suite as holding ten credentials. Every fixture value is
+  now assembled from two pieces, so the file no longer matches while the
+  runtime string still does — and the tests assert the assembled values
+  **are** caught, which is what stops the split from quietly disarming
+  them.
+
+**The baseline is by digest, and it pins all three fields.** A reviewed
+finding is recorded as `<path>|<rule>|<sha256 of the match>`, so a new
+occurrence — even in the same file, even under the same rule — is refused
+rather than covered by its neighbour. The digest rather than the value
+matters twice over: a baseline that quoted the credential it excuses would
+be one more copy of that credential sitting in a tracked file, and it
+would match its own rule. The delivered baseline has **one** entry, a test
+fixture that constructs a remote URL in the shape the
+credential-containment refusal exists to catch, in order to drive that
+refusal; a scanner that could not see it could not be trusted to see the
+real thing either. Two occurrences of that one value are accounted for by
+it.
+
+**The refusal never prints the value.** The scanner reports a digest and
+the rule name, so there is nothing in the diagnostic that could put a
+credential into a log, a terminal, a CI transcript, or the committed
+acceptance report.
+
+**The gate asks the same questions, and this remediation is why.** Not
+every commit in this history is taken by `commit_artifacts.sh` — a tooling
+change is committed with ordinary git, and a checkpoint's gates say
+nothing about a commit that never ran them. So `verify_artifacts.sh` group
+9 runs the committer's read-only `scan` rather than restating eleven
+expressions and a baseline: two copies of one rule set answer differently
+the first time either is updated. `scan` takes no lock, like `status`
+beside it, because the gate holds this checkout's mutation lock
+*exclusively* while it measures and a subcommand that acquired it would
+deadlock against its own caller. Only the last line of `scan`'s output
+reaches the verdict, because its first lines name the current branch and a
+branch name in a committed report would make that report differ between
+branches while measuring an identical tree.
 
 ### Two limitations found by using the guards, stated as limitations
 
@@ -8675,3 +8937,647 @@ and which was already being done. **Deriving a number does not make it the right
 number if the denominator is scoped differently from the sentence around it** —
 and two correctly-derived figures that disagree are worse than one hand-written
 figure, because a reader cannot tell which to trust and both look defensible.
+
+## Security-review remediation: the credential, and what "fix it" can and cannot mean here
+
+A dedicated security review of the completed subsystem returned **eighteen
+findings** — one critical, seven high, eight medium, one low, and one recorded
+against plan requirement R1. This section and the ones that follow it record
+what each one turned into, and it opens with the critical one because it is the
+finding whose *correct* resolution is the least obvious.
+
+### The token in `.git/config`, and why it is still there
+
+`remote.origin.url` in this checkout embeds a live GitHub `x-access-token`
+credential in plain text, and the file was mode **0644**. The finding asked for
+three things: revoke or rotate the token, remove the credential from the URL, and
+restrict the file's permissions.
+
+Only the third is this pipeline's to do, and saying why is the point of writing
+this down rather than quietly doing part of it.
+
+**Rotation is not available.** The token is provisioned by the platform that
+created this checkout. Nothing in the working tree issued it and nothing here
+can revoke it; a script that tried would be guessing at an API it has no
+credential of its own for.
+
+**Removing it from the URL would break publication.** This checkout is
+configured with `credential.helper=` — *empty*, which disables every helper —
+and `credential.interactive=false`. Measured, not assumed: those two lines are
+in the same file. With no helper and no interaction, the URL is the only
+authentication path the repository has, so a step that stripped the credential
+out of it would leave a repository that cannot push. Substituting a
+`credential.store` file would move the same secret into a second plaintext file
+and change which of them the platform's own machinery reads — a change to the
+platform's arrangement, made blind, with the delivery of this evidence as the
+thing at stake.
+
+**The mode was ours, and it is now 0600** (and `.git/` itself 0700). That is the
+half of the finding that was genuinely open, and it is the half that mattered
+locally: a 0644 config hands a bearer token to every account on the host, every
+child process, and — because `git commit` runs hooks — to any executable planted
+in `.git/hooks`.
+
+Two controls now hold it shut rather than one:
+
+* `commit_artifacts.sh` refuses to commit at all when a credential-bearing git
+  config is readable by group or other. It is deliberately a refusal and not a
+  repair: evidence produced in an environment where the credential had already
+  leaked is not evidence about a controlled run, and silently tightening the mode
+  would erase the only sign that it had ever been open.
+* `verify_artifacts.sh` measures the same property as a numbered check in
+  group 7, so the acceptance report carries it rather than leaving it to be
+  remembered. The check is conditional on a credential actually being present, so
+  a checkout with nothing secret in its config is not failed for a file mode that
+  protects nothing.
+
+**Residual risk, stated plainly.** The token still exists in a file on this host,
+and anything running as this user can read it. That is not remediated; it is
+*contained*, and the containment is a file mode rather than a cryptographic
+boundary. Rotation remains outstanding and belongs to whoever issued the token.
+
+### No mutating git command runs a hook any more
+
+The same review noted that `git commit` executes `pre-commit`,
+`prepare-commit-msg`, `commit-msg` and `post-commit` from a directory whose
+contents this pipeline does not own — and that a hook running at that moment can
+read the credential above, mutate the evidence between staging and commit, or
+open a network connection, with the commit still reporting success.
+
+Both commit sites now run as
+`git -c core.hooksPath=<empty verified directory> commit`. Three properties make
+that a control:
+
+* the directory lives in the **verified** private runtime root, which env.sh has
+  already proved to be a real, owner-owned, 0700, never-symlinked path, so
+  nothing can plant an executable in it between its creation and the commit;
+* it is asserted **empty** at the moment it is nominated — an inherited path that
+  already held something is a refusal, not a silent execution;
+* `-c` on the command line outranks every configuration file, so a
+  `core.hooksPath` written into `.git/config`, `~/.gitconfig` or `/etc/gitconfig`
+  cannot win it back.
+
+Reading git — `log`, `rev-parse`, `ls-files`, `ls-tree` — is left alone, because
+none of it runs a hook and routing it through the wrapper would only widen the
+surface. The repository's own hooks are **not** deleted or disabled: this
+checkout carries the stock git-lfs shims, they are legitimate, other tools depend
+on them, and containment here is per-invocation. Verified while making the
+change: no `.gitattributes` in this tree assigns `filter=lfs` and `git lfs
+ls-files` is empty, so no LFS filter was ever firing on a checkpoint anyway.
+
+### The commit now proves it published what was validated
+
+Every gate in `commit_artifacts.sh` runs against the index; the commit is a
+separate operation afterwards. `git commit` succeeding says only that it
+published whatever the index had become, not that those were the bytes the gates
+read.
+
+`commit_checkpoint` now records `git ls-files --stage` for its own pathspecs
+immediately before the commit and compares it, object name by object name,
+against `git ls-tree -r` of the commit it produced. A path whose blob differs was
+rewritten in the window; a path missing from the tree was unstaged behind the
+step's back. Either one names the first disagreement and fails.
+
+The commit is **not** rewritten when that happens. Rewriting history to hide a
+race is worse than reporting it: the commit exists, it is reported as
+unverified, and it has to be inspected before it is trusted.
+
+### A pid and a command name are not an identity
+
+Two findings landed on the same code and turned out to be one problem seen from
+two sides. The X ownership record carried `(display, kind, pid, repo, screen,
+authority, recorded)` and nothing else, and the check that read it compared the
+recorded pid against `/proc/<pid>/comm`. So the whole of "this checkout started
+the server that is answering on :99" rested on two facts: a number, and the
+string `Xvfb`. Linux recycles pids. Running as root, the teardown then signalled
+whatever held that number.
+
+The state of this host when the review was written is the argument for the fix,
+so it is recorded rather than summarised:
+
+| what was measured | value |
+| --- | --- |
+| Xvfb processes answering for `:99` | **three** — pids 2642667, 4049267, 962316 |
+| their start times | 45002864, 52778708, 36950716 — all different |
+| their argument vectors | byte-identical |
+| what the pid files named | one pair (`xvfb.pid=962316`, `openbox.pid=962560`) |
+| the ownership record | **did not exist** |
+| the socket `/tmp/.X11-unix/X99` | `srwxrwxrwx`, matching 962316's generation |
+| the authority cookie | mode 0600, written **before all three servers** |
+
+Three servers, one display, one cookie older than every one of them, and nothing
+on disk claiming any of it.
+
+#### The five fields, and the hole each one closes
+
+`playthrough_pid_identity` emits one line — `comm`, start time, uid, resolved
+executable, argument vector — and the record stores it verbatim. The fields are
+not a belt-and-braces pile; each answers a question the others leave open.
+
+| field | what it settles |
+| --- | --- |
+| `comm` | it is an Xvfb at all |
+| start time | it is the *same* Xvfb, not a later one wearing the pid |
+| uid | it is running as the account that recorded it |
+| resolved exe | it is the `Xvfb` on disk we resolved, not something else named `Xvfb` earlier on `PATH` |
+| cmdline | it is serving *our* display with *our* screen and *our* authority file |
+
+Two further fields sit beside the process, because a process is not the display:
+
+- `socket` — the device and inode of `/tmp/.X11-unix/X<n>`. A server that died
+  and was replaced leaves a **new** socket inode, so this answers "is the thing
+  answering on :99 still the thing we started" without consulting a process
+  table at all. On this host the socket outlived two later Xvfb generations that
+  never bound it, which is exactly the confusion the field removes.
+- `cookie` — a digest of the authority cookie the server was started with. Only
+  the cookie **value** is hashed, never the display-name field, which carries the
+  hostname and would differ between hosts for one identical cookie. A digest is
+  stored, never the secret.
+
+#### `replaced` is reported apart from `stale`
+
+The state machine gained a sixth answer. `stale` means the recorded process is
+gone. `replaced` means a process **is** there and is not the one recorded —
+because its identity, the socket or the cookie disagrees. Both refuse; neither is
+`pipeline`. They are kept apart because they send an operator somewhere
+different, and collapsing them into "not ours" would hide precisely the recycled
+pid case the review found. `PLAYTHROUGH_X_OWNERSHIP_REASON` carries which field
+disagreed, because a one-word state cannot say that and it is the next thing
+anybody needs.
+
+Every branch was driven on the live host rather than reasoned about:
+
+| what was altered | state | the reason it gave |
+| --- | --- | --- |
+| nothing (the honest record) | `pipeline` | — |
+| recorded pid swapped for another live Xvfb | `replaced` | pid is alive but is not the process that was recorded |
+| the `identity` field dropped (a pre-identity record) | `replaced` | the record carries no process identity |
+| the start time altered | `replaced` | identity disagrees |
+| the resolved exe altered | `replaced` | identity disagrees |
+| the socket inode altered | `replaced` | the socket for `:99` is `66305:137748453`, the recorded server created `66305:999999999` |
+| the cookie digest altered | `replaced` | the authority file now holds a different cookie |
+| a dead pid | `stale` | the recorded pid is not a live Xvfb |
+
+#### The cookie is fresh per server generation
+
+Any existing cookie used to be reused, which is how one file came to predate
+three servers. `playthrough_ensure_xauth fresh` now generates a new cookie and
+replaces any prior entry, and it is called at exactly one moment: immediately
+before Xvfb is exec'd. That is not tidiness about where to put a call — `-auth`
+is read **once, at exec**, so rotating it at any other time would swap the file
+out from under a running server and lock its own clients out. No other caller
+rotates. Both generators (`mcookie`, and the `od`/`tr` fallback) are resolved by
+verified absolute path rather than through `PATH`, and both tools joined
+`playthrough_tool_package` so a missing one names its package.
+
+#### Limitations, stated as limitations
+
+**Start times are in clock ticks, and two processes can share one.** Measured:
+two `sleep 30 &` launched back to back both reported `58916125`. This is not a
+hole in the check, and the reasoning matters more than the reassurance. The
+recorded pid *selects* which process is asked about, so the granularity only
+matters for a pid that was recycled into the very tick its predecessor started
+in — and the socket inode and the cookie digest are checked beside it, neither of
+which a coincidence of scheduling reproduces. The test that first tripped over
+this was renamed from `test_two_live_processes_have_different_identities` to
+`test_a_later_process_of_the_same_program_differs`, because the first name
+claimed something untrue.
+
+**The check-then-signal race is narrowed, not closed.** The review asked for
+pidfds. `playthrough_headless_down` is bash, and bash has no pidfd; what it does
+instead is verify the program and the owning uid immediately before it signals,
+so the window is a few syscalls wide rather than the whole teardown. That is an
+improvement and not a proof, and the distinction is worth stating plainly:
+running as root, signalling a recycled pid is not a failed teardown, it is
+killing a stranger's process. Closing the window properly needs
+`pidfd_open`/`pidfd_send_signal`, which needs a compiled helper or a Python
+teardown — neither of which this feature has any other reason to grow. Recorded
+as a divergence rather than quietly treated as done.
+
+#### Two defects the work produced, and one it exposed
+
+**A refusal that left a file behind.** `playthrough_record_x_ownership` created
+the record and *then* validated the identity, so refusing to record still left an
+empty record on disk — a file saying nothing where a later run looks for a claim.
+The identity is now read first and a refusal writes nothing at all.
+
+**A reason that vanished into a subshell.** `state="$(playthrough_x_ownership_state)"`
+runs the function in a subshell, so every variable it sets — including the reason
+— dies with it, and the reason came back empty. The state is published in
+`PLAYTHROUGH_X_OWNERSHIP_STATE` alongside being printed, and both call sites read
+the variable instead of substituting the command. The trap is documented in the
+function's own prose, because the next caller will reach for `$( )` too.
+
+**A fixture that promised to mirror a format, and then didn't.** `own_the_display`
+in `test_launch_game.py` hand-built the ownership record, under a docstring
+saying "the record is made the way the real one is". Once the record grew the
+identity fields, that hand-built six-field version was correctly classified
+`replaced` — something is answering and it is not what was recorded — which held
+the trust state at diagnostic and refused **43 assertions across two classes**.
+The fixture now calls `playthrough_record_x_ownership` through `run_sourced`, so
+it writes whatever the real record contains, and asserts that the recording
+succeeded: a fixture that fails to establish ownership and says nothing would
+leave every test built on it measuring the refusal path while reporting green for
+the path it believes it is measuring.
+
+That last one is the more useful lesson of the three. A fixture that *copies* a
+production format is a second definition of it, and the copy is only correct
+until the format moves.
+
+
+### The supply chain: a pin nobody was watching, and a tag that proved nothing
+
+Three findings, one theme — every trust decision in the dependency and container
+path was made against something a third party could move.
+
+#### RLIMIT_AS is the obvious control here, and it does nothing
+
+The review asked for the Pillow decoder to be sandboxed with "low
+privilege/resource limits". The obvious instrument is `RLIMIT_AS`, and measuring
+it first is the only reason it is not in the shipped code.
+
+| measured on this host | value |
+| --- | --- |
+| `VmPeak` before importing anything | 14.3 MiB |
+| `VmPeak` after importing the OCR module | **2642.3 MiB** |
+| of which `VmData` (numpy's reservation) | 2575.5 MiB |
+| `VmRSS` actually resident | 43.0 MiB |
+| a legitimate 1920x1080 decode | 0.0045 s CPU |
+
+Virtual address space is reserved at import, long before any frame is decoded. So
+an `RLIMIT_AS` tight enough to bound a 64-megapixel decode refuses the *import*,
+and one loose enough to import bounds nothing. That is an argument; here is the
+measurement that settles it — with `RLIMIT_AS` lowered to **300 MiB after
+import**, a full 1920x1080 decode **still completed**, because the limit
+constrains new mappings and numpy's were already made.
+
+Shipping it would have looked like a control and enforced nothing. What ships
+instead:
+
+- **`RLIMIT_CORE = 0`.** The advisories the pinned Pillow carries are
+  memory-safety ones, so a segfault mid-decode is the failure mode to plan for. A
+  core file would contain the decoded frame and everything else resident, and it
+  lands wherever the host's core pattern points — not a path this pipeline
+  controls or cleans.
+- **`RLIMIT_CPU = already-used + 30 s`**, relative rather than absolute because
+  the limit is cumulative over the process. 30 s is roughly six thousand times
+  what a decode costs; a limit that can fire on legitimate work turns a security
+  control into a flaky pipeline, and a flaky control gets deleted.
+- **The pixel ceiling**, which was already there, and which bounds allocation at
+  the only layer able to tell a legitimate frame from a bomb.
+
+A test asserts `RLIMIT_AS` is *absent* from both modules, with the measurement in
+its docstring, so it does not get helpfully added back.
+
+#### The pin's justification, checked instead of recited
+
+Pillow 11.3.0 is pinned because moviepy 2.2.1 declares `pillow<12.0` and 2.2.1 is
+the newest moviepy there is. `requirements.txt` already documented that at length,
+including a prose "trigger for revisiting" — and prose does not fire. The day a
+moviepy release lifts the cap, nothing would have noticed, and the justification
+would have quietly become false while every gate reported green.
+
+The checker now reads moviepy's declared bound from its own installed metadata,
+with no network, and fails when it admits 12.1.1 — the first release carrying the
+fix. It also fails when the bound cannot be read at all, because a justification
+that can no longer be checked is not one. Verified both ways: patched to declare
+`pillow<13.0` it reports "ADMITS the first fixed release 12.1.1"; patched to
+declare nothing it fails closed.
+
+The other half was that the exposure argument — "we only decode PNGs we captured
+ourselves" — was a *description*, not a property. The frames were world-writable.
+Both decode doors now refuse a path that is not a regular file, is not owned by
+this account, or is writable beyond its owner. One asymmetry is worth recording
+because a test initially asserted the opposite: `make_transitions` resolves paths
+before validating them, so a symlinked frame is judged by **what it points at**,
+not by being a link. That is correct — the target's bytes are what the decoder
+parses — and the test now measures that rather than a refusal that never happens.
+
+#### One deletion closed three clauses
+
+The Dockerfile's Python step began `pip install --upgrade pip setuptools wheel`: a
+floating, unhashed download of three packages, executed with the full privileges
+of the build, immediately before the step whose entire purpose is to install
+nothing that is not hash-pinned. The remedy was not to hash-pin it but to stop
+making it, because none of it was needed:
+
+- pip comes from `ensurepip` **inside the CPython tarball this file already
+  verifies by sha256** — 25.0.1 on 3.12.13. The installer was therefore already
+  pinned, transitively and by digest, with no second download to pin.
+- setuptools and wheel are not needed at all: `requirements.lock` carries
+  `--only-binary :all:`, so no build backend is ever invoked.
+
+Measured in the rebuilt image, and this is the part worth keeping:
+
+| | before | after |
+| --- | --- | --- |
+| distributions installed | 14 | **12** |
+| executable `.pth` files | 1 | **0** |
+| unhashed network downloads in the bootstrap | 3 | **0** |
+
+The `.pth` is the interesting one. `distutils-precedence.pth` ships with
+setuptools, its line begins `import`, and the `site` module therefore **executes
+it at every interpreter start** — before `main()`, before any pipeline code, and
+before the checker that is supposed to be vouching for the closure. It is
+arbitrary code inside the dependency closure that no wheel hash and no version
+pin describes. Installing a build backend in order to install nothing that needs
+building is what put it there.
+
+Two new checks make the decision enforced rather than merely made: one refuses any
+distribution the lock does not name (allowing only pip/setuptools/wheel, which
+cannot be lock entries because pip installs the lock), and one inventories every
+`.pth` and refuses any executable one not allowed **by the sha256 of its exact
+bytes**. Allowing setuptools' shim by *name* would allow any content under that
+name, which is precisely the substitution worth refusing. Both checks pass in both
+environments — the host venv with 14 distributions and one allowed `.pth`, and the
+container with 12 and none — because they assert a property rather than a fixed
+list.
+
+The base image is now `FROM ubuntu@sha256:678c6550…`, the OCI index digest, so
+per-architecture resolution still works while the input stops moving.
+
+The remaining clause of that finding — "snapshot/sign package inputs" for apt — is
+**deliberately not done**, and the Dockerfile already argued why before this
+review: the value of an in-support release *is* the security updates it publishes,
+and pinning the archive would freeze the image on whatever was current the day it
+was written while telling everybody it was patched. The build records what it
+installed instead. What was genuinely missing was that nothing bound that record
+to the image's identity, which is the next section.
+
+#### A tag is a mutable pointer, and it was the whole check
+
+`supported_env.sh` mounts the checkout **read-write** into the container it runs,
+and the only thing it checked about that container was that the image *name*
+matched `playthrough-capture:26.04`. `docker tag` makes that name answer for any
+image on the host. The finding is best read as a capability rather than a risk.
+
+Two facts replace the name:
+
+- **Which image**, as an immutable id. The tag is resolved to `.Id` exactly once
+  and `IMAGE_ID` travels from there — resolving it again at the point of use would
+  reopen the window the resolution closes. All three run targets (`inventory`, the
+  exec path, and the session container) were switched from the tag to the id, and
+  the adoption check compares the container's `{{.Image}}` rather than the
+  `{{.Config.Image}}` tag text it was started with. `RepoDigests` is deliberately
+  unused: measured on this host, the built image reports `RepoDigests=[]`, because
+  an image never pushed or pulled has no registry digest, so a check keyed on one
+  would be vacuous exactly where it is needed.
+- **Built from what**, as a digest over the Dockerfile and both requirements
+  files — written into the image as a label at build time, compared afterwards
+  against the tracked files. This is what binds the image to *this* checkout, and
+  it is what makes the apt inventory above load-bearing.
+
+It refused immediately and correctly: the pre-existing image predated the label
+and was rejected fail-closed with the remedy named. The rebuild then succeeded —
+which also proved the Dockerfile edits valid — and the check passed.
+
+One defect the change introduced and the tests caught: `assert_session_container`
+compares against `IMAGE_ID`, and three of the five paths reaching it — the
+teardown and both exec paths — never called `require_image`, so `IMAGE_ID` was
+empty and every container was refused against nothing. Resolved in
+`resolve_session_id`, once, rather than at each caller, for the same reason
+`PYTHONNOUSERSITE` is exported rather than passed at fifteen call sites: a fix
+placed where it cannot be forgotten at the next call site. Requiring identity on
+the teardown path is deliberate — refusing to *stop* a container this driver
+cannot prove is its own is the same property as refusing to exec into one.
+
+#### Two traps in the embedded checker, for whoever edits it next
+
+The closure checker is a Python program stored in a **single-quoted bash string**.
+Any apostrophe in it terminates that string and everything after is parsed as
+shell — a docstring reading "moviepy's own declared bound" turned the program into
+a syntax error. The whole embedded program avoids apostrophes for this reason; a
+test now asserts it. To lint it, extract it and run flake8 on the extraction.
+
+And `verdict(ok, name, observed, expected)` takes four *required* arguments, unlike
+the `say()` beside it which defaults the last. Two new PASS branches passed three
+and raised `TypeError` at runtime — invisible to flake8 and to shellcheck, caught
+only by running the checker. Worth knowing that in this file the linters cannot
+see the program at all.
+
+
+### Two strings chosen elsewhere, printed as though they had been chosen here
+
+Both findings in this pair come from the same oversight: a value that originates
+outside the pipeline was written into something with syntax — a Markdown document,
+a `KEY=value` record, a terminal — without being held to a grammar first.
+
+#### The survivor's name, and why it is refused rather than escaped
+
+`playthrough/transcript.md` is titled with the first level-one heading of
+`playthrough/dossier.md`, and that heading went in verbatim. Markdown passes raw
+HTML through, so a dossier opening `# <img src=x onerror=…>` produces a transcript
+that executes script in any permissive viewer — and the dossier is a file inside
+the tree this pipeline commits.
+
+The finding offered two remedies: escape the HTML, or enforce a name grammar. The
+grammar is the right one, and the reason is about what this artifact is. Escaping
+does not remove the payload, it re-spells it: a transcript titled
+`&lt;img src=x onerror=…&gt;` is neither a name nor a refusal. This document is
+evidence about a person, so a heading that is not a name is a fault to report.
+
+What is accepted: letters in any script, the combining marks that accent them, and
+`space ' ’ - ‐ ‑ . ,`. Everything else is refused, naming the character, its
+codepoint and its Unicode category. The whole HTML and Markdown metacharacter set
+falls out as a *consequence* rather than as a list to maintain — no `<`, `>`, `&`,
+`` ` ``, `[`, `]`, `(`, `)`, `*`, `_`, `|`, `!` or `\` can be spelled, so neither a
+tag, an entity, a link, an image nor an emphasis run can be. Digits are refused
+too: nothing needs them, and excluding them closes `&#60;` without a second rule.
+
+Verified in both directions — the eight payload shapes are refused, and
+`Odette Vachon`, `María José García`, `O'Brien`, `Marie-Claire`, `Smith, Jr.`,
+`Анна Петрова` and `李 小龍` are all accepted. Refusing a name for not being
+English would not have been safety.
+
+One further hole was in the same function's docstring rather than its code.
+`write_markdown` accepts a *supplied* header as well as deriving one, and promised
+that "a supplied header is held to exactly the same gates as a derived one" — but
+the supplied path derives nothing, so the name grammar never sees it. A narrow
+markup gate now runs on the header text on both paths, which is what makes the
+docstring true.
+
+The committed transcript is unchanged. `Odette Vachon` satisfies the grammar, and
+the header rebuilt from the dossier still matches the committed file byte for
+byte — so no sealed artifact moved and the evidence anchor head still stands.
+
+#### A world name is a directory name
+
+The other half is worse, because the value flows into a channel that is *parsed*.
+A world name is a directory under the save tree: the engine writes it from what
+the player typed, and any local account able to create a directory there writes
+whatever it likes. From there it reached `playthrough: WARNING: save/<name> …` and
+`PLAYTHROUGH_SAVE_WORLD`, and this pipeline's stdout is read as `KEY=value` by
+`run_pipeline.sh` and the capture stage. A newline in the name therefore emitted a
+second line of the record that nothing wrote — which is how a save tree could have
+asserted its own trust state.
+
+Three layers, each doing a different job:
+
+- **A grammar where the name is derived.** Non-empty, within a 128-character
+  ceiling, free of C0, DEL and C1. A directory that fails it is *skipped* rather
+  than fatal — one unusable directory must not make an otherwise sound save tree
+  unreadable — and the warning names it with every control byte escaped.
+- **The channel itself.** `emit` in the shell and `_emit` in `session.py` both
+  refuse a control character or an over-long value, so a future caller that
+  forgets the grammar still cannot forge a line. They deliberately do **not**
+  refuse emptiness: an absent world is `PLAYTHROUGH_SAVE_WORLD=` and an unresolved
+  binary is `PLAYTHROUGH_GAME_BIN=`, so a guard that refused it would refuse about
+  a dozen correct emissions. The strict grammar belongs at the source; the channel
+  guards the two properties that corrupt it.
+- **Every diagnostic.** `playthrough_redact` — which each `playthrough_log`,
+  `playthrough_warn` and `playthrough_die` already passes through — now escapes
+  control bytes to a visible `<NN>`. That closes log injection for *all* input
+  rather than for the values somebody remembered, and it means a refusal can quote
+  the offending value without performing the injection it is reporting.
+
+Four scripts had their own `die()` printing `"$*"` raw, bypassing that. The
+finding named `launch_game.sh`; `capture.sh`, `commit_artifacts.sh` and
+`supported_env.sh` had the identical defect and were fixed with it. C1 is included
+throughout because `0x9B` is a single-byte CSI that some terminals honour exactly
+as they honour `ESC [`.
+
+#### The bug in the fix: "one character" is a locale question
+
+The escaper walks the value replacing control bytes, and the first version took
+`${rest:0:1}` — one *character*. In a UTF-8 locale that is the whole two-byte C1
+sequence; in the C locale it is one byte of it. Measured, and the C-locale outcome
+was the bad one: `U+009B` came back **silently deleted** rather than escaped. Safe,
+but it throws away the evidence that anything was there, and it means the
+function's output was a property of the caller's environment rather than of its
+input.
+
+A function-local `LC_ALL=C` makes the walk bytewise everywhere, with the C1 pair
+consumed together and reported as its codepoint. Verified identical across no
+`LC_ALL`, `LC_ALL=C` and `LC_ALL=C.UTF-8`:
+
+| input bytes | escaped |
+| --- | --- |
+| `61 0a 62` | `a<0A>b` |
+| `61 09 62` | `a<09>b` |
+| `61 1b 5b 33 31 6d` | `a<1B>[31m` |
+| `61 7f 62` | `a<7F>b` |
+| `61 c2 9b 62` | `a<9B>b` |
+| `61 c3 a9 62` | `aéb` — untouched |
+
+`supported_env.sh` carries its own copy, for the reason it carries its own copy of
+the trust-bypass list: it deliberately does not source `env.sh`, because sourcing
+it on an end-of-life host is the refusal that script exists to route around. A
+test now runs both implementations over the same ten inputs and requires identical
+output — the same treatment the bypass list already had, and the same lesson as
+the ownership-record fixture: a restated definition that nothing compares is a
+second definition waiting to drift.
+
+#### Two tests that passed for the wrong reason
+
+Both were mine, and both were caught by measuring rather than by reading.
+
+`printf 'x%%.0s' $(seq 1 200)` produced a **five-character** string, not two
+hundred. `%%` is a literal per cent, so the format consumes no argument and bash
+does not recycle it — one cycle, output `x%.0s`. The ceiling correctly accepted it
+and the test failed while the code was right. The working idioms are a single
+`%.0s`, or `printf '%200s'` with a substitution.
+
+And extracting `playthrough_escape_controls` from `env.sh` with `sed` to compare it
+against the copy gave back the input unchanged — because the extraction left
+`playthrough_has_control` undefined, an undefined command exits 127, and the `||`
+early-out fired. It looked precisely like a copy that had stopped escaping.
+
+
+### A truthful sentence under an untruthful verdict
+
+The review's last finding was not about a defence at all. It was about this
+record, and it had two halves: the acceptance report *"records missing local
+identity as PASS"*, and it *"omits security controls"*. Both are reporting
+defects, and both were real.
+
+**The first half, and why it could not be fixed the way the finding suggested.**
+The suggested resolution was to *add authorized repository-local identity
+provisioning*. That cannot be done here: the execution environment this record
+was produced in fixes the committer identity itself and prohibits running
+`git config user.name` or `user.email` at any scope, so creating the pair the
+plan asks for (§0.3.1, §0.10.2) would have been a violation rather than a
+compliance. The measurement says so plainly — `git var GIT_AUTHOR_IDENT` answers
+`Blitzy Agent <agent@blitzy.com>`, `git config --local --get user.name` answers
+nothing, and the resolved scope is `file:/root/.gitconfig`.
+
+So the divergence itself is not the resolvable defect. **The report calling it a
+PASS was.** The prose beside that verdict had always been honest — it said the
+pair was absent, named the sections it diverged from and pointed at this file —
+but the verdict above the prose said `PASS`, and a verdict is what a reader
+skims and what a script parses. A truthful sentence under an untruthful verdict
+is worse than either alone, because it lets the document be cited as evidence of
+the thing it quietly denies.
+
+The gate now has a third verdict class. `record_divergence NAME OBSERVED
+REQUIRED WHY` prints what was observed, what the plan requires and why the gap
+stands, and it is deliberately neither of the other two:
+
+- **not a PASS**, because that is the defect;
+- **not a FAIL**, because a non-zero exit for a permanent, environment-imposed
+  divergence would block every future checkpoint for good, and a gate that
+  cannot be satisfied stops being run;
+- **it still registers as a check**, so the declared per-group inventory
+  accounts for it and it cannot be lost by being reclassified;
+- and it changes the run's own verdict to `VERIFY=pass-with-divergence`, with a
+  summary sentence that explicitly stops claiming full compliance. A caller that
+  understands only pass and fail treats that token as neither — the correct
+  default for something it has no rule for.
+
+**One ripple, which mattered more than the change itself.** `attest` refused to
+publish any report whose verdict was not the single token `pass`. Left alone,
+that would have recreated the finding from the other side: the only publishable
+report would have been one that called the divergence a pass, so the honest
+verdict would be unpublishable and the dishonest one *mandatory* — a strong
+incentive to go back to lying, expressed as a gate. The allowance is now an
+enumerated list, `pass` and `pass-with-divergence`, and it is a list rather than
+a "starts with pass" test on purpose, because a prefix test would admit any
+future token somebody invented including one meaning the opposite. `fail` stays
+unpublishable: the distinction being drawn is between *a property did not hold*
+and *a property does not hold as written, and the report says so out loud*.
+
+**The second half: a count reads the same whether or not anything defended it.**
+The report was a sequence of counts and digests, and nothing in it distinguished
+a run with these controls from a run without them. That is the same failure mode
+as a report that gets shorter — indistinguishable from a complete one to anyone
+who does not already know the number — and it is the failure mode this whole
+file exists to argue against.
+
+Naming the controls in prose would not have fixed it, because prose is
+maintained by hand and drifts silently. So they are **inventoried by a check**.
+`check_security_controls` carries a table of `label|file|marker` rows, asserts
+each control is still present in the file that implements it, and prints the
+labels into the observed text — which puts the list into
+`playthrough/acceptance-report.txt` as evidence rather than as a claim. Twenty-one
+controls, spanning the credential containment gate and the hook-void, the
+commit-tree binding, staging provenance and the secret scan, the path-ancestry
+walk and the writable-path refusal, the environment sanitiser, the mutation lock,
+the X process-identity record and cookie rotation, the record-token grammar and
+control escaping, the hash-chained ledgers, the journal durability propagation,
+the decode provenance and resource limits, the survivor-name grammar, and the
+container image identity.
+
+Two decisions inside that check are worth stating. The marker is a **function
+name, never a phrase**, so rewording a comment cannot satisfy it and a rename
+cannot silently void it — a removed control fails a check instead of vanishing
+from the prose. And the check is **artifact-shaped**, not commit-shaped: it is a
+property of the tree as it stands, so the pre-commit phase answers it and the
+post-commit phase does not re-run it. That is why group 9's declaration moved
+from `12 11 2` in `all`/`pre`/`post` terms without touching the deferral figure
+or either deferred-property enumeration.
+
+The gate found its own drift before a human did, which is the direction that
+mistake is supposed to fall: the first run after adding the check reported
+`observed: 119 distinct of 118 declared; UNDECLARED -- group 9 the binary,
+artwork and hygiene: 11 against 10 declared`, naming the group rather than only
+the total.
+
+**What the report cannot say yet, and why that is not a gap being papered over.**
+`acceptance-report.txt` is published by the `attest` checkpoint, and it names in
+its own machine block the commit it measured; `assert_acceptance_report` refuses
+a report whose `VERIFY_MEASURED_COMMIT` is not exactly the current HEAD, refuses
+one produced by a phase that does not measure history, and refuses one taken
+over a dirty tree as provisional by construction. A report describing the commit
+that carries this remediation therefore cannot exist until that commit does. The
+generator is fixed and proven; the document it generates is regenerated from a
+real post-commit run and published in the same sequence that commits it, which
+is the same pattern every earlier acceptance report in this history followed.

@@ -770,6 +770,7 @@ ONLY_STAGE=""
 NO_COMMIT=0
 REBUILD=0
 LOCK_HELD=0
+MUTATION_LOCK_HELD=0
 FAILED_STAGE=""
 
 # The measurement toolchain, resolved once in the preflight.  Absent
@@ -2496,7 +2497,51 @@ ${PIPELINE_LOCK_TIMEOUT_DEFAULT}}"
             "seconds, or leave it unset for" \
             "${PIPELINE_LOCK_TIMEOUT_DEFAULT}."
     PIPELINE_LOCK_TIMEOUT="${PLAYTHROUGH_INT}"
+    # THE MUTATION LOCK'S TIMEOUT IS VALIDATED HERE TOO, and for the same
+    # reason: playthrough_acquire_mutation_lock would refuse a malformed
+    # one, but this file would then have to report that refusal as EX_BUSY
+    # -- telling an operator who mistyped a number that somebody else is
+    # holding the checkout.  A mistyped value is a usage error wherever it
+    # is set.
+    playthrough_validate_int \
+        "${PLAYTHROUGH_MUTATION_LOCK_TIMEOUT:-\
+${PLAYTHROUGH_MUTATION_LOCK_TIMEOUT_DEFAULT}}" \
+        "PLAYTHROUGH_MUTATION_LOCK_TIMEOUT" 0 86400 ||
+        die "${EX_USAGE}" "set" \
+            "PLAYTHROUGH_MUTATION_LOCK_TIMEOUT to a whole number of" \
+            "seconds, or leave it unset for" \
+            "${PLAYTHROUGH_MUTATION_LOCK_TIMEOUT_DEFAULT}."
     return 0
+}
+
+# acquire_mutation_lock -- hold the CHECKOUT quiescent for this whole run.
+#
+# The pipeline lock above keeps two sequencers apart.  This one keeps the
+# sequencer apart from everything that is not a sequencer: a session step
+# appending a frame, a producer republishing an artifact, a standalone
+# gate, a standalone checkpoint.  It is taken EXCLUSIVELY and held for the
+# whole run rather than around each stage, because the hole this closes is
+# precisely the gap BETWEEN two stages -- a gate that passes, a producer
+# that changes the tree, and a commit that then publishes state no gate
+# ever saw.  Two narrower windows would leave that gap exactly where it
+# was.
+#
+# The stages this run starts inherit the descriptor and verify it, so each
+# of them proves the quiescence rather than re-taking a lock that would
+# block against its own parent for ever.  See env.sh's mutation lock
+# section for why that verification is a proof and not a courtesy.
+acquire_mutation_lock() {
+    playthrough_acquire_mutation_lock exclusive \
+        "${PLAYTHROUGH_MUTATION_LOCK_TIMEOUT:-\
+${PLAYTHROUGH_MUTATION_LOCK_TIMEOUT_DEFAULT}}" ||
+        die "${EX_BUSY}" "this sequencer could not take THIS" \
+            "checkout's mutation lock exclusively, so it cannot" \
+            "promise that nothing changed between the gate that" \
+            "passes and the checkpoint that commits.  A session step," \
+            "a producer, a standalone gate or a standalone checkpoint" \
+            "is still running over the same working tree; wait for it" \
+            "rather than rendering beside it."
+    MUTATION_LOCK_HELD=1
 }
 
 acquire_pipeline_lock() {
@@ -2542,6 +2587,13 @@ _rp_on_exit() {
         # release cannot be allowed to change the status this run is
         # ending with -- the reason for it has already been reported.
         playthrough_release_lock "${PLAYTHROUGH_LOCK_FD:-}" || true
+    fi
+    if [ "${MUTATION_LOCK_HELD}" -eq 1 ]; then
+        MUTATION_LOCK_HELD=0
+        # Released through its own helper, which releases ONLY when
+        # this shell was the one that took it: a run that inherited
+        # an ancestor's hold must leave that ancestor holding it.
+        playthrough_release_mutation_lock || true
     fi
     # The scratch directory goes whatever way this run ended, including a
     # refusal from the closure gate, which is the one path that creates it
@@ -2742,6 +2794,7 @@ main() {
     # in place before that gate runs.
     trap '_rp_on_exit' EXIT
     acquire_pipeline_lock
+    acquire_mutation_lock
 
     # BOTH GATES RUN AFTER THE LOCK AND BEFORE THE FIRST STAGE.
     #

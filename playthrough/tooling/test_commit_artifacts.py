@@ -344,6 +344,18 @@ def runtime_root():
     return root
 
 
+def _unlink_if_present(path):
+    """Remove `path` if it is still there; used for a planted fifo.
+
+    shutil.rmtree removes a fifo perfectly well -- this exists so the
+    special file is gone even if the tree removal is what fails.
+    """
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
 class CheckpointFixture(unittest.TestCase):
     """A miniature checkout, a real git repository, and one run."""
 
@@ -1236,6 +1248,187 @@ class TestTheIdentityGate(CheckpointFixture):
         self.assertEqual(status, EX_OK, msg=err)
         self.assertIn("cannot determine an author identity", err)
         self.assertEqual(self.payload(out)["AUTHOR"], "")
+
+
+class TestTheCredentialGate(CheckpointFixture):
+    """A credential in .git/config is not readable by anybody else.
+
+    This checkout is provisioned with a push URL of the shape
+    https://x-access-token:<secret>@host/..., which puts a live bearer
+    token in a plain file.  Removing it is not available -- with
+    credential.helper empty that URL is the repository's only
+    authentication -- and rotating it is the platform's act.  What IS in
+    this step's power is the file's mode, so a config that carries a
+    credential while group or other can read it is a refusal.
+    """
+
+    def config_path(self):
+        return os.path.join(self.checkout, ".git", "config")
+
+    def embed_credential(self, mode):
+        """Give the sandbox a credential-bearing remote at `mode`."""
+        path = self.config_path()
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write('[remote "origin"]\n\turl = '
+                         "https://x-access-token:s3cr3t@example.invalid"
+                         "/repo.git\n")
+        os.chmod(path, mode)
+        return path
+
+    def test_a_world_readable_credential_refuses_the_checkpoint(self):
+        self.write_save()
+        self.write_evidence(self.CREATION_ROWS)
+        self.embed_credential(0o644)
+        message = self.refuse(EX_REPO, ("creation",))
+        self.assertIn("carries a credential", message)
+        self.assertIn("644", message)
+        self.assertIn("chmod 600", message)
+
+    def test_a_group_readable_credential_is_refused_too(self):
+        """0640 exposes it to a group, which is still not the owner."""
+        self.write_save()
+        self.write_evidence(self.CREATION_ROWS)
+        self.embed_credential(0o640)
+        message = self.refuse(EX_REPO, ("creation",))
+        self.assertIn("carries a credential", message)
+        self.assertIn("640", message)
+
+    def test_an_owner_only_credential_commits_and_says_so(self):
+        self.write_save()
+        self.write_evidence(self.CREATION_ROWS)
+        self.embed_credential(0o600)
+        _, err = self.checkpoint("creation")
+        self.assertIn("readable only by its owner", err)
+        self.assertIn("the platform's to", err)
+
+    def test_a_config_with_no_credential_is_not_held_to_the_mode(self):
+        """Nothing secret in it means nothing for the mode to expose."""
+        self.write_save()
+        self.write_evidence(self.CREATION_ROWS)
+        os.chmod(self.config_path(), 0o644)
+        _, err = self.checkpoint("creation")
+        self.assertIn("embeds no credential", err)
+
+    def test_the_gate_is_not_a_silent_repair(self):
+        """A refusal LEAVES the mode wide.
+
+        Tightening it quietly would erase the only evidence that the
+        credential had ever been exposed, and the run that produced the
+        artifacts would still have been the exposed one.
+        """
+        self.write_save()
+        self.write_evidence(self.CREATION_ROWS)
+        path = self.embed_credential(0o644)
+        self.refuse(EX_REPO, ("creation",))
+        self.assertEqual(0o644, os.stat(path).st_mode & 0o777)
+
+
+class TestMutatingGitRunsNoHook(CheckpointFixture):
+    """`git commit` executes hooks; this step does not let it.
+
+    A hook runs with the checkpoint's privileges at the moment the
+    credential in .git/config is reachable, so every mutating git call
+    is made with core.hooksPath pointed at an empty verified directory.
+    """
+
+    def hook(self, name, body):
+        """Plant an executable hook in the sandbox repository."""
+        hooks = os.path.join(self.checkout, ".git", "hooks")
+        os.makedirs(hooks, exist_ok=True)
+        path = os.path.join(hooks, name)
+        self.write(path, body)
+        os.chmod(path, 0o755)
+        return path
+
+    def test_a_planted_pre_commit_hook_does_not_run(self):
+        self.write_save()
+        self.write_evidence(self.CREATION_ROWS)
+        witness = os.path.join(self.root, "hook-ran")
+        self.hook("pre-commit",
+                  "#!/bin/sh\ntouch %s\nexit 0\n" % witness)
+        self.checkpoint("creation")
+        self.assertFalse(
+            os.path.exists(witness),
+            msg="a pre-commit hook ran during a checkpoint commit")
+
+    def test_a_failing_hook_cannot_block_the_checkpoint(self):
+        """A hook that exits non-zero would veto the commit.
+
+        Which is the same reach, seen from the other side: whoever can
+        plant a file can stop the evidence being published.
+        """
+        self.write_save()
+        self.write_evidence(self.CREATION_ROWS)
+        self.hook("pre-commit", "#!/bin/sh\nexit 1\n")
+        self.checkpoint("creation")
+
+    def test_every_post_commit_hook_is_contained_as_well(self):
+        """post-commit runs AFTER the commit, so it is not a veto.
+
+        It is contained for the other reason: it is the hook with the
+        clearest read on a freshly published tree.
+        """
+        self.write_save()
+        self.write_evidence(self.CREATION_ROWS)
+        witness = os.path.join(self.root, "post-ran")
+        self.hook("post-commit",
+                  "#!/bin/sh\ntouch %s\nexit 0\n" % witness)
+        self.checkpoint("creation")
+        self.assertFalse(os.path.exists(witness))
+
+    def test_a_configured_hooks_path_cannot_win_it_back(self):
+        """-c on the command line outranks every configuration file."""
+        self.write_save()
+        self.write_evidence(self.CREATION_ROWS)
+        elsewhere = os.path.join(self.root, "other-hooks")
+        os.makedirs(elsewhere)
+        witness = os.path.join(self.root, "configured-hook-ran")
+        path = os.path.join(elsewhere, "pre-commit")
+        self.write(path, "#!/bin/sh\ntouch %s\nexit 0\n" % witness)
+        os.chmod(path, 0o755)
+        self.git("config", "core.hooksPath", elsewhere, identity=False)
+        self.checkpoint("creation")
+        self.assertFalse(os.path.exists(witness))
+
+    def test_the_commit_is_made_through_the_wrapper(self):
+        """No `"${GIT}" commit` remains -- structurally, not by luck."""
+        source = self.script_source()
+        self.assertNotIn('"${GIT}" commit', source)
+        self.assertEqual(2, source.count("git_mutate commit"))
+        self.assertIn("core.hooksPath=$(hooks_void)", source)
+
+    def test_the_hooks_directory_must_be_empty(self):
+        """An inherited path with contents is a refusal, not a purge."""
+        source = self.script_source()
+        self.assertIn("-mindepth 1 -print -quit", source)
+        self.assertIn("is not empty", source)
+
+
+class TestTheCommitPublishesWhatWasValidated(CheckpointFixture):
+    """The staged blobs are bound to the tree the commit produced."""
+
+    def test_a_successful_checkpoint_reports_the_binding(self):
+        self.write_save()
+        self.write_evidence(self.CREATION_ROWS)
+        _, err = self.checkpoint("creation")
+        self.assertIn("published exactly the", err)
+        self.assertIn("object(s) that were staged", err)
+
+    def test_the_comparison_is_object_names_from_both_sides(self):
+        """Index blobs against tree blobs, not file contents.
+
+        Comparing contents would re-read the very bytes whose stability
+        is in question; comparing object names asks git what it stored.
+        """
+        source = self.script_source()
+        self.assertIn("ls-files --stage", source)
+        self.assertIn("ls-tree -r --full-tree", source)
+        self.assertIn("assert_commit_tree_matches_index", source)
+
+    def test_a_mismatch_is_reported_and_never_rewritten(self):
+        source = self.script_source()
+        self.assertIn("does not publish the objects that were", source)
+        self.assertIn("it is not rewritten", source)
 
 
 class TestTheRepositoryGate(CheckpointFixture):
@@ -2535,12 +2728,40 @@ class TestTheDossierCheckpoint(CheckpointFixture):
     all.
     """
 
-    def test_it_commits_the_dossier_and_nothing_else(self):
+    def test_it_commits_the_dossier_and_its_seal(self):
+        """The dossier, and the one thing that vouches for it.
+
+        THE EVIDENCE ANCHOR TRAVELS WITH IT, and that is the point of the
+        anchor rather than a leak in this checkpoint's scope.  The
+        requirement being satisfied here is that the dossier was written
+        before play, and the whole force of it rests on the dossier's
+        bytes not having changed since.  So this checkpoint seals those
+        bytes -- by sha256 and by git's own blob name -- and publishes the
+        chain's head in its own message, in the same commit.  Committing
+        the dossier without its seal would leave the earliest and most
+        order-sensitive artifact in the tree as the only one nothing
+        vouches for.
+        """
         self.forget_dossier()
         fields, _ = self.take_dossier()
         self.assertEqual(fields["COMMITTED"], "yes")
         self.assertEqual(self.touched_by(),
-                         ["playthrough/dossier.md"])
+                         ["playthrough/build/evidence_anchor.jsonl",
+                          "playthrough/dossier.md"])
+
+    def test_the_dossiers_own_bytes_are_what_it_seals(self):
+        """Nothing else exists yet, so the seal is exactly one row."""
+        self.forget_dossier()
+        self.take_dossier()
+        path = os.path.join(self.checkout, "playthrough", "build",
+                            "evidence_anchor.jsonl")
+        with open(path, "r", encoding="utf-8") as handle:
+            rows = [json.loads(line) for line in handle if line.strip()]
+        self.assertEqual([row["path"] for row in rows], ["dossier.md"])
+        self.assertEqual(
+            rows[0]["git_blob"],
+            self.git("rev-parse", "HEAD:playthrough/dossier.md",
+                     identity=False).strip())
 
     def test_it_carries_its_own_trailer(self):
         self.forget_dossier()
@@ -2657,7 +2878,11 @@ class TestTheDossierRefusesOnceTheSessionHasBegun(CheckpointFixture):
         self.forget_dossier()
         fields, _ = self.checkpoint("dossier")
         self.assertEqual(fields["COMMITTED"], "yes")
-        self.assertEqual(self.touched_by(), ["playthrough/dossier.md"])
+        # The dossier and the seal that binds its bytes; see
+        # TestTheDossierCheckpoint for why the two travel together.
+        self.assertEqual(self.touched_by(),
+                         ["playthrough/build/evidence_anchor.jsonl",
+                          "playthrough/dossier.md"])
 
 
 class TestTheOrderingIsAboutThisGeneration(CheckpointFixture):
@@ -3831,6 +4056,519 @@ class TestTheCommitItself(CheckpointFixture):
                       "three-section report", subjects[0])
 
 
+class TestTheCheckpointSealsAndPublishesTheEvidence(CheckpointFixture):
+    """The half of the evidence anchor that lives in the history.
+
+    A review found every attestation in this tree mutable with the
+    evidence it attested to: rewrite a frame, rewrite its digest row, and
+    the ledger recomputed from the forged frame agrees with itself.  No
+    file in the working tree can settle that, because a file in the
+    working tree is exactly what the attacker is editing.
+
+    A COMMIT can.  A commit object's name hashes its own message, so a
+    value written into a checkpoint's message is fixed the moment the
+    checkpoint is taken -- changing it changes the commit id and every id
+    after it, which is a rewrite of published history rather than an edit
+    of a file.  So each checkpoint seals the evidence into a hash-chained
+    ledger AND publishes that chain's head as a trailer, in the same
+    commit that carries the ledger.
+    """
+
+    ANCHOR = "playthrough/build/evidence_anchor.jsonl"
+    TRAILER = "Playthrough-Evidence-Anchor"
+
+    def anchor_rows(self):
+        """The ledger's rows, as JSON, from the working tree."""
+        path = os.path.join(self.checkout, self.ANCHOR)
+        if not os.path.isfile(path):
+            return []
+        with open(path, "r", encoding="utf-8") as handle:
+            return [json.loads(line) for line in handle if line.strip()]
+
+    def declared(self, revision="HEAD"):
+        """The head a commit's trailer publishes, or ''."""
+        for line in self.message(revision).split("\n"):
+            if line.startswith(self.TRAILER + ": "):
+                return line[len(self.TRAILER) + 2:]
+        return ""
+
+    def test_the_checkpoint_creates_the_ledger(self):
+        self.take_creation()
+        self.assertTrue(self.anchor_rows(),
+                        msg="the checkpoint sealed nothing")
+
+    def test_the_ledger_is_committed_by_the_checkpoint_that_wrote_it(self):
+        """The seal and the claim about it travel together.
+
+        A ledger left uncommitted would be a seal nobody could check
+        from the history, and group 7 of the gate would report the tree
+        as dirty immediately afterwards.
+        """
+        self.take_creation()
+        self.assertTrue(self.is_tracked(self.ANCHOR))
+        self.assertEqual(
+            "", self.git("status", "--porcelain", "--", self.ANCHOR,
+                         identity=False).strip())
+
+    def test_the_head_is_published_as_a_trailer(self):
+        self.take_creation()
+        rows = self.anchor_rows()
+        self.assertEqual(self.declared(), rows[-1]["chain"])
+
+    def test_the_published_head_is_a_sha256(self):
+        self.take_creation()
+        self.assertRegex(self.declared(), r"\A[0-9a-f]{64}\Z")
+
+    def test_both_trailers_are_in_one_trailer_block(self):
+        """Adjacent lines, so git reads them as trailers.
+
+        A blank line between them would make the second one body text:
+        `git log --grep` would still find it and `git interpret-trailers`
+        would not, which is the kind of disagreement that surfaces years
+        later in whichever tool was not tested.
+        """
+        self.take_creation()
+        lines = [line for line in self.message().split("\n") if line]
+        self.assertEqual(lines[-2], "Playthrough-Checkpoint: creation")
+        self.assertEqual(lines[-1],
+                         "%s: %s" % (self.TRAILER, self.declared()))
+
+    def test_the_record_and_the_films_ledger_are_both_sealed(self):
+        """Fifteen rows cover every frame, transitively.
+
+        build/frame_digests.jsonl carries a digest per capture, so
+        sealing that one file seals them all: substituting a frame breaks
+        its digest row, repairing the digest row breaks this seal, and
+        repairing this seal breaks the chain and the head the commit
+        published.
+        """
+        self.take_creation()
+        sealed = {row["path"] for row in self.anchor_rows()}
+        self.assertIn("manifest.jsonl", sealed)
+        self.assertIn("build/frame_digests.jsonl", sealed)
+
+    def test_each_row_seals_by_sha256_and_by_gits_own_blob_name(self):
+        self.take_creation()
+        for row in self.anchor_rows():
+            with self.subTest(path=row["path"]):
+                self.assertRegex(row["sha256"], r"\A[0-9a-f]{64}\Z")
+                self.assertRegex(row["git_blob"], r"\A[0-9a-f]{40}\Z")
+
+    def test_the_sealed_blob_name_is_the_name_git_gave_it(self):
+        """The independent witness, checked against git itself."""
+        self.take_creation()
+        for row in self.anchor_rows():
+            path = "playthrough/" + row["path"]
+            if not self.is_tracked(path):
+                continue
+            with self.subTest(path=path):
+                self.assertEqual(
+                    self.git("rev-parse", "HEAD:" + path,
+                             identity=False).strip(),
+                    row["git_blob"])
+
+    def test_the_row_records_the_checkpoint_that_sealed_it(self):
+        self.take_creation()
+        self.assertEqual(
+            {row["sealed_by"] for row in self.anchor_rows()},
+            {"creation"})
+
+    def test_a_later_checkpoint_appends_and_republishes(self):
+        """Append-only, and the new head is published in its turn."""
+        self.take_creation()
+        first = self.declared()
+        before = len(self.anchor_rows())
+        self.play_session()
+        self.checkpoint("final")
+        rows = self.anchor_rows()
+        self.assertGreater(len(rows), before)
+        self.assertEqual([row["seq"] for row in rows],
+                         list(range(1, len(rows) + 1)))
+        self.assertNotEqual(self.declared(), first)
+        self.assertEqual(self.declared(), rows[-1]["chain"])
+        # The earlier head is still in the history, on its own commit.
+        self.assertEqual(self.declared("HEAD~1"), first)
+
+    def test_the_earlier_rows_are_never_rewritten(self):
+        self.take_creation()
+        before = self.anchor_rows()
+        self.play_session()
+        self.checkpoint("final")
+        self.assertEqual(self.anchor_rows()[:len(before)], before)
+
+    def test_the_integration_milestone_seals_nothing(self):
+        """It commits the two rule files and touches no evidence.
+
+        A milestone that sealed an empty tree would put a row in the
+        chain vouching for nothing, and would publish a head that no
+        artifact stands behind.
+        """
+        self.checkpoint("integration")
+        self.assertEqual(self.anchor_rows(), [])
+        self.assertEqual(self.declared(), "")
+
+    def test_a_broken_chain_stops_the_next_checkpoint(self):
+        """Fail-closed: a checkpoint is not taken over an unsound seal.
+
+        Appending onto a chain that is already broken would bury the
+        break under rows that all verify against one another.
+        """
+        self.take_creation()
+        head_before = self.git("rev-parse", "HEAD",
+                               identity=False).strip()
+        path = os.path.join(self.checkout, self.ANCHOR)
+        rows = self.anchor_rows()
+        with open(path, "w", encoding="utf-8", newline="\n") as handle:
+            for row in rows[1:]:
+                handle.write(json.dumps(row, separators=(",", ":")) + "\n")
+        self.play_session()
+        message = self.refuse(EX_COMMIT, ("final",))
+        self.assertIn("not a sound chain", message)
+        self.assertEqual(
+            self.git("rev-parse", "HEAD", identity=False).strip(),
+            head_before,
+            msg="a checkpoint was taken despite an unsound seal")
+
+
+class TestTheStagedTreeIsWhatItAppearsToBe(CheckpointFixture):
+    """WHAT a path is, as opposed to where it is.
+
+    The engine's own subtree is classified by POSITION, and it has to be:
+    the engine writes `#<b64>.sav`, `.seen.0.-1`, `.mm1` directories and
+    `<name>-<serial>.json.-4651329699267.fb` caches, so a per-filename
+    allowlist over somebody else's output would refuse a correct
+    checkpoint the first time a new engine version wrote a new shape.
+
+    A review found what position alone cannot see. The classification
+    sweep enumerates with `find -type f`, and `-type f` is TRUE of a hard
+    link to a file anywhere else on the same filesystem -- so a second
+    link to something outside this tree, dropped into a directory the
+    engine owns, is classified as engine state and committed whole. The
+    same sweep cannot see a symlink at all, so a symlink is an
+    unclassified path the classification refusal never gets to refuse.
+
+    So these properties are asked of every entry, by what it IS, which is
+    a question the engine's freedom to name its own files does not touch.
+    """
+
+    def engine_path(self, name):
+        """A path inside a directory the engine legitimately owns."""
+        return os.path.join(self.dir, "userdir", "cache", name)
+
+    def prepared(self):
+        """The tree a creation checkpoint would be taken over."""
+        self.write_save()
+        self.write_evidence(self.CREATION_ROWS)
+
+    def test_an_ordinary_tree_passes_and_says_so(self):
+        """The positive control: the check must not be unconditional."""
+        self.prepared()
+        fields, output = self.checkpoint("creation")
+        self.assertEqual(fields["COMMITTED"], "yes")
+        self.assertIn("single-linked regular file", output)
+
+    def test_a_hard_link_into_the_engine_tree_is_refused(self):
+        """CWE-59, and the reason `-type f` is not enough.
+
+        The link is a perfectly ordinary regular file by every test the
+        classification makes, it sits in a directory the engine owns, and
+        its content is somebody else's.
+        """
+        self.prepared()
+        outsider = os.path.join(self.checkout, "outside-the-tree.txt")
+        self.write(outsider, "content that belongs to another file\n")
+        planted = self.engine_path("tile-cache.json")
+        os.makedirs(os.path.dirname(planted), exist_ok=True)
+        os.link(outsider, planted)
+        message = self.refuse(EX_SCOPE, ("creation",))
+        self.assertIn("userdir/cache/tile-cache.json", message)
+        self.assertIn("hard links", message)
+        self.assertIn("reachable outside this tree", message)
+
+    def test_a_symlink_in_the_engine_tree_is_refused(self):
+        """The path the classification sweep cannot even see."""
+        self.prepared()
+        planted = self.engine_path("tiles.png")
+        os.makedirs(os.path.dirname(planted), exist_ok=True)
+        os.symlink("/etc/hostname", planted)
+        message = self.refuse(EX_SCOPE, ("creation",))
+        self.assertIn("userdir/cache/tiles.png", message)
+        self.assertIn("symbolic link", message)
+
+    def test_a_dangling_symlink_is_refused_too(self):
+        """Nothing to read is not a reason to let it through."""
+        self.prepared()
+        planted = self.engine_path("gone.json")
+        os.makedirs(os.path.dirname(planted), exist_ok=True)
+        os.symlink(os.path.join(self.root, "does-not-exist"), planted)
+        message = self.refuse(EX_SCOPE, ("creation",))
+        self.assertIn("symbolic link", message)
+
+    def test_a_named_pipe_is_refused(self):
+        """A file that is not a file, which `git add` would hang on."""
+        self.prepared()
+        planted = self.engine_path("pipe")
+        os.makedirs(os.path.dirname(planted), exist_ok=True)
+        os.mkfifo(planted)
+        self.addCleanup(_unlink_if_present, planted)
+        message = self.refuse(EX_SCOPE, ("creation",))
+        self.assertIn("not a regular file or a directory", message)
+
+    def test_a_path_owned_by_another_account_is_refused(self):
+        """Somebody else put this here.
+
+        Skipped where this account cannot change ownership, because then
+        the state under test cannot be constructed honestly.
+        """
+        self.prepared()
+        planted = self.engine_path("notes.json")
+        self.write(planted, "{}\n")
+        try:
+            os.chown(planted, 12345, 12345)
+        except (OSError, OverflowError) as err:
+            self.skipTest("cannot change ownership here: %s" % err)
+        message = self.refuse(EX_SCOPE, ("creation",))
+        self.assertIn("userdir/cache/notes.json", message)
+        self.assertIn("owned by uid 12345", message)
+        self.assertIn("placed here by somebody else", message)
+
+    def test_another_filesystem_inside_the_tree_is_refused(self):
+        """A grafted mount, which is a whole tree of somebody's content.
+
+        Skipped where mounting is not available, for the same reason as
+        the ownership case: an unconstructable state is not a passing one.
+        """
+        self.prepared()
+        planted = self.engine_path("mounted")
+        os.makedirs(planted, exist_ok=True)
+        mount = subprocess.run(
+            ["mount", "-t", "tmpfs", "-o", "size=1m", "tmpfs", planted],
+            capture_output=True, timeout=60)
+        if mount.returncode != 0:
+            self.skipTest("cannot mount here: %s"
+                          % mount.stderr.decode("utf-8", "replace"))
+
+        # UNMOUNTED BEFORE THE TREE IS REMOVED, and lazily if the plain
+        # form is busy: leaving a mount behind would outlive this suite.
+        def unmount():
+            if subprocess.run(["umount", planted],
+                              capture_output=True).returncode != 0:
+                subprocess.run(["umount", "-l", planted],
+                               capture_output=True)
+        self.addCleanup(unmount)
+        self.write(os.path.join(planted, "planted.json"), "{}\n")
+        message = self.refuse(EX_SCOPE, ("creation",))
+        self.assertIn("another filesystem is mounted inside this tree",
+                      message)
+
+    def test_the_dossier_checkpoint_asks_the_same_questions(self):
+        """It stages one path and still seals the whole tree."""
+        self.forget_dossier()
+        planted = self.engine_path("tile-cache.json")
+        outsider = os.path.join(self.checkout, "outside-the-tree.txt")
+        self.write(outsider, "somebody else's content\n")
+        os.makedirs(os.path.dirname(planted), exist_ok=True)
+        os.link(outsider, planted)
+        message = self.refuse(EX_SCOPE, ("dossier",))
+        self.assertIn("hard links", message)
+
+
+class TestSecretMaterialIsRefusedBeforeStaging(CheckpointFixture):
+    """The content question, which no structural check can answer.
+
+    A review put the vector plainly: "an innocuously named inserted
+    credential can be committed". Every other gate in this script asks
+    where a path is, what it is called and what shape it has, and a file
+    called `userdir/cache/tile-cache.json` holding an access token
+    satisfies all three.
+
+    The scan that answers it had to be measured in BOTH directions before
+    it could be trusted, and the first measurement is why it looks the
+    way it does: run over the delivered tree, a plain-vocabulary version
+    reported twelve findings and every one was a false positive on this
+    feature's own documentation of the hazard. So the rules describe
+    secret VALUES, and the tests below hold both halves -- what must be
+    caught, and what must not be.
+    """
+
+    # One planted file per rule, each a realistic shape and none of them
+    # a credential to anything that exists.
+    #
+    # EVERY VALUE IS ASSEMBLED FROM TWO PIECES, and that is load-bearing
+    # rather than a style: written as whole literals, this file CARRIES
+    # the eight shapes it exists to prove are caught, and the committer's
+    # own scan then reports this suite as holding ten credentials.
+    # Measured exactly that way -- ten findings, all of them here -- which
+    # is the same self-reference the scanner's own patterns had to be
+    # written around. Splitting each value puts a quote and a `+` where
+    # the expression needs the next character of the secret, so the file
+    # no longer matches while the runtime string still does. The tests
+    # below prove the assembled values ARE caught, which is what keeps
+    # this from quietly disarming the fixtures.
+    CAUGHT = (
+        ("token.json",
+         '{"remote":"https://x-access-token:' +
+         "ghs_" + 'AbCdEfGhIjKlMnOpQrStUvWxYz012345' +
+         '@github.com/o/r.git"}\n'),
+        ("aws.txt", "AKIA" + "IOSFODNN7EXAMPLE\n"),
+        ("google.txt", "AIza" + "SyA1234567890abcdefghijklmnopqrstuvw\n"),
+        ("slack.txt", "xoxb" + "-1234567890-abcdefghijkl\n"),
+        ("key.pem",
+         "-----BEGIN " + "OPENSSH PRIVATE KEY-----\nb3BlbnNzaA\n"),
+        ("cookie.txt",
+         "MIT-MAGIC-COOKIE-1  " +
+         "0123456789abcdef" + "0123456789abcdef\n"),
+        ("bearer.txt",
+         "Authorization: Bearer " +
+         "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9\n"),
+        ("basic.txt",
+         "Authorization: Basic " + "QWxhZGRpbjpvcGVuIHNlc2FtZQ==\n"),
+    )
+
+    # And what must NOT be reported, each taken from something that really
+    # appears in this tree.
+    PASSED_OVER = (
+        ("protocol.txt", "MIT-MAGIC-COOKIE-1 is the protocol name\n"),
+        ("digest.txt", "MD5=4c38e03830e7d4a278f237276b9dae46\n"),
+        ("redacted.txt",
+         "https://x-access-token:<secret>@github.com/o/r.git\n"),
+        ("expanded.txt", "https://user:${TOKEN}@example.invalid/r.git\n"),
+        ("starred.txt", "https://user:****@example.invalid/r.git\n"),
+        ("prose.txt",
+         "The remote carries an x-access-token and the config is 0600.\n"),
+    )
+
+    def plant(self, name, text):
+        """Write one file into a directory the engine legitimately owns."""
+        return self.write(
+            os.path.join(self.dir, "userdir", "cache", name), text)
+
+    def prepared(self):
+        self.write_save()
+        self.write_evidence(self.CREATION_ROWS)
+
+    def test_a_credential_in_an_innocuously_named_file_is_refused(self):
+        """The review's stated vector, end to end."""
+        self.prepared()
+        self.plant("tile-cache.json", self.CAUGHT[0][1])
+        message = self.refuse(EX_SCOPE, ("creation",))
+        self.assertIn("carry secret material", message)
+        self.assertIn("userdir/cache/tile-cache.json", message)
+        self.assertIn("url-credential", message)
+
+    def test_the_value_is_never_printed(self):
+        """A refusal that quoted the secret would publish it itself.
+
+        Into the log, the terminal and whatever CI transcript is keeping
+        them -- which is the outcome this whole gate exists to prevent, so
+        the diagnostic names the rule and the path and nothing else.
+        """
+        self.prepared()
+        self.plant("tile-cache.json", self.CAUGHT[0][1])
+        message = self.refuse(EX_SCOPE, ("creation",))
+        self.assertNotIn("ghs_" + "AbCdEfGhIjKlMnOpQrStUvWxYz012345",
+                         message)
+        self.assertNotIn("x-access-token:" + "ghs_", message)
+
+    def test_every_rule_catches_its_own_shape(self):
+        for name, text in self.CAUGHT:
+            with self.subTest(name=name):
+                self.setUp()
+                self.prepared()
+                self.plant(name, text)
+                message = self.refuse(EX_SCOPE, ("creation",))
+                self.assertIn("carry secret material", message)
+                self.assertIn("userdir/cache/" + name, message)
+
+    def test_what_must_not_be_reported_is_not(self):
+        """All of them at once: a false positive here refuses every run."""
+        self.prepared()
+        for name, text in self.PASSED_OVER:
+            self.plant(name, text)
+        fields, output = self.checkpoint("creation")
+        self.assertEqual(fields["COMMITTED"], "yes")
+        self.assertIn("found nothing unaccounted for", output)
+
+    def test_a_binary_capture_is_skipped_rather_than_decoded(self):
+        """The scan is affordable over ten thousand captures because of it.
+
+        A PNG's first bytes carry a NUL, so the frames, both films and the
+        engine's binary save files never reach the expressions at all.
+        """
+        self.prepared()
+        self.plant("blob.dat", "AKIA" + "IOSFODNN7EXAMPLE\n")
+        # The same bytes with a NUL in front are not text and are skipped,
+        # which is the behaviour being pinned -- not an exemption for
+        # anything whose name ends in .dat.
+        path = os.path.join(self.dir, "userdir", "cache", "blob.dat")
+        with open(path, "wb") as handle:
+            handle.write(b"\x89PNG\r\n\x1a\n\x00" +
+                         b"AKIA" + b"IOSFODNN7EXAMPLE\n")
+        fields, output = self.checkpoint("creation")
+        self.assertEqual(fields["COMMITTED"], "yes")
+        self.assertIn("found nothing unaccounted for", output)
+
+    def test_the_baseline_pins_the_path_as_well_as_the_value(self):
+        """The reviewed fixture is excused where it is, and nowhere else.
+
+        The one baselined finding is a test fixture in
+        test_commit_artifacts.py. The SAME value planted in the engine's
+        tree is a different finding and is refused, because an entry pins
+        the path, the rule and the digest together.
+        """
+        self.prepared()
+        self.plant("copy.json",
+                   "https://x-access-token:s3cr3t@github.com/o/r.git\n")
+        message = self.refuse(EX_SCOPE, ("creation",))
+        self.assertIn("userdir/cache/copy.json", message)
+        self.assertIn("url-credential", message)
+
+    def test_the_scanner_does_not_report_itself(self):
+        """It quotes the shapes it looks for, and must not match them.
+
+        Measured before it shipped: written as plain literals, the
+        private-key and PuTTY rules matched their own source and the scan
+        reported the scanner as carrying a key. The positive control for
+        that a checkpoint succeeds over a tree which CONTAINS the scanner,
+        and that is asserted directly here rather than left implicit in
+        every other test.
+        """
+        self.prepared()
+        # The sandbox really does carry the script, so the scan really
+        # does read the file that quotes every pattern it applies.
+        scanner = os.path.join(self.tooling, SCRIPT_NAME)
+        self.assertTrue(os.path.isfile(scanner))
+        with open(scanner, "r", encoding="utf-8") as handle:
+            source = handle.read()
+        self.assertIn("private-key", source)
+        self.assertIn("putty-key", source)
+        fields, output = self.checkpoint("creation")
+        self.assertEqual(fields["COMMITTED"], "yes")
+        self.assertIn("found nothing unaccounted for", output)
+
+    def test_the_baseline_is_a_reviewed_list_not_an_exemption(self):
+        """Every entry names a path, a rule and a digest -- no wildcards.
+
+        A baseline that excused a FILE, or a rule everywhere, would be an
+        exclusion wearing a baseline's name. The delivered list has one
+        entry and it is fully qualified; the digest is there so the list
+        itself carries no credential-shaped string.
+        """
+        with open(os.path.join(TOOLING, SCRIPT_NAME), "r",
+                  encoding="utf-8") as handle:
+            source = handle.read()
+        start = source.index("readonly -a SECRET_BASELINE=(")
+        block = source[start:source.index(")\n", start)]
+        entries = [line.strip().strip('"').rstrip("\\")
+                   for line in block.split("\n")[1:] if line.strip()]
+        joined = "".join(entries)
+        fields = joined.split("|")
+        self.assertEqual(len(fields), 3, msg=joined)
+        self.assertTrue(fields[0].startswith("playthrough/"))
+        self.assertNotIn("*", fields[0])
+        self.assertRegex(fields[2], r"\A[0-9a-f]{64}\Z")
+
+
 class TestTheStatusReport(CheckpointFixture):
     """Read-only, and it answers the operator's actual question."""
 
@@ -4148,6 +4886,49 @@ class TestTheAcceptanceReportIsPublishedByAttestAlone(CheckpointFixture):
         message = self.refuse(EX_EVIDENCE, ("attest",))
         self.assertIn("VERIFY=fail", message)
         self.assertIn("failing measurement", message)
+
+    def test_a_named_divergence_is_published_rather_than_refused(self):
+        """The honest verdict has to be the publishable one.
+
+        The gate has a third verdict, `pass-with-divergence`, for a run
+        where nothing FAILED but some property the plan asks for is
+        delivered differently and the report says so in full.  It exists
+        because a review found the opposite handling of exactly one such
+        property -- a known, permanent, environment-imposed divergence
+        recorded as a PASS -- and named the resulting report as the
+        defect.
+
+        If this checkpoint refused that verdict, the only report it could
+        ever commit would be one that called the divergence a pass: the
+        honest measurement would be unpublishable and the dishonest one
+        mandatory.  So the refusal is on `fail` alone, and the log line
+        says which verdict it published and how many divergences it
+        carried, rather than passing it through silently.
+        """
+        self.reach_attest(verdict="pass-with-divergence")
+        fields, err = self.checkpoint("attest")
+        self.assertEqual(fields["COMMITTED"], "yes")
+        self.assertIn("published the acceptance report", err)
+        self.assertIn("pass-with-divergence", err)
+        self.assertIn("divergence(s) from the plan", err)
+        self.assertTrue(
+            self.is_tracked("playthrough/acceptance-report.txt"))
+
+    def test_a_verdict_this_checkpoint_does_not_know_is_refused(self):
+        """The allowance is a list, not "anything that starts with pass".
+
+        A prefix test would admit any future token somebody invented,
+        including one meaning the opposite of what it looked like.  The
+        two publishable verdicts are enumerated, an unknown one is
+        refused, and the refusal names the set so the operator does not
+        have to read this file to find out what it would have accepted.
+        """
+        self.reach_attest(verdict="pass-with-caveat")
+        message = self.refuse(EX_EVIDENCE, ("attest",))
+        self.assertIn("pass-with-caveat", message)
+        self.assertIn("pass pass-with-divergence", message)
+        self.assertFalse(
+            self.is_tracked("playthrough/acceptance-report.txt"))
 
     def test_a_report_from_the_artifacts_only_phase_is_refused(self):
         """It measured no history, and history is what this attests to."""

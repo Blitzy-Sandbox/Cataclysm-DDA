@@ -3560,6 +3560,456 @@ class TestTheCaptureAttestationLedger(ManifestFixture):
         self.assertEqual(status, 1)
 
 
+# ---------------------------------------------------------------------
+# THE EVIDENCE ANCHOR
+#
+# Every other ledger in this module vouches for something ELSE in the
+# tree: the digest ledger vouches for the frames, the observation sidecar
+# for what was on screen.  None of them vouches for ITSELF, and a review
+# named the cost precisely -- "every attestation is mutable with its
+# evidence".  Rewrite a frame and rewrite its digest row in the same
+# breath and the ledger, recomputed from the forged frame, agrees with
+# itself perfectly.
+#
+# The anchor answers that with a hash chain: each row seals one artifact
+# by sha256, by byte count and by GIT'S OWN blob name, and carries the
+# previous row's chain hash, so the rows cannot be edited, reordered or
+# dropped independently of one another.  The chain's head is then
+# published as a commit trailer by commit_artifacts.sh, which is the half
+# that puts it beyond the reach of anybody editing the working tree.
+#
+# THREE ATTACKS, THREE DIFFERENT DEFENCES, and the tests below hold each
+# one separately because a single "it detects tampering" test would not
+# say which layer did the detecting:
+#   * change a sealed artifact          -> its seal no longer matches;
+#   * change the row to match           -> the row's own chain no longer
+#                                          derives from its fields;
+#   * delete or reorder rows            -> seq is no longer contiguous
+#                                          and prev_chain no longer
+#                                          links.
+# ---------------------------------------------------------------------
+class AnchorFixture(unittest.TestCase):
+    """A temporary approved tree carrying the sealed artifact set.
+
+    The same `root=` discipline the rest of this suite uses: every path
+    is resolved inside a tree the test owns, so the production
+    confinement rules are the ones being exercised and the real
+    playthrough/ is never opened.
+    """
+
+    def setUp(self):
+        self.directory = tempfile.mkdtemp(prefix="blitzy_anchor_")
+        self.addCleanup(_remove_tree, self.directory)
+        os.mkdir(os.path.join(self.directory, "build"))
+        manifest._WARNED.clear()
+        self.anchor = os.path.join(
+            self.directory, *manifest.ANCHOR_REL_PARTS)
+
+    def artifact(self, *parts):
+        """Return the absolute path of a sealed artifact."""
+        return os.path.join(self.directory, *parts)
+
+    def write(self, parts, text):
+        """Create one sealed artifact with `text` as its content."""
+        path = self.artifact(*parts)
+        with open(path, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(text)
+        return path
+
+    def populate(self, count=None):
+        """Create the first `count` sealed artifacts (all, by default).
+
+        Each gets content derived from its own name, so no two artifacts
+        share a digest and a row that named the wrong file would be
+        visible rather than coincidentally correct.
+        """
+        chosen = manifest.ANCHOR_SEALED[:count]
+        created = []
+        for parts in chosen:
+            created.append(self.write(parts, "content of %s\n"
+                                      % "/".join(parts)))
+        return created
+
+    def seal(self, sealed_by="creation"):
+        """Seal everything present, returning (written, absent)."""
+        return manifest.seal_artifacts(
+            sealed_by, anchor_path=self.anchor,
+            require_durable=False, root=self.directory)
+
+    def rows(self):
+        """Return the ledger's rows as the module reads them."""
+        return manifest.read_anchor_rows(self.anchor, self.directory)
+
+    def raw(self):
+        """Return the ledger's lines exactly as written."""
+        with open(self.anchor, "r", encoding="utf-8",
+                  newline="") as handle:
+            return handle.readlines()
+
+    def rewrite(self, lines):
+        """Replace the ledger with `lines` (each already terminated)."""
+        with open(self.anchor, "w", encoding="utf-8",
+                  newline="") as handle:
+            handle.writelines(lines)
+
+    def problems(self, require_all=True):
+        """Return verify_anchor's findings for this tree."""
+        return manifest.verify_anchor(
+            self.anchor, self.directory, require_all=require_all)
+
+
+class TestGitIsTheIndependentWitness(AnchorFixture):
+    """The blob name is git's, computed here without running git.
+
+    A second digest computed by the SAME code over the same bytes adds
+    nothing -- it fails and succeeds in exactly the cases the first one
+    does.  Git's blob name is different in kind: it is the name the
+    repository itself will use for that content, derived by an algorithm
+    this module reimplements, so agreement between the two is agreement
+    between two independent descriptions of the same bytes.
+    """
+
+    # `git hash-object` on this host, for content whose hash is a matter
+    # of public record rather than of this suite's opinion.
+    EMPTY = "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
+    HELLO = "ce013625030ba8dba906f756967f9e9ca394464a"
+
+    def test_the_empty_blob_is_gits_empty_blob(self):
+        path = self.write(("dossier.md",), "")
+        self.assertEqual(manifest.git_blob_name(path, "test"), self.EMPTY)
+
+    def test_a_known_blob_matches_gits_own_name_for_it(self):
+        path = self.write(("dossier.md",), "hello\n")
+        self.assertEqual(manifest.git_blob_name(path, "test"), self.HELLO)
+
+    def test_the_name_covers_the_length_not_only_the_bytes(self):
+        """Git prefixes the length, so two lengths cannot collide."""
+        short = self.write(("dossier.md",), "a")
+        longer = self.write(("transcript.md",), "aa")
+        self.assertNotEqual(manifest.git_blob_name(short, "test"),
+                            manifest.git_blob_name(longer, "test"))
+
+    def test_the_blob_name_is_not_the_sha256(self):
+        """Two descriptions, not one written twice."""
+        path = self.write(("dossier.md",), "hello\n")
+        self.assertNotEqual(manifest.git_blob_name(path, "test"),
+                            manifest.file_digest(path, "test"))
+
+
+class TestSealingTheEvidence(AnchorFixture):
+    """One chained row per artifact, appended and never rewritten."""
+
+    def test_every_present_artifact_is_sealed(self):
+        self.populate()
+        written, absent = self.seal()
+        self.assertEqual(len(written), len(manifest.ANCHOR_SEALED))
+        self.assertEqual(absent, ())
+        self.assertEqual(
+            [row["path"] for row in written],
+            ["/".join(parts) for parts in manifest.ANCHOR_SEALED])
+
+    def test_an_absent_artifact_is_reported_and_not_invented(self):
+        self.populate(3)
+        written, absent = self.seal()
+        self.assertEqual(len(written), 3)
+        self.assertEqual(len(absent),
+                         len(manifest.ANCHOR_SEALED) - 3)
+        self.assertNotIn("cata-play.mp4",
+                         [row["path"] for row in written])
+        self.assertIn("cata-play.mp4", absent)
+
+    def test_the_row_carries_both_digests_and_the_byte_count(self):
+        path = self.populate(1)[0]
+        written, _ = self.seal()
+        row = written[0]
+        self.assertEqual(row["sha256"],
+                         manifest.file_digest(path, "test"))
+        self.assertEqual(row["git_blob"],
+                         manifest.git_blob_name(path, "test"))
+        self.assertEqual(row["bytes"], os.path.getsize(path))
+
+    def test_the_declared_schema_is_the_written_schema(self):
+        self.populate(1)
+        written, _ = self.seal()
+        self.assertEqual(tuple(written[0]), manifest.ANCHOR_FIELDS)
+
+    def test_the_path_column_is_relative_to_the_approved_tree(self):
+        """Not to the repository, and not absolute.
+
+        A row that stored an absolute path would name this host, and a
+        row that stored a repository-relative path would lose its
+        directory component when the tree is read anywhere else -- which
+        is a defect this column was corrected for.
+        """
+        self.populate()
+        written, _ = self.seal()
+        paths = [row["path"] for row in written]
+        self.assertIn("build/frame_digests.jsonl", paths)
+        for path in paths:
+            with self.subTest(path=path):
+                self.assertFalse(os.path.isabs(path))
+                self.assertNotIn("..", path.split("/"))
+
+    def test_a_second_seal_appends_rather_than_replaces(self):
+        self.populate(2)
+        first, _ = self.seal()
+        before = self.raw()
+        second, _ = self.seal("media")
+        after = self.raw()
+        self.assertEqual(after[:len(before)], before)
+        self.assertEqual(len(after), len(before) + len(second))
+        self.assertEqual([row["seq"] for row in self.rows()],
+                         [1, 2, 3, 4])
+
+    def test_the_seal_records_who_took_it(self):
+        self.populate(1)
+        self.seal("attest")
+        self.assertEqual(self.rows()[0]["sealed_by"], "attest")
+
+    def test_a_sealer_name_outside_the_grammar_is_refused(self):
+        self.populate(1)
+        for name in ("Creation", "with space", "", "x" * 33, "9lives"):
+            with self.subTest(name=name):
+                with self.assertRaises(manifest.ManifestError):
+                    self.seal(name)
+
+    def test_sealing_an_unsound_chain_is_refused_outright(self):
+        """A broken ledger is not extended; it is reported.
+
+        Appending onto a chain that is already broken would bury the
+        break under new rows that all verify against each other.
+        """
+        self.populate(2)
+        self.seal()
+        lines = self.raw()
+        self.rewrite([lines[1]])
+        with self.assertRaises(manifest.ManifestError):
+            self.seal()
+
+    def test_a_sound_chain_reports_no_problems(self):
+        self.populate()
+        self.seal()
+        self.assertEqual(manifest.anchor_chain_problems(self.rows()), [])
+        self.assertEqual(self.problems(), [])
+
+    def test_the_head_is_the_last_rows_chain(self):
+        self.populate()
+        self.seal()
+        rows = self.rows()
+        self.assertEqual(manifest.anchor_head(rows), rows[-1]["chain"])
+
+    def test_an_empty_ledger_has_no_head(self):
+        self.assertEqual(manifest.anchor_head(()), "")
+
+    def test_the_head_moves_when_anything_is_resealed(self):
+        self.populate(1)
+        self.seal()
+        first = manifest.anchor_head(self.rows())
+        self.seal("media")
+        self.assertNotEqual(manifest.anchor_head(self.rows()), first)
+
+
+class TestTheChainDetectsTampering(AnchorFixture):
+    """Each of the three attacks, and which layer catches it."""
+
+    def test_changing_a_sealed_artifact_breaks_its_seal(self):
+        self.populate()
+        self.seal()
+        self.write(("build", "frame_digests.jsonl"), "forged\n")
+        problems = self.problems()
+        self.assertTrue(problems)
+        self.assertIn("build/frame_digests.jsonl", problems[0])
+        self.assertIn("changed after it was sealed", problems[0])
+        # The chain itself is untouched, so the diagnosis is about the
+        # artifact rather than about the ledger.
+        self.assertEqual(manifest.anchor_chain_problems(self.rows()), [])
+
+    def test_rewriting_the_row_to_match_breaks_the_chain(self):
+        """The second move an attacker makes, and its own detection."""
+        self.populate()
+        self.seal()
+        path = self.write(("build", "frame_digests.jsonl"), "forged\n")
+        lines = self.raw()
+        for index, line in enumerate(lines):
+            row = json.loads(line)
+            if row["path"] != "build/frame_digests.jsonl":
+                continue
+            row["sha256"] = manifest.file_digest(path, "test")
+            row["git_blob"] = manifest.git_blob_name(path, "test")
+            row["bytes"] = os.path.getsize(path)
+            lines[index] = json.dumps(row, separators=(",", ":")) + "\n"
+        self.rewrite(lines)
+        # The artifact now matches its row exactly ...
+        drift = [p for p in self.problems()
+                 if "changed after it was sealed" in p]
+        self.assertEqual(drift, [])
+        # ... and the row no longer hashes to the chain it declares.
+        problems = manifest.anchor_chain_problems(self.rows())
+        self.assertTrue(problems)
+        self.assertIn("altered after it was sealed", problems[0])
+
+    def test_deleting_a_row_breaks_the_sequence(self):
+        self.populate()
+        self.seal()
+        lines = self.raw()
+        del lines[9]
+        self.rewrite(lines)
+        problems = manifest.anchor_chain_problems(self.rows())
+        self.assertTrue(problems)
+        self.assertTrue(
+            any("removed, reordered or inserted" in p for p in problems),
+            msg=problems)
+
+    def test_reordering_two_rows_breaks_the_sequence(self):
+        self.populate()
+        self.seal()
+        lines = self.raw()
+        lines[3], lines[4] = lines[4], lines[3]
+        self.rewrite(lines)
+        self.assertTrue(manifest.anchor_chain_problems(self.rows()))
+
+    def test_a_sealed_artifact_that_vanished_is_reported(self):
+        self.populate()
+        self.seal()
+        os.unlink(self.artifact("cata-play-cc.mp4"))
+        problems = self.problems()
+        self.assertTrue(any("cata-play-cc.mp4" in p and "not on disk" in p
+                            for p in problems), msg=problems)
+
+    def test_an_absent_ledger_is_a_finding_when_all_is_required(self):
+        self.populate()
+        self.assertTrue(self.problems(require_all=True))
+
+    def test_an_absent_ledger_is_silent_when_all_is_not_required(self):
+        """Mid-pipeline, an unsealed tree is not yet a failure."""
+        self.populate()
+        self.assertEqual(self.problems(require_all=False), [])
+
+
+class TestCoverageIsReportedApartFromDrift(AnchorFixture):
+    """An unsealed artifact is a question about ORDER, not integrity.
+
+    The committer seals at each checkpoint, and the render stages write
+    the timeline, the film and the transcripts AFTER the last session
+    checkpoint.  So an artifact that exists and carries no seal is the
+    normal mid-pipeline state, and the gate has to be able to say so
+    without calling it tampering -- while still failing on an artifact
+    that IS sealed and no longer matches.
+    """
+
+    def test_an_unsealed_artifact_is_named_as_pending(self):
+        self.populate(2)
+        self.seal()
+        self.write(("cata-play.mp4",), "a film\n")
+        self.assertEqual(
+            manifest.unsealed_artifacts(self.anchor, self.directory),
+            ("cata-play.mp4",))
+
+    def test_a_fully_sealed_tree_has_nothing_pending(self):
+        self.populate()
+        self.seal()
+        self.assertEqual(
+            manifest.unsealed_artifacts(self.anchor, self.directory), ())
+
+    def test_pending_coverage_is_a_finding_only_when_all_is_required(self):
+        self.populate(2)
+        self.seal()
+        self.write(("cata-play.mp4",), "a film\n")
+        self.assertEqual(self.problems(require_all=False), [])
+        strict = self.problems(require_all=True)
+        self.assertTrue(any("cata-play.mp4" in p and "outside the chain"
+                            in p for p in strict), msg=strict)
+
+    def test_pending_coverage_does_not_mask_drift(self):
+        self.populate(2)
+        self.seal()
+        self.write(("cata-play.mp4",), "a film\n")
+        self.write(("manifest.jsonl",), "forged\n")
+        problems = self.problems(require_all=False)
+        self.assertTrue(any("manifest.jsonl" in p for p in problems),
+                        msg=problems)
+
+    def test_reading_the_rows_twice_is_avoidable(self):
+        """The `rows` argument is honoured rather than ignored."""
+        self.populate(2)
+        self.seal()
+        self.write(("cata-play.mp4",), "a film\n")
+        self.assertEqual(
+            manifest.unsealed_artifacts(self.anchor, self.directory,
+                                        rows=self.rows()),
+            ("cata-play.mp4",))
+
+
+class TestTheChainIsReimplementable(AnchorFixture):
+    """The chain hash is derivable from the published rows alone.
+
+    The point of an anchor an auditor can check is that they need this
+    module's OUTPUT, not this module.  So the derivation is held to a
+    definition written out independently here: sha256 over the previous
+    chain value, a newline, and the row's own fields in compact JSON
+    without the chain column.
+    """
+
+    def derive(self, row):
+        fields = {name: row[name] for name in manifest.ANCHOR_FIELDS
+                  if name != "chain"}
+        payload = "%s\n%s" % (
+            row["prev_chain"],
+            json.dumps(fields, separators=(",", ":"), sort_keys=False))
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def test_each_row_hashes_to_the_chain_it_declares(self):
+        self.populate()
+        self.seal()
+        for row in self.rows():
+            with self.subTest(seq=row["seq"]):
+                self.assertEqual(self.derive(row), row["chain"])
+
+    def test_each_row_links_to_the_one_before_it(self):
+        self.populate()
+        self.seal()
+        previous = ""
+        for row in self.rows():
+            with self.subTest(seq=row["seq"]):
+                self.assertEqual(row["prev_chain"], previous)
+                previous = row["chain"]
+
+    def test_the_first_rows_predecessor_is_the_empty_string(self):
+        self.populate(1)
+        self.seal()
+        self.assertEqual(self.rows()[0]["prev_chain"], "")
+
+
+class TestSealingRefusesToLeaveTheTree(AnchorFixture):
+    """The anchor is confined exactly as every other ledger is."""
+
+    def test_a_ledger_outside_the_approved_tree_is_refused(self):
+        self.populate(1)
+        with tempfile.TemporaryDirectory() as elsewhere:
+            outside = os.path.join(elsewhere, "evidence_anchor.jsonl")
+            with self.assertRaises(manifest.ManifestError):
+                manifest.seal_artifacts(
+                    "creation", anchor_path=outside,
+                    require_durable=False, root=self.directory)
+
+    def test_a_missing_build_directory_is_refused_not_created(self):
+        target = os.path.join(self.directory, "build")
+        shutil.rmtree(target)
+        with self.assertRaises(manifest.ManifestError):
+            self.seal()
+        self.assertFalse(os.path.exists(target))
+
+    def test_a_row_naming_a_path_outside_the_tree_is_a_finding(self):
+        self.populate(1)
+        self.seal()
+        lines = self.raw()
+        row = json.loads(lines[0])
+        row["path"] = "../escaped.txt"
+        lines[0] = json.dumps(row, separators=(",", ":")) + "\n"
+        self.rewrite(lines)
+        self.assertTrue(self.problems(require_all=False))
+
+
 class TestTheSuiteTouchesNoEvidence(unittest.TestCase):
     """The record this module protects must survive its own tests."""
 

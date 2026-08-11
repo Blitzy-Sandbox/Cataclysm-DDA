@@ -231,6 +231,15 @@ import stat
 import subprocess
 import sys
 
+try:
+    # POSIX only, and present on every platform this pipeline
+    # supports.  Guarded so the module stays importable where it
+    # is not, with decode_limits degrading to a no-op rather
+    # than the module failing to load.
+    import resource
+except ImportError:            # pragma: no cover - POSIX only
+    resource = None            # type: ignore[assignment]
+
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 
@@ -555,6 +564,23 @@ GLYPH_FONT_SHA256 = (
 # 64 megapixels is generous by a factor of thirty and still far below
 # Pillow's own 89-megapixel bomb threshold.
 MAX_PIXELS = 64 * 1024 * 1024
+
+# The CPU budget, in seconds, granted to one decode.
+#
+# MEASURED, NOT GUESSED: twenty consecutive open_png() calls over a real
+# 1920x1080 capture on this host cost 0.0903 s of process CPU time,
+# 0.0045 s each.  Thirty seconds is therefore roughly six thousand times
+# what the work takes, which is the point -- the limit exists to end a
+# native decoder that has stopped making progress, not to police a slow
+# machine.  It MUST stay generous: a limit that can fire on legitimate
+# work turns a security control into a flaky pipeline, and a flaky
+# control gets removed.
+#
+# The budget is added to the CPU time already consumed and restored
+# afterwards, because RLIMIT_CPU is cumulative over the life of the
+# process, not per call.  A fixed absolute value would fire partway
+# through a long run for no reason at all.
+DECODE_CPU_SECONDS = 30
 
 # Everything the sidebar's clock, date and coarse-time rows can contain.
 # Ordered so that a tie prefers a digit over a letter, which matters for
@@ -953,6 +979,165 @@ def _attested_font(row_height: int) -> "ImageFont.FreeTypeFont":
             "%dpx: %s" % (path, row_height, exc)) from exc
 
 
+def assert_decodable_provenance(path: str) -> None:
+    """Refuse to decode a file anybody but this account could rewrite.
+
+    THE POINT OF THIS CHECK IS THE PIN, NOT THE FILE.  Pillow 11.3.0 is
+    pinned because moviepy 2.2.1 declares `pillow<12.0`, and 11.3.0
+    carries published advisories in native decoders that are first fixed
+    in 12.1.1.  The reason that is an acceptable risk is stated in
+    requirements.txt and rests on ONE property: the only images this
+    pipeline decodes are PNGs it captured itself, from an X server it
+    started, on the machine doing the decoding.
+
+    A security review found that property was not actually enforced.
+    The frames were group- and world-writable -- 151 files at mode 0666
+    and 15 directories at 02777, measured -- so any local account could
+    replace frame_00042.png with a crafted PNG between capture and
+    decode, and the closed loop the pin is defended by was not closed.
+    The modes were repaired and the producers now create owner-only
+    paths, but a mode set at creation is a fact about the past. This
+    checks it at the moment it matters: immediately before the bytes
+    reach a native parser.
+
+    Refused, each for its own reason:
+
+    * not a regular file -- a fifo or a device makes the read itself the
+      attack, and a symlink means the name and the bytes are two
+      different decisions;
+    * owned by another account -- then its owner chooses what this
+      decoder parses;
+    * group- or world-writable -- then so does anybody in that group,
+      or anybody at all.
+
+    :raises FrameUnreadableError: with the property that failed.
+    """
+    try:
+        info = os.lstat(path)
+    except OSError as exc:
+        raise FrameUnreadableError(
+            "%s could not be examined before decoding: %s"
+            % (path, exc)) from exc
+    if stat.S_ISLNK(info.st_mode):
+        raise FrameUnreadableError(
+            "%s is a symbolic link, so the name checked and the bytes "
+            "decoded are two separate decisions and only one of them "
+            "was verified.  Every capture this pipeline reads is a "
+            "regular file written by capture.sh" % path)
+    if not stat.S_ISREG(info.st_mode):
+        raise FrameUnreadableError(
+            "%s is not a regular file (mode %#o), so reading it is "
+            "itself an operation on something else -- a pipe, a socket "
+            "or a device -- rather than a capture" % (path, info.st_mode))
+    if info.st_uid != os.geteuid():
+        raise FrameUnreadableError(
+            "%s is owned by uid %d and this process runs as uid %d, so "
+            "its owner rather than this pipeline decides what the "
+            "decoder parses.  It is refused: the accepted risk in the "
+            "pinned Pillow rests on decoding only frames this account "
+            "captured" % (path, info.st_uid, os.geteuid()))
+    if info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        raise FrameUnreadableError(
+            "%s is mode %04o, which is writable beyond its owner, so "
+            "its contents can be replaced between the capture that "
+            "wrote it and this decode.  It is refused: the pinned "
+            "Pillow carries advisories in its native decoders, and the "
+            "reason that is acceptable is that nothing but this account "
+            "can choose their input"
+            % (path, stat.S_IMODE(info.st_mode)))
+
+
+class decode_limits(object):
+    """Bound one decode in CPU time, and forbid a core dump.
+
+    WHAT THIS DOES AND, MORE IMPORTANTLY, WHAT IT DOES NOT.
+
+    RLIMIT_CORE is set to 0 for the duration. If a native decoder
+    segfaults on a malformed PNG -- the failure mode the pinned Pillow
+    has advisories for -- the kernel writes no core file. That matters
+    here beyond tidiness: a core dump of this process contains the
+    decoded frame and everything else resident, and it lands wherever
+    the host's core pattern points, which is not a location this
+    pipeline controls or cleans.
+
+    RLIMIT_CPU is set to the CPU already used plus DECODE_CPU_SECONDS,
+    so a decoder that stops making progress is killed instead of
+    spinning until something else notices.
+
+    RLIMIT_AS IS DELIBERATELY NOT SET, and that is a measurement rather
+    than an omission. Importing this module reserves 2.6 GiB of virtual
+    address space before any decode happens -- numpy alone accounts for
+    2.5 GiB of VmData -- so an address-space ceiling tight enough to
+    bound a 64-megapixel decode would refuse the import, and one loose
+    enough to permit the import bounds nothing. It was tried on this
+    host: with the limit lowered to 300 MiB AFTER import, a full decode
+    still completed, because RLIMIT_AS constrains new mappings and the
+    mappings were already made. Shipping it would have looked like a
+    control and enforced nothing, so the pixel ceiling
+    (Image.MAX_IMAGE_PIXELS = MAX_PIXELS) is what bounds allocation
+    here, and it does so at the only layer that can distinguish a
+    legitimate 1920x1080 frame from a bomb.
+
+    Every limit is restored on exit, including when the body raises, so
+    nothing here changes the process for the stage that follows.
+    """
+
+    def __init__(self) -> None:
+        self._saved: List[Tuple[int, Tuple[int, int]]] = []
+
+    def __enter__(self) -> "decode_limits":
+        if resource is None:            # pragma: no cover - POSIX only
+            return self
+        for name, wanted in self._targets():
+            limit = getattr(resource, name, None)
+            if limit is None:           # pragma: no cover - POSIX only
+                continue
+            try:
+                soft, hard = resource.getrlimit(limit)
+            except (OSError, ValueError):    # pragma: no cover
+                continue
+            # NEVER RAISE A LIMIT AND NEVER TOUCH THE HARD ONE.  If the
+            # environment already bounds this process more tightly than
+            # asked, that decision wins -- a guard that loosened an
+            # operator's limit would be a hole wearing the name of a
+            # control.
+            target = wanted if hard in (resource.RLIM_INFINITY,) \
+                else min(wanted, hard)
+            if soft != resource.RLIM_INFINITY and soft <= target:
+                continue
+            try:
+                resource.setrlimit(limit, (target, hard))
+            except (OSError, ValueError):    # pragma: no cover
+                continue
+            self._saved.append((limit, (soft, hard)))
+        return self
+
+    def __exit__(self, *_exc: object) -> bool:
+        if resource is not None:
+            for limit, original in reversed(self._saved):
+                try:
+                    resource.setrlimit(limit, original)
+                except (OSError, ValueError):   # pragma: no cover
+                    pass
+        self._saved = []
+        return False
+
+    @staticmethod
+    def _targets() -> List[Tuple[str, int]]:
+        """The limits to impose, as (RLIMIT name, soft value)."""
+        used = 0.0
+        if resource is not None:
+            try:
+                usage = resource.getrusage(resource.RUSAGE_SELF)
+                used = usage.ru_utime + usage.ru_stime
+            except (OSError, ValueError):       # pragma: no cover
+                used = 0.0
+        return [
+            ("RLIMIT_CORE", 0),
+            ("RLIMIT_CPU", int(used) + DECODE_CPU_SECONDS),
+        ]
+
+
 def open_png(path: str) -> "Image.Image":
     """Open `path` as a PNG, and refuse anything that is not one.
 
@@ -978,6 +1163,7 @@ def open_png(path: str) -> "Image.Image":
     Verified on this host under Pillow 11.3.0: a BMP renamed .png is
     refused with UnidentifiedImageError.
     """
+    assert_decodable_provenance(path)
     try:
         with open(path, "rb") as handle:
             signature = handle.read(len(PNG_MAGIC))
@@ -995,8 +1181,9 @@ def open_png(path: str) -> "Image.Image":
     previous = Image.MAX_IMAGE_PIXELS
     Image.MAX_IMAGE_PIXELS = MAX_PIXELS
     try:
-        image = Image.open(path, formats=["PNG"])
-        image.load()
+        with decode_limits():
+            image = Image.open(path, formats=["PNG"])
+            image.load()
     except Image.DecompressionBombError as exc:
         raise FrameUnreadableError(
             "%s declares more than %d pixels: %s"
@@ -1028,8 +1215,9 @@ def open_png_bytes(data: bytes, source: str) -> "Image.Image":
     previous = Image.MAX_IMAGE_PIXELS
     Image.MAX_IMAGE_PIXELS = MAX_PIXELS
     try:
-        image = Image.open(io.BytesIO(data), formats=["PNG"])
-        image.load()
+        with decode_limits():
+            image = Image.open(io.BytesIO(data), formats=["PNG"])
+            image.load()
     except Image.DecompressionBombError as exc:
         raise ToolchainError(
             "%s produced an image past the %d-pixel ceiling: %s"
