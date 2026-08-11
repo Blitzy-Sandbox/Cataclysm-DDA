@@ -1,12 +1,12 @@
 verify_artifacts.sh -- the acceptance gate for the playthrough capture subsystem
 reading the committed artifacts under playthrough/ at the repository root
-measuring the tree at HEAD af101d8d8b
+measuring the tree at HEAD d79b9372a3
 
 === 1. the measuring environment ===
 PASS  every command this gate invokes is present, verified and called by its resolved path
       observed: ffprobe ffmpeg convert identify compare git awk grep sed head tail tr sort wc cat rm mktemp chmod find basename cut timeout
 PASS  ImageMagick answers through its classic entry points (convert, identify, compare -- never the version-7-only 'magick')
-      observed: Version: ImageMagick 7.1.2-18 Q16 x86_64 23822 https://imagemagick.org
+      observed: Version: ImageMagick 7.1.2-3 Q16 x86_64 23340 https://imagemagick.org
 PASS  the verified interpreter runs
       observed: 3.12.13 at <outside the checkout>/python
 PASS  the interpreter is the CPython 3.12 the lock was built for
@@ -19,25 +19,39 @@ PASS  every declared library imports
       observed: all 6 import cleanly: moviepy, PIL, pytesseract, numpy, imageio, imageio_ffmpeg
 PASS  every installed distribution has its own requirements met
       observed: 13 requirement(s) across 14 distribution(s) all satisfied
+PASS  the render stack still forces the Pillow pin it is held at
+      observed: moviepy declares pillow<12.0,>=9.2.0, which excludes the first fixed release 12.1.1, so 11.3.0 remains the newest permitted and the accepted risk is still forced rather than chosen
+PASS  nothing is installed that requirements.lock does not name
+      observed: 14 distribution(s), all named by the lock or one of the 3 bootstrap tools (pip, setuptools, wheel)
+PASS  nothing runs at interpreter startup that was not allowed
+      observed: 1 .pth file(s) present; every executable one is allowed by digest (distutils-precedence.pth)
 INFO  the installed dependency closure: moviepy==2.2.1, pillow==11.3.0, pytesseract==0.3.13, numpy==2.5.1, imageio==2.37.4, imageio-ffmpeg==0.6.0
-INFO  the linter: /usr/bin/flake8 -- 7.3.0 (mccabe: 0.7.0, pycodestyle: 2.14.0, pyflakes: 3.4.0) CPython 3.14.4 on Linux
+INFO  the linter: /usr/local/bin/flake8 -- 7.3.0 (mccabe: 0.7.0, pycodestyle: 2.14.0, pyflakes: 3.4.0) CPython 3.12.13 on Linux
+WARN  the environment doing the measuring: PLAYTHROUGH_ALLOW_EOL_PLATFORM is set, which says this HOST is past its security support date and nothing about the committed artifacts; this gate reads evidence and writes nothing, so it is reported rather than failed.  A capture-time bypass would fail here instead
 PASS  the environment doing the measuring is trusted
-      observed: PLAYTHROUGH_TRUST_STATE=trusted
+      observed: no capture-time bypass is set; the only relaxation in force (PLAYTHROUGH_ALLOW_EOL_PLATFORM) bears on the host doing the reading, not on the evidence being read
 PASS  this audit process runs under the x11 video driver contract, never dummy (a statement about the audit, not about the recorded session)
-      observed: SDL_VIDEODRIVER=x11 in force here, inherited as x11; whether the RECORDED session rendered real pixels is measured in group 6 from the captures and the films themselves, and the artwork it rendered in group 9 from the engine's own log
-INFO  the host this gate ran on: Ubuntu 26.04 LTS (supported=yes, eol=2031-04)
+      observed: SDL_VIDEODRIVER=x11 in force here, inherited as <unset>; whether the RECORDED session rendered real pixels is measured in group 6 from the captures and the films themselves, and the artwork it rendered in group 9 from the engine's own log
+INFO  the host this gate ran on: Ubuntu 25.10 (supported=no, eol=2026-07-09)
+WARN  the host this gate ran on: this release is past end of life; that does not change what the committed artifacts are, but a session must not be RECORDED here -- see playthrough/tooling/supported_env.sh
 PASS  every artifact this gate reads is present and readable
       observed: 12 paths, all of them readable
 
 === 7. version control -- the save is really committed ===
 PASS  the artifacts live in the working tree of a git repository
       observed: .
-PASS  git has an identity to commit these artifacts under, and the history agrees with it
-      observed: Blitzy Agent <agent@blitzy.com>, resolved from a broader scope than this checkout, and the newest commit touching playthrough is authored by the same identity.  It is NOT repository-local: 'git config --local --get user.name' answers nothing here.  That is a KNOWN AND DELIBERATE divergence from the plan's sections 0.3.1 and 0.10.2, which ask for a repository-local pair -- the execution environment this record was produced in forbids running 'git config user.name' or 'user.email' at any scope and fixes the committer identity itself, so creating one would have been a violation rather than a compliance.  It is recorded in playthrough/TECHNICAL_NOTES.md rather than papered over
+PASS  git's own configuration does not expose this checkout's credential to other accounts
+      observed: .git/config carries a credential and is mode 600 -- readable only by its owner.  Rotating that token is the platform's act, not this pipeline's; the reach of it is what is measured here
+DIVERGENCE  git has an identity to commit these artifacts under, and the history agrees with it
+      observed: Blitzy Agent <agent@blitzy.com>, resolved from a broader scope than this checkout, and the newest commit touching playthrough is authored by the same identity.  It is NOT repository-local: 'git config --local --get user.name' answers nothing here
+      the plan requires: a repository-local pair -- 'git config --local user.name' and 'user.email' set in this checkout's own .git/config, per the plan's sections 0.3.1 and 0.10.2
+      why it stands: the execution environment this record was produced in FIXES the committer identity itself and PROHIBITS running 'git config user.name' or 'user.email' at any scope, so creating the pair the plan asks for would have been a violation rather than a compliance.  The property the plan wanted it FOR does hold and is measured above: an identity resolves, and it is the one the history was committed under.  What does not hold is where it is configured.  This is reported as a divergence rather than a pass because a report that reads as compliance is the defect; it is recorded in playthrough/TECHNICAL_NOTES.md as well
 PASS  git's ignore rules exclude none of the artifact classes
       observed: 15 representative paths -- a character save live or buried, master.gsav, worldoptions.json, an engine log, a capture, both films, the cue file, the readable record, the record, the timeline, the concat list, the dossier and the requirements -- of which 15 are re-included by a negation and 0 match no rule at all
 PASS  no interpreter bytecode has been left under playthrough/
       observed: no __pycache__, .pyc or .pyo on disk or in the index
+PASS  nothing under playthrough/ is writable by any account but its owner
+      observed: every file and directory under playthrough withholds write access from group and other
 PASS  the world's own save file is tracked by git
       observed: 1 master.gsav (SAVE_MASTER, src/path_info.h:11)
 PASS  the survivor's own save file is tracked by git
@@ -67,29 +81,32 @@ PASS  the lifecycle checkpoints are about the survivor in the tree
       observed: both newest checkpoints record Fairport Harbor / Odette Vachon, the survivor HEAD carries: 'creation' 800ab8e11f then 'final' 555b12b88d
 PASS  the recording in the tree has a checkpoint pair of its own
       observed: Fairport Harbor / Odette Vachon: 'final' 555b12b88d anchored to 'creation' 800ab8e11f, both recording that survivor
+PASS  the evidence anchor's head is published in the history
+      observed: commit d79b9372a3 Remediate the security review of the playthrough capture subsystem declares Playthrough-Evidence-Anchor: 468793a63e813a78, which is the head the anchor ends on
 
 === 9. the binary, the required artwork and repository hygiene ===
 INFO  the base commit the change surface is measured from: f38c2fbae3 Merge branch 'CleverRaven:master' into master
 PASS  the change surface is only the two ignore files and playthrough/
-      observed: 666 changed path(s) since f38c2fbae3, all of them under playthrough/ or one of: .gitignore .gitattributes
+      observed: 667 changed path(s) since f38c2fbae3, all of them under playthrough/ or one of: .gitignore .gitattributes
 PASS  this gate itself left no interpreter bytecode behind
       observed: no __pycache__, .pyc or .pyo on disk or in the index
 
 === 10. the inventory of this report ===
 PASS  this report contains every check this gate declares
-      observed: 31 distinct checks against 31 declared for the 'post-commit' phase, group by group -- every group exactly its declared count
+      observed: 37 distinct checks against 37 declared for the 'post-commit' phase, group by group -- every group exactly its declared count
 
-SUMMARY  31 of 31 checks passed (31 of 31 declared for the 'post-commit' phase), 7 informational note(s); the committed artifacts are what they claim to be.
+SUMMARY  36 of 37 checks passed with 1 DIVERGENCE(S) from the plan (37 of 37 declared for the 'post-commit' phase), 7 informational note(s).  Nothing FAILED, but the run does not claim full compliance: each divergence above prints what the plan requires, what was delivered instead, and why it stands.
 VERIFY_PHASE=post-commit
-VERIFY_MEASURED_COMMIT=HEAD af101d8d8b
-VERIFY_CHECKS=31
-VERIFY_EXPECTED_CHECKS=31
-VERIFY_PASSES=31
+VERIFY_MEASURED_COMMIT=HEAD d79b9372a3
+VERIFY_CHECKS=37
+VERIFY_EXPECTED_CHECKS=37
+VERIFY_PASSES=36
 VERIFY_FAILURES=0
+VERIFY_DIVERGENCES=1
 VERIFY_INFOS=7
 VERIFY_CAPTURES=?
 VERIFY_ROWS=?
 VERIFY_TIMELINE_TOTAL=?
 VERIFY_TRANSITIONS=?
 VERIFY_REPORT=<outside the checkout>/acceptance-report.txt
-VERIFY=pass
+VERIFY=pass-with-divergence
