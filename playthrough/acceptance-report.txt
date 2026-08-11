@@ -1,6 +1,6 @@
 verify_artifacts.sh -- the acceptance gate for the playthrough capture subsystem
 reading the committed artifacts under playthrough/ at the repository root
-measuring the tree at HEAD 3462b49626
+measuring the tree at HEAD af101d8d8b
 
 === 1. the measuring environment ===
 PASS  every command this gate invokes is present, verified and called by its resolved path
@@ -81,7 +81,7 @@ PASS  this report contains every check this gate declares
 
 SUMMARY  31 of 31 checks passed (31 of 31 declared for the 'post-commit' phase), 7 informational note(s); the committed artifacts are what they claim to be.
 VERIFY_PHASE=post-commit
-VERIFY_MEASURED_COMMIT=HEAD 3462b49626
+VERIFY_MEASURED_COMMIT=HEAD af101d8d8b
 VERIFY_CHECKS=31
 VERIFY_EXPECTED_CHECKS=31
 VERIFY_PASSES=31
