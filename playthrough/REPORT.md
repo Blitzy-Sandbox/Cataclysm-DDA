@@ -60,7 +60,21 @@ the session is over:
 | `creation` | `800ab8e11f8852175e17f96dcc4f68fc5d58d4a4` | Fairport Harbor / Odette Vachon, 171 frames, 171 rows |
 | `final` | `555b12b88d90a038681a26bd4286b4254e4a86ad` | Fairport Harbor / Odette Vachon, 307 frames, 307 rows |
 | `media` | `b0038360c77a7bb22cbfc47270ea584ad98046d9` | the film, both transcripts, the timeline |
-| `attest` | the acceptance report and this report | |
+| `attest` | *(the commit that adds this document)* | `acceptance-report.txt` and this report |
+
+The `attest` row carries no hash on purpose: a document cannot contain the id of
+the commit that introduces it. `git log --grep '^Playthrough-Checkpoint: attest'`
+is where to read it, and the acceptance report committed beside this one names
+the tree it measured in its own `VERIFY_MEASURED_COMMIT` line — the commit
+immediately before it, which is the last one whose contents it could honestly
+have read.
+
+The gate's own verdicts are committed rather than left in a terminal.
+`playthrough/acceptance-report.txt` is the **post-commit** half — the properties
+only a commit can make true — and reports **31 of 31 declared checks, 31 passes,
+0 failures**. The **pre-commit** half, which measures the artifacts themselves,
+reports **108 of 108 declared, 108 passes, 0 failures, 12 informational notes**.
+122 in all.
 
 The `creation` checkpoint is taken after the first autosave rather than at the
 instant the creator closed, and the reason is the engine's: no character file
