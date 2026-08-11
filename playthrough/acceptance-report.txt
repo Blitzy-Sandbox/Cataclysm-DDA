@@ -1,6 +1,6 @@
 verify_artifacts.sh -- the acceptance gate for the playthrough capture subsystem
 reading the committed artifacts under playthrough/ at the repository root
-measuring the tree at HEAD 1f2e7b879e
+measuring the tree at HEAD 3462b49626
 
 === 1. the measuring environment ===
 PASS  every command this gate invokes is present, verified and called by its resolved path
@@ -71,7 +71,7 @@ PASS  the recording in the tree has a checkpoint pair of its own
 === 9. the binary, the required artwork and repository hygiene ===
 INFO  the base commit the change surface is measured from: f38c2fbae3 Merge branch 'CleverRaven:master' into master
 PASS  the change surface is only the two ignore files and playthrough/
-      observed: 665 changed path(s) since f38c2fbae3, all of them under playthrough/ or one of: .gitignore .gitattributes
+      observed: 666 changed path(s) since f38c2fbae3, all of them under playthrough/ or one of: .gitignore .gitattributes
 PASS  this gate itself left no interpreter bytecode behind
       observed: no __pycache__, .pyc or .pyo on disk or in the index
 
@@ -81,7 +81,7 @@ PASS  this report contains every check this gate declares
 
 SUMMARY  31 of 31 checks passed (31 of 31 declared for the 'post-commit' phase), 7 informational note(s); the committed artifacts are what they claim to be.
 VERIFY_PHASE=post-commit
-VERIFY_MEASURED_COMMIT=HEAD 1f2e7b879e
+VERIFY_MEASURED_COMMIT=HEAD 3462b49626
 VERIFY_CHECKS=31
 VERIFY_EXPECTED_CHECKS=31
 VERIFY_PASSES=31
