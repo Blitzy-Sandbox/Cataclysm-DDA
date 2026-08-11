@@ -125,15 +125,15 @@ reviewed.
 | Path | What it is | Written by |
 | --- | --- | --- |
 | `tooling/` | the authored pipeline — 9 shell entry points, 10 Python modules, 21 `test_*.py` suites, `requirements.txt`, `requirements.lock`, `tileset_provenance.json`, `environment/Dockerfile`. Kept out of the game's source tree on purpose | authored |
-| `frames/frame_NNNNN.png` | exactly one 1920×1080 capture per keystroke — 305 of them, contiguous from `frame_00001`, none decimated, sampled or deduplicated | `capture.sh` |
+| `frames/frame_NNNNN.png` | exactly one 1920×1080 capture per keystroke — 307 of them, contiguous from `frame_00001`, none decimated, sampled or deduplicated | `capture.sh` |
 | `manifest.jsonl` | one row per capture, six fields: `frame`, `file`, `real_ts`, `ingame_clock`, `action`, `commentary` | `session.py` |
 | `amendments.jsonl` | corrections to the record, **appended** rather than applied in place, so the original reading survives beside the correction | operator, via `session.py annotate --amend` and review |
 | `timeline.json` | the computed durations and transition flags — **the single source of truth** for both the film and the captions | `timeline.py` |
 | `build/` | intermediates and telemetry: `concat.txt`, `transitions/`, `observations.jsonl`, `frame_dates.jsonl`, `frame_digests.jsonl`, `transitions.json`, `movie.json`, `transcript.json` | the stage that owns each |
 | `cata-play.mp4` | the film: `h264`, 1920×1080, no audio stream | `render_movie.py` |
 | `cata-play-cc.mp4` | the same film with a selectable `mov_text` caption track tagged `language=eng` | `embed_captions.sh` |
-| `transcript.srt` | the caption cue file — 305 cues | `make_srt.py` |
-| `transcript.md` | the timestamped, in-character record — 305 entries, cumulative video time | `make_srt.py` |
+| `transcript.srt` | the caption cue file — 307 cues | `make_srt.py` |
+| `transcript.md` | the timestamped, in-character record — 307 entries, cumulative video time | `make_srt.py` |
 | `dossier.md` | the survivor's first-person backstory, written and committed **before** the first gameplay frame | authored |
 | `userdir/` | the engine's own tree: `save/<World>/`, `config/`, `achievements/`, `templates/`, `cache/`. Committed. The **save** is the engine's alone and is never edited; the **config** is engine-created and then patched in place by `seed_options.py` (see below) | the game, plus `seed_options.py` for `config/options.json` |
 | `TECHNICAL_NOTES.md` | the engineering log — measurements, pitfalls, divergences | authored |
@@ -544,7 +544,7 @@ readable — and keystrokes are not injectable — by any other local account.
   is 1920×1072 inside a 1920×1080 root, so photographing the root yields a
   true-resolution frame and needs no rescale that would soften the text the
   clock reader depends on. The eight leftover rows are a letterbox; measured
-  across the whole 305-frame population they are all at the **bottom**, rows
+  across the whole 307-frame population they are all at the **bottom**, rows
   1072–1079, with the grid at `+0+0` — the AAP's "four pixels top and bottom"
   **(plan)** does not reproduce. Nothing is cropped either way; see
   *Two figures where the plan and the measurement disagree* in
@@ -1598,7 +1598,7 @@ saves its panel options
 ```
 
 **`352x1072+1568+4`** — and `build/observations.jsonl` records exactly that,
-with `clock_rect_from = computed`, for all 305 captures.
+with `clock_rect_from = computed`, for all 307 captures.
 
 **This is where a hard-coded rectangle would have been wrong, and the
 disagreement is worth understanding rather than papering over.** The AAP
