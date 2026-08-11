@@ -1,0 +1,95 @@
+verify_artifacts.sh -- the acceptance gate for the playthrough capture subsystem
+reading the committed artifacts under playthrough/ at the repository root
+measuring the tree at HEAD 1f2e7b879e
+
+=== 1. the measuring environment ===
+PASS  every command this gate invokes is present, verified and called by its resolved path
+      observed: ffprobe ffmpeg convert identify compare git awk grep sed head tail tr sort wc cat rm mktemp chmod find basename cut timeout
+PASS  ImageMagick answers through its classic entry points (convert, identify, compare -- never the version-7-only 'magick')
+      observed: Version: ImageMagick 7.1.2-18 Q16 x86_64 23822 https://imagemagick.org
+PASS  the verified interpreter runs
+      observed: 3.12.13 at <outside the checkout>/python
+PASS  the interpreter is the CPython 3.12 the lock was built for
+      observed: cpython 3.12.13 at /opt/playthrough-venv/bin/python
+PASS  the declaration and the lock pin the same versions
+      observed: all 6 agree: moviepy==2.2.1, pillow==11.3.0, pytesseract==0.3.13, numpy==2.5.1, imageio==2.37.4, imageio-ffmpeg==0.6.0
+PASS  every declared library is installed at its declared version
+      observed: moviepy==2.2.1, pillow==11.3.0, pytesseract==0.3.13, numpy==2.5.1, imageio==2.37.4, imageio-ffmpeg==0.6.0
+PASS  every declared library imports
+      observed: all 6 import cleanly: moviepy, PIL, pytesseract, numpy, imageio, imageio_ffmpeg
+PASS  every installed distribution has its own requirements met
+      observed: 13 requirement(s) across 14 distribution(s) all satisfied
+INFO  the installed dependency closure: moviepy==2.2.1, pillow==11.3.0, pytesseract==0.3.13, numpy==2.5.1, imageio==2.37.4, imageio-ffmpeg==0.6.0
+INFO  the linter: /usr/bin/flake8 -- 7.3.0 (mccabe: 0.7.0, pycodestyle: 2.14.0, pyflakes: 3.4.0) CPython 3.14.4 on Linux
+PASS  the environment doing the measuring is trusted
+      observed: PLAYTHROUGH_TRUST_STATE=trusted
+PASS  this audit process runs under the x11 video driver contract, never dummy (a statement about the audit, not about the recorded session)
+      observed: SDL_VIDEODRIVER=x11 in force here, inherited as x11; whether the RECORDED session rendered real pixels is measured in group 6 from the captures and the films themselves, and the artwork it rendered in group 9 from the engine's own log
+INFO  the host this gate ran on: Ubuntu 26.04 LTS (supported=yes, eol=2031-04)
+PASS  every artifact this gate reads is present and readable
+      observed: 12 paths, all of them readable
+
+=== 7. version control -- the save is really committed ===
+PASS  the artifacts live in the working tree of a git repository
+      observed: .
+PASS  git has an identity to commit these artifacts under, and the history agrees with it
+      observed: Blitzy Agent <agent@blitzy.com>, resolved from a broader scope than this checkout, and the newest commit touching playthrough is authored by the same identity.  It is NOT repository-local: 'git config --local --get user.name' answers nothing here.  That is a KNOWN AND DELIBERATE divergence from the plan's sections 0.3.1 and 0.10.2, which ask for a repository-local pair -- the execution environment this record was produced in forbids running 'git config user.name' or 'user.email' at any scope and fixes the committer identity itself, so creating one would have been a violation rather than a compliance.  It is recorded in playthrough/TECHNICAL_NOTES.md rather than papered over
+PASS  git's ignore rules exclude none of the artifact classes
+      observed: 15 representative paths -- a character save live or buried, master.gsav, worldoptions.json, an engine log, a capture, both films, the cue file, the readable record, the record, the timeline, the concat list, the dossier and the requirements -- of which 15 are re-included by a negation and 0 match no rule at all
+PASS  no interpreter bytecode has been left under playthrough/
+      observed: no __pycache__, .pyc or .pyo on disk or in the index
+PASS  the world's own save file is tracked by git
+      observed: 1 master.gsav (SAVE_MASTER, src/path_info.h:11)
+PASS  the survivor's own save file is tracked by git
+      observed: 1 file(s) matching #<base64>.sav or #<base64>.sav.zzip under playthrough/userdir/save -- both shapes are correct, the compressed one being the default
+PASS  the world's option overrides are tracked by git
+      observed: 1 worldoptions.json
+PASS  every artifact class is tracked by git
+      observed: 11 classes, each with at least one tracked file
+PASS  every capture on disk is tracked by git
+      observed: 307 tracked == 307 on disk
+PASS  nothing under playthrough/ is left uncommitted
+      observed: git status --porcelain is empty
+PASS  the save was committed at both mandated points
+      observed: 11 commit(s) touch playthrough/userdir, which is at least the two the requirement names.  This reading is a COUNT: which of them followed character creation and which followed the in-game Save and Quit is established by the checkpoint trailers, and is asserted separately by 'each checkpoint anchors to its own survivor's creation'
+PASS  the dossier's first commit precedes the first capture's
+      observed: playthrough/dossier.md was introduced by 1ad704df3b, playthrough/frames/frame_00001.png by 7117ef9700, and 1ad704df3b is a strict ancestor of 7117ef9700 -- measured as reachability in the commit graph rather than from either commit's date, which can say anything
+PASS  the committed .gitignore still rescues the save data
+      observed: its last effective rule is '!/playthrough/**', so a fresh clone of this history re-includes the engine's own '#<name>.sav' and '*.log' files instead of ignoring them
+PASS  the committed .gitattributes carries this feature's rows
+      observed: 6 rows present: *.mp4 binary *.zzip binary *.sav binary *.gsav binary *.srt text *.jsonl text
+INFO  the 'final' checkpoint 555b12b88d: records Fairport Harbor / Odette Vachon, anchored to 'creation' 800ab8e11f which records Fairport Harbor / Odette Vachon
+INFO  the 'final' checkpoint 4e8a49879a: records Fern Creek / Delphine Ouellette, anchored to 'creation' 7e10721d4e which records Fern Creek / Delphine Ouellette
+PASS  each checkpoint anchors to its own survivor's creation
+      observed: 2 'final' checkpoint(s), each anchored to a 'creation' checkpoint recording the same world and survivor
+INFO  the survivor whose evidence HEAD carries: Fairport Harbor / Odette Vachon
+PASS  the lifecycle checkpoints are about the survivor in the tree
+      observed: both newest checkpoints record Fairport Harbor / Odette Vachon, the survivor HEAD carries: 'creation' 800ab8e11f then 'final' 555b12b88d
+PASS  the recording in the tree has a checkpoint pair of its own
+      observed: Fairport Harbor / Odette Vachon: 'final' 555b12b88d anchored to 'creation' 800ab8e11f, both recording that survivor
+
+=== 9. the binary, the required artwork and repository hygiene ===
+INFO  the base commit the change surface is measured from: f38c2fbae3 Merge branch 'CleverRaven:master' into master
+PASS  the change surface is only the two ignore files and playthrough/
+      observed: 665 changed path(s) since f38c2fbae3, all of them under playthrough/ or one of: .gitignore .gitattributes
+PASS  this gate itself left no interpreter bytecode behind
+      observed: no __pycache__, .pyc or .pyo on disk or in the index
+
+=== 10. the inventory of this report ===
+PASS  this report contains every check this gate declares
+      observed: 31 distinct checks against 31 declared for the 'post-commit' phase, group by group -- every group exactly its declared count
+
+SUMMARY  31 of 31 checks passed (31 of 31 declared for the 'post-commit' phase), 7 informational note(s); the committed artifacts are what they claim to be.
+VERIFY_PHASE=post-commit
+VERIFY_MEASURED_COMMIT=HEAD 1f2e7b879e
+VERIFY_CHECKS=31
+VERIFY_EXPECTED_CHECKS=31
+VERIFY_PASSES=31
+VERIFY_FAILURES=0
+VERIFY_INFOS=7
+VERIFY_CAPTURES=?
+VERIFY_ROWS=?
+VERIFY_TIMELINE_TOTAL=?
+VERIFY_TRANSITIONS=?
+VERIFY_REPORT=<outside the checkout>/acceptance-report.txt
+VERIFY=pass
