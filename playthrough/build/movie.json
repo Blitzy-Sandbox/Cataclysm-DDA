@@ -1,0 +1,23 @@
+{
+  "capture_count": 307,
+  "concat_list": {
+    "bytes": 22845,
+    "path": "playthrough/build/concat.txt",
+    "sha256": "ce01bc93ae05d811c8b8b50ee75032a4da98af27871ec202650c0fe41654c5b3"
+  },
+  "expected_total": 300.5,
+  "group_count": 12,
+  "height": 1080,
+  "movie": {
+    "bytes": 20047349,
+    "path": "playthrough/cata-play.mp4",
+    "sha256": "8e3610496ef3a3a24b36eeb8b8b0be9e7160c2c4382b14b03df7e4ab6a4769eb"
+  },
+  "stage": "movie",
+  "timeline": {
+    "path": "playthrough/timeline.json",
+    "sha256": "f4e5c0e412e68ae256da61531b51f1019487083bec717295c0a49d2799c66aa7"
+  },
+  "version": 1,
+  "width": 1920
+}

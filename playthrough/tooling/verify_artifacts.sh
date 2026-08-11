@@ -1978,10 +1978,12 @@ open_scratch() {
     sweep_stale_scratch "${base}"
     # THE DURABLE COPY STARTS HERE, one line behind stdout, so that every
     # verdict printed from this point on is also written down.  It is
-    # assembled in the private scratch directory and only PUBLISHED into
-    # the working tree if the run passes, which keeps a half-written or
-    # failing report out of the tree while still capturing it for the
-    # operator reading this run's output.
+    # assembled in the private scratch directory, where a half-written or
+    # abandoned report cannot be mistaken for evidence, and copied out at
+    # the end to the path the CALLER named with `--report-to` -- outside
+    # the checkout, on every run, whatever the verdict.  Publishing it
+    # inside the tree this gate measures is not a measurement's act; the
+    # attestation checkpoint does that, and refuses a failing one.
     REPORT_FILE="${SCRATCH}/acceptance-report.md"
     : >"${REPORT_FILE}" || REPORT_FILE=""
     if [ -n "${REPORT_FILE}" ]; then
@@ -2130,12 +2132,31 @@ printf 'fail'; else printf 'pass'; fi), phase '${PHASE}')"
 #   There is no phase condition on it either, because a phase decides
 #   what was measured and the report says which phase that was; a caller
 #   who asks for the report of a pre-commit run is entitled to it.
+#
+#   IT CANNOT FAIL, AND THAT IS THE POINT.  "Nowhere" is the ordinary
+#   answer -- no `--report-to` is the default -- so it is reported the way
+#   this function reports every answer: on stdout, as the empty string.
+#   It used to say "nowhere" by RETURNING 1, and both callers capture it
+#   in a command substitution under `set -e`.  One exempted the status
+#   with `|| true` and the other did not, so a run that passed all 108 of
+#   its checks printed `VERIFY=pass` and then died at the assignment in
+#   publish_report -- the ERR trap naming a line in the one function whose
+#   entire job is to be harmless.  A gate that reports a pass and exits 1
+#   is worse than one that fails honestly, because the exit status is what
+#   run_pipeline.sh reads: the sequencer refused to go on to the commit
+#   while the report it was refusing said every artifact was sound.
+#
+#   The empty string carries the whole answer, so the status carries none
+#   and no caller needs to remember to exempt it.  test_verify_artifacts.py
+#   pins the absence of a failing return AND drives publish_report with no
+#   destination under this file's own shell options, because the source
+#   assertion alone could not prove the branch survives errexit.
 report_publication_target() {
     if [ -z "${REPORT_FILE}" ] || [ ! -f "${REPORT_FILE}" ]; then
-        return 1
+        return 0
     fi
     if [ -z "${REPORT_DESTINATION}" ]; then
-        return 1
+        return 0
     fi
     printf '%s' "${REPORT_DESTINATION}"
 }
@@ -8837,15 +8858,28 @@ group_version_control() {
         # spelled out in prose, because a spelled-out one is a second
         # place for the truth to live and it went stale the moment a
         # twelfth deferred check was added.
-        record_info "$((GROUP_CHECKS_ALL[7] - \
-GROUP_CHECKS_PRE_COMMIT[7])) properties of the COMMIT are deferred to \
+        #
+        # IT IS THE PHASE'S DEFERRAL, NOT THIS GROUP'S.  It was
+        # GROUP_CHECKS_ALL[7] - GROUP_CHECKS_PRE_COMMIT[7], which is 13:
+        # every deferred check but one lives in this group, and the
+        # fourteenth is group 9's change surface.  The sentence around it
+        # says "properties of the COMMIT ... deferred to the post-commit
+        # phase", which is a claim about the PHASE, so a group-scoped
+        # count made the report say 13 where this file's own usage text
+        # and section 7 documentation both say "the fourteen" -- two
+        # numbers for one quantity, which is the defect the derivation
+        # was introduced to prevent, merely moved.  Summed across the
+        # groups it is one number, and the enumeration below closes with
+        # the change surface so that the count and the list agree.
+        record_info "$((EXPECTED_CHECKS_ALL - \
+EXPECTED_CHECKS_PRE_COMMIT)) properties of the COMMIT are deferred to \
 the ${PHASE_POST_COMMIT} phase" \
             "the save, the artifact classes and the captures being \
 tracked; nothing being left uncommitted; the commit order; the \
-committed ignore rules; the checkpoint anchors; and whether the \
-checkpoints are about the survivor in the tree -- none of them can \
-hold before the checkpoint that makes them true, and this phase runs \
-ahead of it"
+committed ignore rules; the checkpoint anchors; whether the \
+checkpoints are about the survivor in the tree; and, from group 9, \
+the change surface -- none of them can hold before the checkpoint \
+that makes them true, and this phase runs ahead of it"
     fi
 }
 
@@ -9829,7 +9863,11 @@ summarise_run() {
     note VERIFY_TIMELINE_TOTAL "$(fact timeline_total '?')"
     note VERIFY_TRANSITIONS "$(fact transition_groups '?')"
     local report_target=""
-    report_target="$(report_publication_target || true)"
+    # No `|| true`: report_publication_target cannot fail, by design and
+    # by test.  An exemption here would read as though it could, and the
+    # other call site's MISSING exemption is what once killed a passing
+    # run -- so the rule is the function's, not each caller's.
+    report_target="$(report_publication_target)"
     if [ -n "${report_target}" ]; then
         note VERIFY_REPORT "$(rel "${report_target}")"
     else

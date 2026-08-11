@@ -629,6 +629,35 @@ class TestTheDeclaredCounts(unittest.TestCase):
                      "declared tables differ by %d (%s)"
                      % (match.group(1), deferred, names[deferred])))
 
+    def test_the_runtime_note_defers_the_same_number_the_prose_does(self):
+        """One quantity, one number, wherever the report states it.
+
+        The note a pre-commit run actually PRINTS was derived from group
+        7's own columns, which is 13: every deferred check but one lives
+        in version control, and the fourteenth is group 9's change
+        surface.  But its sentence is a claim about the PHASE -- "properties
+        of the COMMIT are deferred to the post-commit phase" -- so the
+        report said 13 while this same file's usage text and its section 7
+        documentation both said "the fourteen".  Both numbers were
+        correctly derived, from different denominators, which is precisely
+        how a reader ends up unable to tell which one to trust.
+        """
+        source = gate_source()
+        start = source.index("properties of the COMMIT are deferred to \\")
+        note = source[start - 200:start + 80]
+        self.assertIn("EXPECTED_CHECKS_ALL - \\", note)
+        self.assertIn("EXPECTED_CHECKS_PRE_COMMIT", note)
+        self.assertNotIn("GROUP_CHECKS_ALL[7]", note,
+                         msg="a group-scoped count under a phase-scoped "
+                             "sentence is what made the report disagree "
+                             "with its own usage text")
+        # The count and the list have to agree, so the fourteenth
+        # deferral is named where the other thirteen are.
+        enumeration = source[start:start + 700]
+        self.assertIn("the change surface", enumeration,
+                      msg="the note counts the change surface among the "
+                          "deferrals, so it must name it too")
+
     def test_every_total_is_declared(self):
         self.assertGreater(declared("EXPECTED_CHECKS_ALL"), 0)
         self.assertGreater(declared("EXPECTED_CHECKS_PRE_COMMIT"), 0)
@@ -1906,6 +1935,41 @@ class TestTheReportIsDurable(unittest.TestCase):
             source.index("note VERIFY_MEASURED_COMMIT"),
             source.index("if [ \"${FAILURES}\" -eq 0 ]", start),
             msg="the measured tree must be noted unconditionally")
+
+    def test_the_publication_target_cannot_fail(self):
+        """"Nowhere" is an answer, not an error.
+
+        Both readers of report_publication_target capture it in a command
+        substitution, and this file runs under `set -euo pipefail` with
+        `errtrace`.  While "no destination" was signalled by RETURNING 1,
+        the assignment itself failed: one caller exempted the status with
+        `|| true` and the other did not, so a run that passed all 108 of
+        its checks printed `VERIFY=pass` and then died inside the one
+        function whose whole job is to be harmless.  run_pipeline.sh reads
+        the exit status, so the sequencer stopped before the commit while
+        the report it was refusing said every artifact was sound.
+
+        The empty string carries the whole answer.  The status carries
+        none, so no caller has to remember anything -- which is why the
+        exemption is asserted GONE rather than present.
+        """
+        source = joined_source()
+        start = source.index("report_publication_target() {")
+        body = source[start:source.index("\n}\n", start)]
+        self.assertNotIn("return 1", body,
+                         msg="'nowhere' is reported on stdout, not by a "
+                             "status a caller must exempt from errexit")
+        self.assertEqual(
+            source.count("report_publication_target || true"), 0,
+            msg="an exemption here reads as though the function could "
+                "fail; it cannot, and the other call site's missing "
+                "exemption is what killed a passing run")
+        # Both readers, still reading it.
+        self.assertEqual(
+            source.count('"$(report_publication_target)"'), 2,
+            msg="summarise_run names the file and publish_report writes "
+                "it; two conditions would let the report name a file "
+                "that was never written")
 
     def test_the_divergence_probe_is_scoped_to_the_artifacts(self):
         """And to the code reading them, which share one directory.
@@ -4592,6 +4656,114 @@ class TestAFailureIsNotAReasonToStopMeasuring(SyntheticGateFixture):
             for name in names:
                 after.add(os.path.join(directory, name))
         self.assertEqual(after, before)
+
+
+class TestPublishingTheReportSurvivesErrexit(SyntheticGateFixture):
+    """The last act of a passing run must not be what kills it.
+
+    THE DEFECT THIS EXISTS FOR.  A full run of the real gate over the real
+    artifacts recorded 108 of 108 checks passed, printed `VERIFY=pass`, and
+    then exited 1 -- the ERR trap naming the assignment inside
+    publish_report.  "No --report-to" was signalled by report_publication
+    _target RETURNING 1, both readers capture it in a command substitution,
+    this file runs under `set -euo pipefail` with `errtrace`, and only one
+    of the two readers exempted the status.  run_pipeline.sh reads the exit
+    status and nothing else, so the sequencer stopped before the commit
+    while the report it was refusing said every artifact was sound.
+
+    WHY IT NEEDED A DRIVEN TEST.  Every existing assertion about
+    publish_report reads the SOURCE, and the source was never wrong: the
+    branch that handles "nowhere" is right there, correct, and was
+    unreachable under errexit.  A source assertion cannot prove a branch
+    survives the shell options the file sets, so this one EXECUTES it --
+    and `drive` appends a COUNTERS line after the snippet, which is printed
+    only if the shell was still alive to print it.
+    """
+
+    def publish(self, destination=None):
+        """Call the real publish_report; return what it printed."""
+        snippet = 'REPORT_DESTINATION=%s\npublish_report' % (
+            '"%s"' % destination if destination else '""')
+        return self.drive(snippet)
+
+    def test_no_destination_is_not_a_failure(self):
+        """The default invocation, which is every invocation by hand."""
+        recorded = self.publish()
+        self.assertIn("COUNTERS=", recorded.out,
+                      msg="publish_report killed the shell: the branch "
+                          "that handles 'nowhere' is unreachable under "
+                          "errexit")
+        self.assertIn("kept nowhere but this stream", recorded.out)
+
+    def test_publishing_counts_no_verdict_either_way(self):
+        """It is an act, not a measurement.
+
+        The totals are printed before this runs, so anything counted here
+        would make the report disagree with its own arithmetic -- the
+        report would state 108 checks and the counter behind it 109.
+
+        BOTH BRANCHES, because they are different code.  A first version
+        of this measured only the "nowhere" path, and a `record_info`
+        planted in the branch that performs the COPY went unnoticed: the
+        branch a test never reaches is the branch that has no test.
+        """
+        for destination in (None, os.path.join(self.base, "report.txt")):
+            with self.subTest(destination=bool(destination)):
+                recorded = self.publish(destination)
+                self.assertEqual(
+                    (recorded.passes, recorded.failures, recorded.infos),
+                    (0, 0, 0),
+                    msg="publishing counted a verdict the totals above "
+                        "it have already been printed without")
+
+    def test_a_named_destination_receives_the_report(self):
+        """And the same run stays alive to say so."""
+        target = os.path.join(self.base, "acceptance-report.txt")
+        recorded = self.publish(target)
+        self.assertIn("COUNTERS=", recorded.out)
+        self.assertTrue(os.path.isfile(target),
+                        msg="the report names a path it never wrote")
+        self.assertIn(target, recorded.out)
+
+    def test_the_verdict_travels_beside_the_path(self):
+        """Because the file is written whether the run passed or failed.
+
+        Its existence used to BE the verdict, which is a verdict a stale
+        copy can tell.
+        """
+        target = os.path.join(self.base, "acceptance-report.txt")
+        recorded = self.drive(
+            'REPORT_DESTINATION="%s"\nFAILURES=3\npublish_report'
+            % target)
+        self.assertIn("VERIFY fail", recorded.out)
+        self.assertIn("COUNTERS=", recorded.out)
+
+    def test_the_summary_and_the_publication_agree_on_the_path(self):
+        """One predicate, read twice: named, then written.
+
+        Two independent conditions would be a way for the machine block
+        to name a file that was never written -- and the note is emitted
+        before the copy is made, so a divergence would always favour the
+        claim over the act.
+        """
+        target = os.path.join(self.base, "acceptance-report.txt")
+        recorded = self.drive(
+            'REPORT_DESTINATION="%s"\nsummarise_run\npublish_report'
+            % target)
+        self.assertIn("VERIFY_REPORT=", recorded.out)
+        named = [line.partition("=")[2].strip()
+                 for line in recorded.out.splitlines()
+                 if line.startswith("VERIFY_REPORT=")]
+        self.assertEqual(len(named), 1)
+        self.assertNotEqual(named[0], "none",
+                            msg="a destination was given and the block "
+                                "says there was none")
+        self.assertTrue(os.path.isfile(target))
+
+    def test_the_summary_says_none_when_there_is_none(self):
+        recorded = self.drive('REPORT_DESTINATION=""\nsummarise_run')
+        self.assertIn("VERIFY_REPORT=none", recorded.out)
+        self.assertIn("COUNTERS=", recorded.out)
 
 
 class TestTheSyntheticHarnessTouchesNothingReal(SyntheticGateFixture):
