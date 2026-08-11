@@ -113,7 +113,7 @@ floor and the ceiling in section 6, and the only imagery in the film that was
 not photographed off the screen is the one-second transition unit the ceiling
 inserts.
 
-The shipped session: **305 captures**, **222.750 s** of film, **three**
+The shipped session: **307 captures**, **300.500 s** of film, **twelve**
 transitions. Read `REPORT.md` for the deliverable account, `transcript.md` for
 the survivor's own, and `TECHNICAL_NOTES.md` for how it was produced and
 reviewed.
@@ -151,9 +151,9 @@ never here, because the acceptance gate asserts
 
 ```console
 $ ls -1 playthrough/frames/frame_*.png | wc -l
-305
+307
 $ wc -l < playthrough/manifest.jsonl
-305
+307
 ```
 
 and mixing derived images into `frames/` would destroy that identity while
@@ -163,30 +163,37 @@ every other count still tallied.
 
 ```console
 $ git ls-files playthrough | wc -l
-435
+662
 $ git ls-files playthrough/frames | wc -l
-305
+307
 $ git ls-files playthrough/userdir | wc -l
-32
+149
 $ git ls-files playthrough/userdir/save | wc -l
-3
-$ git ls-files playthrough/userdir/graveyard | wc -l
-11
+134
 ```
 
-`userdir/save` holds only three tracked files, and that is the engine's doing
-rather than an omission: the survivor died, so `move_save_to_graveyard()`
-relocated her save into `userdir/graveyard/<timestamp>/` — the eleven files
-counted above — and `WORLD_END`, committed at the engine's own default
-`reset`, then cleared the world of everything but `mods.json`,
-`world_timestamp.json` and `worldoptions.json`. Section 9 has the whole
-sequence.
+`userdir/save` holds the whole **live** world, and that is the engine's doing
+rather than a choice: the survivor slept through the night, woke to her alarm
+and left through the in-game Save & Quit, so the world was kept. Those 134
+files are one world, `Fairport Harbor` — `master.gsav`, `dimension_data.gsav`,
+ten `o.N.N` overmap segments, 95 map chunks under `maps/`, five memory-map
+files under `#<base64>.mm1/`, the fourteen `#<base64>.seen.N.N` visibility
+files, and the survivor's own `#T2RldHRlIFZhY2hvbg==.sav` beside its `.log`,
+`.pt`, `.ano.json` and `.zones.json` companions. The remaining fifteen tracked
+userdir files are seven in `cache/`, six in `config/`, one character template
+and one achievement. Section 9 has the whole sequence.
 
-The first of those three moves with every commit that adds a tooling file or a
-suite, so `test_readme.py` asserts the two that are properties of the
-**recording** — the captures and the save files — by running the commands above
-and comparing their output with what is quoted here, and it quotes the total
-without asserting it.
+There is **no** `userdir/graveyard`, and its absence is evidence rather than an
+omission: the engine creates one only by `move_save_to_graveyard()` on death.
+An earlier recording of this feature did end in death and did carry eleven
+graveyard files; this one ends the way AAP requirement R11 names first, so the
+save stayed where a living survivor's save lives.
+
+The `git ls-files playthrough` total moves with every commit that adds a
+tooling file or a suite, so `test_readme.py` asserts the two that are
+properties of the **recording** — the captures and the save files — by running
+the commands above and comparing their output with what is quoted here, and it
+quotes the total without asserting it.
 
 When repository size and completeness conflict, completeness wins, and the
 mitigation is engineering rather than omission.
@@ -589,17 +596,40 @@ to reach the **same** container, so recording uses `up`, a series of `exec`s, an
 $ playthrough/tooling/supported_env.sh up                     # start the session
 $ playthrough/tooling/supported_env.sh exec playthrough/tooling/launch_game.sh headless
 $ playthrough/tooling/supported_env.sh exec playthrough/tooling/launch_game.sh launch
-$ playthrough/tooling/supported_env.sh exec "$PLAYTHROUGH_PYTHON" -B \
-      playthrough/tooling/seed_options.py apply
+$ playthrough/tooling/supported_env.sh exec bash -c 'source playthrough/tooling/env.sh \
+      >/dev/null; "$PLAYTHROUGH_PYTHON" -B playthrough/tooling/seed_options.py'
 $ playthrough/tooling/supported_env.sh exec playthrough/tooling/launch_game.sh stop
 $ playthrough/tooling/supported_env.sh exec playthrough/tooling/launch_game.sh launch
-$ playthrough/tooling/supported_env.sh exec "$PLAYTHROUGH_PYTHON" -B \
-      playthrough/tooling/session.py step --key Return --action 'open the menu' \
-      --commentary 'why the survivor did it' --observed 'what the last frame showed'
+$ playthrough/tooling/supported_env.sh exec bash -c 'source playthrough/tooling/env.sh \
+      >/dev/null; "$PLAYTHROUGH_PYTHON" -B playthrough/tooling/session.py step \
+      --key Return --action "open the menu" --commentary "why the survivor did it" \
+      --observed "what the last frame showed" --expect changed'
   # ... one exec per keystroke, then the in-game Save & Quit ...
 $ playthrough/tooling/supported_env.sh exec playthrough/tooling/commit_artifacts.sh final
 $ playthrough/tooling/supported_env.sh down                   # end the session
 ```
+
+**Why the Python steps are wrapped in `bash -c 'source … env.sh; …'` and the
+shell steps are not.** `exec` deliberately forwards almost nothing — `HOME`,
+`TMPDIR` and the cleared bypass names — so that what a hosted command sees is
+the container's contract and not the host's shell. Every `*.sh` stage sources
+`env.sh` itself, so it establishes `DISPLAY`, `XAUTHORITY` and the rest on the
+way in. A bare `python` child does not, and the symptom is specific rather than
+vague: Xvfb here runs with a MIT-MAGIC-COOKIE, so without `XAUTHORITY` the
+first thing that tries to reach the display fails outright.
+
+```console
+$ supported_env.sh exec sh -c 'echo "[$DISPLAY][$XAUTHORITY]"; xdotool search --class cataclysm-tiles'
+[][]
+Error: Can't open display: (null)
+$ supported_env.sh exec bash -c 'source playthrough/tooling/env.sh >/dev/null; \
+      echo "[$DISPLAY][$XAUTHORITY]"; xdotool search --class cataclysm-tiles'
+[:99][/tmp/xdg/playthrough/Xauthority]
+4194313
+```
+
+Sourcing `env.sh` first is therefore not a stylistic flourish; it is the only
+form in which a Python step can deliver a keystroke at all.
 
 **In order, and why each step is where it is:**
 
@@ -612,10 +642,12 @@ $ playthrough/tooling/supported_env.sh down                   # end the session
    fresh userdir opens on a language prompt rather than the main menu, and the
    window is created at the compiled-in 640×384 until the game has written
    screen-derived values into `options.json`. Nothing captured here is evidence.
-4. **`exec seed_options.py apply`** patches that generated `options.json` in
+4. **`exec … seed_options.py`** patches that generated `options.json` in
    place — 24-hour clock, sound off, the required tileset, the terminal geometry —
    and the world's `CHARACTER_POINT_POOLS` when a character is about to be
-   created, so the creator opens on a points pool.
+   created, so the creator opens on a points pool. There is no subcommand: the
+   bare invocation patches, and `--verify-only` re-reads without writing.
+   `--dry-run` and `--explain` are the other two read-only forms.
 5. **`exec launch_game.sh stop`, then `launch` again**, so the seeded values take
    effect. `stop` terminates a **calibration** instance and saves nothing — and it
    refuses outright once a recorded session is in progress, which is exactly the
@@ -912,16 +944,25 @@ creation:
 
 ```console
 $ "$PLAYTHROUGH_PYTHON" -B playthrough/tooling/session.py probe
-PLAYTHROUGH_SESSION_MODE=create
-PLAYTHROUGH_SAVE_WORLD_COUNT=0
-PLAYTHROUGH_SAVE_RESUMABLE_COUNT=0
-PLAYTHROUGH_SAVE_CHAR_COUNT=0
+PLAYTHROUGH_SESSION_MODE=resume
+PLAYTHROUGH_SAVE_DIR=playthrough/userdir/save
+PLAYTHROUGH_SAVE_WORLD=Fairport Harbor
+PLAYTHROUGH_SAVE_WORLD_COUNT=1
+PLAYTHROUGH_SAVE_RESUMABLE_COUNT=1
+PLAYTHROUGH_SAVE_CHAR_COUNT=1
+PLAYTHROUGH_SAVE_CHAR_FORMS=.sav
+PLAYTHROUGH_SCENARIO=missed
 ```
 
 `launch_game.sh probe` reports the same decision from the shell side. On a clean
 tree it resolves to **create**; on a tree carrying a live save it resolves to
-**resume**. The reading above is this checkout's, and the paragraph after next
-says why it is `create` on a tree that has already been played.
+**resume**. The reading above is this checkout's, and it says **resume** — the
+recorded session ended through Save & Quit, so Odette Vachon's world is still
+there and the rule *if a save already exists, continue that save file* now
+points at her. Anyone re-running the pipeline over this tree continues her day;
+producing a different survivor would mean retiring this evidence first, which
+is what the two retirement commits in this history did to the recording before
+it.
 
 **There is a third answer, and it is a refusal.** If the append-only record
 shows the survivor beginning their last words while a live character save is
@@ -935,13 +976,21 @@ survivor back into play with nothing in the save to show it. Resumability is
 therefore decided from the record and the engine's cleanup products, never from
 the shape of the save.
 
-**What the probe answers in this checkout is `create`, and that is the engine's
-own doing.** The survivor died and `cleanup_at_end()` ran to completion, so
-`move_save_to_graveyard()` relocated her character file into
-`userdir/graveyard/<timestamp>/` and the world was cleared — `WORLD_END` sits at
-the engine default `reset` and she was its only character. What is left under
-`userdir/save/Barrows/` is world metadata and no character at all, so there is
-nothing resumable to resume, which is exactly what the probe reports above.
+**Why the probe answers `resume` in this checkout.** The recorded session ended
+the way R11 names first: the survivor slept, woke, and left through the in-game
+Save & Quit. `cleanup_at_end()` therefore never took the death path, so
+`move_save_to_graveyard()` never ran, `WORLD_END` never cleared anything, and
+`playthrough/userdir/save/Fairport Harbor/` still holds one living character
+beside its world. One world, one resumable character, and the reading above says
+so in all three counts.
+
+That is the interesting half of the refusal described just before it. The two
+states are told apart not by the save — which looks identical in both — but by
+the **record**: a session that stopped inside the death screen leaves a
+live-shaped save with a record that shows the survivor's last words, and a
+session that closed properly leaves a live-shaped save with a record that ends
+on a main menu. Only the second is resumable, and only reading the record can
+tell you which one you have.
 
 The creator is entered through the
 main-menu door labelled `Custom Character` — the template picker
@@ -1473,16 +1522,19 @@ end`. Measured on the shipped record:
 ```console
 $ python3 -c "import json; d=json.load(open('playthrough/timeline.json')); \
 print(d['total_duration'], d['total_transition'], d['total'], d['final_cue_end'])"
-219.75 3.0 222.75 222.75
+288.5 12.0 300.5 300.5
 $ grep -E -- '-->' playthrough/transcript.srt | tail -1
-00:03:42,500 --> 00:03:42,750
+00:05:00,250 --> 00:05:00,500
 ```
 
-219.75 + 3.0 = 222.75, and the last cue closes at 222.750 s. The ceiling
-engaged three times — at frames 195, 198 and 210, where raw deltas of 10 794 s,
-21 601 s and 47 s were each held at 10.0 s — which is why there are three
-transition groups of twelve pictures, 36 images altogether. The first two are
-the three-hour and six-hour waits the survivor spent in cover.
+288.5 + 12.0 = 300.5, and the last cue closes at 300.500 s. The ceiling engaged
+twelve times — at frames 170, 279, 283, 284, 285, 286, 296, 298, 299, 303, 304
+and 305, whose raw deltas of 172, 337, 2167, 830, 2401, 36 869, 313, 7200,
+7458, 1542, 3000 and 9858 seconds were each held at 10.0 s — which is why there
+are twelve transition groups of twelve pictures, 144 images altogether. The
+largest, 36 869 s at frame 286, is the ten-and-a-quarter-hour wait the survivor
+sat out indoors before dark; the 7200 s and 7458 s pair at frames 298 and 299
+are the night itself, slept in two attempts.
 
 `timeline.json` is the **single source of truth**: the renderer and the caption
 generator both read it, in one pass, so the cue windows and the frame windows
@@ -1591,20 +1643,33 @@ convert "$FRAME" -crop "$RECT" +repage -colorspace Gray -resize 200% \
 
 The `-resize 200% -normalize` step is what makes 8×16 terminal glyphs legible
 to tesseract at all. **The production reader is `ocr_clock.py`, not that
-one-liner, and the difference is measurable rather than stylistic** — run
-against a real capture on this host, the one-liner returns nothing while the
-module returns the reading the record holds:
+one-liner, and the difference is measurable rather than stylistic.** Run against
+this session's own captures, the module returns the reading the record holds:
 
 ```console
 $ "$PLAYTHROUGH_PYTHON" -B playthrough/tooling/ocr_clock.py \
-      playthrough/frames/frame_00163.png
+      playthrough/frames/frame_00164.png
 08:00:00
 ```
 
-The module measures which vertical phase the engine's cell grid is really drawn
-on instead of trusting the computed offset, which is why it is immune to a
-class of drift the one-liner is not. Use the module. It is also allowed to
-fail: it returns a clock string or nothing, and never a guess.
+The one-liner, on the same four captures, returns something that **matches the
+regex and is wrong**:
+
+| Capture | The one-liner | `ocr_clock.py`, and the record |
+| --- | --- | --- |
+| `frame_00164.png` | `48:40:48` | `08:00:00` |
+| `frame_00200.png` | `48:43:18` | `08:03:18` |
+| `frame_00267.png` | `48:84:14` | `08:04:14` |
+| `frame_00306.png` | `84:04:18` | `04:04:18` |
+
+This is the failure mode worth naming, because it is worse than returning
+nothing: `48:40:48` is a well-formed `HH:MM:SS` that `grep -Eo` accepts, so a
+pipeline built on the one-liner would not fail — it would record a fabricated
+time and carry it into every duration derived from it. The module measures which
+vertical phase the engine's cell grid is really drawn on instead of trusting the
+computed offset, which is the drift the readings above are made of. Use the
+module. It is also allowed to fail: it returns a clock string or nothing, and
+never a guess.
 
 ---
 
@@ -1634,13 +1699,13 @@ rules say — `--no-index` is required to see the rules themselves:
 
 ```console
 $ git check-ignore -v --no-index -- \
-    'playthrough/userdir/graveyard/2026-08-10T04-04-38/#T2RldHRlIFZhY2hvbg==.sav'
-.gitignore:275:!/playthrough/**  playthrough/userdir/graveyard/…/#T2Rl….sav
+    'playthrough/userdir/save/Fairport Harbor/#T2RldHRlIFZhY2hvbg==.sav'
+.gitignore:275:!/playthrough/**  playthrough/userdir/save/Fairport Harbor/#T2Rl….sav
 ```
 
-The path is in `graveyard/` rather than `save/` because a death relocates it
-there, and the leading `#` moves with the file — so this is exactly the name
-`\#*` would have swallowed.
+That is the survivor's own character file, and its name begins with `#` because
+CDDA base64-encodes the character name — so this is exactly the path `\#*` would
+have swallowed, and the negation is the only reason it is tracked.
 
 Run against a control copy of `.gitignore` truncated just above the block, the
 same paths are excluded, and by these patterns:
@@ -1785,21 +1850,22 @@ $ python3 -c "import json; print([e for e in \
 json.load(open('playthrough/userdir/config/options.json')) \
 if e['name']=='WORLD_COMPRESSION2'])"
 [{'name': 'WORLD_COMPRESSION2', ..., 'value': 'false'}]
-$ ls playthrough/userdir/graveyard/2026-08-10T04-04-38/ | grep -E '^#.*\.sav$'
+$ ls 'playthrough/userdir/save/Fairport Harbor/' | grep -E '^#.*\.sav$'
 #T2RldHRlIFZhY2hvbg==.sav
 ```
 
-The same option is why the overmaps were written as plain `o.0.0` / `o.0.-1`
+The same option is why the overmaps were written as plain `o.0.0` … `o.2.2`
 files and the map data as a `maps/` **directory**, rather than `maps.zzip` and
 `overmaps/*.zzip`. Both layouts are legitimate; this session took the
 uncompressed one.
 
-Those world files are no longer in the working tree, and that is the engine's
-doing rather than a loss: the world was cleared when the survivor died. They are
-in the history, at the `creation` checkpoint `57ee8afc34`, which carries
-`master.gsav`, `o.0.0`, `o.0.-1`, `uistate.json`, `zones.json` and the whole
-`maps/` tree alongside the live character files. `git ls-tree -r 57ee8afc34 --
-playthrough/userdir/save/Barrows/` is the way to look at them.
+Those world files are in the working tree and tracked, because this session
+ended through Save & Quit rather than in death: ten overmap segments, 95 map
+chunks, `master.gsav`, `dimension_data.gsav`, `uistate.json`, `zones.json` and
+the character's own files, 134 tracked paths in all. `git ls-files
+'playthrough/userdir/save/Fairport Harbor/'` is the way to look at them, and
+`git ls-tree -r 800ab8e11f -- 'playthrough/userdir/save/'` shows the same world
+as it stood at the `creation` checkpoint, before the day was played.
 
 **2. `.shortcuts` is Android-only and will never exist on a Linux host.** It is
 written inside `#if defined(__ANDROID__)` [src/game_io.cpp:630-635] and only

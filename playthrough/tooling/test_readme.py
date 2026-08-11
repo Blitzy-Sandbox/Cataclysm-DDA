@@ -244,6 +244,26 @@ _TOP_LEVEL = ("playthrough", "data", "src", "gfx", "tools", "doc",
               "lang", "build-scripts", "tests")
 _PATH = re.compile(r"(?<![\w./-])(?:\./)?((?:" + "|".join(_TOP_LEVEL) +
                    r")/[A-Za-z0-9_./*+=#-]+)")
+# A single-quoted argument that is one whole repository path.
+#
+# WHY THIS IS SEPARATE FROM _PATH.  _PATH matches a bare shell token, so
+# it stops at the first space -- and the world this session recorded is
+# called `Fairport Harbor`.  Every command naming a file inside it was
+# read as the path `playthrough/userdir/save/Fairport`, which exists
+# nowhere, so the page could not cite its own save file without failing
+# this suite, and the real path went unverified either way.  Shell
+# quoting is how a path with a space is written, so it is how one is
+# read here.
+#
+# THE SPAN IS RECOGNISED, NOT JUST TOLERATED.  A quoted span counts as a
+# path only when the whole of it is one -- a top-level directory, a
+# slash, and no parenthesis or semicolon that would mark it as code.
+# That excludes `grep -E '^#.*\.sav$'` and admits the inner
+# `'playthrough/timeline.json'` of a `python3 -c "..."` program, which
+# _PATH already found; masking the span before _PATH runs is what stops
+# the same path being counted twice, once whole and once truncated.
+_QUOTED_PATH = re.compile(r"'((?:\./)?(?:" + "|".join(_TOP_LEVEL) +
+                          r")/[^'()\n;]*)'")
 _ROOT_FILE = re.compile(r"(?<![\w.-])(?:\./)?"
                         r"(cataclysm-tiles|Makefile|\.gitignore"
                         r"|\.gitattributes)(?![\w./-])")
@@ -356,9 +376,21 @@ def documented_paths():
     """Every repository path any documented command names."""
     found = {}
     for example in console_examples():
-        for match in _PATH.finditer(example.command):
+        # The quoted whole paths first, and the span each occupied is
+        # blanked out so the bare-token pass cannot also report the
+        # fragment before its space as a path of its own.
+        remainder = example.command
+        for match in _QUOTED_PATH.finditer(example.command):
+            path = match.group(1)
+            if path.startswith("./"):
+                path = path[2:]
+            found.setdefault(path.rstrip("/"), []).append(example)
+            start, end = match.span()
+            blanked = " " * (end - start)
+            remainder = remainder[:start] + blanked + remainder[end:]
+        for match in _PATH.finditer(remainder):
             found.setdefault(match.group(1), []).append(example)
-        for match in _ROOT_FILE.finditer(example.command):
+        for match in _ROOT_FILE.finditer(remainder):
             found.setdefault(match.group(1), []).append(example)
     return found
 
@@ -1070,10 +1102,15 @@ class TestTheHostedSessionWalkthroughIsDocumented(ExampleFixture):
         not apply to.
         """
         section = self.section()
+        # `seed_options.py` takes no subcommand.  This step used to be
+        # spelled `seed_options.py apply` here and on the page, and the
+        # tool answers that with `unrecognized arguments: apply` -- a
+        # documented command that cannot run, asserted to be present by a
+        # test that only ever compared the page against itself.
         order = ("supported_env.sh up",
                  "launch_game.sh headless",
                  "launch_game.sh launch",
-                 "seed_options.py apply",
+                 "seed_options.py",
                  "launch_game.sh stop",
                  "session.py step",
                  "commit_artifacts.sh final",
@@ -1085,6 +1122,78 @@ class TestTheHostedSessionWalkthroughIsDocumented(ExampleFixture):
                 self.assertNotEqual(found, -1,
                                     "the walk-through omits it")
                 at = found
+
+    def test_every_documented_subcommand_is_one_the_tool_offers(self):
+        """A documented command that cannot run is worse than none.
+
+        The walk-through said `seed_options.py apply`, and the tool answers
+        `unrecognized arguments: apply` -- it takes flags and no
+        subcommand at all.  Nothing caught it because every assertion
+        about the step compared the page with the page.  This asks the
+        TOOL: it reads the `usage:` line, which argparse prints with a
+        `{a,b,c}` group exactly when there are subcommands and without one
+        when there are not, and holds every positional word the page
+        passes to that list.
+        """
+        for script in ("seed_options.py", "session.py"):
+            with self.subTest(script=script):
+                proc = self.shell(
+                    '"$PLAYTHROUGH_PYTHON" -B playthrough/tooling/%s '
+                    '--help' % script)
+                usage = proc.stdout.split("\n\n")[0]
+                # The SUBPARSER group only: argparse prints it as a bare
+                # `{a,b,c}` followed by `...`.  A choice-restricted option
+                # such as `--point-pools {any,multi_pool}` looks the same
+                # without the ellipsis, and matching that one would have
+                # this test believe `any` were a subcommand.
+                match = re.search(r"\{([a-z_,]+)\}\s*\.\.\.", usage)
+                offered = set(match.group(1).split(",")) if match else set()
+                for documented in self.positionals(script):
+                    self.assertIn(
+                        documented, offered,
+                        "the page documents `%s %s`, which the tool does "
+                        "not offer; it accepts %s"
+                        % (script, documented,
+                           sorted(offered) or "no subcommand at all"))
+
+    def positionals(self, script):
+        """Every bare word the page passes to `script` as a positional."""
+        found = set()
+        for example in console_examples():
+            for piece in example.command.split(script)[1:]:
+                for word in piece.split():
+                    if word.startswith("-") or word in ("\\", "…"):
+                        break
+                    word = word.strip("'\"")
+                    if word:
+                        found.add(word)
+                    break
+        return found
+
+    def test_a_hosted_python_step_establishes_the_display_first(self):
+        """`exec` forwards no DISPLAY, so a bare python child has none.
+
+        The walk-through told a reader to run
+        `supported_env.sh exec "$PLAYTHROUGH_PYTHON" -B … session.py step`.
+        Every `*.sh` stage sources `env.sh` on the way in and is therefore
+        fine, but a python child is not: `exec` forwards only HOME, TMPDIR
+        and the cleared bypass names, and Xvfb here runs with a
+        MIT-MAGIC-COOKIE, so without XAUTHORITY the first call that
+        touches the display fails outright.  Every keystroke in a
+        recording goes through such a step, so the documented form could
+        not deliver one.
+        """
+        for example in console_examples():
+            command = collapse(example.command)
+            if "supported_env.sh exec" not in command:
+                continue
+            if "PLAYTHROUGH_PYTHON" not in command:
+                continue
+            with self.subTest(line=example.line):
+                self.assertIn(
+                    "source playthrough/tooling/env.sh", command,
+                    "this hosted python step never establishes DISPLAY "
+                    "or XAUTHORITY, so it cannot reach the engine")
 
     def test_the_teardown_guard_is_documented_with_its_escape(self):
         section = collapse(self.section())
@@ -1413,24 +1522,57 @@ class TestTheReadOnlyToolExamplesRun(ExampleFixture):
         reported = dict(line.split("=", 1)
                         for line in proc.stdout.splitlines()
                         if "=" in line)
-        # WHAT IS HERE IS NO LIVE CHARACTER, AND THE PROBE SAYS SO.  The
-        # survivor died and the engine's own cleanup_at_end() ran to
-        # completion, so move_save_to_graveyard() relocated her save into
-        # userdir/graveyard/ and the world was cleared -- WORLD_END sits
-        # at the engine default `reset` and she was its only character.
-        # So the answer is `create`, and it is asserted against the tree
-        # rather than against a remembered one: no character save exists
-        # under userdir/save, and the probe counts none.
-        characters = glob.glob(os.path.join(
-            PLAYTHROUGH, "userdir", "save", "*", "#*.sav"))
-        self.assertEqual(characters, [],
-                         "a character save is here, so the probe's "
-                         "answer should not be 'create'")
-        self.assertEqual(reported.get("PLAYTHROUGH_SESSION_MODE"),
-                         "create")
-        self.assertEqual(reported.get("PLAYTHROUGH_SAVE_CHAR_COUNT"), "0")
+        # THE ANSWER IS ASSERTED AGAINST THE TREE, NOT AGAINST A
+        # REMEMBERED ONE.  This used to require `create` and two zero
+        # counts, with a comment explaining that the survivor had died and
+        # the engine's move_save_to_graveyard() had emptied userdir/save.
+        # That was true of the recording it was written for and false of
+        # the next one: a session that ends the way R11 names first --
+        # sleep, wake, in-game Save & Quit -- KEEPS its world, so a
+        # character save is exactly what a correct run leaves behind, and
+        # the test failed on the tree being right.
+        #
+        # So the property is the RELATIONSHIP: whatever is on disk, the
+        # probe reports it, and the page quotes what the probe reports.
+        # Both endings are legitimate and neither is written down here.
+        # Both save spellings are counted, because the page itself
+        # documents that `#<b64>.sav` and `#<b64>.sav.zzip` are both
+        # legitimate and which one appears is a world option.
+        saves = os.path.join(PLAYTHROUGH, "userdir", "save", "*")
+        characters = sorted(glob.glob(os.path.join(saves, "#*.sav")) +
+                            glob.glob(os.path.join(saves, "#*.sav.zzip")))
+        mode = reported.get("PLAYTHROUGH_SESSION_MODE")
         self.assertEqual(
-            reported.get("PLAYTHROUGH_SAVE_RESUMABLE_COUNT"), "0")
+            reported.get("PLAYTHROUGH_SAVE_CHAR_COUNT"),
+            str(len(characters)),
+            "the probe counts %r character save(s) while %d are on disk: "
+            "%s" % (reported.get("PLAYTHROUGH_SAVE_CHAR_COUNT"),
+                    len(characters), characters))
+        if characters:
+            self.assertEqual(
+                mode, "resume",
+                "a character save is here, so the probe must continue it "
+                "rather than answer %r -- the rule is 'if a save already "
+                "exists, continue that save file'" % mode)
+            self.assertEqual(
+                reported.get("PLAYTHROUGH_SAVE_RESUMABLE_COUNT"),
+                str(len(characters)))
+        else:
+            self.assertEqual(mode, "create")
+            self.assertEqual(
+                reported.get("PLAYTHROUGH_SAVE_RESUMABLE_COUNT"), "0")
+        # And the page quotes this answer rather than the other one.  Both
+        # occurrences are read, because one of them is a bare list of the
+        # subcommands and carries no output at all; the claim is that
+        # WHEREVER the page quotes the mode, it quotes this one.
+        quoted = "\n".join(line for example in examples
+                           for line in example.output)
+        self.assertIn("PLAYTHROUGH_SESSION_MODE=", quoted,
+                      "neither occurrence quotes the probe's answer, so "
+                      "the page states nothing this can be held to")
+        self.assertIn("PLAYTHROUGH_SESSION_MODE=%s" % mode, quoted,
+                      "the page quotes a different mode than the probe "
+                      "reports on this tree")
 
     def test_the_audit_reports_no_debug_binding(self):
         example, proc = self.run_documented("session.py audit")
