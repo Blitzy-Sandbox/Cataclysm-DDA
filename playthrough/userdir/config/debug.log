@@ -23,3 +23,4 @@
 21:36:27.642 WARNING : Portal Storms Ignore NPCs pack load time:: 316us (avg: 316us) (count: 1)
 21:36:39.334 INFO : Loaded tileset: MshockXottoplus
 21:36:39.481 INFO : Loaded tileset: Larwick Overmap
+01:14:48.018 INFO : npc::set_omt_destination - new goal for NPC [Thomas Larsson] with [need_weapon] is [s_gun_a] in (304,236,0).
