@@ -9964,3 +9964,258 @@ every byte of every path, binary included — matches it in **zero** tracked fil
 It cannot be rotated or revoked from inside this checkout, and removing it
 removes the push path the platform provisioned. Disclosed and escalated; not
 closed.
+
+## Code-review remediation of the source commentary
+
+A code review read every comment and docstring in the authored subsystem —
+**22 658 items across 20 comment-bearing files** — and returned **fourteen
+findings: six major and eight minor**. Its central one was not a wrong sentence
+but a wrong *shape*: the source had accumulated a parallel specification.
+Remediation diaries, dated host inventories, measured calibration figures, plan
+negotiations and multi-page operating manuals sat inside the scripts they
+described, at a comment density two to four times that of the repository's own
+Python and shell (measured: Python 0.387–0.475 against neighbours 0.081–0.281;
+shell hash-comment ratios 0.29–0.56 against 0.068–0.167; `requirements.txt`
+carried 610 comment lines for six pins). Text that long goes stale, and by the
+time of the review several blocks already had — the commit lifecycle, the
+sequencer's stage list, the verifier's check inventory and `Session.step`'s
+recovery contract all described earlier versions of their own code.
+
+**What the source keeps.** Concise, timeless WHY; invariants; external
+constraints with their `[path:line]` citations; security properties; and the
+public contract of each callable, adjacent to the code it governs. Machine-checked
+inventories stay too — the verifier's `all / pre / post` derivation table is
+asserted by its own suite, so it is documentation the tests hold to the code.
+
+**What left the source.** Incident chronology, dated measurements, host
+package inventories, plan negotiations and step-by-step operator guidance.
+Where that material is durable it is here or in `playthrough/README.md`, which
+already documented the prerequisites, the environment contract, the re-run
+procedure, the commit lifecycle, the duration model, the OCR crop, the
+repository integration and the lint gate; the source blocks were duplicating a
+page that is easier to keep correct. Where it was a record of how a defect was
+found and fixed, it is in git history, which is where a change history belongs.
+
+**No behaviour changed in this pass.** No executable statement was edited except
+to delete fifty suppression comments that suppressed nothing, so the tooling's
+own suites are the regression evidence: 3589 tests, `OK (skipped=2)`, the same
+result as before the pass, alongside a clean `flake8 playthrough/`, `bash -n`
+and `shellcheck` over every script.
+
+### The no-cheat group says "no evidence", because that is what it measures
+
+The gate's eighth group was called *no cheating, as a checkable property*, and
+its header said that a claim of good faith "stops resting on the word of whoever
+played the session and becomes a property of a committed file". Its first verdict
+went further: an absent `keybindings.json` was reported as proof that "nothing was
+ever bound".
+
+Those are stronger claims than the checks support, and the review was right to
+say so. What the three checks actually do is read three committed artifacts — the
+user keybindings, the engine's log, and the record with the documents derived from
+it — and report their contents. A file can be rewritten before it is committed, a
+log need not mention everything the engine did, and an absence of vocabulary is
+not an absence of behaviour: spawning, a stat edit, a teleport or a map reveal
+leave no trace in any of the three if nobody wrote one.
+
+So the group is now **`no evidence of debug or cheat use in the audited
+artifacts`**, its verdicts are named for what was observed (`the committed
+keybindings bind no debug action`, `the engine's own log shows no debug-mode
+activation`, `the record itself names no debug or cheat action`), the absent-file
+observation says the engine's shipped bindings are what applied rather than that
+nothing was ever bound, and the group closes with an INFO stating in the report
+itself that these observations corroborate the requirement without proving it.
+The INFO deliberately does not `register_check`, so the declared inventory is
+unchanged at 134 / 119 / 37.
+
+One consequence to know when reading the evidence: `playthrough/acceptance-report.txt`
+is the receipt of the run that produced it, and it carries the **old** group
+heading and verdict names. It is not rewritten — a receipt is evidence, and
+evidence is not edited to match later prose. A re-run of the gate prints the new
+names; the counts are identical.
+
+### The system packages, moved out of `requirements.txt`
+
+`requirements.txt` is a declaration of six pinned Python libraries; it had grown
+a 500-line apt manual, and this is that manual. Every version was read back from
+the provisioned host with `dpkg-query -W -f='${Version}'` rather than copied from
+documentation, so these record what the pipeline was verified against — they are
+not minimums, and apt is not asked to pin them. Three inventories rather than
+one, because they are three different jobs and most hosts need only some of
+them: a machine that only renders and verifies needs group 2 alone, a machine
+that builds the engine needs 1 and 2, and a machine driving the supported
+container needs 3 and nothing else.
+
+**1. Host build — needed only to produce `./cataclysm-tiles`.**
+
+```console
+$ apt-get install -y build-essential g++-14 make pkg-config ccache \
+      gettext zlib1g-dev libncurses-dev libsdl2-dev libsdl2-ttf-dev \
+      libsdl2-image-dev libsdl2-mixer-dev libfreetype-dev
+```
+
+| Package | Version | Why |
+| --- | --- | --- |
+| `build-essential` | 12.12ubuntu1 | base toolchain and linker |
+| `g++-14` | 14.3.0-8ubuntu1 | the sanctioned compiler, **not** this archive's default `g++`: the Makefile builds with `-Werror`, so a newer compiler's new warnings are build failures |
+| `make` | 4.4.1-2 | the primary build driver |
+| `pkg-config` | 1.8.1-4build1 | how the Makefile asks the host about SDL and FreeType, and the mechanism behind its SDL3 version gate |
+| `ccache` | 4.11.2-2 | used via `CCACHE=1` |
+| `gettext` | 0.23.1-2build2 | `msgfmt`, for the `.mo` catalogues |
+| `zlib1g-dev` | 1:1.3.dfsg+really1.3.1-1ubuntu2 | the save layer is compressed |
+| `libncurses-dev` | 6.5+20250216-2ubuntu0.1 | the shared curses code compiles even in a tiles build |
+| `libsdl2-dev` | 2.32.4+dfsg-1 | SDL2 core |
+| `libsdl2-ttf-dev` | 2.24.0+dfsg-2 | font rendering |
+| `libsdl2-image-dev` | 2.8.8+dfsg-1 | tile and image loading |
+| `libsdl2-mixer-dev` | 2.8.1+dfsg-2 | audio, present because `SOUND=1`, muted at run time |
+| `libfreetype-dev` | 2.13.3+dfsg-1ubuntu0.1 | FreeType headers. Note the name: `libfreetype6-dev`, which the project's own `COMPILING.md` install line uses, is transitional here and `dpkg-query` reports it as not installed. `libncursesw5-dev` is transitional the same way |
+
+The commands and the development libraries are both required, and the
+distinction is the one that costs an hour: `make`, `g++-14`, `pkg-config` and
+`ccache` can all be present on a host with no SDL2 headers at all, and the build
+then fails several hundred object files in with a compiler error about a missing
+header rather than a sentence naming a package. `launch_game.sh`'s
+`assert_build_capabilities` probes every module in this list with `pkg-config`
+*before* it spawns anything and reports all of them at once. SDL3 is deliberately
+absent: `SDL3=0` is mandatory on this archive, the Makefile hard-errors without
+it, and the SDL3 GPU shader path is not exercised. Never pass `TESTS=0`.
+
+**2. Capture runtime — the headless surface, capture, OCR and render.**
+
+```console
+$ apt-get install -y xvfb openbox x11-utils x11-xserver-utils xauth \
+      imagemagick ffmpeg tesseract-ocr tesseract-ocr-eng xdotool scrot \
+      fontconfig util-linux coreutils
+```
+
+| Package | Version | Why |
+| --- | --- | --- |
+| `xvfb` | 2:21.1.18-1ubuntu1.1 | the headless X server |
+| `openbox` | 3.6.1-12ubuntu2 | a minimal window manager, and not cosmetic: a bare X server has no focus model and `xdotool` key delivery to an unfocused window is unreliable, so this is load-bearing for the one-frame-per-keystroke invariant |
+| `x11-utils` | 7.7+7 | `xdpyinfo`, `xwininfo`, `xprop` — display geometry, window geometry, and whether a window manager owns the display |
+| `x11-xserver-utils` | 7.7+11 | X session utilities |
+| `xauth` | 1:1.1.2-1.1 | not optional. Xvfb is started with `-auth` and a fresh 128-bit `MIT-MAGIC-COOKIE-1`, and the pipeline asserts that a client without the cookie is refused. Without `xauth` the cookie cannot be recorded, the display has no access control, and every local account can read the screen being captured and inject keystrokes into the session — so a recorded session is refused rather than merely warned about |
+| `imagemagick` | 8:7.1.2.3+dfsg1-1ubuntu0.1 | `import` captures the root window, `convert` crops and preprocesses, `identify` inspects, `compare` measures change between frames; all four entry points ship in this one package |
+| `ffmpeg` | 7:7.1.1-1ubuntu4.2 | `ffmpeg` encodes and muxes, `ffprobe` verifies |
+| `tesseract-ocr` | 5.5.0-1 | reads the sidebar clock |
+| `tesseract-ocr-eng` | 1:4.1.0-2 | the English data the OCR needs; `tesseract` without a language pack reads nothing |
+| `xdotool` | 1:3.20160805.1-5.1 | focuses the window by class and delivers exactly one keystroke |
+| `scrot` | 1.12.1-1 | the fallback capturer |
+| `fontconfig` | 2.15.0-2.3ubuntu1 | font resolution for the transition card |
+| `util-linux` | 2.41-4ubuntu4.2 | `flock`, which is how every lock in this pipeline is held, and `mcookie` for the X cookie |
+| `coreutils` | 9.5-1ubuntu2 | named explicitly despite being universal, for one tool: `sha256sum` takes each capture's digest at the instant the frame is published, and a capture whose digest cannot be computed is withdrawn rather than recorded. `stat`, `readlink` and `chmod` come from here too, and `env.sh` resolves those three from fixed system directories rather than from `PATH`, because they are the programs every ownership check is made of |
+
+`grep`, `sed`, `mawk`/`gawk` and `bash` are required and are not given an
+install line: no base system omits them, and a host that did could not run these
+scripts at all. `env.sh`'s `playthrough_tool_package` names the package for each
+of them anyway, so a missing-tool diagnostic says what to install rather than
+only what is absent.
+
+**3. Supported container — the trusted path when the host is not.** A compliant
+capture must run on a release that is in support. Where the host is not, the
+sanctioned route is the container this repository builds and drives through
+`playthrough/tooling/supported_env.sh`, which needs a container runtime on the
+host and nothing else — groups 1 and 2 live inside the image. Measured here:
+`docker-ce` 5:29.7.0-1~ubuntu.25.10~questing and `docker-compose-plugin`
+5.3.1-1~ubuntu.25.10~questing. `supported_env.sh` requires `docker` on `PATH`
+**and** a responding daemon — it probes `docker info`, because an installed
+client with a dead daemon is a different fault from an absent one and needs a
+different fix. The image may be produced by any OCI builder; only the run path is
+docker-specific. The pipeline does not use compose, so that plugin is recorded
+rather than required.
+
+**Not a dependency of any of the three**: `shellcheck` (0.10.0-1 here) and
+`flake8` gate this tooling during development and are deliberately absent from
+every inventory above and from the pins, because a developer tool the pipeline
+never invokes at run time is not a dependency of the pipeline.
+
+
+### The caption packets a container carries are not the cues this file writes
+
+`make_srt.py`'s header used to carry the measurement that establishes this, and
+the measurement is worth keeping — just not in the source, where it reads as a
+calibration note rather than as the rule it implies.
+
+MP4 timed text has to cover the container contiguously. The transcript
+deliberately leaves a gap wherever `timeline.py` charged a transition's second to
+video time, so the muxer fills each of those gaps with an empty two-byte sample
+of its own. Measured on the reference sequence: a container muxed from **seven**
+cues reports **nine** subtitle packets, the two extra ones occupying exactly
+16.250–17.250 s and 27.250–28.250 s — which are the two transitions, to the
+millisecond.
+
+The rule that follows is the one the source now states without the arithmetic:
+count the cues in `playthrough/transcript.srt` with `grep -c " --> "`, or count
+the cues extracted back out of the container (seven, deviating from the timeline
+by 0.000000 s). Never count the subtitle packets `ffprobe` reports, because that
+number is the cue count plus the transition count and it will disagree with the
+frame count for a perfectly correct film.
+
+### The two ffmpeg measurements the renderer's header no longer carries
+
+Both establish a flag as load-bearing rather than as a tuning choice, and both
+were measured on this host with ffmpeg 7.1.1. The rules they imply stay in
+`render_movie.py`'s header, where a reader changing the encode command will meet
+them; the arithmetic is here.
+
+**The repeated final `file` entry.** On a 134.000 s timeline, with `-bf 0` in
+force: **134.040 s** with the entry repeated, **133.800 s** without it. The
+shortfall is silent — every count in the concat list still matches, and only the
+container is short, which puts every caption past the shortfall beyond the end of
+the video.
+
+**`-bf 0`.** libx264's default B-frame reorder delay leaves the final DTS behind
+the final PTS, and the mov muxer takes the track duration from the DTS timeline.
+Under `-fps_mode vfr` the PTS deltas are wildly uneven, and the trailing
+durations are lost outright:
+
+| timeline | reported without `-bf 0` | reported with `-bf 0` |
+| --- | --- | --- |
+| 11.250 s, three images, PTS 0 / 0.24 / 1.24 / 11.24 | 1.520 s | 11.280 s |
+| 134.000 s, two transition groups | 129.800 s — 4.2 s short | 134.040 s |
+
+`-video_track_timescale` does not help. Without `-bf 0` the mandated
+container-versus-timeline comparison cannot be satisfied at all.
+
+### The rounding band the container-versus-timeline comparison is measured against
+
+`render_movie.py` states the band and its derivation; these are the values it was
+measured at, on this host with ffmpeg 7.1.1 and `-bf 0`. The concat demuxer
+quantises each entry to the 1/25 s default frame period, NOT cumulatively — the
+running sum is what gets rounded, not each addend — and the repeated final entry
+contributes its own 0.04 s packet, so `container - timeline_total` lands in
+`[+0.02, +0.06]` deterministically:
+
+| timeline total | container | deviation |
+| --- | --- | --- |
+| 11.250 s, 3 entries | 11.280 s | +0.03 |
+| 134.000 s, 2 transition groups | 134.040 s | +0.04 |
+| 570.500 s, 396-entry stress list | 570.560 s | +0.06 |
+
+The stress list's worst per-entry deviation from the exact cumulative sum was
++0.020 s. The failure the comparison exists to catch has the opposite sign and is
+much larger: dropping the repeated final entry loses the last entry's whole
+duration, and the smallest duration the timeline can carry is the 0.25 s floor.
+
+### Where the grid really sat, measured over the committed captures
+
+`sidebar_geometry.py` computes the crop's vertical offset as
+`(root_height - grid_height) // 2` — the offset a centred borderless
+window would produce. On the surface that produced the committed
+session the grid did not sit there. Measured over all 395 captures of
+that record: 387 carry ink in y0–3, 356 carry ink in y1068–1071, and
+not one carries ink in y1072–1079. The grid therefore sat at `+0+0`
+with all eight leftover pixels in a single band at the bottom, because
+the engine blits the grid at the window's top-left and leaves the
+remainder as border [src/sdltiles.cpp:311-320, :1046-1050], and openbox
+had given the borderless window the whole root.
+
+The centred form is kept deliberately rather than corrected to `+0+0`.
+A four-pixel error costs nothing here: the crop is 1072 rows tall and
+the clock row it exists to capture sits at y288, far inside it either
+way. And `ocr_clock.py` does not trust that `y` for glyph slicing at
+all — it measures which vertical phase the engine's cell grid is really
+on by scoring candidates against the game's own font. The module's own
+docstring states the contract that follows from this: read that `y` as
+"where a centred window would put the grid", never as "where the grid
+was".

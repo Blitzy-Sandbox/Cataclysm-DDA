@@ -15,46 +15,36 @@ THE FORMULA
     x      = window.x                         (SIDEBAR_POSITION left)
     y      = window.y
 
-where the game window itself is derived exactly as the engine derives
-it, in the engine's own ORDER -- and the order is the part worth
-reading twice, because performing only its second half is wrong.  The
-engine first turns the SAVED ``TERMINAL_X``/``TERMINAL_Y`` into a
-LOGICAL grid, trimming to a multiple of the scaling factor, flooring at
+The game window is derived exactly as the engine derives it, in the
+engine's own ORDER, and the order is the part worth reading twice: the
+engine first turns the SAVED ``TERMINAL_X``/``TERMINAL_Y`` into a LOGICAL
+grid -- trimming to a multiple of the scaling factor, flooring at
 ``EVEN_MINIMUM_TERM_*`` times that factor, then DIVIDING by it
-[src/sdltiles.cpp:6235-6252]; only then does it compute
-``WindowWidth = TERMINAL_WIDTH * fontwidth * scaling_factor`` and
-``WindowHeight = TERMINAL_HEIGHT * fontheight * scaling_factor``
+[src/sdltiles.cpp:6235-6252] -- and only then computes
+``WindowWidth = TERMINAL_WIDTH * fontwidth * scaling_factor``
 [src/sdltiles.cpp:595-596].  Multiplying the saved values by the factor
 WITHOUT dividing first overstates a scaled window by the square of the
 factor: a saved 240x67 at factor 2 is a 120x33 logical grid in a
-1920x1056 window, not a 3840x2144 one.  The window is then centred
-inside the X root, which produces the letterbox: at factor 1 it
-measures 1920x1072 at ``+0+4`` inside a 1920x1080 root, so ``y`` is 4 --
-COMPUTED as ``(1080 - 1072) // 2``, not a constant anywhere in this
-file.
+1920x1056 window, not a 3840x2144 one.
 
-That centred ``y`` is the CONTRACT, and on the surface that produced the
-committed session it started four pixels short of where the grid
-actually began -- so the crop misses the grid's first four pixel rows
-and takes four rows of bottom border in their place.  Measured over all
-395 captures of that record: 387 carry ink in
-y0-3, 356 carry ink in y1068-1071, and NOT ONE carries ink in
-y1072-1079 -- so the grid sat at ``+0+0`` with all eight leftover
-pixels in a single band at the BOTTOM, because the engine blits the
-grid at the window's top-left and leaves the remainder as border
-[src/sdltiles.cpp:311-320, :1046-1050] and openbox had given the
-borderless window the whole root.  The arithmetic here is deliberately
-left as the centred form: a four-pixel error costs nothing, since the
-crop is 1072 rows tall and the clock row it exists to capture is at
-y288, far inside it either way; and ``ocr_clock.py`` does not trust
-this ``y`` for glyph slicing at all -- it MEASURES which vertical phase
-the engine's cell grid is really on by scoring candidates against the
-game's own font.  Read this ``y`` as "where a centred window would put
-the grid", never as "where the grid was".
+The window is then centred inside the X root, which produces the
+letterbox: at factor 1 it measures 1920x1072 at ``+0+4`` inside a
+1920x1080 root, so ``y`` is COMPUTED as ``(1080 - 1072) // 2`` and is not
+a constant anywhere in this file.  READ THAT ``y`` AS "WHERE A CENTRED
+WINDOW WOULD PUT THE GRID", NEVER AS "WHERE THE GRID WAS": a window
+manager that hands a borderless window the whole root leaves the engine
+blitting the grid at the top-left with the whole remainder as border at
+the bottom [src/sdltiles.cpp:311-320, :1046-1050], so the real grid can
+begin up to four rows above this.  The centred form is kept deliberately,
+because the crop is 1072 rows tall and the clock row it exists to capture
+sits at y288, far inside it either way -- and ``ocr_clock.py`` does not
+trust this ``y`` for glyph slicing at all: it MEASURES which vertical
+phase the cell grid is on by scoring candidates against the game's own
+font.
 
 WHICH SIDEBAR, AND ON WHOSE AUTHORITY
-The width in cells belongs to the layout the engine is CURRENTLY
-drawing, which is not necessarily ``custom_sidebar``:
+The width in cells belongs to the layout the engine is CURRENTLY drawing,
+which is not necessarily ``custom_sidebar``:
 
 * ``current_layout_id`` is read from the game's own
   ``<userdir>/config/panel_options.json`` [src/panels.cpp:492-503,
@@ -63,38 +53,33 @@ drawing, which is not necessarily ``custom_sidebar``:
   applies -- ``legacy_labels_sidebar`` on every non-Android build
   [src/panels.cpp:412-418], whose width is 44 cells and NOT
   ``custom_sidebar``'s 36;
-* the id is looked up among the ``style: sidebar`` widgets of the
-  whole ``data/json/ui`` tree, because that is where the engine builds
-  its layout map from [src/panels.cpp:398-408], and the width used is
-  that widget's own ``width`` [src/panels.cpp:484].
+* the id is looked up among the ``style: sidebar`` widgets of the whole
+  ``data/json/ui`` tree, because that is where the engine builds its
+  layout map from [src/panels.cpp:398-408], and the width used is that
+  widget's own ``width`` [src/panels.cpp:484].
 
-On a fresh userdir the formula therefore evaluates to
-``352x1072+1568+4``, and on a game whose panel options select
-``custom_sidebar`` to ``288x1072+1632+4``.  Both strings are expected
-results, never return values.
+So a fresh userdir evaluates to ``352x1072+1568+4`` and a game selecting
+``custom_sidebar`` to ``288x1072+1632+4``.  Both are expected results,
+never return values.
 
 WHY THIS IS COMPUTED AND NOT A LITERAL
-Measured in this checkout, not estimated: across the whole
-``data/json/ui`` tree -- including the ``zenfs/``, ``structured/`` and
-``spacebar/`` bundles -- twelve widgets declare ``"style": "sidebar"``
-at eight distinct widths: 32, 36, 43, 44, 48, 58, 62 and 66 cells.  A
-hard-coded rectangle -- or a correctly computed one taken from the wrong
-preset, which is the same defect wearing a function's clothes -- would
+Twelve widgets in this checkout declare ``"style": "sidebar"`` at eight
+distinct widths -- 32, 36, 43, 44, 48, 58, 62 and 66 cells.  A hard-coded
+rectangle, or a correctly computed one taken from the wrong preset, would
 crop the wrong column the moment the layout changed, and it would do so
 SILENTLY: nothing crashes, the OCR simply stops matching, every
 ``ingame_clock`` goes null and every duration collapses to the 0.25 s
-floor while the finished movie still looks plausible.  Preventing that
-one silent failure is the entire reason this module exists, which is why
-every fallback below is announced on stderr through ``logging`` and a
-malformed input raises :class:`GeometryError` rather than falling back
-to a default.
+floor while the finished movie still looks plausible.  Preventing that one
+silent failure is the entire reason this module exists, which is why every
+fallback is announced on stderr through ``logging`` and a malformed input
+raises :class:`GeometryError` rather than falling back to a default.
 
 READ-ONLY BY CONSTRUCTION
 The widget JSON under ``data/json/ui`` and the game-written
 ``options.json`` and ``panel_options.json`` are opened for reading only;
-no widget is modified, no layout is selected, the in-game sidebar
-manager is never invoked, no subprocess is started, and no network call
-of any kind is made.
+no widget is modified, no layout is selected, the in-game sidebar manager
+is never invoked, no subprocess is started, and no network call of any
+kind is made.
 
 USAGE
     $ . playthrough/tooling/env.sh
@@ -102,15 +87,12 @@ USAGE
     352x1072+1568+4
 
 ``env.sh`` exports ``PLAYTHROUGH_PYTHON``, the pinned CPython 3.12 this
-tooling is installed against; this file is tracked mode 644 and is not
-on PATH, so it is always invoked through that interpreter, and ``-B``
-keeps a re-included ``__pycache__`` out of the tree.
+tooling is installed against; the system ``python3`` is not it.
 
 Standard output carries exactly the geometry string and nothing else, so
-capturing the invocation above in a ``RECT="$(...)"`` substitution is
-safe, and ``--layout-id`` pins a named layout instead of reading the
-game's own choice.  Every diagnostic, warning and fallback notice goes
-to stderr.
+capturing that invocation in a ``RECT="$(...)"`` substitution is safe, and
+``--layout-id`` pins a named layout instead of reading the game's own
+choice.  Every diagnostic, warning and fallback notice goes to stderr.
 """
 import argparse
 import json
@@ -131,12 +113,12 @@ LOG = logging.getLogger("playthrough.sidebar_geometry")
 # from the game-written options file, and never silently: each fallback
 # is logged at WARNING and recorded in SidebarGeometry.notes.
 #
-# Note that TERMINAL_X and TERMINAL_Y default to the compiled-in 80x24
-# rather than to the 240x67 this pipeline runs at.  That is deliberate
-# and correct: 80x24 is what the engine writes on a first launch before
-# it has derived screen-based values, and reporting the real default is
-# what makes the accompanying warning worth reading.  Anything else
-# would be inventing a default the engine does not have.
+# TERMINAL_X and TERMINAL_Y default to the compiled-in 80x24 rather than
+# to the 240x67 this pipeline runs at.  That is deliberate: 80x24 is what
+# the engine writes on a first launch before it has derived screen-based
+# values, and reporting the real default is what makes the accompanying
+# warning worth reading.  Anything else would be inventing a default the
+# engine does not have.
 # ---------------------------------------------------------------------
 
 # src/options.cpp:2408-2411 add( "TERMINAL_X", ..., 80, 960, 80, ... )
@@ -171,8 +153,9 @@ FONT_HEIGHT_RANGE = (8, 100)
 # -- the LOGICAL grid everything on screen is laid out in, including the
 # sidebar's width in cells -- is that number divided by the factor.  The
 # trim and the floor are mirrored here because they are what the engine
-# actually stored before it divided.  THE FORMULA at the top of this
-# module has the consequence of getting the order backwards.
+# actually stored before it divided.  Mirroring this order avoids the
+# squared-scaling error: dividing by the factor after multiplying the
+# physical cell count by it would apply the factor twice.
 DEFAULT_SCALING_FACTOR = 1
 SCALING_FACTORS = (1, 2, 4)
 
@@ -191,19 +174,17 @@ DEFAULT_SIDEBAR_POSITION = "right"
 SIDEBAR_POSITIONS = ("left", "right")
 
 # data/json/ui/sidebar.json:7 custom_sidebar "width": 36, recorded for
-# reference only.  It is deliberately NOT a default of any kind: the
-# width always comes from the widget the ACTIVE layout names, and there
-# is no code path on which this number is substituted for it.  Naming
-# it DEFAULT_ anything is what let a 36-cell crop stand in for a
-# 44-cell sidebar in the first place, so it is named for the preset it
-# documents instead.
+# reference only.  It is deliberately NOT a default of any kind: the width
+# always comes from the widget the ACTIVE layout names, and there is no code
+# path on which this number is substituted for it.
 CUSTOM_SIDEBAR_CELLS = 36
 
 # ---------------------------------------------------------------------
 # WHICH SIDEBAR IS ACTUALLY ON SCREEN
 #
 # The crop must be taken from the layout the engine is CURRENTLY
-# drawing, and that is not custom_sidebar on a fresh userdir.
+# drawing, and that is not custom_sidebar on a fresh userdir.  Three
+# facts decide it:
 #
 #   * panel_manager's constructor sets current_layout_id to
 #     "legacy_labels_sidebar" on every non-Android build, and to
@@ -268,10 +249,10 @@ DEFAULT_SCREEN_WIDTH = 1920
 DEFAULT_SCREEN_HEIGHT = 1080
 
 # The widget this module reads, by id first and by style second.
-# data/json/ui/sidebar.json:3 "id", :5 "style".  The default is now
+# data/json/ui/sidebar.json:3 "id", :5 "style".  The layout in force is
 # resolved from the game's own configuration rather than fixed to one
-# preset; DEFAULT_SIDEBAR_WIDGET_ID remains the documented id of the
-# custom_sidebar preset for a caller that wants to ask for it by name.
+# preset; DEFAULT_SIDEBAR_WIDGET_ID is the documented id of the
+# custom_sidebar preset, for a caller that wants to ask for it by name.
 DEFAULT_SIDEBAR_WIDGET_ID = "custom_sidebar"
 SIDEBAR_WIDGET_STYLE = "sidebar"
 
@@ -279,9 +260,8 @@ SIDEBAR_WIDGET_STYLE = "sidebar"
 # at first because it is the file the pipeline documents, but the
 # engine loads the WHOLE tree, so every *.json under data/json/ui --
 # including the spacebar/, structured/ and zenfs/ bundles -- is
-# searched for the resolved layout id.  Measured in this checkout:
-# eight widgets declare "style": "sidebar" in data/json/ui/*.json at
-# widths 32, 36, 43, 44, 44 and 66, with more in the themed bundles.
+# searched for the resolved layout id, because the widths differ
+# between presets and cropping the wrong column fails silently.
 UI_JSON_PARTS = ("data", "json", "ui")
 JSON_SUFFIX = ".json"
 
@@ -353,13 +333,7 @@ class GeometryError(Exception):
 
 
 def _note(message: str, notes: Optional[List[str]] = None) -> None:
-    """Announce a fallback and record it.
-
-    Emitted at WARNING so it is visible with no logging configuration
-    at all: Python's ``logging.lastResort`` handler writes WARNING and
-    above to stderr.  Standard output is reserved for the geometry
-    string, so a caller capturing stdout still sees this.
-    """
+    """Announce a fallback and record it."""
     LOG.warning("%s", message)
     if notes is not None:
         notes.append(message)
@@ -447,14 +421,7 @@ class WindowGeometry:
 
 @dataclass(frozen=True)
 class SidebarGeometry:
-    """The computed crop plus every input it was computed from.
-
-    Carrying the inputs alongside the answer is what lets a caller --
-    or a reviewer -- confirm the rectangle was derived rather than
-    assumed.  :attr:`notes` lists every substitution that had to be
-    made, in the order it was made; an empty tuple means every value
-    came from the game's own configuration files.
-    """
+    """The computed crop plus every input it was computed from."""
 
     rect: Rect
     window: Rect
@@ -754,14 +721,10 @@ def read_current_layout_id(
     default applies -- ``legacy_labels_sidebar`` on every non-Android
     build [src/panels.cpp:412-418].
 
-    An absent file is therefore ordinary and yields the documented
-    default with a note, while one that exists but cannot be believed
-    raises -- the READERS rule above, applied here.
-
     :returns: ``(layout_id, source)`` where ``source`` is
-        ``"panel_options.json"`` or ``"engine default"``.
-    :raises GeometryError: when the file exists but is not the shape
-        the engine writes.
+        ``"panel_options.json"`` or ``"engine default"``. :raises
+        GeometryError: when the file exists but is not the shape the engine
+        writes.
     """
     resolved = path or panel_options_path(root)
     if not os.path.exists(resolved):
@@ -804,14 +767,7 @@ def read_current_layout_id(
 
 
 def _widget_files(root: Optional[str] = None) -> List[str]:
-    """Every widget JSON file the engine loads, in a stable order.
-
-    ``data/json/ui/sidebar.json`` is listed FIRST so that the file this
-    pipeline documents is the one searched first, and the rest of the
-    tree follows in sorted order so that two runs on one checkout
-    resolve the same widget.  Sorting matters: an arbitrary filesystem
-    order would make a duplicate id resolve differently between runs.
-    """
+    """Every widget JSON file the engine loads, in a stable order."""
     base = ui_json_dir(root)
     documented = _join(repo_root(root), SIDEBAR_JSON_PARTS)
     found: List[str] = []
@@ -831,15 +787,7 @@ def _widget_files(root: Optional[str] = None) -> List[str]:
 def _sidebar_widgets(
     paths: Sequence[str],
 ) -> List[Tuple[str, Dict[str, object]]]:
-    """Return every ``style: sidebar`` widget in ``paths``.
-
-    Files that are not JSON arrays of objects are skipped rather than
-    fatal: the widget tree also holds bare objects and other shapes,
-    and the engine simply ignores what is not a widget it wants.  A
-    file that cannot be parsed at all IS reported, because a broken
-    content tree is worth knowing about even when the wanted widget
-    happens to be found elsewhere.
-    """
+    """Return every ``style: sidebar`` widget in ``paths``."""
     widgets: List[Tuple[str, Dict[str, object]]] = []
     for path in paths:
         try:
@@ -880,14 +828,7 @@ def _widget_width(
 def _all_widgets(
     paths: Sequence[str],
 ) -> Dict[str, Tuple[str, Dict[str, object]]]:
-    """Return {widget id: (file, widget)} for the whole widget tree.
-
-    EVERY widget, not only the sidebars: a layout names its rows by id
-    and those rows name their own children the same way, so answering a
-    question about what a layout CONTAINS needs the full map.  The first
-    definition of an id wins, which is the same rule
-    :func:`resolve_sidebar_widget` applies for the layouts themselves.
-    """
+    """Return {widget id: (file, widget)} for the whole widget tree."""
     found: Dict[str, Tuple[str, Dict[str, object]]] = {}
     for path in paths:
         try:
@@ -920,16 +861,6 @@ def layout_shows_the_clock(
     over a column with no clock in it -- every reading unreadable, every
     duration at the floor, and the pacing fiction.  So the question is
     asked of the layout's own contents rather than of its id.
-
-    The walk follows BOTH edges of the content tree: the ``widgets``
-    list, because the engine composes rows of rows and the clock lives
-    inside a row rather than directly in the sidebar, and ``copy-from``,
-    because a widget may inherit the very ``var`` this is looking for.
-    A cycle cannot loop it: every id is visited at most once.
-
-    Never raises for a layout it cannot find -- that is
-    :func:`resolve_sidebar_widget`'s refusal to make, and it makes it
-    with the engine's own fallbacks.
     """
     widgets = _all_widgets(
         list(paths) if paths is not None else _widget_files(root))
@@ -1038,17 +969,8 @@ def load_options(
     ``joOptions.get_string( "value" )`` [src/options.cpp:4080-4100].  So
     ``TERMINAL_X`` arrives as ``"240"``, not ``240``.
 
-    Two further shapes are accepted so that a hand-seeded or
-    hand-inspected file still works: a flat ``{"NAME": value}`` mapping
-    and a nested ``{"NAME": {"value": value}}`` mapping.  Every value
-    is normalised to :class:`str`, matching the engine's own contract.
-
-    An absent file yields an empty map plus a note and the caller falls
-    back to documented defaults, while one that exists but cannot be
-    parsed raises -- the READERS rule above, applied here.
-
-    :raises GeometryError: when the file exists but is unreadable,
-        unparseable, or of an unrecognised shape.
+    :raises GeometryError: when the file exists but is unreadable, unparseable,
+        or of an unrecognised shape.
     """
     resolved = path or options_json_path(root)
     if not os.path.isfile(resolved):
@@ -1114,16 +1036,8 @@ def option_int(
 ) -> int:
     """Read one integer option, substituting its default visibly.
 
-    An absent key yields ``default`` with a WARNING naming both the key
-    and the value substituted; a key present but not an integer raises.
-
-    ``valid_range`` is the engine's own declared minimum and maximum.  A
-    value outside it is reported at WARNING and then used AS READ -- the
-    file is authoritative about what the game is actually running with,
-    and clamping it here would hide a real misconfiguration.
-
-    :raises GeometryError: when the value is present but not a
-        positive integer.
+    :raises GeometryError: when the value is present but not a positive
+        integer.
     """
     if name not in options:
         _note(
@@ -1167,11 +1081,10 @@ def option_str(
 ) -> str:
     """Read one string option, substituting its default visibly.
 
-    :raises GeometryError: when the value is present but outside
-        ``allowed``.  For ``SIDEBAR_POSITION`` that matters concretely:
-        an unrecognised value means the side the sidebar is drawn on is
-        unknown, and picking one would be a coin toss dressed as a
-        computation.
+    :raises GeometryError: when the value is present but outside ``allowed``.
+        For ``SIDEBAR_POSITION`` that matters concretely: an unrecognised value
+        means the side the sidebar is drawn on is unknown, and picking one
+        would be a coin toss dressed as a computation.
     """
     if name not in options:
         _note(
@@ -1246,13 +1159,7 @@ def _resolve_int(
     notes: Optional[List[str]] = None,
     valid_range: Optional[Tuple[int, int]] = None,
 ) -> int:
-    """Resolve one integer term through the three-tier order.
-
-    Explicit argument, then the game-written options file, then the
-    pipeline's ``env.sh`` contract, then the engine's documented
-    default.  Every tier below the first two is announced at WARNING,
-    so a reader always knows which of them supplied the number.
-    """
+    """Resolve one integer term through the three-tier order."""
     if explicit is not None:
         return _positive_int(explicit, f"{name} override")
     if name in options:
@@ -1382,11 +1289,6 @@ def engine_logical_grid(
        [:6238-6239], and DIVIDED by the factor to give
        ``TERMINAL_WIDTH``/``TERMINAL_HEIGHT`` [:6251-6252].
 
-    The returned cell counts are the unit everything on screen is laid
-    out in -- including a sidebar widget's ``width`` -- and multiplying
-    them back up by ``font * factor`` reproduces the engine's physical
-    window [:595-596].
-
     The display bound used here is the X root, which is what the engine
     uses when ``FULLSCREEN`` is anything but ``"no"``: it takes the
     desktop display mode rather than probing a maximised test window
@@ -1401,10 +1303,9 @@ def engine_logical_grid(
     scale of 3 from any other caller would produce a well-formed
     rectangle for a window the game never renders.
 
-    :returns: ``(cols, rows, effective_scaling_factor)``.
-    :raises GeometryError: when any input is not a positive integer, or
-        when ``scaling_factor`` is not one of the three the engine
-        permits.
+    :returns: ``(cols, rows, effective_scaling_factor)``. :raises
+        GeometryError: when any input is not a positive integer, or when
+        ``scaling_factor`` is not one of the three the engine permits.
     """
     grid_x = _positive_int(terminal_x, "terminal width")
     grid_y = _positive_int(terminal_y, "terminal height")
@@ -1593,33 +1494,10 @@ def compute_sidebar_geometry(
 ) -> SidebarGeometry:
     """Compute the full-height sidebar crop from configuration.
 
-    This is the module's primary entry point.  Every parameter is an
-    optional override that exists so the computation can be exercised
-    against configurations other than the live one; supplying none of
-    them reads the real repository JSON and the real game-written
-    options and panel-options files, which is the path the pipeline
-    takes.
-
-    Resolution order for each term is: the explicit override, then the
-    game-written ``options.json``, then the ``env.sh`` contract, then
-    the engine's documented default -- with every tier below the first
-    two announced at WARNING and recorded in
-    :attr:`SidebarGeometry.notes`.
-
-    The sidebar width in cells is the one term never taken from an
-    environment variable or a constant, because that is precisely the
-    hard-coded rectangle this module exists to eliminate.  It is resolved
-    the way the engine resolves it -- ``current_layout_id`` from
-    ``panel_options.json``, else the engine's own default, then that id
-    looked up among the ``style: sidebar`` widgets of the whole
-    ``data/json/ui`` tree; see WHICH SIDEBAR at the top of this module.
-    ``sidebar_widget_id`` remains a direct override for exercising one
-    specific preset.
-
-    :returns: a :class:`SidebarGeometry` carrying the crop and every
-        input it was derived from.
-    :raises GeometryError: on any malformed input, on a sidebar wider
-        than the window, or if the crop would fall outside the root.
+    :returns: a :class:`SidebarGeometry` carrying the crop and every input it
+        was derived from. :raises GeometryError: on any malformed input, on a
+        sidebar wider than the window, or if the crop would fall outside the
+        root.
     """
     notes: List[str] = []
     root = repo_root(repo_root_dir)
@@ -1766,14 +1644,7 @@ def compute_sidebar_geometry(
 
 
 def sidebar_crop_geometry(**overrides: Any) -> str:
-    """Return just the ImageMagick ``WxH+X+Y`` crop string.
-
-    The convenience wrapper ``ocr_clock.py`` and ``capture.sh`` use.
-    Accepts exactly the keyword overrides of
-    :func:`compute_sidebar_geometry` and discards everything except the
-    geometry, so a consumer that only needs the rectangle does not have
-    to reach through the record to reach it.
-    """
+    """Return just the ImageMagick ``WxH+X+Y`` crop string."""
     return compute_sidebar_geometry(**overrides).geometry
 
 
@@ -1792,20 +1663,14 @@ def narrow_to_rows(
     ``custom_sidebar`` ``widgets`` array puts it, so ``ocr_clock.py``
     finds it by regex inside the OCR output of the whole column.
 
-    Supplying both bounds trades that robustness for OCR speed and is
-    only ever correct when the caller has independently established
-    which rows the clock occupies for the layout in play.  The
-    narrowing is announced at WARNING for exactly that reason.
-
     :param geometry: the resolved full sidebar geometry from
-        :func:`compute_sidebar_geometry`, whose ``rect`` is returned
-        unchanged unless both bounds are given and whose
-        ``font_height`` and ``scaling_factor`` give the pixel height of
-        one text row.
+        :func:`compute_sidebar_geometry`, whose ``rect`` is returned unchanged
+        unless both bounds are given and whose ``font_height`` and
+        ``scaling_factor`` give the pixel height of one text row.
     :param first_row: zero-based text row the band starts at.
     :param row_count: number of text rows the band covers.
-    :raises GeometryError: when the bounds are not positive integers
-        or fall outside the column.
+    :raises GeometryError: when the bounds are not positive integers or fall
+        outside the column.
     """
     if first_row is None or row_count is None:
         LOG.debug(
@@ -1994,21 +1859,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _configure_cli_logging(verbose: bool) -> None:
-    """Route this module's log records to the current stderr.
-
-    Deliberately NOT ``logging.basicConfig``: that call is a silent no-op
-    once the root logger already has a handler, so a second invocation in
-    one process -- or an embedding application that configured logging
-    first -- would send these warnings somewhere the operator is not
-    looking, and the warnings are the mechanism by which a substituted
-    default stays visible.
-
-    A handler owned by this module and rebuilt on every call always lands
-    on the ``sys.stderr`` in force right now, and ``propagate = False``
-    keeps it from being echoed again by a root handler.  Library callers
-    that do not run :func:`main` are untouched: with no handler anywhere,
-    ``logging.lastResort`` still writes WARNING and above to stderr.
-    """
+    """Route this module's log records to the current stderr."""
     for existing in list(LOG.handlers):
         LOG.removeHandler(existing)
         existing.close()

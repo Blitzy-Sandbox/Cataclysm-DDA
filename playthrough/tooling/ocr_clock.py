@@ -8,7 +8,8 @@ expression, and return the matched string -- or NOTHING AT ALL.
 THE HONESTY CONTRACT: None VERSUS AN EXCEPTION
 This module is the single place where "never fabricate" is enforced in
 code, because every frame duration, the pacing of the movie and the
-caption timings rest on it never inventing a number.
+caption timings rest on it never inventing a number.  The contract has
+four clauses:
 
   * a genuine ``HH:MM:SS`` reading is returned verbatim;
   * anything else returns ``None``: never ``"00:00:00"``, never the
@@ -32,32 +33,30 @@ The prescribed chain, in its shell form::
       | grep -Eo '[0-9]{2}:[0-9]{2}:[0-9]{2}'
 
 Every operator is load-bearing and none is dropped or reordered:
-``-crop "$RECT" +repage`` takes the sidebar column and resets the
-virtual canvas, ``-colorspace Gray`` removes chroma noise from coloured
-text on a dark background, ``-resize 200%`` enlarges 8x16 terminal
-glyphs that tesseract cannot read at native size, and ``-normalize``
-stretches contrast so the strokes separate.  ``$RECT`` is COMPUTED at
-run time by :mod:`sidebar_geometry`, never hard-coded.
+``+repage`` resets the virtual canvas the crop leaves behind,
+``-colorspace Gray`` removes chroma noise from coloured text,
+``-resize 200%`` enlarges 8x16 terminal glyphs tesseract cannot read at
+native size, and ``-normalize`` stretches contrast so strokes separate.
+``$RECT`` is COMPUTED at run time by :mod:`sidebar_geometry`.
 
-Two refinements are appended rather than substituted.  ``--psm 7`` is
-used ROW BY ROW with per-row normalisation, because tesseract's layout
-analysis mangles the clock line when the whole column is read at once
-and a column-global ``-normalize`` leaves the clock too dim to match.
-And ``-gaussian-blur 0x0.5`` follows ``-normalize``, because the game's
-Terminus face draws a SLASHED ZERO that tesseract reads as an ``8``; the
-half-pixel blur softens the slash.  The unblurred prescribed chain is
-still run as its own pass on every frame the blurred form cannot read.
+Two refinements are appended rather than substituted, each documented
+at its own definition: reading ROW BY ROW under ``--psm 7`` with
+per-row normalisation, because tesseract's layout analysis mangles the
+clock line when the whole column is read at once and a column-global
+``-normalize`` leaves it too dim to match; and :data:`DESLASH_BLUR`
+after ``-normalize``.  The unblurred prescribed chain still runs as its
+own pass on every frame the blurred form cannot read.
+
 The passes are ordered, documented and deterministic (:data:`PASSES`),
 and ``cross_check=True`` runs all of them and requires that they AGREE.
-A frame whose readers return different times is reported as UNREADABLE
-rather than resolved by pass order -- with one exception, and it is an
-exception about proof rather than about preference: an EXACT glyph match
-stands.  Exact means every character's ink is bit-identical to what the
-attested ``data/font/Terminus.ttf`` draws for it, so the engine
-demonstrably drew that time in those pixels; tesseract contradicting
-that is tesseract being wrong, as three frames of the committed evidence
-show.  Anything short of a proof is withheld.  capture.sh always
-cross-checks, so a style-induced misread cannot become the record.
+A frame whose readers disagree is reported as UNREADABLE rather than
+resolved by pass order -- with one exception, and it is about proof
+rather than preference: an EXACT glyph match stands, meaning every
+character's ink is bit-identical to what the attested
+``data/font/Terminus.ttf`` draws for it, so the engine demonstrably drew
+that time in those pixels.  Anything short of a proof is withheld.
+capture.sh always cross-checks, so a style-induced misread cannot
+become the record.
 
 FINDING THE ROW
 :mod:`sidebar_geometry` returns the WHOLE sidebar column, because the
@@ -72,11 +71,11 @@ appears the FIRST in reading order wins, so the same PNG always reads
 the same way.
 
 IMPOSSIBLE READINGS ARE DECLINED, NOT REPAIRED
-``48:48:48`` matches the pattern but cannot be a clock -- the engine
-cannot render hour 48.  Such a reading is declined with a warning and
-the search continues through the same real OCR output.  Declining is not
-repair: no digit is ever substituted, no value reconstructed, and if
-nothing possible is found the answer is ``None``.
+``48:48:48`` matches the pattern but cannot be a clock.  Such a reading
+is declined with a warning and the search continues through the same
+real OCR output.  Declining is not repair: no digit is substituted, no
+value reconstructed, and if nothing possible is found the answer is
+``None``.
 
 WHAT THE ENGINE CAN LEGITIMATELY RENDER
 ``display::time_string( const Character &u )``
@@ -90,10 +89,8 @@ failures, so :func:`read_time_phrase` returns them verbatim for
 returns ``None``, because they are not parseable clocks.
 Second-resolution deltas require a watch, and acquiring one is a
 character decision made in play; this module never works around its
-absence.  A ``"???"`` sidebar frequently comes back from OCR as
-something other than the literal marker, and that is reported as
-``None`` -- the honest answer, since nothing was recognised -- never as
-an invented time.
+absence.  A ``"???"`` sidebar often comes back from OCR as something
+other than the literal marker, and that is reported as ``None``.
 
 WHY THE PATTERN IS EXACTLY ``[0-9]{2}:[0-9]{2}:[0-9]{2}``
 ``to_string_time_of_day()`` [src/calendar.cpp:638-663] branches three
@@ -102,38 +99,32 @@ ways on ``24_HOUR``: ``"military"`` gives ``"%02d%02d.%02d"``
 ``"24h"`` gives the fixed-width colon-delimited ``"%02d:%02d:%02d"``
 [src/calendar.cpp:649], the only form the pattern matches; and the
 shipped ``"12h"`` default [src/options.cpp:1868-1877] gives a
-variable-width AM/PM form.  ``seed_options.py`` sets ``24_HOUR=24h``
-precisely so the pattern is deterministic, and
-:func:`assert_24_hour_option` REFUSES to read frames under any other
-value -- and just as firmly when the value cannot be established at all,
-because "unknown format" and "wrong format" have the same consequence:
-zero matches, every duration collapsed to the floor, and a movie that
-looks plausible and means nothing.  The one way past it is the
-explicitly diagnostic ``--no-check-options``, which reports what it
-found, refuses nothing, and yields a reading that must not be treated as
-evidence for timing.
+variable-width AM/PM form.  ``seed_options.py`` sets ``24_HOUR=24h`` so
+the pattern is deterministic, and :func:`assert_24_hour_option` REFUSES
+to read frames under any other value -- and just as firmly when the
+value cannot be established at all, because "unknown format" and "wrong
+format" have the same consequence: zero matches, every duration
+collapsed to the floor, and a movie that looks plausible and means
+nothing.  The one way past it is the explicitly diagnostic
+``--no-check-options``, whose reading must not be treated as evidence
+for timing.
 
 TRUSTED TOOL RESOLUTION, NO SHELL, AND ONE DECLARED WRITE
-The legacy ``convert`` and ``identify`` commands are called directly:
-they exist on both the ImageMagick 6.x and 7.x branches, whereas the
-unified version-7 entry point does not exist on 6.x at all, so calling
-only the legacy names is what lets this module run against either.
-Code written against version-7 examples fails on 6.x with a
-command-not-found error.  Every external command runs through
-``subprocess.run([...])`` with an argument LIST and a timeout -- never a
-shell, never a command assembled by string interpolation -- nothing is
-evaluated dynamically, no path is joined without validation, and there
-is no network surface of any kind.
+The legacy ``convert`` and ``identify`` commands are called directly,
+because they exist on both the ImageMagick 6.x and 7.x branches while
+the unified version-7 entry point does not exist on 6.x at all.  Every
+external command runs through ``subprocess.run([...])`` with an
+argument LIST and a timeout -- never a shell, never a command assembled
+by string interpolation -- nothing is evaluated dynamically, no path is
+joined without validation, and there is no network surface of any kind.
 
 The frame and the game-written ``options.json`` are opened for READING
 only, and no game state, save file or memory is ever consulted: the
-clock comes from rendered pixels and nothing else.  Every reading --
-the clock, the coarse phrase, the date line, the per-pass evidence
-behind ``--json`` -- leaves on STDOUT, with diagnostics on stderr, and
-is not persisted here.  That is a boundary rather than an omission:
-this module is called from the capture step, whose declared output is
-one PNG, so a file written here would be a second output of a capture
-and an artifact nobody asked for.
+clock comes from rendered pixels and nothing else.  Every reading
+leaves on STDOUT, with diagnostics on stderr, and is not persisted
+here -- a boundary rather than an omission, since the capture step's
+declared output is one PNG and a file written here would be a second
+output of a capture.
 
 THE ONE EXCEPTION IS ASKED FOR BY NAME.  When a caller passes
 ``--audit``, :func:`append_date_audit` appends one record per frame to
@@ -142,30 +133,23 @@ to tell a midnight rollover from a misread clock.  It lives outside the
 manifest because that schema is exactly six fields, and it is written
 HERE because reading the date in the same OCR pass as the clock is what
 stops the two from ever disagreeing.  Without ``--audit`` there is no
-write at all, and the caller that owns the session record decides
-whether any of this evidence is kept and where.  No bytecode is written
-either (``sys.dont_write_bytecode``, plus ``-B`` on every standalone
-command, so importing the sibling cannot leave a ``__pycache__`` inside
-the committed ``playthrough/`` tree).
+write at all.  No bytecode is written either
+(``sys.dont_write_bytecode``, plus ``-B`` on every standalone command,
+so importing the sibling cannot leave a ``__pycache__`` inside the
+committed ``playthrough/`` tree).
 
 A VERIFIED TOOLCHAIN
-Two further conditions hold before any pixels are parsed, because this
-module's output is what every duration in the finished movie is
-computed from.  ``convert`` and ``tesseract`` are resolved to absolute
-paths -- preferring env.sh's already-checked ``$PLAYTHROUGH_BIN_*`` --
-and the binary and every directory above it are checked for
-third-party ownership and group- or world-writability; one that fails
-is treated as absent rather than run, which for ``convert`` means the
-Pillow engine takes over loudly.  And the installed Pillow must be at
-least PILLOW_MIN_VERSION, which is the pin in
-``playthrough/tooling/requirements.txt``: every frame is decoded by
-Pillow, so an interpreter carrying an older one is not the environment
-this pipeline was verified in and the mismatch is reported here rather
-than discovered from a wrong duration.  Both refusals have a
-documented, per-invocation override for diagnosis
-(``$PLAYTHROUGH_ALLOW_UNVERIFIED_EXECUTABLES=1``,
-``$PLAYTHROUGH_ALLOW_VULNERABLE_PILLOW=1``); neither is ever the
-default.
+Two conditions hold before any pixels are parsed, because this module's
+output is what every duration in the finished movie is computed from.
+``convert`` and ``tesseract`` are resolved to absolute paths --
+preferring env.sh's already-checked ``$PLAYTHROUGH_BIN_*`` -- and each
+binary and every directory above it is checked for third-party
+ownership and group- or world-writability; one that fails is treated as
+absent rather than run, which for ``convert`` means the Pillow engine
+takes over loudly.  And the installed Pillow must satisfy
+:data:`PILLOW_MIN_VERSION`, which tracks the requirements-file pin.
+Each refusal has a documented, loud, per-invocation override defined
+alongside it; neither is ever the default.
 
 CLI CHANNELS
     $ . playthrough/tooling/env.sh
@@ -183,30 +167,25 @@ CLI CHANNELS
     CLOCK_DATE=Thursday, Dec 21
 
 ``env.sh`` exports ``PLAYTHROUGH_PYTHON``, the pinned CPython 3.12 that
-carries Pillow and pytesseract; the system ``python3`` does not, so it
-is the interpreter every example here uses, and ``-B`` keeps a
-re-included ``__pycache__`` out of the tree.
+carries Pillow and pytesseract; the system ``python3`` does not.
 
 Standard output carries exactly the reading and nothing else, so
 capturing it in a ``CLOCK="$(...)"`` substitution is safe; an
-unreadable clock prints
-nothing and exits 1, and a fault prints a diagnosis on stderr and exits
-2.  Every warning, note and derivation goes to stderr, which keeps
-engineering observations out of the in-character record.
+unreadable clock prints nothing and exits 1, and a fault prints a
+diagnosis on stderr and exits 2.  Every warning, note and derivation
+goes to stderr, which keeps engineering observations out of the
+in-character record.
 
-Status 1 means ONE thing and nothing else: this module ran, read the
-frame, and the frame held no such reading.  It is never the status of a
-module that failed to start, because ``capture.sh`` acts on that
-distinction -- it carries on past an unreadable clock and stops on a
-fault -- and a missing dependency reported as "no clock on this frame"
-would collapse every duration in the film to the floor while every
-count still tallied.  Every import that can fail is therefore guarded
-(see BOOTSTRAP IMPORTS below) and ``--preflight`` checks them all
-before the session starts.
-
-Anything MISCONFIGURED or suspicious is a warning and needs no logging
-setup, while an ORDINARY unreadable frame -- what most menu keystrokes
-capture -- is explained at INFO and surfaces with ``-v``.
+Status 1 means ONE thing: this module ran, read the frame, and the
+frame held no such reading.  It is never the status of a module that
+failed to start, because ``capture.sh`` acts on that distinction -- it
+carries on past an unreadable clock and stops on a fault -- and a
+missing dependency reported as "no clock on this frame" would collapse
+every duration in the film to the floor while every count still
+tallied.  Every import that can fail is therefore guarded (see
+BOOTSTRAP IMPORTS below) and ``--preflight`` checks them all before the
+session starts.  An ORDINARY unreadable frame -- what most menu
+keystrokes capture -- is explained at INFO and surfaces with ``-v``.
 """
 # Annotations are strings under PEP 563, which is what lets this module
 # keep its `-> Image.Image` and `rect: sidebar_geometry.Rect`
@@ -238,7 +217,7 @@ try:
     # than the module failing to load.
     import resource
 except ImportError:            # pragma: no cover - POSIX only
-    resource = None            # type: ignore[assignment]
+    resource = None
 
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple, Union
@@ -279,11 +258,11 @@ try:
     from PIL import __version__ as PILLOW_VERSION
     PILLOW_IMPORT_ERROR: Optional[BaseException] = None
 except ImportError as _pillow_import_error:  # pragma: no cover
-    Image = None  # type: ignore[assignment]
-    ImageDraw = None  # type: ignore[assignment]
-    ImageFilter = None  # type: ignore[assignment]
-    ImageFont = None  # type: ignore[assignment]
-    ImageOps = None  # type: ignore[assignment]
+    Image = None
+    ImageDraw = None
+    ImageFilter = None
+    ImageFont = None
+    ImageOps = None
     PILLOW_VERSION = ""
     PILLOW_IMPORT_ERROR = _pillow_import_error
 
@@ -294,21 +273,17 @@ try:
     import numpy
     NUMPY_IMPORT_ERROR: Optional[BaseException] = None
 except ImportError as _numpy_import_error:  # pragma: no cover
-    numpy = None  # type: ignore[assignment]
+    numpy = None
     NUMPY_IMPORT_ERROR = _numpy_import_error
 
-# Set BEFORE the sibling import below, which is the only import that
-# can write into the repository working tree.  env.sh exports
-# PYTHONDONTWRITEBYTECODE=1, but this module is documented as runnable
-# on its own -- and a standalone `python3 playthrough/tooling/
-# ocr_clock.py ...` without that environment would compile the sibling
-# to playthrough/tooling/__pycache__/, which .gitignore's terminal
-# `!/playthrough/**` negation then makes COMMITTABLE.  A stray .pyc in
-# a committed evidence tree is an artifact nobody authored, so the
-# module refuses to create one whatever environment it is run under.
-# The flag only suppresses .pyc writing; it changes nothing else, and
-# it must be set before the import it protects because the interpreter
-# consults it at compile time.
+# Set BEFORE the sibling import below, which is the only import that can write
+# into the repository working tree.  env.sh exports PYTHONDONTWRITEBYTECODE=1,
+# but this module is documented as runnable on its own -- and a standalone
+# `python3 playthrough/tooling/ ocr_clock.py ...` without that environment
+# would compile the sibling to playthrough/tooling/__pycache__/, which
+# .gitignore's terminal `!/playthrough/**` negation then makes COMMITTABLE.  A
+# stray .pyc in a committed evidence tree is an artifact nobody authored, so
+# the module refuses to create one whatever environment it is run under.
 sys.dont_write_bytecode = True
 
 try:
@@ -328,7 +303,7 @@ except ImportError:  # pragma: no cover - flat sibling, as tools/ does
     try:
         import sidebar_geometry
     except ImportError as _geometry_import_error:  # pragma: no cover
-        sidebar_geometry = None  # type: ignore[assignment]
+        sidebar_geometry = None
         SIDEBAR_GEOMETRY_IMPORT_ERROR = _geometry_import_error
 
 LOG = logging.getLogger("playthrough.ocr_clock")
@@ -425,27 +400,12 @@ OPT_24_HOUR_12H = "12h"
 CONVERT_BIN = "convert"
 TESSERACT_BIN = "tesseract"
 
-# The lowest Pillow this module will decode a captured frame with, and
-# it is exactly the version playthrough/tooling/requirements.txt pins.
-#
-# THIS TRACKS THE PIN, and that is the whole contract: it is exactly
-# `pillow==11.3.0` from playthrough/tooling/requirements.txt, so an
-# interpreter that satisfies the requirements file satisfies this check
-# and one that does not is named before a frame is read rather than
-# after a duration comes out wrong.  Every frame goes through Pillow --
-# the convert path decodes convert's output with it, the Pillow path
-# does the whole chain in it, and _assert_rect_fits() opens the PNG
-# with it -- so it is the one library on the pipeline's only hot path,
-# which is why the version is asserted at all instead of assumed.
-#
-# 11.3.0 is the newest release moviepy 2.2.1's declared
-# `pillow<12.0,>=9.2.0` range allows, it is the last release of the 11
-# line so it carries every fix published in that series, and
-# requirements.txt records the advisory measurement behind preferring
-# that consistency to a newer major.  MOVE THE TWO TOGETHER: raising
-# this constant above the pin makes the provisioned interpreter fail
-# this gate, which is precisely the break this comment exists to
-# prevent.
+# The lowest Pillow this module will decode a captured frame with, and it is
+# exactly the version playthrough/tooling/requirements.txt pins.  THIS TRACKS
+# THE PIN, and that is the whole contract: it is exactly `pillow==11.3.0` from
+# playthrough/tooling/requirements.txt, so an interpreter that satisfies the
+# requirements file satisfies this check and one that does not is named before
+# a frame is read rather than after a duration comes out wrong.
 PILLOW_MIN_VERSION = (11, 3, 0)
 
 # The pinned version as a requirement specifier, for the diagnostics
@@ -481,10 +441,10 @@ SCALE_FACTOR = 2
 # back into the "08:00:00" the pixels actually say.
 DESLASH_BLUR = "0x0.5"
 
-# The Pillow equivalent of the appended blur.  Measured on the same
-# real frame: radius 0.8-1.0 reproduces a match where radius 0.5 does
-# not, so the two engines are equivalent in kind rather than in
-# arithmetic, and the difference is recorded in ENGINE_NOTES.
+# The Pillow equivalent of the appended blur.  Radius 0.8-1.0 reproduces
+# a match where radius 0.5 does not, so the two engines are equivalent in
+# kind rather than in arithmetic, and the difference is recorded in
+# ENGINE_NOTES.
 PILLOW_BLUR_RADIUS = 0.9
 
 # Page-segmentation modes.  7 is "treat the image as a single text
@@ -553,8 +513,7 @@ GLYPH_FONT_PARTS = ("data", "font", "Terminus.ttf")
 # PARSER INPUT -- FreeType, reached through Pillow -- and the path above
 # is derived rather than configured, which is safe until somebody puts a
 # different file there.  Attesting the bytes turns "the font we expect"
-# into a checkable fact; see _attested_font().  Measured on this
-# checkout, not copied from anywhere.
+# into a checkable fact; see _attested_font().
 GLYPH_FONT_SHA256 = (
     "e0d645677fa32557a16b3be8533c552c2939fd507d7b8515ead5d9cf494cb2a6")
 
@@ -565,31 +524,16 @@ GLYPH_FONT_SHA256 = (
 # Pillow's own 89-megapixel bomb threshold.
 MAX_PIXELS = 64 * 1024 * 1024
 
-# A hard ceiling on the BYTES one capture may occupy, which is a
-# different question from its pixel count and is asked earlier.  The
-# provenance check now reads the file it validated (see
-# read_verified_frame), so a planted enormous file would otherwise be
-# read into memory before anything looked at its header.  A 1920x1080
-# root capture measures roughly 90 KiB compressed and the largest in the
-# delivered set is under 200 KiB, so 64 MiB is generous by a factor of
-# three hundred and still bounded.
+# A hard ceiling on the BYTES one capture may occupy, which is a different
+# question from its pixel count and is asked earlier.  The provenance check now
+# reads the file it validated (see read_verified_frame), so a planted enormous
+# file would otherwise be read into memory before anything looked at its
+# header.
 MAX_FRAME_BYTES = 64 * 1024 * 1024
 
-# The CPU budget, in seconds, granted to one decode.
-#
-# MEASURED, NOT GUESSED: twenty consecutive open_png() calls over a real
-# 1920x1080 capture on this host cost 0.0903 s of process CPU time,
-# 0.0045 s each.  Thirty seconds is therefore roughly six thousand times
-# what the work takes, which is the point -- the limit exists to end a
-# native decoder that has stopped making progress, not to police a slow
-# machine.  It MUST stay generous: a limit that can fire on legitimate
-# work turns a security control into a flaky pipeline, and a flaky
-# control gets removed.
-#
-# The budget is added to the CPU time already consumed and restored
-# afterwards, because RLIMIT_CPU is cumulative over the life of the
-# process, not per call.  A fixed absolute value would fire partway
-# through a long run for no reason at all.
+# The CPU budget, in seconds, granted to one decode.  MEASURED, NOT GUESSED:
+# twenty consecutive open_png() calls over a real 1920x1080 capture on this
+# host cost 0.0903 s of process CPU time, 0.0045 s each.
 DECODE_CPU_SECONDS = 30
 
 # Everything the sidebar's clock, date and coarse-time rows can contain.
@@ -607,25 +551,16 @@ GLYPH_ALPHABET = (
 # bright text on black, so the split is wide and not delicate.
 GLYPH_INK_THRESHOLD = 100
 
-# The most differing pixels a match may carry over a cell of
-# FONT_WIDTH x FONT_HEIGHT.  Zero is what a clean capture actually
-# produces; a small allowance absorbs a colour whose dimmest stroke
-# pixel falls near the threshold.
-#
-# THIS IS A CEILING, NOT THE TOLERANCE.  The tolerance that actually
-# applies is derived per glyph from its own nearest neighbour (see
-# _glyph_templates), because a fixed ceiling is unsafe by measurement
-# rather than in principle: on this checkout's Terminus.ttf at 8x16,
-# '3' and '8' differ by exactly 4 pixels and ',' and '.' by 1, so a
-# ceiling of 4 was wide enough for a smudged '3' to be answered by an
-# '8'.  A false clock reading is a false duration, a false caption and a
-# false line in the transcript, and nothing downstream can detect it.
+# The most differing pixels a match may carry over a cell of FONT_WIDTH x
+# FONT_HEIGHT.  Zero is what a clean capture actually produces; a small
+# allowance absorbs a colour whose dimmest stroke pixel falls near the
+# threshold.
 GLYPH_MAX_DISTANCE = 4
 
 # How much further away the runner-up must be before the nearest match
-# is believed.  Two, so that an exact TIE -- which used to be resolved
-# by GLYPH_ALPHABET order, i.e. arbitrarily -- and a one-pixel
-# preference are both refused.
+# is believed.  Two, so that an exact TIE -- which would otherwise fall
+# to GLYPH_ALPHABET order, i.e. arbitrarily -- and a one-pixel preference
+# are both refused.
 GLYPH_MATCH_MARGIN = 2
 
 # Cell width is derived from the row height rather than read from the
@@ -751,38 +686,15 @@ class ToolchainError(OcrClockError):
 
 
 class OptionsError(OcrClockError):
-    """The game is configured so that the clock cannot be parsed.
-
-    Raised when ``24_HOUR`` is not ``24h``.  ``military`` renders
-    ``0815.32``, which matches nothing this module looks for, so every
-    frame would report an unreadable clock, every duration would
-    collapse to the floor, and the finished movie would look plausible
-    and mean nothing.  That silent catastrophe is turned into a hard
-    failure here.
-    """
+    """The game is configured so that the clock cannot be parsed."""
 
 
 class BootstrapError(ToolchainError):
-    """A dependency this module cannot work without did not import.
-
-    A subclass of :class:`ToolchainError` because that is exactly what
-    it is -- a missing part of the toolchain -- and because every
-    caller that already treats a toolchain fault as a fault then
-    treats this one the same way.  It exists as its own class so the
-    diagnostic can name the import that failed and the file that
-    declares it.
-    """
+    """A dependency this module cannot work without did not import."""
 
 
 def _require_pillow() -> None:
     """Fail as a FAULT when Pillow is unavailable.
-
-    Called at every point Pillow is actually used, rather than at
-    import time, so that ``--explain``, ``--help`` and the module's
-    pure text helpers keep working on a host where the pin has not
-    been installed -- and so that the failure, when it comes, carries
-    the dedicated fault status instead of the status that means "this
-    frame held no clock".
 
     :raises BootstrapError: when ``PIL`` could not be imported.
     """
@@ -811,13 +723,7 @@ def _require_sidebar_geometry() -> None:
 
 
 def bootstrap_problems() -> List[str]:
-    """Return one diagnostic per dependency that did not import.
-
-    Exposed so a caller can PREFLIGHT the toolchain before it starts
-    capturing -- ``capture.sh`` runs ``--preflight`` once before the
-    first frame -- instead of discovering a missing package one
-    unreadable-looking frame at a time.
-    """
+    """Return one diagnostic per dependency that did not import."""
     problems = []
     for require in (_require_pillow, _require_sidebar_geometry):
         try:
@@ -828,14 +734,7 @@ def bootstrap_problems() -> List[str]:
 
 
 class AuditError(OcrClockError):
-    """The per-frame date evidence could not be recorded.
-
-    Distinct from an unreadable date, which is recorded as ``null``.
-    This is raised only when the sidecar itself cannot be written --
-    a bad path, a bad frame index, or a write the module could not
-    complete -- because timeline.py's rollover rule is only as good as
-    the evidence it can read back.
-    """
+    """The per-frame date evidence could not be recorded."""
 
 
 # ---------------------------------------------------------------------
@@ -890,11 +789,6 @@ def reset_diagnostics() -> None:
       of a check made when it was first resolved.  A caller whose PATH
       or whose filesystem has changed since then is entitled to have
       that check made again rather than inherited.
-
-    Forward reference: ``_VERIFIED_TOOLS`` is defined further down, with
-    ``verified_tool`` that populates it.  It is cleared here rather than
-    beside it so that there is ONE way to say "start again", instead of
-    a caller having to know how many caches this module keeps.
     """
     _WARNED.clear()
     _VERIFIED_TOOLS.clear()
@@ -944,17 +838,12 @@ def _attested_font(row_height: int) -> "ImageFont.FreeTypeFont":
     is safe until somebody plants a file there.  So the font is attested
     on three counts before it is opened:
 
-      * it is a REGULAR FILE reached without a symbolic link, so the name
-        cannot be redirected;
-      * its sha256 equals GLYPH_FONT_SHA256, the digest of the
-        data/font/Terminus.ttf this repository ships -- so a substituted
-        or corrupted face is refused rather than parsed;
-      * it is inside this checkout.
-
-    The digest is a committed fact about a committed file, which is what
-    makes this checkable by somebody who was not here.  A legitimate
-    upstream font change is a one-line update with the new digest, made
-    deliberately -- which is the point.
+    * it is a REGULAR FILE reached without a symbolic link, so the name
+      cannot be redirected;
+    * its sha256 equals GLYPH_FONT_SHA256, the digest of the
+      data/font/Terminus.ttf this repository ships -- so a substituted
+      or corrupted face is refused rather than parsed;
+    * it is inside this checkout.
     """
     path = _glyph_font_path()
     try:
@@ -998,17 +887,10 @@ def assert_decodable_provenance(path: str) -> None:
     in 12.1.1.  The reason that is an acceptable risk is stated in
     requirements.txt and rests on ONE property: the only images this
     pipeline decodes are PNGs it captured itself, from an X server it
-    started, on the machine doing the decoding.
-
-    A security review found that property was not actually enforced.
-    The frames were group- and world-writable -- 151 files at mode 0666
-    and 15 directories at 02777, measured -- so any local account could
-    replace frame_00042.png with a crafted PNG between capture and
-    decode, and the closed loop the pin is defended by was not closed.
-    The modes were repaired and the producers now create owner-only
-    paths, but a mode set at creation is a fact about the past. This
-    checks it at the moment it matters: immediately before the bytes
-    reach a native parser.
+    started, on the machine doing the decoding.  A mode set at creation
+    is a fact about the past, so the property is checked here at the
+    moment it matters: immediately before the bytes reach a native
+    parser.
 
     Refused, each for its own reason:
 
@@ -1020,12 +902,12 @@ def assert_decodable_provenance(path: str) -> None:
     * group- or world-writable -- then so does anybody in that group,
       or anybody at all.
 
-    THE CHECK AND THE READ ARE ONE OPERATION NOW.  A later review found
-    the remaining half of this race: the properties above were read with
-    `lstat` and the file was then REOPENED BY NAME for the decode, so a
-    concurrent writer with the same uid could replace the inode between
-    the two (CWE-367) and the bytes that reached Pillow were not the
-    bytes that were validated.  read_verified_frame() closes that by
+    THE CHECK AND THE READ ARE ONE OPERATION.  Reading the properties
+    above with `lstat` and then REOPENING THE FILE BY NAME for the decode
+    would leave half the race open: a concurrent writer with the same uid
+    could replace the inode between the two (CWE-367), and the bytes that
+    reached Pillow would not be the bytes that were validated.
+    read_verified_frame() closes that by
     opening once with O_NOFOLLOW, asking `fstat` about the DESCRIPTOR,
     and decoding what it read through that same descriptor.  This
     function is the descriptor-less half, kept public because a caller
@@ -1074,9 +956,6 @@ def _open_frame_descriptor(path: str) -> int:
 def _refuse_undecodable_stat(info: os.stat_result, path: str) -> None:
     """Refuse a stat result that is not a capture this account wrote.
 
-    Held against an `fstat` of the open descriptor wherever a decode
-    follows, so the object described is the object read.
-
     :raises FrameUnreadableError: with the property that failed.
     """
     if stat.S_ISLNK(info.st_mode):              # pragma: no cover
@@ -1110,15 +989,6 @@ def _refuse_undecodable_stat(info: os.stat_result, path: str) -> None:
 
 def read_verified_frame(path: str) -> bytes:
     """Return the bytes of a capture, validated as it was read.
-
-    ONE OPEN, ONE FSTAT, ONE READ, IN THAT ORDER.  This is the whole of
-    the check-to-use race the review named: everything the provenance
-    rule asks -- regular file, this account's, not writable by anybody
-    else -- is asked of the DESCRIPTOR that the returned bytes came out
-    of, so no concurrent writer can substitute another inode between the
-    question and the answer.  The PNG signature is checked on the bytes
-    for the same reason: a header read from the path and content decoded
-    from the path are two reads and therefore two facts.
 
     The read is bounded by MAX_FRAME_BYTES, which is asked twice -- once
     of the size `fstat` reported and once of what was actually read --
@@ -1172,18 +1042,6 @@ class decode_limits(object):
 
     WHAT THIS DOES AND, MORE IMPORTANTLY, WHAT IT DOES NOT.
 
-    RLIMIT_CORE is set to 0 for the duration. If a native decoder
-    segfaults on a malformed PNG -- the failure mode the pinned Pillow
-    has advisories for -- the kernel writes no core file. That matters
-    here beyond tidiness: a core dump of this process contains the
-    decoded frame and everything else resident, and it lands wherever
-    the host's core pattern points, which is not a location this
-    pipeline controls or cleans.
-
-    RLIMIT_CPU is set to the CPU already used plus DECODE_CPU_SECONDS,
-    so a decoder that stops making progress is killed instead of
-    spinning until something else notices.
-
     RLIMIT_AS IS DELIBERATELY NOT SET, and that is a measurement rather
     than an omission. Importing this module reserves 2.6 GiB of virtual
     address space before any decode happens -- numpy alone accounts for
@@ -1197,9 +1055,6 @@ class decode_limits(object):
     (Image.MAX_IMAGE_PIXELS = MAX_PIXELS) is what bounds allocation
     here, and it does so at the only layer that can distinguish a
     legitimate 1920x1080 frame from a bomb.
-
-    Every limit is restored on exit, including when the body raises, so
-    nothing here changes the process for the stage that follows.
     """
 
     def __init__(self) -> None:
@@ -1263,34 +1118,31 @@ def open_png(path: str) -> "Image.Image":
 
     THE ONE DOOR EVERY IMAGE THIS MODULE DECODES COMES THROUGH.
 
-    Pillow identifies a file by its CONTENT, not by its name, and it
-    ships a plugin for every format it supports -- so `Image.open` on a
-    file called frame_00001.png will happily hand a PSD, a DDS, a TIFF
-    or a FLI to the native parser that format needs.  Those parsers are
-    where Pillow's memory-corruption advisories live.  Two controls close
-    that off completely:
+    Pillow identifies a file by its CONTENT, not by its name, and ships
+    a plugin for every format it supports -- so `Image.open` on a file
+    called frame_00001.png will happily hand a PSD, a DDS, a TIFF or a
+    FLI to the native parser that format needs, and those parsers are
+    where Pillow's memory-corruption advisories live.  Two controls
+    close that off completely:
 
-      * the first eight bytes must be the PNG signature, checked here
-        rather than trusted;
-      * `formats=["PNG"]` restricts Pillow to the PNG plugin alone, so
-        even a file that got past the signature check cannot reach
-        another decoder.
+    * the first eight bytes must be the PNG signature, checked here
+      rather than trusted;
+    * `formats=["PNG"]` restricts Pillow to the PNG plugin alone, so
+      even a file that got past the signature check cannot reach
+      another decoder.
+
+    THE BYTES DECODED ARE THE BYTES VALIDATED.  Checking the path with
+    `lstat`, reading its signature by name, and then handing the NAME to
+    Image.open is three separate reads of one pathname -- a check-to-use
+    race (CWE-367), because a concurrent writer with this account's uid
+    can replace the inode after the checks and the decoder then parses a
+    file nothing validated.  read_verified_frame does all of it through
+    ONE descriptor and returns the bytes, and the decode is handed those
+    bytes.
 
     A decompression bomb is bounded as well: MAX_PIXELS is a hard cap on
     the pixel count, which is generous beside the 1920x1080 root window
     these captures actually are.
-
-    Verified on this host under Pillow 11.3.0: a BMP renamed .png is
-    refused with UnidentifiedImageError.
-
-    THE BYTES DECODED ARE THE BYTES VALIDATED.  This used to check the
-    path with `lstat`, read its signature by name, and then hand the NAME
-    to Image.open -- three separate reads of one pathname, which a review
-    correctly called a check-to-use race: a concurrent writer with this
-    account's uid could replace the inode after the checks and the
-    decoder would parse a file nothing had validated.  read_verified_frame
-    does all of it through one descriptor and returns the bytes, and the
-    decode is handed those bytes.
     """
     data = read_verified_frame(path)
     _require_pillow()
@@ -1314,12 +1166,6 @@ def open_png(path: str) -> "Image.Image":
 
 def open_png_bytes(data: bytes, source: str) -> "Image.Image":
     """Open in-memory PNG bytes, and refuse anything that is not one.
-
-    The bytes-shaped half of `open_png`.  `convert` is asked for `png:-`
-    and is a pinned, verified tool, but "the tool we asked for a PNG
-    returned one" is an assumption rather than a check -- and it is
-    exactly one `-define` or one hostile frame away from being false.
-    Restricting Pillow to the PNG plugin makes it a check.
 
     :param source: what produced the bytes, for the error message.
     """
@@ -1350,15 +1196,8 @@ def open_png_bytes(data: bytes, source: str) -> "Image.Image":
 def png_size(path: str) -> Tuple[int, int]:
     """Return a PNG's pixel dimensions WITHOUT decoding it.
 
-    The IHDR chunk is the first chunk of every PNG and its first eight
-    bytes are the width and the height, big-endian.  Reading them here
-    means the commonest question asked of a capture -- "is it
-    1920x1080?" -- is answered by 24 bytes of pure Python instead of by
-    a native decoder, so a malformed capture is a ValueError rather than
-    a parse of hostile input.
-
-    :raises FrameUnreadableError: for anything that is not a PNG whose
-        first chunk is a well-formed IHDR.
+    :raises FrameUnreadableError: for anything that is not a PNG whose first
+        chunk is a well-formed IHDR.
     """
     try:
         with open(path, "rb") as handle:
@@ -1392,27 +1231,7 @@ def _glyph_templates(
 ) -> Tuple[Dict[bytes, str],
            Tuple[Tuple[str, "numpy.ndarray"], ...],
            Dict[str, int]]:
-    """Render one template per glyph from the game's own font.
-
-    Returns three things: an exact index keyed by the template's raw
-    bytes, so that a cell the engine drew from this font is recognised by
-    LOOKUP rather than by comparison; the same templates as an ordered
-    list, for the bounded near-match below; and, for each glyph, the
-    Hamming distance to its CLOSEST OTHER template.
-
-    That third value is what makes a near match safe rather than
-    plausible.  Measured on this checkout's Terminus.ttf at 8x16: '3'
-    and '8' differ by only FOUR pixels, and ',' and '.' by ONE, so a
-    fixed tolerance that looked generous was in fact wide enough to
-    answer a smudged '3' with an '8' -- and a false clock reading is a
-    false duration, a false caption and a false line in the transcript.
-    The tolerance is therefore derived per glyph from its own nearest
-    neighbour: a template can absorb at most floor((d-1)/2) differing
-    pixels before another template is closer, so twice the distance must
-    stay strictly under that neighbour distance.
-
-    Cached, because a session reads the same grid on every frame.
-    """
+    """Render one template per glyph from the game's own font."""
     _require_pillow()
     font = _attested_font(row_height)
     exact: Dict[bytes, str] = {}
@@ -1503,33 +1322,21 @@ def _decode_glyph_row(
 ) -> str:
     """Decode one grid row of cells into text.
 
-    :param marks: filled, if given, with one flag per returned
-        character saying whether that character came from an EXACT
-        match.  An exact match means the cell's ink is bit-identical to
-        what the attested font draws for that glyph, which is a proof
-        rather than a preference -- read_sidebar() uses it to decide
-        whether this pass may stand against a disagreeing OCR pass.
+    An exact match answers immediately.  Anything else must be a match
+    that is UNIQUE AND SEPARATED, on three conditions that all have to
+    hold:
 
-    An exact match answers immediately.  Anything else must be a
-    match that is UNIQUE AND SEPARATED, on three conditions that all
-    have to hold:
+    * the nearest template is within GLYPH_MAX_DISTANCE;
+    * twice that distance is strictly less than the distance from that
+      template to its own nearest neighbour -- the classic
+      unique-decoding radius, so no other template can be as close;
+    * the runner-up is at least GLYPH_MATCH_MARGIN further away, which
+      also settles an exact TIE, where two templates sit at the same
+      distance and the answer would otherwise be whichever came first
+      in GLYPH_ALPHABET.
 
-      * the nearest template is within GLYPH_MAX_DISTANCE;
-      * twice that distance is strictly less than the distance from that
-        template to its own nearest neighbour -- the classic
-        unique-decoding radius, so no other template can be as close;
-      * the runner-up is at least GLYPH_MATCH_MARGIN further away, which
-        also settles an exact TIE, where two templates sit at the same
-        distance and the answer used to be whichever came first in
-        GLYPH_ALPHABET.
-
-    A cell that fails any of them becomes a space -- NEVER a guess at
-    what it might have been -- and the ambiguity is recorded so it is
-    visible rather than silently absorbed.  The row then usually fails
-    find_clocks() and the OCR passes answer for that frame, which is the
-    designed fallback and is the honest outcome: a plausible false time
-    is worse than no time, because the timeline reconciles a missing
-    reading and cannot detect a wrong one.
+    :param marks: filled, if given, with one flag per returned character saying
+        whether that character came from an EXACT match.
     """
     out: List[str] = []
     exactly: List[bool] = []
@@ -1588,14 +1395,10 @@ def read_column_by_glyphs(
 ) -> str:
     """Decode the sidebar column cell by cell against the game's font.
 
-    Returns the column's text, one grid row per line, with rows that
-    decoded to nothing dropped.  Returns "" when the grid cannot be
-    established or the font is unavailable -- never a partial guess.
-
-    :param marks: filled, if given, with one flag per character of the
-        returned text saying whether that character was an EXACT match
-        against the attested font.  Newlines are marked False, so the
-        list indexes the returned string directly.
+    :param marks: filled, if given, with one flag per character of the returned
+        text saying whether that character was an EXACT match against the
+        attested font. Newlines are marked False, so the list indexes the
+        returned string directly.
     """
     _require_pillow()
     if numpy is None or ImageFont is None or ImageDraw is None:
@@ -1661,15 +1464,12 @@ def read_column_by_glyphs(
                 marks.append(False)
             marks.extend(band_marks)
     if ambiguous and find_clocks(text)[0] is None:
-        # PROPORTIONATE REPORTING.  A refused cell is only worth a
-        # reader's attention when the refusal cost the reading: the
-        # sidebar draws box-rules and symbols this alphabet does not
-        # contain, so a column normally carries dozens of cells that
-        # match nothing -- and those used to be answered with whichever
-        # template happened to be nearest.  Refusing them is the fix and
-        # is silent; a column that yielded NO clock is the case where
-        # someone needs to see why, so it gets one note carrying the
-        # count and the closest call.
+        # PROPORTIONATE REPORTING.  A refused cell is only worth a reader's
+        # attention when the refusal cost the reading: the sidebar draws
+        # box-rules and symbols this alphabet does not contain, so a column
+        # normally carries dozens of cells that match nothing, and answering
+        # those with whichever template happened to be nearest is exactly what
+        # this refuses.
         _warn(
             "the exact glyph reader refused %d ambiguous cell(s) in %s "
             "and found no clock, so the OCR passes answer for this "
@@ -1689,9 +1489,6 @@ def _all_exact(text: str, value: str,
     unique-decoding radius is bounded -- is strong evidence but not
     proof, and only a proof is allowed to stand against a disagreeing
     OCR pass in read_sidebar().
-
-    Conservative on every doubt: an unlocatable value, a short mark
-    list, or a value spanning a line break all answer False.
     """
     if not value or len(marks) != len(text):
         return False
@@ -1767,15 +1564,7 @@ PASSES = (
 
 @dataclass(frozen=True)
 class SidebarReading:
-    """Everything one frame's sidebar actually said, and how.
-
-    Carrying the evidence beside the answer is what lets a caller -- or
-    a reviewer -- confirm the reading was observed rather than assumed.
-    :attr:`candidates` lists every distinct clock any pass read, in
-    pass order, so a disagreement is inspectable; :attr:`agreement` is
-    false exactly when there is more than one.  :attr:`clock` is the
-    winning pass's reading, or ``None``.
-    """
+    """Everything one frame's sidebar actually said, and how."""
 
     png: str
     rect: str
@@ -1850,13 +1639,9 @@ class SidebarReading:
         return "\n".join(lines)
 
 
-# Everything :func:`resolve_rect` accepts.  A bare sequence is
-# ``(width, height, x, y)`` -- the order of the geometry string, so
-# that reading a call and reading the crop are the same exercise.
-# The two sibling types are named as forward references so that this
-# alias -- which IS evaluated at import time, unlike an annotation --
-# does not require the sibling module to have imported.  See BOOTSTRAP
-# IMPORTS above.
+# Everything :func:`resolve_rect` accepts.  A bare sequence is ``(width,
+# height, x, y)`` -- the order of the geometry string, so that reading a call
+# and reading the crop are the same exercise.
 RectLike = Union[
     None,
     str,
@@ -1907,17 +1692,6 @@ def validate_frame_path(
     notes: Optional[List[str]] = None,
 ) -> str:
     """Resolve and check a frame path, or fail loudly.
-
-    The checks, in order: the argument is a non-empty string; it names
-    a ``.png``; it resolves inside the canonical frames directory; the
-    file exists; it is a regular file; and it begins with the PNG
-    signature.
-
-    Containment is a WARNING by default rather than a refusal, because
-    reading one arbitrary frame is exactly how a human debugs this
-    module -- and ``main()`` says so on stderr when it happens.  Pass
-    ``strict=True`` (``--strict-path`` on the command line) to refuse
-    instead, which is what an automated caller should do.
 
     :returns: the resolved absolute path.
     :raises FramePathError: for an unusable path, or for a path outside
@@ -2007,22 +1781,11 @@ def assert_24_hour_option(
     ``seed_options.py``, which is a mis-sequenced pipeline rather than
     an ordinary state to warn about.
 
-    ``require=False`` is the explicitly diagnostic path, for inspecting
-    a frame captured under some other configuration by hand.  It NEVER
-    raises: it reports what it found on stderr, says plainly that the
-    assertion was skipped, and returns whatever the value was.  A
-    reading obtained that way carries no assurance about its format and
-    must not feed a timeline.  :func:`read_time_phrase` and
-    :func:`read_date_line` take that path because neither the coarse
-    phrase nor the date line depends on the clock rendering at all --
-    both read identically under all three values -- so refusing them
-    over ``24_HOUR`` would reject a legitimate read.
-
-    :returns: the option's value when it is ``24h``; the value found,
-        or ``None`` when there was none, in the diagnostic mode.
-    :raises OptionsError: when ``require`` is true and the value is
-        anything other than ``24h``, including the cases where the
-        options file cannot be read or carries no such value.
+    :returns: the option's value when it is ``24h``; the value found, or
+        ``None`` when there was none, in the diagnostic mode.
+    :raises OptionsError: when ``require`` is true and the value is anything
+        other than ``24h``, including the cases where the options file cannot
+        be read or carries no such value.
     """
     if options is None:
         try:
@@ -2170,21 +1933,11 @@ def resolve_rect(
 ) -> Tuple[sidebar_geometry.Rect, int]:
     """Return the sidebar crop and the height of one text row.
 
-    With ``rect=None`` the crop is computed from configuration by
-    :func:`sidebar_geometry.compute_sidebar_geometry`, which is the
-    path the pipeline takes, and every substitution that computation
-    had to make is copied into ``notes``.
-
     :param rect: an explicit crop, or ``None`` to compute one.
     :param row_height: one text row in pixels; derived when omitted.
     :param notes: a list every substitution is appended to.
-    :param options_json: the game-written ``options.json`` the crop
-        computation should read.  ``None`` leaves
-        :mod:`sidebar_geometry` on its own default location, which is
-        the production path; passing it keeps the crop and the
-        ``24_HOUR`` assertion on one single configuration file, since
-        the terminal and font dimensions that place the sidebar live in
-        the same file as the clock format that makes it readable.
+    :param options_json: the game-written ``options.json`` the crop computation
+        should read.
     :returns: ``(rect, row_height)``.
     :raises RectError: for a malformed rectangle or row height.
     """
@@ -2266,8 +2019,8 @@ def resolve_rect(
 # command, no PATH search by the shell.  Beyond that, FINDING a tool on
 # PATH is not the same as trusting it: PATH is mutable, this runs
 # unattended, and what convert and tesseract produce is the clock
-# reading every duration in the finished movie is computed from.  So
-# the binary is resolved to an absolute path, and that path -- and every
+# reading every duration in the finished movie is computed from.  So the
+# binary is resolved to an absolute path, and that path -- and every
 # directory above it -- is checked for third-party ownership and for
 # group- or world-writability before it is run.  A tool that fails the
 # check is treated exactly like a missing one, with the reason given.
@@ -2291,14 +2044,7 @@ def _owned_by_a_third_party(info: os.stat_result) -> bool:
 
 
 def _executable_complaint(path: str) -> Optional[str]:
-    """Return why `path` cannot be trusted, or None when it can.
-
-    The realpath is what is inspected, because a link's own permissions
-    say nothing about the file that would actually run, and every
-    ancestor directory is inspected too: a writable directory anywhere
-    above the binary means it can be replaced between this check and
-    the next invocation.
-    """
+    """Return why `path` cannot be trusted, or None when it can."""
     real = os.path.realpath(path)
     try:
         info = os.stat(real)
@@ -2350,7 +2096,7 @@ def verified_tool(name: str) -> str:
     link's TARGET is what gets inspected.
 
     :raises ToolchainError: when the tool is absent, or present and
-        untrustworthy.  ``$PLAYTHROUGH_ALLOW_UNVERIFIED_EXECUTABLES=1``
+        untrustworthy. ``$PLAYTHROUGH_ALLOW_UNVERIFIED_EXECUTABLES=1``
         downgrades the refusal to a warning for a diagnostic run.
     """
     cached = _VERIFIED_TOOLS.get(name)
@@ -2486,12 +2232,6 @@ def assert_pillow_supported(
 def preflight_problems() -> List[str]:
     """Return every reason this module could not read a frame yet.
 
-    bootstrap_problems() answers "did the dependencies import".  This
-    answers the larger question ``--preflight`` is actually asked, by
-    adding the one condition that is checked at the point of use and
-    would therefore surface no earlier than frame 1: whether the Pillow
-    that decodes every frame is the version the pin names.
-
     Both failures have the same shape -- a whole session of frames that
     each look like an honest unreadable clock while every count still
     tallies -- so both belong in the check that runs ONCE before any
@@ -2499,10 +2239,6 @@ def preflight_problems() -> List[str]:
     documented override is honoured exactly as it is at the point of
     use: with ``$PLAYTHROUGH_ALLOW_VULNERABLE_PILLOW=1`` the mismatch is
     announced and is not a problem.
-
-    An import failure short-circuits the version question, because
-    "PIL did not import" is already the report and asking a module that
-    is not there for its version would say nothing further.
     """
     problems = bootstrap_problems()
     if problems:
@@ -2551,14 +2287,7 @@ def _run(
 
 def resolve_engine(requested: Optional[str] = None,
                    notes: Optional[List[str]] = None) -> str:
-    """Choose the preprocessing engine, announcing any substitution.
-
-    ``convert`` is the default because it IS the prescribed chain and
-    because it measurably read the calibration frame correctly where
-    Pillow read one digit of the slashed zero wrong.  When ImageMagick
-    is absent the Pillow path is used instead -- loudly, since the
-    reading may differ.
-    """
+    """Choose the preprocessing engine, announcing any substitution."""
     engine = requested or ENGINE_CONVERT
     if engine not in ENGINES:
         raise ToolchainError(
@@ -2577,13 +2306,7 @@ def resolve_engine(requested: Optional[str] = None,
 
 def resolve_ocr_engine(requested: Optional[str] = None,
                        notes: Optional[List[str]] = None) -> str:
-    """Choose the OCR front end, announcing any substitution.
-
-    ``pytesseract`` is the default -- it is the declared dependency for
-    this module -- and the ``tesseract`` binary is called directly when
-    it is not installed, which is also the literal form of the
-    prescribed pipeline.
-    """
+    """Choose the OCR front end, announcing any substitution."""
     engine = requested or OCR_PYTESSERACT
     if engine not in OCR_ENGINES:
         raise ToolchainError(
@@ -2723,17 +2446,9 @@ def ocr_image(image: Image.Image, psm: int,
               ocr_engine: str = OCR_PYTESSERACT) -> str:
     """Run tesseract over one image and return its text.
 
-    BOTH front ends are bounded by :data:`TESSERACT_TIMEOUT`.  The
-    subprocess path always was; the pytesseract path defaults to
-    ``timeout=0``, meaning no limit at all, so it is passed explicitly.
-    Without it a single wedged tesseract child would hang the capture
-    loop indefinitely, mid-session, with the game still running and no
-    error to show for it -- and a hung tool is a fault to report, not a
-    reason to wait forever.
-
-    :raises ToolchainError: when tesseract is absent, exceeds the
-        timeout, or fails.  A blank result is NOT an error: an empty
-        band legitimately reads empty.
+    :raises ToolchainError: when tesseract is absent, exceeds the timeout, or
+        fails. A blank result is NOT an error: an empty band legitimately reads
+        empty.
     """
     config = "--psm %d" % psm
     if ocr_engine == OCR_PYTESSERACT:
@@ -2805,14 +2520,9 @@ def is_possible_clock(value: object) -> bool:
 def find_clocks(text: str) -> Tuple[Optional[str], Tuple[str, ...]]:
     """Return the first possible clock in ``text``, and the rest.
 
-    Matches are considered in reading order -- top row to bottom row,
-    left to right within a row -- and the first one that could be a
-    real time wins.  That rule is fixed so the same OCR text always
-    yields the same answer.
-
-    :returns: ``(clock_or_None, impossible_readings)``.  The second
-        element exists so a caller can report what was declined; no
-        declined reading is ever repaired into the first element.
+    :returns: ``(clock_or_None, impossible_readings)``. The second element
+        exists so a caller can report what was declined; no declined reading is
+        ever repaired into the first element.
     """
     if not text:
         return None, ()
@@ -2852,11 +2562,6 @@ def extract_phrase(text: str) -> Optional[str]:
     [src/display.cpp:159-186, 212-216], so they are genuine readings
     and are returned exactly as the engine spells them, for
     ``manifest.py`` to record in ``ingame_clock``.
-
-    When several appear, the earliest in the text wins, and the longer
-    phrase wins a tie -- so "Around midnight" is never truncated to a
-    shorter match that starts at the same place.  ``"???"`` is reported
-    only when no phrase was found, since a phrase says strictly more.
     """
     if not text:
         return None
@@ -2902,24 +2607,7 @@ def extract_date(text: str) -> Optional[str]:
 
 def diagnose_clock_text(text: str,
                         notes: Optional[List[str]] = None) -> None:
-    """Explain why OCR text held no readable clock.
-
-    An unreadable clock is a legitimate outcome, but the REASON is
-    worth reporting: an off-contract ``24_HOUR`` value looks exactly
-    like a watchless survivor from the outside, and confusing the two
-    would send someone hunting for a wristwatch that was never the
-    problem.
-
-    The level is calibrated deliberately.  A cause that means
-    something is MISCONFIGURED -- a ``military`` or ``12h`` clock in
-    the sidebar -- is a warning, visible with no logging setup at all.
-    A cause that is ORDINARY -- a watchless survivor, or a menu frame
-    with no sidebar drawn, which is what most character-creation
-    keystrokes capture -- is reported at INFO and surfaces with
-    ``-v``.  Warning on every expected menu frame would bury the two
-    lines that actually mean someone must intervene, so the split is
-    load-bearing and should not be flattened.
-    """
+    """Explain why OCR text held no readable clock."""
     military = MILITARY_RE.search(text)
     if military is not None:
         _warn(
@@ -2965,12 +2653,8 @@ def _scan_strip(
 ) -> Tuple[str, int]:
     """OCR a preprocessed strip band by band, top to bottom.
 
-    Bands that hold a single flat colour are skipped without an OCR
-    call -- a blank sidebar row cannot contain a clock, and on a black
-    frame this reduces the whole read to no OCR calls at all.
-
-    :returns: ``(text, ocr_call_count)`` with one line per band, so the
-        row structure survives into the extraction step.
+    :returns: ``(text, ocr_call_count)`` with one line per band, so the row
+        structure survives into the extraction step.
     """
     lines: List[str] = []
     calls = 0
@@ -3030,41 +2714,30 @@ def read_sidebar(
 ) -> SidebarReading:
     """Read one captured frame's sidebar and report what it said.
 
-    This is the module's primary entry point; :func:`read_clock`,
-    :func:`read_time_phrase` and :func:`read_date_line` are thin views
-    of it.  The read is a pure function of the frame and the crop: no
-    value is carried from any previous call, so a sequence cannot be
-    silently continued.
-
-    :param png_path: the captured PNG.  Validated, and expected inside
-        the frames directory.
+    :param png_path: the captured PNG. Validated, and expected inside the
+        frames directory.
     :param rect: the crop; ``None`` computes it from configuration.
     :param row_height: one text row in pixels; derived when omitted.
     :param engine: ``convert`` (default) or ``pillow`` preprocessing.
     :param ocr_engine: ``pytesseract`` (default) or ``tesseract``.
     :param passes: an explicit pass list; :data:`PASSES` by default.
-    :param cross_check: run every pass even after one succeeds.  A
-        disagreement then makes the clock ``None`` -- withheld, not
-        resolved by pass order -- UNLESS an exact glyph match settles
-        it, which is a proof and stands.  Either way every candidate
-        stays in :attr:`SidebarReading.candidates` and
-        :attr:`SidebarReading.agreement` stays false, so a contested
-        frame is visible as contested.  This is what capture.sh uses.
-    :param full_scan: read every text row.  ``False`` stops at the
-        first row holding a clock, which is faster and is what
-        :func:`read_clock` does; the date line may then be missed.
+    :param cross_check: run every pass even after one succeeds. A disagreement
+        then makes the clock ``None`` -- withheld, not resolved by pass order
+        -- UNLESS an exact glyph match settles it, which is a proof and stands.
+    :param full_scan: read every text row. ``False`` stops at the first row
+        holding a clock, which is faster and is what :func:`read_clock` does;
+        the date line may then be missed.
     :param check_options: assert ``24_HOUR`` is ``24h`` before reading.
-    :param options_json: an explicit options file, used both for that
-        assertion and for the crop computation, so a hand-picked
-        configuration cannot be asserted against one file while the
-        sidebar is located from another.
+    :param options_json: an explicit options file, used both for that assertion
+        and for the crop computation, so a hand-picked configuration cannot be
+        asserted against one file while the sidebar is located from another.
     :param frames_dir: an explicit frames directory for path checking.
     :param strict_path: refuse a frame outside the frames directory.
     :returns: a :class:`SidebarReading`; ``.clock`` is ``None`` when no
         possible clock was read.
-    :raises OcrClockError: for any fault -- a bad or missing frame, an
-        unusable crop, a missing tool, a misconfigured option.  Never
-        for an unreadable clock.
+    :raises OcrClockError: for any fault -- a bad or missing frame, an unusable
+        crop, a missing tool, a misconfigured option. Never for an unreadable
+        clock.
     """
     notes: List[str] = []
     resolved_png = validate_frame_path(
@@ -3300,19 +2973,8 @@ def read_clock(
 ) -> Optional[str]:
     """Return the sidebar clock as ``HH:MM:SS``, or ``None``.
 
-    THE contract of this module.  ``None`` means the clock could not be
-    read from these pixels -- because the survivor carries no watch,
-    because the sidebar is not drawn on this frame, or because OCR
-    could not make out a possible time.  ``None`` is never a stand-in
-    for a value: no default, no neighbouring frame, no interpolation
-    and no repair of a partial match.
-
-    Scanning stops at the first row holding a clock, which is why the
-    default here is ``full_scan=False``; use :func:`read_sidebar` when
-    the date line or the raw text is wanted too.
-
-    :returns: the reading, or ``None``.
-    :raises OcrClockError: for a fault, never for an unreadable clock.
+    :returns: the reading, or ``None``. :raises OcrClockError: for a fault,
+        never for an unreadable clock.
     """
     return read_sidebar(
         png_path,
@@ -3349,10 +3011,6 @@ def read_time_phrase(
     the engine spells them for ``manifest.py`` to record -- while
     :func:`read_clock` still returns ``None`` for the same frame,
     because a phrase is not a parseable clock.
-
-    ``check_options`` defaults to ``False`` here: the ``24_HOUR`` value
-    is irrelevant to a phrase, so a misconfigured option must not stop
-    a phrase from being read honestly.
     """
     return read_sidebar(
         png_path,
@@ -3379,14 +3037,7 @@ def read_date_line(
     frames_dir: Optional[str] = None,
     strict_path: bool = False,
 ) -> Optional[str]:
-    """Return the sidebar date line, verbatim, or ``None``.
-
-    Exposed separately from the clock because ``timeline.py``'s
-    midnight-rollover guard needs it: with the date in hand a
-    ``23:59:58`` to ``00:00:04`` step is a positive six-second delta
-    rather than a negative one.  It is never folded into the clock
-    string.
-    """
+    """Return the sidebar date line, verbatim, or ``None``."""
     return read_sidebar(
         png_path,
         rect=rect,
@@ -3460,7 +3111,7 @@ DATE_AUDIT_FIELDS = ("frame", "file", "clock", "phrase", "date",
 # this pipeline is inside that tree, so "inside the tree" includes the
 # manifest, the transcripts, a save file, a PNG and both MP4s.
 #
-# So the destination is now pinned to one relative name.  A caller may
+# So the destination is pinned to one relative name.  A caller may
 # still relocate the whole TREE (see approved_artifact_root's `root`
 # argument, which is a call-site seam for a test that owns a temporary
 # directory), and inside whatever tree that is, the sidecar has exactly
@@ -3493,20 +3144,7 @@ def _validated_audit_frame(frame: object) -> int:
 
 
 def approved_artifact_root(root: Optional[str] = None) -> str:
-    """Return the tree this module may write inside, absolute.
-
-    Derived from THIS FILE's location and from nothing else: the
-    ``playthrough`` directory that holds ``tooling``.  No environment
-    variable participates, because the one thing this module writes is
-    evidence about a captured session, and a variable that could move
-    it somewhere else could move it on top of something else.
-
-    ``root`` is a CALL SITE's argument and nothing else -- argparse
-    never produces one and ``main()`` never passes one.  It exists so a
-    test can hold this writer to a temporary directory it owns instead
-    of appending to the committed evidence, which is the same seam
-    timeline.py and manifest.py already carry.
-    """
+    """Return the tree this module may write inside, absolute."""
     if root is None:
         tooling = os.path.dirname(os.path.abspath(__file__))
         return os.path.realpath(os.path.dirname(tooling))
@@ -3524,12 +3162,6 @@ def approved_artifact_root(root: Optional[str] = None) -> str:
 
 def canonical_audit_path(root: Optional[str] = None) -> str:
     """Return the ONE path the date audit may be appended to.
-
-    Derived from :func:`approved_artifact_root` and
-    :data:`DATE_AUDIT_REL_PARTS`, so no environment variable and no
-    argument participates.  ``root`` is the same call-site-only seam
-    approved_artifact_root documents: a test relocates the whole tree,
-    and the sidecar's place inside it does not move.
 
     env.sh exports the same value as ``$PLAYTHROUGH_DATE_AUDIT`` for the
     shell half of the pipeline; it is not READ here, because a variable
@@ -3554,11 +3186,6 @@ def _validated_audit_path(path: object,
     still points at something else inside the tree, and the sidecar is
     appended to: one link could grow the manifest, a frame or the
     movie by a line of JSON while this function reported success.
-
-    The parent directory must already exist: creating it here would let
-    a mistyped path grow a second sidecar somewhere else in the tree,
-    and directory creation is playthrough_mkdirs()' job in
-    playthrough/tooling/env.sh.
     """
     if isinstance(path, os.PathLike):
         path = os.fspath(path)
@@ -3636,21 +3263,7 @@ def date_audit_record(frame: int,
                       reading: SidebarReading,
                       frame_sha256: Optional[str] = None
                       ) -> Dict[str, object]:
-    """Build the audit record for one frame's reading.
-
-    Pure: it touches no file, so a caller can inspect exactly what
-    would be written.  The frame index is the caller's -- session.py
-    owns the counter and this module never generates one.
-
-    `frame_sha256` BINDS the reading to the pixels it was taken from.
-    capture.sh hashes the PNG the instant it is published and passes that
-    digest here, so a consumer can tell a reading of THIS frame from a
-    reading of whatever file later occupied the same index -- a
-    withdrawn capture, or a re-photographed step.  It is optional
-    because a row written before the attestation ledger existed
-    genuinely has none, and ``null`` is the honest way to say so rather
-    than a digest measured now and presented as one taken then.
-    """
+    """Build the audit record for one frame's reading."""
     index = _validated_audit_frame(frame)
     return {
         "frame": index,
@@ -3664,13 +3277,7 @@ def date_audit_record(frame: int,
 
 
 def _validated_audit_digest(value: object) -> Optional[str]:
-    """Return a sha256 in canonical form, or None.  Never a guess.
-
-    A malformed digest is REFUSED rather than dropped to null: it would
-    otherwise be indistinguishable from a row that honestly had none,
-    and the difference between "not bound" and "bound to something
-    unreadable" is exactly what a reader needs.
-    """
+    """Return a sha256 in canonical form, or None. Never a guess."""
     if value is None:
         return None
     if isinstance(value, os.PathLike):
@@ -3697,17 +3304,8 @@ def append_date_audit(path: str, frame: int,
                       ) -> Dict[str, object]:
     """Append one frame's date evidence to the sidecar.
 
-    Append-only, one line, flushed and forced to the device: this is
-    evidence about what the sidebar showed, and evidence is neither
-    rewritten nor reported as stored until it is.  A repeated frame
-    index is NOT an error here -- a recapture legitimately produces a
-    second record for the same frame -- and resolving that is the
-    consumer's job, which requires the readings for a frame to AGREE and
-    treats the date as unobserved when they do not.
-
-    :returns: the record exactly as written.
-    :raises AuditError: for a bad path, a bad index, or a write this
-        module could not complete.
+    :returns: the record exactly as written. :raises AuditError: for a bad
+        path, a bad index, or a write this module could not complete.
     """
     resolved = _validated_audit_path(path, root)
     record = date_audit_record(frame, reading, frame_sha256)
@@ -3957,15 +3555,7 @@ def _configure_cli_logging(verbosity: int) -> None:
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    """Read one frame and print the requested reading, or nothing.
-
-    The three exit codes are a contract with ``capture.sh`` and are
-    kept strictly apart: 0 carries a reading on stdout, 1 means the
-    frame was read and held no such reading, and 2 means a FAULT --
-    including a dependency that did not import, which is why the
-    bootstrap check below runs before anything else and why every
-    fragile import in this module is guarded.
-    """
+    """Read one frame and print the requested reading, or nothing."""
     parser = build_parser()
     args = parser.parse_args(argv)
     _configure_cli_logging(args.verbose)

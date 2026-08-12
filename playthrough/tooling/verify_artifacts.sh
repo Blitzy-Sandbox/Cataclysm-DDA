@@ -12,10 +12,13 @@
 #
 # Every acceptance criterion this feature has is a COMMAND or a
 # CHECKABLE PROPERTY rather than an adjective, and this file is where
-# those commands live.  It reads the committed artifacts -- the frames,
-# the record, the timeline, the film, the caption track, the transcripts
-# and the engine-written userdir -- and reports, one property at a time,
-# whether each is what it is claimed to be.
+# those commands live.  It reads the ARTIFACT SET -- the frames, the
+# record, the timeline, the film, the caption track, the transcripts and
+# the engine-written userdir -- and reports, one property at a time,
+# whether each is what it is claimed to be.  Committed state is a
+# separate question, asked by the version-control group: the pre-commit
+# phase deliberately measures artifacts that are NOT yet committed, which
+# is the whole point of running it before the checkpoint.
 #
 # IT MODIFIES NOTHING INSIDE THE WORKING TREE.  Its only writes are into
 # a private scratch directory under the mode-0700 runtime root env.sh
@@ -26,39 +29,27 @@
 # ---------------------------------------------------------------------
 # WHY IT EXISTS: THREE FAILURE MODES THAT ARE OTHERWISE SILENT
 #
-# Most of the ways this pipeline can go wrong announce themselves -- a
-# missing tool, a crashed encode, an unparsable JSON row.  Three do not,
-# and those three are the reason this file exists.  Each is turned into
-# a loud, named failure below.
+# Most ways this pipeline can go wrong announce themselves -- a missing
+# tool, a crashed encode, an unparsable row.  Three do not, and each is
+# turned into a loud, named failure below:
 #
-#   1. A SAVE THAT IS COMMITTED IN APPEARANCE ONLY.  Cataclysm-DDA
-#      writes per-character save files whose names begin with '#'
-#      (src/game_io.cpp:601-641), and .gitignore carries `\#*`
-#      (.gitignore:131) plus an unanchored `*.log` (.gitignore:31) and
-#      `debug.log` (.gitignore:79).  Without the terminal
-#      `!/playthrough/**` negation, `git add` SKIPS the save and EXITS
-#      SUCCESSFULLY.  Every count downstream still tallies; the save is
-#      simply not there.  Answered by check group 7, which asserts both
-#      `git ls-files` membership and `git check-ignore` non-membership
-#      for every artifact class.
-#
-#   2. A FILM THAT IS ENTIRELY BLACK.  With SDL_VIDEODRIVER=dummy the
-#      game runs, the captures succeed, the encode succeeds, the frame
-#      count equals the row count, and the only symptom is that nothing
-#      is visible.  Answered by check group 6, the luminance gate:
-#      grayscale mean > 0 AND standard deviation > 0, on sampled
-#      captures and on a frame extracted from the finished film.  Both
-#      terms are load-bearing -- the mean catches a black frame, the
-#      deviation additionally catches a uniform solid-colour one that a
-#      mean-only test would pass.
-#
-#   3. CAPTIONS THAT DRIFT OUT OF SYNC.  A transition inserts real
-#      seconds into video time.  A caption generator that walks frame
-#      durations without charging those seconds to the cue cursor emits
-#      cues that are correct at the start and increasingly wrong by the
-#      end.  Answered by check groups 3 and 5, which assert the
+#   1  A SAVE COMMITTED IN APPEARANCE ONLY.  The engine writes character
+#      files beginning with '#', and .gitignore carries `\#*` (:131),
+#      unanchored `*.log` (:31) and `debug.log` (:79).  Without the
+#      terminal `!/playthrough/**` negation, `git add` SKIPS the save and
+#      EXITS SUCCESSFULLY.  Answered by group 7, which asserts both
+#      `git ls-files` membership and `git check-ignore` non-membership.
+#   2  A FILM THAT IS ENTIRELY BLACK.  Under SDL_VIDEODRIVER=dummy the
+#      game runs, the captures succeed, the encode succeeds and every
+#      count tallies; nothing is visible.  Answered by group 6: grayscale
+#      mean > 0 AND standard deviation > 0.  The mean catches a black
+#      frame, the deviation a uniform solid-colour one.
+#   3  CAPTIONS THAT DRIFT.  A transition inserts real seconds into video
+#      time, so a caption generator that walks frame durations without
+#      charging them emits cues that are right at the start and further
+#      out with every transition.  Answered by groups 3 and 5: the
 #      invariant sum(durations) + sum(transitions) == total == final cue
-#      end AND compare every cue window against the timeline's own.
+#      end, and every cue window against the timeline's own.
 #
 # ---------------------------------------------------------------------
 # THE REPORTING MODEL: RUN EVERY CHECK, THEN EXIT NON-ZERO
@@ -66,8 +57,8 @@
 # This file runs under `set -euo pipefail`, under which a bare failing
 # command aborts the script.  For a gate that is precisely the wrong
 # behaviour: the operator would be told about the first broken property
-# and left ignorant of the other sixty.  So no check is expressed as a
-# bare command.  Every one records a verdict through record_pass,
+# and left ignorant of every remaining check.  So no check is expressed
+# as a bare command.  Every one records a verdict through record_pass,
 # record_fail or record_info, the counters accumulate, and the exit
 # status is decided ONCE at the end.
 #
@@ -76,76 +67,44 @@
 # cannot find is a FAILURE of the gate rather than an excuse to stop
 # measuring.  Every check below has a defined verdict on every host.
 #
+# EVERY VERDICT PRINTS ITS EVIDENCE: a FAIL prints the observed value
+# beside the expected one, and a PASS prints the observed value too, so
+# the report records what was measured rather than asserting that
+# somebody once measured it.
+#
 # ---------------------------------------------------------------------
 # THE TWO PHASES, AND WHY A SINGLE-PHASE GATE COULD NEVER PASS
 #
-# FIFTEEN of the properties below are properties OF THE COMMIT: the
+# FIFTEEN of the properties below are properties OF THE COMMIT -- the
 # save is tracked, every artifact class is tracked, the tracked capture
 # count equals the on-disk one, nothing under playthrough/ is left
 # uncommitted, the checkpoints are ordered and are about the survivor in
-# the tree, the committed .gitignore still carries the negation, the
+# the tree, the committed .gitignore still carries the negation, and the
 # change surface since the base commit is only this feature.  NONE OF
-# THEM CAN HOLD BEFORE THE COMMIT THAT MAKES THEM TRUE.  They are
+# THEM CAN HOLD BEFORE THE COMMIT THAT MAKES THEM TRUE, so a gate run as
+# one undivided pass ahead of a checkpoint can never reach it.  They are
 # enumerated one by one beside GROUP_CHECKS_ALL below.
 #
-# Every other property -- the record, the timeline, the container, the
-# caption track, the luminance, the absence of cheating, the artwork,
-# the lint -- is a property OF THE ARTIFACTS, and holds the instant the
-# render finishes, with nothing committed at all.
-#
-# Run as one undivided gate ahead of a commit, those fifteen fail on
-# any tree that is not already fully committed, and a sequencer that
-# puts the gate before the checkpoint can therefore never reach the
-# checkpoint.  That is not a hypothetical: it was measured, on a genuine
-# post-session tree, as nine failures out of a hundred and eight, every
-# one of them a tracking, history or clean-tree property.
-#
-# So the gate has PHASES, and the workflow is
-#
-#     --phase pre-commit    the artifacts are what they claim to be
-#            commit         commit_artifacts.sh takes the checkpoint
-#     --phase post-commit   ...and the history now says so
-#
-#   pre-commit    every property of the ARTIFACTS.  The fifteen
-#                 commit-shaped ones are deferred, and the deferral is
-#                 REPORTED as an informational note naming them, so a
-#                 shorter report explains its own length instead of
-#                 reading exactly as green as a complete one.
-#   post-commit   THE HISTORY, AND WHAT IT TAKES TO MEASURE IT: the
-#                 measuring environment, the version-control group, the
-#                 change surface, and the inventory of the report.
-#                 Nothing else.
-#   all           EVERYTHING, and THE DEFAULT, so an operator auditing a
-#                 committed tree runs this file with no arguments and
-#                 gets the whole gate.
-#
-# WHY post-commit IS NOT "EVERYTHING" ANY MORE, which it used to be.
-#
-# The two phases were designed as complementary halves and one of them
-# was not a half: `post-commit` ran every check `pre-commit` had just
-# run, minutes earlier, over artifacts NOTHING had touched in between --
-# the commit changes the history, not the bytes on disk.  So a default
-# sequencer run performed the eighty-nine artifact checks twice: two
-# whole-set digest sweeps, two decodes of each film, two lint runs, two
-# runs of the timeline suite.  At the session lengths this pipeline is
-# built for that is the expensive half of the gate, paid twice, for an
-# answer that cannot have changed.
-#
-# `post-commit` is therefore what its name says: the properties that
-# became answerable BECAUSE of the commit, plus group 1, which is what
-# establishes that this run can measure at all.  `all` remains the
-# explicit full audit -- it is the right thing to run when the question
-# is "is this committed tree what it claims to be" rather than "did the
-# checkpoint publish what the gate had just passed", and it is what an
-# operator gets by default.
+#   --phase pre-commit   every property of the ARTIFACTS.  The fifteen
+#                        commit-shaped ones are deferred, and the
+#                        deferral is REPORTED as an informational note
+#                        naming them, so a shorter report explains its
+#                        own length instead of reading as green as a
+#                        complete one.
+#   --phase post-commit  THE HISTORY, AND WHAT IT TAKES TO MEASURE IT:
+#                        the measuring environment, the version-control
+#                        group, the change surface and the inventory of
+#                        the report.  Nothing else -- the commit changes
+#                        the history, not the bytes on disk, so
+#                        re-running the artifact half would pay for the
+#                        expensive checks twice for an answer that cannot
+#                        have changed.
+#   --phase all          EVERYTHING, and THE DEFAULT, so an operator
+#                        auditing a committed tree runs this file with no
+#                        arguments and gets the whole gate.
 #
 # The declared check count is per phase (see EXPECTED_CHECKS below), so
 # no phase can quietly return a short report.
-#
-# EVERY VERDICT PRINTS ITS EVIDENCE.  A FAIL prints the observed value
-# next to the expected one; a PASS prints the observed value too, so the
-# report is a record of what was measured and not merely an assertion
-# that somebody once measured it.
 #
 # ---------------------------------------------------------------------
 # WHAT THE CHECK GROUPS COVER
@@ -153,43 +112,46 @@
 #   1  the measuring environment  the tools, the interpreter, the trust
 #                                 state, and that every artifact this
 #                                 gate reads is present and readable
-#   2  one frame per keystroke    frames == rows, contiguous indices,
-#                                 the six-key record schema, the
+#   2  one frame per keystroke    frames == rows, contiguous indices, the
+#                                 six-key record schema, the
 #                                 acknowledgment ledger and the
 #                                 hash-chained evidence anchor
-#   3  the timeline               the 0.25 s floor, the 10 s ceiling,
-#                                 the transition flag, the materialised
+#   3  the timeline               the 0.25 s floor, the 10 s ceiling, the
+#                                 transition flag, the materialised
 #                                 transition groups, the invariant
 #   4  the container              h264 1920x1080, duration, no audio
 #   5  the caption track          mov_text/eng, cue structure, cue
 #                                 windows, not burned in, the
 #                                 transcripts, the meta-language gate
 #   6  the luminance gate         mean > 0 and std > 0
-#   7  version control            the save is really tracked, nothing
-#                                 is silently ignored, nothing is left
+#   7  version control            the save is really tracked, nothing is
+#                                 silently ignored, nothing is left
 #                                 uncommitted, the commit order, the
-#                                 committed ignore rules, and the
-#                                 lifecycle checkpoints
-#   8  no cheating                no debug keybinding, no debug-mode
-#                                 activation in the engine's own log
-#   9  the binary and hygiene     +tiles, scoped flake8, the timeline
-#                                 test suite, the change surface
+#                                 committed ignore rules, the lifecycle
+#                                 checkpoints
+#   8  no evidence of debug or    what the committed keybindings, the
+#      cheat use                  engine's own log and the record itself
+#                                 contain -- corroboration, not proof
+#   9  the binary and hygiene     +tiles, the required artwork, scoped
+#                                 flake8, the timeline suite, the change
+#                                 surface
+#  10  the inventory of this      the number of checks printed against
+#      report                     the number declared
 #
 # ---------------------------------------------------------------------
 # TWO HOST FACTS THAT SHAPE THE CODE
 #
 # IMAGEMAGICK IS CALLED THROUGH ITS CLASSIC ENTRY POINTS -- `convert`,
-# `identify`, `compare`.  The unified `magick` entry point exists only
-# on the version 7 branch, so code written against it fails outright on
-# a version 6 host; the classic names work on both.  env.sh additionally
-# documents that ImageMagick dispatches on argv[0], which is why the
-# resolved PATH entry is invoked rather than its symlink target.
+# `identify`, `compare`.  The unified `magick` entry point exists only on
+# the version 7 branch, so code written against it fails outright on a
+# version 6 host; the classic names work on both.  ImageMagick also
+# dispatches on argv[0], which is why the resolved PATH entry is invoked
+# rather than its symlink target.
 #
-# THE SHELL CANNOT COMPARE FLOATING POINT.  `[ "0.27" -gt 0 ]` is not a
-# working test -- it is an integer comparison against a string, and it
-# fails at the syntax level.  Every threshold in this file goes through
-# awk, with the values passed in via -v as data rather than pasted into
-# the program text.
+# THE SHELL CANNOT COMPARE FLOATING POINT.  `[ "0.27" -gt 0 ]` is an
+# integer comparison against a string and fails at the syntax level, so
+# every threshold here goes through awk, with the values passed in via
+# -v as data rather than pasted into the program text.
 #
 # ---------------------------------------------------------------------
 # EXIT STATUS
@@ -199,9 +161,9 @@
 #   2  usage error -- an unknown option or a malformed value
 #   3  layout error -- this file cannot locate itself, or env.sh is
 #      missing or refused to load
-#   4  busy -- another stage is mutating this checkout, so there is
-#      no fixed tree to measure.  Distinct from 3 because nothing
-#      is wrong: the same command succeeds once that stage finishes
+#   4  busy -- another stage is mutating this checkout, so there is no
+#      fixed tree to measure.  Distinct from 3 because nothing is wrong:
+#      the same command succeeds once that stage finishes
 #
 # Requires bash: BASH_SOURCE, arrays and `local` are all used.
 # ---------------------------------------------------------------------
@@ -234,13 +196,9 @@ readonly EX_BUSY=4
 
 # ---------------------------------------------------------------------
 # LOCATING THIS FILE, AND THE ENVIRONMENT CONTRACT
-#
 # The pattern is the repository's own -- build-scripts/clang-tidy-run.sh
-# resolves its directory from BASH_SOURCE the same way -- and it is what
-# keeps the gate correct no matter which directory it is invoked from.
-# env.sh is then the SINGLE definition of every artifact path, the
-# verified interpreter, the tool resolution and PYTHONDONTWRITEBYTECODE;
-# none of it is restated here.
+# resolves its directory from BASH_SOURCE the same way -- and it is what keeps
+# the gate correct no matter which directory it is invoked from.
 # ---------------------------------------------------------------------
 # The one place no resolved tool can be used, because this is what finds
 # the file that resolves them: bash's own parameter expansion does the
@@ -256,12 +214,6 @@ directory, so I cannot find the environment contract" >&2
 fi
 
 # WHAT THE CALLER'S ENVIRONMENT SAID, READ BEFORE env.sh OVERWRITES IT.
-# env.sh exports SDL_VIDEODRIVER=x11 unconditionally and deliberately, so
-# after sourcing it there is nothing left to observe: a check that read
-# the value afterwards would be reporting what this file had just set,
-# one line earlier, and would pass whatever the caller intended.  The
-# inherited value is captured here so the report can say what it actually
-# was.
 _VA_INHERITED_VIDEODRIVER="${SDL_VIDEODRIVER:-}"
 readonly _VA_INHERITED_VIDEODRIVER
 
@@ -292,14 +244,7 @@ cd "${PLAYTHROUGH_REPO_ROOT}"
 
 # ---------------------------------------------------------------------
 # WHAT THE ARTIFACTS ARE REQUIRED TO BE
-#
-# These are the expected values, named once.  Where a value also exists
-# as a constant inside a sibling module it is CROSS-CHECKED against that
-# module rather than merely restated -- check group 3 imports
-# timeline.py, make_transitions.py and render_movie.py and fails if the
-# producer's own constants have drifted from the numbers below.  That
-# way a future edit to a producer cannot quietly move the goalposts this
-# gate measures against.
+# These are the expected values, named once.
 # ---------------------------------------------------------------------
 readonly VIDEO_CODEC_EXPECTED="h264"
 readonly SUBTITLE_CODEC_EXPECTED="mov_text"
@@ -316,13 +261,7 @@ readonly TRANSITION_SECONDS="1.0"
 # encoder pass.  Twelve images at 12 fps make the 1.0 s unit.
 readonly TRANSITION_FRAMES_PER_GROUP="12"
 
-# How far the encoded container may sit from the timeline's declared
-# total.  A variable-frame-rate encode does not land on the arithmetic
-# total exactly; a SHORTFALL of a whole frame's worth or more is the
-# signature of a concat list whose final `file` entry was not repeated,
-# which was measured once as a 10.52 s container against an 11.75 s
-# subtitle stream.  0.12 s is render_movie.py's own tolerance and is
-# asserted against it in check group 3.
+# How far the encoded container may sit from the timeline's declared total.
 readonly CONTAINER_TOLERANCE="0.12"
 
 # Cue and duration arithmetic is compared at the timeline's own rounding
@@ -335,77 +274,26 @@ readonly ARITHMETIC_EPSILON="0.0005"
 # the opening captures and inside ordinary play.
 readonly EXTRACT_OFFSET="1"
 
-# AND THE FRACTIONS OF THE FILM SAMPLED ALONGSIDE IT.  One fixed offset
-# near the start was measured to be a real blind spot: a film truncated to
-# a third of its length still decoded perfectly at 1 s, so both the
-# non-blank reading and the burned-in comparison passed while two thirds
-# of the pictures were gone.  These fractions of the timeline total put a
-# reading in the middle and one near the end as well.
-#
-# ANY OFFSET THAT LANDS INSIDE A TRANSITION IS MOVED PAST IT.  A fade or a
-# "…time passes…" card is legitimately near black, so a reading taken
-# there says nothing about whether the session rendered; the windows come
-# from the timeline itself (group 3 publishes them) rather than from an
-# assumption about where they are.
+# AND THE FRACTIONS OF THE FILM SAMPLED ALONGSIDE IT. One fixed offset near the
+# start was measured to be a real blind spot: a film truncated to a third of
+# its length still decoded perfectly at 1 s, so both the non-blank reading and
+# the burned-in comparison passed while two thirds of the pictures were gone.
 readonly EXTRACT_FRACTIONS="0.10 0.50 0.95"
 
-# The calibration reading from a real rendered capture, quoted so the
-# report carries the provenance of the threshold.  IT IS NOT A BOUND:
-# the assertion is strictly `> 0` on both terms, because how bright a
-# frame is depends on the tileset and on what the survivor was looking
-# at, and a gate that demanded a magnitude would fail honest captures.
+# The calibration reading from a real rendered capture, quoted so the report
+# carries the provenance of the threshold.
 readonly LUMINANCE_REFERENCE="mean=0.270018 std=0.198145 \
 (one real frame, quoted as provenance only)"
 
 # HOW MANY CAPTURES THE LUMINANCE GATE DECODES: A DELIBERATE SPREAD.
-#
-# THE PIXELS OF EVERY FRAME ARE STILL ACCOUNTED FOR, by two witnesses
-# that do not need this gate to decode a raster to speak:
-#
-#   * THE CONTEMPORANEOUS READING.  capture.sh measures the grayscale
-#     mean and standard deviation of each frame at the moment it takes
-#     it, refuses to publish a blank one, and commits the reading in
-#     playthrough/build/observations.jsonl beside that frame's sha256.
-#     check_recorded_luminance below reads EVERY one of those rows, on
-#     every run, at every session length -- so "no frame was blank when
-#     it was captured" is asserted over the whole population.
-#   * THE DIGEST SWEEP.  Group 3 holds every committed capture to the
-#     digest taken when it was captured, so a frame SUBSTITUTED after the
-#     fact -- blanked, re-encoded, swapped -- fails there whatever its
-#     index, again over the whole population.
-#
-# What a CURRENT-PIXEL decode adds on top of those two is one narrow
-# case: a frame that was already blank when it was captured AND whose
-# digest AND whose recorded reading were all three re-declared to match
-# it.  That case is worth sampling for, and it is not worth decoding an
-# unbounded number of full-resolution rasters for on every run: the
-# session length is deliberately unbounded, one decode is about 0.14 s in
-# chunks of 16, and an exhaustive default therefore turns into hours of
-# I/O on a long session -- for a reading two whole-population witnesses
-# have already answered.  Measured here: 326 frames decoded in 45 s of
-# an 89 s gate.
-#
-# So the default is a SPREAD, always including the first and the last
-# capture, and `--samples all` is the exhaustive audit -- the reading to
-# take when the question is precisely "were the pixels re-declared", and
-# the one an operator auditing a stranger's tree should take at least
-# once.  The verdict always says how many of how many it read, so a
-# sampled reading can never be mistaken for a complete one.
-#
-# The reading itself stays as cheap as it was made: one ImageMagick
-# invocation per CHUNK of images, each reporting geometry and both
-# statistics for every image in the chunk, and ONE awk program over the
-# collected readings instead of one process per frame.  Measured on this
-# host: 0.235 s per frame one at a time against 0.138 s in chunks of 16,
-# and the separate `identify` call for geometry disappears entirely
-# because %w and %h come back in the same line.
+# Sampling bounds the decode cost on a long session; the pixels of every
+# frame are still accounted for by two witnesses that need no decode --
+# the capture-time luminance recorded per frame in the telemetry sidecar,
+# and the whole-set digest sweep.
 readonly LUMINANCE_SAMPLES_DEFAULT="64"
 readonly LUMINANCE_SAMPLES_ALL="all"
 
-# How many images one ImageMagick invocation measures.  ImageMagick holds
-# a chunk in memory at once, so this trades memory for process starts: 16
-# 1920x1080 rasters is a couple of hundred megabytes at most, and 21
-# invocations instead of 326 is where the saving comes from.
+# How many images one ImageMagick invocation measures.
 readonly LUMINANCE_CHUNK="16"
 
 # ---------------------------------------------------------------------
@@ -456,9 +344,6 @@ readonly BOUND_PROBE_SECONDS="120"
 readonly BOUND_CHUNK_SECONDS="600"
 
 # A whole-film pass -- the decode, the frame count, a frame extraction.
-# base + bytes / throughput floor, where the floor is deliberately far
-# below what any real host achieves (this one decodes about 90 MB/s), so
-# an expiry means wedged rather than slow.
 readonly BOUND_FILM_BASE_SECONDS="300"
 readonly BOUND_FILM_BYTES_PER_SECOND="1048576"
 
@@ -479,13 +364,9 @@ readonly BOUND_SUITE_SECONDS="3600"
 readonly BOUND_MAX_SECONDS="86400"
 
 # HOW MANY OFFENDING ITEMS ONE VERDICT NAMES.
-#
 # A verdict is reached on the FACT of a failure, and the first example
 # establishes it: what the rest add is length -- in the report, and in the
-# shell array the report was assembled from.  The failure this gate exists
-# for is a WHOLE capture set coming back blank, so "one entry per capture"
-# is the realistic shape of an unbounded diagnostic here.  The count is
-# always reported in full; this bounds how many are named.
+# shell array the report was assembled from.
 readonly DIAGNOSTIC_LIMIT="8"
 
 # `timeout` reports this when it fires, which is how an expiry is told
@@ -496,114 +377,35 @@ readonly BOUND_KILLED="137"
 
 # ---------------------------------------------------------------------
 # THE SCRATCH GENERATION, AND WHY STALE ONES ARE SWEPT
-#
-# This gate works in a private directory under the mode-0700 runtime root
-# and removes it on every exit path.  "Every exit path" is not every END:
-# SIGKILL, an OOM kill and a pod eviction all leave the directory behind,
-# and because the name is unique per run, the leftovers ACCUMULATE -- one
-# generation per killed audit, each holding the extracted frames and
-# per-film logs of a run nobody can read any more.  Measured shapes are
-# tens of megabytes each.
-#
-# So a run sweeps before it works.  A generation is removed only when its
-# owner is provably gone -- the pid it recorded is not a live process --
-# or, for a generation from a version that recorded no owner, when it is
-# older than the bound below.  A generation whose owner is alive is never
-# touched, which is what keeps two concurrent audits safe.
+# This gate works in a private directory under the mode-0700 runtime root and
+# removes it on every exit path.
 readonly SCRATCH_PREFIX="verify."
 readonly SCRATCH_OWNER_FILE="owner.pid"
 readonly SCRATCH_STALE_SECONDS="21600"
 
-# The engine's own debug actions.  All three are declared in
-# data/raw/keybindings.json WITHOUT a `bindings` array -- debug_mode at
-# L3398-3403, debug ("Debug menu") at L3404-3409 and debug_hour_timer at
-# L3466-3471 -- so they are unbound by default and unreachable by any
-# keystroke unless somebody deliberately binds them.  The user
-# keybindings file is a COMMITTED artifact, which is what turns "no
-# cheating" from a claim into a property a stranger can check.
+# The engine's own debug actions.
 readonly DEBUG_ACTION_PATTERN='"(debug|debug_mode|debug_hour_timer)"'
 
 # THE SAME QUESTION ASKED OF THE RECORD ITSELF.
-#
-# The keybindings file and the engine log prove nothing was BOUND and
-# nothing was ACTIVATED, which leaves the most direct evidence there is
-# unexamined: the record of what was actually pressed, and the transcript
-# written from it.  A session that opened the debug menu and spawned a
-# rifle would say so in its own action column -- the requirement is that
-# no decision was made that way at all, so the words are worth reading.
-#
-# THE LEXICON IS DELIBERATELY NARROW.  Every term is either an engine
-# action id (debug, debug_mode, debug_hour_timer, the wish* family behind
-# the debug menu's spawn screens) or an unambiguous name for a cheat
-# (god mode, noclip, teleport, revealing the map, editing stats).  Bare
-# "wish" is excluded on purpose: it is ordinary English, and the honest
-# transcript of this session already contains it ("That is the whole
-# wish."), so including it would manufacture a finding out of prose.
-# Measured across all five committed record files at this checkpoint:
-# zero hits.
-#
-# WRITTEN IN DOUBLE QUOTES, and that is not cosmetic.  A backslash before
-# a newline continues the line only inside double quotes; inside single
-# quotes it is a literal backslash followed by a literal newline, which
-# grep reads as several patterns of which one ends in a trailing
-# backslash -- an invalid expression that grep rejects, leaving the
-# check to find nothing and report success.  That is precisely the
-# vacuous verdict this gate exists to prevent, and it was caught here by
-# running the mutation the check was written for.
+# The keybindings file and the engine log prove nothing was BOUND and nothing
+# was ACTIVATED, which leaves the most direct evidence there is unexamined: the
+# record of what was actually pressed, and the transcript written from it.
 readonly CHEAT_VOCABULARY_PATTERN="debug|god[ _-]?mode|no[ _-]?clip|teleport|wish(item|monster|mutate|skill|proficiency)|spawn|cheat|reveal (the |whole )*map|map reveal|edit (my |the )*(stat|skill|proficienc)|set (my |the )*(stat|skill|proficienc)"
 
-# The engine writes its log beside the configuration it was launched
-# with.  Both candidate locations are inspected, because which one is
-# used has changed between builds and a gate that looked in only one
-# would report "no debug activation" without having read anything.  An
-# ARRAY, so no expansion has to be left unquoted to split it.
+# The engine writes its log beside the configuration it was launched with.
 readonly -a DEBUG_LOG_RELATIVE_PATHS=("config/debug.log" "debug.log")
 
 # ---------------------------------------------------------------------
 # THE REQUIRED ARTWORK
-#
-# The tileset is a REQUIREMENT and not a preference: the feature is
-# specified to install the CDDA-Tilesets pack and to configure MSXotto+.
-# It needs its own assertions because none of the other groups can see
-# it.  `+tiles` in the binary's banner says the SDL tiles PATH was
-# compiled in, not which artwork was drawn through it; every count, every
-# duration, every cue and even the luminance gate are satisfied exactly
-# as well by an ASCII-rendered session -- which is exactly why no code
-# path in this pipeline can select other artwork any more: the diagnostic
-# ASCIITiles fallback and the trust bypass that reached it are both gone,
-# so there is one contract and these assertions measure whether it held.
-# Four are made here, from four independent directions -- the installed
-# pack, the committed option values, the engine's own log, and the pixels
-# of the captures themselves.
-#
-# The engine's log line is the strongest of the four, because it is
-# CAPTURE-TIME evidence written by the game rather than a statement about
-# the host doing the auditing: cata_tiles::do_tile_loading_report logs
-# "Loaded tileset: <id>" (src/cata_tiles.cpp:5183) once the artwork has
-# actually been loaded, and playthrough/userdir/config/debug.log is a
-# committed artifact.
+# The tileset is a REQUIREMENT and not a preference: the feature is specified
+# to install the CDDA-Tilesets pack and to configure MSXotto+. It needs its own
+# assertions because none of the other groups can see it.
 readonly TILESET_LOADED_PREFIX="Loaded tileset:"
 
-# THE PIXEL ASSERTION, AND WHERE ITS NUMBER COMES FROM.  An options file
-# can be edited after the fact and an installed pack can be swapped, so
-# the last assertion is made against the captures: how many DISTINCT
-# COLOURS a rendered frame holds separates sprite artwork from glyphs
-# decisively.  Measured on this checkout: the entire ASCII tileset holds
-# 38 unique colours (gfx/ASCIITileset/ASCIITiles.png) and its fallback
-# glyph sheet 18, while MSXotto+'s sheet holds 170,808
-# (gfx/MShockXotto+/tiles.png).  A text render is bounded by the game's
-# 16-colour palette over 16 backgrounds -- 256 combinations at the
-# absolute most, and far fewer in practice because the shipped font is a
-# bitmap face with no anti-aliasing.  The committed captures measure up
-# to 2352 on a map frame.  512 therefore sits an order of magnitude above
-# anything ASCII can produce and a factor of four below what this session
-# actually produced.
-#
-# IT IS A MAXIMUM OVER SAMPLED IN-GAME CAPTURES, NOT A PER-FRAME FLOOR.
-# A legitimate frame can be almost colourless -- a full-screen menu over
-# the map, a night scene, the closing dialogue -- so demanding depth of
-# every frame would fail an honest session.  One frame that could only
-# have been drawn from sprite artwork is what this proves.
+# THE PIXEL ASSERTION, AND WHERE ITS NUMBER COMES FROM. An options file can be
+# edited after the fact and an installed pack can be swapped, so the last
+# assertion is made against the captures: how many DISTINCT COLOURS a rendered
+# frame holds separates sprite artwork from glyphs decisively.
 readonly TILE_COLOUR_FLOOR="512"
 readonly TILE_COLOUR_REFERENCE="ASCII artwork holds 38 unique colours \
 in total (gfx/ASCIITileset/ASCIITiles.png) against 170808 in \
@@ -614,10 +416,9 @@ gfx/MShockXotto+/tiles.png"
 # spread of eight is both sufficient and cheap.
 readonly TILE_COLOUR_SAMPLES="8"
 
-# The complete set of paths outside playthrough/ that this feature is
-# allowed to have touched.  Anything else in the change surface is a
-# finding: the engine, the content, the build system and CI are all
-# consumed read-only.
+# The complete set of paths outside playthrough/ that this feature is allowed
+# to have touched. Anything else in the change surface is a finding: the
+# engine, the content, the build system and CI are all consumed read-only.
 readonly ALLOWED_FOREIGN_PATHS=".gitignore .gitattributes"
 
 # ---------------------------------------------------------------------
@@ -626,17 +427,17 @@ readonly ALLOWED_FOREIGN_PATHS=".gitignore .gitattributes"
 #
 # `git check-ignore` answers for the WORKING TREE, which is the right
 # question for "will the next `git add` skip the save".  It is the wrong
-# question for "will a fresh clone of this history still carry the
-# save", and that second question is the one a reader of the repository
-# actually asks.  A history whose terminal negation was never committed
-# passes every working-tree check and re-ignores the save data the
-# moment somebody clones it -- measured, and reported as a finding.
+# question for "will a fresh clone of this history still carry the save",
+# and that second question is the one a reader of the repository actually
+# asks: a history whose terminal negation was never committed passes every
+# working-tree check and re-ignores the save data the moment somebody
+# clones it.
 #
-# So the committed content is read out of HEAD directly.  The negation
-# must be the LAST effective rule in the committed file, because git
-# applies the last matching pattern and the file says so itself; and the
-# six attribute rows must be present, because `* text=auto` alone would
-# leave the film, the save and the archives to content detection.
+# So the committed content is read out of HEAD directly.  The negation must
+# be the LAST effective rule in the committed file, because git applies the
+# last matching pattern; and the six attribute rows must be present,
+# because `* text=auto` alone would leave the film, the save and the
+# archives to content detection.
 readonly IGNORE_NEGATION="!/playthrough/**"
 readonly -a REQUIRED_ATTRIBUTES=(
     "*.mp4 binary"
@@ -647,35 +448,21 @@ readonly -a REQUIRED_ATTRIBUTES=(
     "*.jsonl text"
 )
 
-# The trailer commit_artifacts.sh writes, and the two checkpoint names
-# whose ordering the lifecycle is made of.  Spelled here as the strings
-# they are, because this gate READS a history somebody else wrote and
-# must not import the committer's code to do it.
+# The trailer commit_artifacts.sh writes, and the two checkpoint names whose
+# ordering the lifecycle is made of.
 readonly CHECKPOINT_TRAILER_KEY="Playthrough-Checkpoint"
 
 # The trailer that carries the evidence anchor's chain head, for the same
-# reason and read the same way.  A commit object's name is a hash of its
-# own content, so a head published here cannot be edited without
-# rewriting history -- which is the whole of what makes the anchor an
-# INDEPENDENT domain rather than one more mutable file beside the
-# evidence.
+# reason and read the same way.
 readonly ANCHOR_TRAILER_KEY="Playthrough-Evidence-Anchor"
 readonly CHECKPOINT_CREATION_NAME="creation"
 readonly CHECKPOINT_FINAL_NAME="final"
 
-# The third checkpoint the anchor is asked about.  `creation` and `final`
-# are the two the plan mandates (R1); `media` is the one that first
-# publishes the rendered film and its transcripts, so it is the earliest
-# commit at which the anchor has a complete evidence tree to seal.  Named
-# here because the anchor gate must be able to ASK EACH REQUIRED
-# CHECKPOINT for a trailer of its own rather than accept the newest one
-# anywhere in the history.
+# The third checkpoint the anchor is asked about.
 readonly CHECKPOINT_MEDIA_NAME="media"
 
-# The engine's record of which world and survivor were last loaded, read
-# out of a commit rather than off disk.  A fixed program with no
-# interpolation, fed on stdin, so nothing a path or a name contains can
-# reach the interpreter -- the same rule the sibling stages follow.
+# The engine's record of which world and survivor were last loaded, read out of
+# a commit rather than off disk.
 readonly LASTWORLD_STDIN_READER='
 import json
 import sys
@@ -690,17 +477,7 @@ if not world or not character:
 sys.stdout.write("%s / %s" % (world, character))
 '
 
-# The unit separator, used between the fields of one verdict line.  A
-# NON-whitespace delimiter is required: bash's `read` collapses runs of
-# a whitespace IFS character and drops leading and trailing ones, so a
-# tab-separated protocol would silently lose an empty field.
-# The WORLD_END the world was played under, read out of a
-# worldoptions.json on stdin.  The file is a LIST of option records
-# (src/worldfactory.cpp writes one object per override), so the value is
-# found by name rather than by key.  Exit 1 when the option is absent,
-# which is itself the answer: an absent override means the engine
-# default, and this reader is only consulted where the difference
-# between "reset", "delete" and everything else decides a verdict.
+# The unit separator, used between the fields of one verdict line.
 readonly WORLDOPTIONS_STDIN_READER='
 import json
 import sys
@@ -733,12 +510,11 @@ readonly VERDICT_SEPARATOR=$'\037'
 # check.  So the count is DECLARED here, asserted at the end of the run,
 # and printed in the summary and in the machine block.
 #
-# THE COUNT IS PER GROUP AND IT IS EXACT, and both halves of that are a
-# fix.  A review found this declared as ONE total, asserted with "at
-# least" -- and that guard cannot do the job it exists for.  Several
+# THE COUNT IS PER GROUP AND IT IS EXACT, and both halves matter.  A
+# single global total asserted with "at least" cannot do the job: several
 # checks report one verdict per offending item, so a broken artifact set
-# genuinely produces more verdicts than the declaration; but with one
-# global "at least", three extra per-frame failures in the luminance
+# genuinely produces more verdicts than the declaration, and under one
+# global "at least" three extra per-frame failures in the luminance
 # group SILENTLY PAY FOR three checks that never ran in the record group,
 # and the report still says every declared check is present.  The
 # masking is not hypothetical: it is arithmetic.
@@ -747,26 +523,26 @@ readonly VERDICT_SEPARATOR=$'\037'
 # an EQUALITY on the number of DISTINCT check names -- which is the
 # measure per-item repetition cannot inflate, because a check reporting
 # eleven times about eleven frames reports one name.  An extra name in
-# group 6 can no longer settle a debt in group 2, and a name that is not
-# in the declared inventory at all is now reported instead of welcomed.
+# group 6 cannot settle a debt in group 2, and a name that is not in the
+# declared inventory at all is reported rather than welcomed.
 #
 # The derivation, group by group, on a complete artifact set -- with the
 # COMMIT-SHAPED verdicts counted separately, because they are the ones
 # the pre-commit phase defers:
 #
-#                                        all   pre   post
-#    1  the measuring environment         14    14    14
-#    2  one frame per keystroke           20    20     -
-#    3  the timeline                      19    19     -
-#    4  the container and its inputs      20    20     -
-#    5  the caption track                 20    20     -
-#    6  the luminance gate                 5     5     -
-#    7  version control                   20     6    20
-#    8  no cheating                        3     3     -
-#    9  the binary, artwork and hygiene    12    11     2
-#   10  the inventory of this report        1     1     1
-#                                        ----  ----  ----
-#                                         134   119    37
+#                                                all   pre   post
+#    1  the measuring environment                 14    14    14
+#    2  one frame per keystroke                   20    20     -
+#    3  the timeline                              19    19     -
+#    4  the container and its inputs              20    20     -
+#    5  the caption track                         20    20     -
+#    6  the luminance gate                         5     5     -
+#    7  version control                           20     6    20
+#    8  no evidence of debug or cheat use          3     3     -
+#    9  the binary, artwork and hygiene           12    11     2
+#   10  the inventory of this report               1     1     1
+#                                                ----  ----  ----
+#                                                 134   119    37
 #
 # The post-commit column is group 1 (a gate reports what it can measure
 # before it reports what it measured), the whole of group 7, group 9's
@@ -804,14 +580,9 @@ readonly -a GROUP_CHECKS_ALL=(
 readonly -a GROUP_CHECKS_PRE_COMMIT=(
     0 14 20 19 20 20 5 6 3 11 1
 )
-# The third phase, and the reason it is a THIRD count rather than a
-# synonym for `all`: `post-commit` used to resolve to the whole audit, so
-# the sequencer paid for every artifact check twice on any run that
-# reached its checkpoint.  The artifacts are not what a commit changed,
-# so post-commit asks the environment it measures with, the whole of
-# version control, group 9's change surface and bytecode sweep, and the
-# inventory -- and `--phase all` remains how the artifacts are
-# re-measured deliberately.
+# The third phase, and the reason it is a THIRD count rather than a synonym for
+# `all`: `post-commit` used to resolve to the whole audit, so the sequencer
+# paid for every artifact check twice on any run that reached its checkpoint.
 readonly -a GROUP_CHECKS_POST_COMMIT=(
     0 14 0 0 0 0 0 20 0 2 1
 )
@@ -827,19 +598,15 @@ readonly -a GROUP_NAMES=(
     "the caption track"
     "the luminance gate"
     "version control"
-    "no cheating"
+    "no evidence of debug or cheat use"
     "the binary, artwork and hygiene"
     "the inventory of this report"
 )
 readonly GROUP_COUNT=10
 
-# The totals are SUMMED FROM THE TABLE rather than written down beside
-# it.  A hand-maintained total is a second place for the truth to live,
-# and the first thing that happens to it is that somebody updates one and
-# not the other.
-# Pure arithmetic: this runs at file scope, before any external command
-# has been resolved and verified, so `seq` is not available to it and
-# would not be used if it were.
+# The totals are SUMMED FROM THE TABLE rather than written down beside it. A
+# hand-maintained total is a second place for the truth to live, and the first
+# thing that happens to it is that somebody updates one and not the other.
 _expected_all=0
 _expected_pre_commit=0
 _expected_post_commit=0
@@ -857,31 +624,13 @@ readonly EXPECTED_CHECKS_POST_COMMIT="${_expected_post_commit}"
 unset _expected_all _expected_pre_commit _expected_post_commit
 unset _group_index
 
-# WHERE THE DURABLE REPORT LANDS -- AND WHY THAT IS NO LONGER THIS
-# FILE'S BUSINESS.
-#
-# It used to be a constant here, `acceptance-report.txt`, and this gate
-# wrote the report to playthrough/<that> on a passing run and deleted it
-# on a failing one.  Both were writes INSIDE the tree being measured, both
-# happened after the checks that assert that tree is clean and fully
-# committed, and a review found the consequence: a full-phase run taken
-# after the final checkpoint left the tree dirty in the very file it had
-# just certified as committed.
-#
-# A measurement does not publish itself.  This gate now writes only where
-# a caller names with --report-to, always outside the checkout, and
-# COMMITTING the report is a separate deliberate act -- the attestation
-# checkpoint, which reads what this gate measured and can refuse to
-# publish a failing one.  The artifact's own name therefore lives with
-# the stage that produces it rather than with the stage that is judged
-# by it.
+# WHERE THE DURABLE REPORT LANDS -- AND WHY THAT IS NO LONGER THIS FILE'S
+# BUSINESS.
 
 # ---------------------------------------------------------------------
-# THE PHASES, as the three words the option accepts.  Each measures a
-# different set: `pre-commit` the artifacts, `post-commit` the history,
-# and `all` both -- see WHY post-commit IS NOT "EVERYTHING" ANY MORE at
-# the head of this file.  A report says which phase produced it, so a
-# saved transcript can always be placed.
+# THE PHASES, as the three words the option accepts. Each measures a different
+# set: `pre-commit` the artifacts, `post-commit` the history, and `all` both --
+# see WHY post-commit IS NOT "EVERYTHING" ANY MORE at the head of this file.
 # ---------------------------------------------------------------------
 readonly PHASE_ALL="all"
 readonly PHASE_PRE_COMMIT="pre-commit"
@@ -890,12 +639,8 @@ readonly PHASE_DEFAULT="${PHASE_ALL}"
 
 # ---------------------------------------------------------------------
 # THE REPORT
-#
-# Verdicts go to stdout, because the report IS the product of this file
-# and is what gets read, saved and quoted.  Environmental diagnostics go
-# to stderr through env.sh's helpers, so a caller can keep the two
-# apart.  The trailing VERIFY_* block is the machine-readable summary,
-# in the same KEY=value shape the sibling stages publish.
+# Verdicts go to stdout, because the report IS the product of this file and is
+# what gets read, saved and quoted.
 # ---------------------------------------------------------------------
 PASSES=0
 FAILURES=0
@@ -916,28 +661,10 @@ LUMINANCE_SAMPLES="${LUMINANCE_SAMPLES_DEFAULT}"
 PHASE="${PHASE_DEFAULT}"
 EXPECTED_CHECKS="${EXPECTED_CHECKS_ALL}"
 
-# The tool paths, defaulted to the plain command names so that `set -u`
-# cannot trip before they have been resolved and verified.  A tool that
-# is genuinely absent makes the checks that use it FAIL, which is the
-# intended behaviour -- the gate keeps measuring everything else.
-#
-# EVERY EXTERNAL COMMAND THIS FILE INVOKES HAS ONE OF THESE, AND
-# NOTHING ELSE DOES.  That is a fix rather than tidiness.  A review found
-# the inventory covering nine commands while the gate also ran head,
-# tail, tr, sort, wc, cat, rm, mktemp, chmod, find, basename and cut --
-# and invoked even the CHECKED `sed` by bare name, so the verified path
-# was resolved and then not used.  A gate that says "every command this
-# gate needs is present and verified" has to mean all of them, and has to
-# call the thing it verified: PATH is not this process's to trust, and a
-# bare name re-searches it at every call.
-#
-# The set is kept EXACT in both directions.  `dirname` and `touch` are
-# not here because nothing invokes them -- the bootstrap that used to
-# call dirname now takes the directory with ${BASH_SOURCE[0]%/*}, which
-# needs no command at all -- and a declared tool the gate never runs is
-# the same drift in the opposite direction: it would make an operator
-# install something to satisfy a check that proves nothing.  ShellCheck
-# enforces this half automatically: an unused variable here is SC2034.
+# The tool paths, defaulted to the plain command names so that `set -u` cannot
+# trip before they have been resolved and verified. A tool that is genuinely
+# absent makes the checks that use it FAIL, which is the intended behaviour --
+# the gate keeps measuring everything else.
 FFPROBE="ffprobe"
 FFMPEG="ffmpeg"
 CONVERT="convert"
@@ -975,17 +702,10 @@ basename cut timeout"
 TOOLS_RESOLVED=0
 TOOLS_DETAIL=""
 
-# The durable copy of this report.  Empty until open_scratch has made
-# somewhere private to write it; every line of the report is appended to
-# it as it is printed, and report_publication_target decides whether a
-# copy is left at the destination the caller named.
+# The durable copy of this report.
 REPORT_FILE=""
 
-# WHERE THE CALLER ASKED FOR THE REPORT, or nothing.  Set only by
-# --report-to (or $PLAYTHROUGH_VERIFY_REPORT_TO), always OUTSIDE the
-# working tree, and validated in parse_arguments before any check runs --
-# a destination that would be refused is refused before the measurement
-# is paid for rather than after it.
+# WHERE THE CALLER ASKED FOR THE REPORT, or nothing.
 REPORT_DESTINATION=""
 
 # The linter as an ARRAY rather than a string, because one of the four
@@ -997,20 +717,8 @@ FLAKE8_CMD=()
 # rather than silently falling through to the next candidate.
 FLAKE8_REJECTED=""
 
-# say FORMAT [ARG...] -- one piece of the report, to stdout AND to the
-# durable copy.
-#
-# WHY THE REPORT IS CAPTURED AS IT IS PRINTED.  A review found the gate
-# streaming its verdicts and then deleting its scratch directory, leaving
-# no durable record that the ffprobe readings, the luminance statistics,
-# the git status, the checkpoint ids and the no-cheat searches were ever
-# made -- so "the artifacts were verified" rested on a terminal somebody
-# had closed.  Capturing here rather than teeing the whole process keeps
-# the counters in THIS shell (a pipeline would put them in a subshell and
-# lose every one) and needs no race with a background writer.
-#
-# The format string is always a literal from this file, so passing it
-# through is safe; SC2059 is disabled for exactly that reason.
+# say FORMAT [ARG...] -- one piece of the report, to stdout AND to the durable
+# copy.
 say() {
     local format="$1"
     shift
@@ -1050,10 +758,8 @@ rel() {
     playthrough_rel "$1"
 }
 
-# die STATUS MESSAGE... -- for the handful of conditions under which
-# there is nothing left to measure.  env.sh's playthrough_die RETURNS 1
-# rather than exiting, because it is sourced and an exit there would
-# kill an interactive shell; the exit is therefore taken here.
+# die STATUS MESSAGE... -- for the handful of conditions under which there is
+# nothing left to measure.
 die() {
     local status="$1"
     shift
@@ -1062,35 +768,12 @@ die() {
 }
 
 # group NUMBER NAME -- open a group under its OWN number.
-#
-# THE NUMBER IS THE GROUP'S IDENTITY, NOT ITS POSITION IN THIS RUN.  It
-# used to be a running counter, which is the same thing only while every
-# group runs: under `--phase post-commit` four groups report, and the
-# counter numbered version control 2 and hygiene 3.  Every verdict is
-# filed under that number by register_check and the inventory reads the
-# files back, so the post-commit phase compared version control's
-# seventeen verdicts against group 2's declaration and reported both as
-# wrong while each had performed exactly what it declared.  Numbering
-# each group for itself also means a post-commit report and a full one
-# name the same group by the same number, which is what makes the two
-# comparable.
 group() {
     GROUP="$1"
     say '\n=== %d. %s ===\n' "${GROUP}" "$2"
 }
 
 # register_check NAME -- record that this check reported, in this group.
-#
-# The inventory assertion in group 10 counts DISTINCT names per group, so
-# every verdict that IS a check on the artifacts writes its name here.
-# INFO and WARN deliberately do not: they are notes rather than
-# judgements, and counting them would make the declared inventory a
-# count of report lines instead of a count of checks.
-#
-# Before the scratch directory exists there is nowhere to write, and
-# nothing reports that early -- group 1 opens after open_scratch.  The
-# guard is there so that a future caller which does cannot fail on a
-# redirection.
 register_check() {
     [ -n "${SCRATCH}" ] && [ -d "${SCRATCH}" ] || return 0
     printf '%s\n' "$1" >>"${SCRATCH}/checks-${GROUP}.seen"
@@ -1116,34 +799,6 @@ record_fail() {
 # record_divergence NAME OBSERVED REQUIRED WHY
 #   The delivered code knowingly departs from what the plan requires,
 #   and the departure cannot be closed from inside this pipeline.
-#
-#   WHY THIS IS ITS OWN VERDICT RATHER THAN A PASS OR A FAIL.  A review
-#   found this gate reporting a KNOWN divergence from the plan as PASS,
-#   with the reason written honestly in the observed text beside it -- so
-#   the prose was truthful and the verdict was not, and the acceptance
-#   report and REPORT.md then inherited "PASS" and dropped the prose.
-#   That is the defect: not the divergence, which is documented and
-#   forced, but a report that reads as compliance.
-#
-#   It is not a FAIL either, and that distinction is deliberate rather
-#   than lenient.  A failure says "this is wrong and fixing it is the
-#   work"; this says "this is not what the plan asked for, here is what
-#   was delivered instead, and here is why the difference cannot be
-#   closed here".  Collapsing the two would either hide a real failure
-#   among permanent divergences or make the gate permanently red for
-#   something no run of it can change.
-#
-#   IT DOES NOT AFFECT THE EXIT STATUS, and that is the one judgement
-#   worth arguing with.  This gate runs before the commit stage, so a
-#   non-zero exit for an environment-imposed and permanent divergence
-#   would block every checkpoint for good rather than reporting anything.
-#   Instead the run is impossible to MISREAD: the verdict line becomes
-#   VERIFY=pass-with-divergence, the count is published as
-#   VERIFY_DIVERGENCES, and the summary sentence stops claiming the
-#   artifacts are what they claim to be.
-#
-#   It DOES register as a check, because it is a judgement about the
-#   artifacts and the declared inventory must continue to account for it.
 record_divergence() {
     DIVERGENCES=$((DIVERGENCES + 1))
     register_check "$1"
@@ -1158,10 +813,8 @@ record_info() {
     say 'INFO  %s: %s\n' "$1" "${2:-<empty>}"
 }
 
-# record_warn -- something an operator should see that is not itself a
-# verdict on the artifacts.  It does NOT affect the exit status: this
-# gate's job is to judge the evidence, and a note about the host it was
-# judged on is not evidence.
+# record_warn -- something an operator should see that is not itself a verdict
+# on the artifacts.
 record_warn() {
     say 'WARN  %s: %s\n' "$1" "${2:-<empty>}"
 }
@@ -1171,11 +824,11 @@ record_warn() {
 #   that are about the history rather than about the artifacts, and that
 #   therefore cannot hold until the checkpoint has been taken.
 #
-#   One predicate, called at each of the two group call sites, rather
-#   than an `if` inside each of the fifteen checks: a check that decides
-#   for itself whether to run is a check that can be talked out of
-#   running, and this way the classification is visible in one place
-#   beside the group it belongs to.
+#   One predicate, called at each of the two group call sites, rather than
+#   an `if` inside each of the deferred checks: a check that decides for
+#   itself whether to run is a check that can be talked out of running, and
+#   this way the classification is visible in one place beside the group it
+#   belongs to.
 tracking_phase() {
     [ "${PHASE}" != "${PHASE_PRE_COMMIT}" ]
 }
@@ -1184,33 +837,16 @@ tracking_phase() {
 #   Whether THIS run measures the artifact-shaped properties: the record,
 #   the timeline, the container, the caption track, the luminance, the
 #   absence of cheating, the artwork and the lint.  True for `pre-commit`
-#   and for `all`; FALSE for `post-commit`, because a commit changes the
-#   history and not the bytes, so re-measuring them minutes after the
-#   pre-commit phase did is work with no question behind it.
-#
-#   The complement of tracking_phase in intent rather than in logic --
-#   `all` is both -- and, like it, one predicate at the group call sites
-#   rather than an `if` inside each of the eighty-nine artifact
-#   checks.
 artifact_phase() {
     [ "${PHASE}" != "${PHASE_POST_COMMIT}" ]
 }
 
 # ---------------------------------------------------------------------
 # THE VERDICT CHANNEL
-#
-# The arithmetic-heavy checks are written in Python, because JSON,
-# floating point and set comparison are what Python is for and because
-# the sibling producers' own constants can be imported and cross-checked
-# rather than restated.  Each program emits one verdict per line:
-#
-#     KIND <US> NAME <US> OBSERVED <US> EXPECTED
-#
-# and this function turns those lines into counted, formatted report
-# entries.  It is fed by REDIRECTION from a file rather than by a pipe,
-# and that is a correctness requirement rather than a style choice: the
-# right-hand side of a pipe runs in a subshell, so every counter this
-# function incremented would be discarded when it returned.
+# The arithmetic-heavy checks are written in Python, because JSON, floating
+# point and set comparison are what Python is for and because the sibling
+# producers' own constants can be imported and cross-checked rather than
+# restated.
 # ---------------------------------------------------------------------
 consume_verdicts() {
     # Initialised rather than merely declared: under `set -u` a `local`
@@ -1239,21 +875,18 @@ consume_verdicts() {
 #   Materialise one Python checker from this file's heredoc into SCRATCH.
 #   The programs live in the scratch directory rather than in the working
 #   tree so that running the gate cannot add an untracked file to the
-#   evidence -- which check group 7 would then, correctly, report.
+#   evidence -- which the change-surface group would then, correctly,
+#   report.
 emit_checker() {
     "${CAT}" >"${SCRATCH}/$1.py"
 }
 
 # run_checker LABEL [arg ...]
-#   Run one materialised checker, collect its verdicts and fold them into
-#   the report.  A crash is itself a FAILURE of the gate -- reported with
-#   the tail of its stderr so the cause is visible -- and any verdicts it
-#   managed to emit before dying are still counted, so a partial run
-#   reports what it did establish rather than nothing at all.
-#
-#   -B is passed on top of env.sh's PYTHONDONTWRITEBYTECODE=1 because
-#   this gate asserts that no stray bytecode exists under playthrough/,
-#   and a gate that creates the condition it forbids is worthless.
+#   Run one materialised checker, collect its verdicts and fold them into the
+#   report.  A crash is itself a FAILURE of the gate -- reported with the tail
+#   of its stderr so the cause is visible -- and any verdicts it managed to
+#   emit before dying are still counted, so a partial run reports what it did
+#   establish rather than nothing at all.
 run_checker() {
     local label="$1"
     shift
@@ -1263,13 +896,10 @@ run_checker() {
     local ceiling="" status=0 detail=""
     ceiling="$(checker_bound)"
     : >"${out}"
-    # THE CEILING IS DERIVED FROM THE POPULATION, and an expiry is
-    # reported as an expiry: a checker that hangs on a corrupt artifact
-    # would otherwise hold this gate -- and the pipeline's lock -- for
-    # ever, with no verdict at all.  Its stderr goes to a FILE and is
-    # quoted from there in bounded form, because a checker that prints a
-    # line per frame would otherwise put the whole session into one
-    # shell variable to explain one failure.
+    # THE CEILING IS DERIVED FROM THE POPULATION, and an expiry is reported as
+    # an expiry: a checker that hangs on a corrupt artifact would otherwise
+    # hold this gate -- and the pipeline's lock -- for ever, with no verdict at
+    # all.
     bounded "${ceiling}" "${PYTHON}" -B "${script}" "$@" \
         >"${out}" 2>"${err}" || status=$?
     if [ "${status}" -ne 0 ]; then
@@ -1312,12 +942,6 @@ fact() {
 }
 
 # floats_close A B EPSILON -- |A - B| <= EPSILON.
-#
-# THE SHELL CANNOT COMPARE FLOATING POINT.  `[ "0.27" -gt 0 ]` applies an
-# integer operator to a string and fails at the syntax level rather than
-# returning a wrong answer, so awk does every comparison in this file --
-# as a fixed program with the values handed in through -v, never with a
-# value interpolated into the program text.
 floats_close() {
     "${AWK}" -v a="$1" -v b="$2" -v eps="$3" 'BEGIN {
         d = a - b
@@ -1326,22 +950,10 @@ floats_close() {
     }'
 }
 
-# TWO VALIDATORS, BECAUSE TWO DIFFERENT THINGS ARE BEING VALIDATED.
-#
-# There used to be one, accepting the character class [0-9.] and nothing
-# else, and it was wrong in both directions at once.  ImageMagick prints
-# its statistics with %g, which switches to SCIENTIFIC NOTATION for a
-# very dark frame: a real capture measuring mean=7.56475e-09
-# std=5.44662e-06 -- both strictly greater than zero, both perfectly
-# comparable -- was rejected as "could not measure grayscale statistics"
-# and reported as a failure, so an honest near-black capture failed while
-# the numeric comparison never ran.  In the other direction, a value
-# containing '.' passed and then reached `[ "${a}" -eq "${b}" ]`, which
-# is an INTEGER comparison and errors at the syntax level on a decimal.
-#
-# So: is_real is what awk can compare, and is_count is what the shell can.
-# Neither accepts ffprobe's "N/A", which is how ffprobe spells "I do not
-# know" and must never be mistaken for a measurement.
+# TWO VALIDATORS, BECAUSE TWO DIFFERENT THINGS ARE BEING VALIDATED: a
+# count that must be safe for `-eq` and `-gt`, and a decimal reading that
+# must be safe to hand to awk.  One validator accepting [0-9.] is wrong in
+# both directions at once.
 
 # is_count VALUE -- a non-negative integer, safe for `-eq` and `-gt`.
 is_count() {
@@ -1352,11 +964,8 @@ is_count() {
     esac
 }
 
-# is_real VALUE -- an optionally signed decimal, with an optional
-# exponent, and therefore exactly the set of readings awk can compare.
-# A bash regex rather than a case glob: an exponent is not expressible as
-# a glob without accepting things that are not numbers, and bash is
-# already a requirement of this file (BASH_SOURCE, arrays and `local`).
+# is_real VALUE -- an optionally signed decimal, with an optional exponent, and
+# therefore exactly the set of readings awk can compare.
 is_real() {
     case "${1-}" in
         ''|'N/A'|'n/a') return 1 ;;
@@ -1366,17 +975,13 @@ is_real() {
 
 # ---------------------------------------------------------------------
 # BOUNDED EXECUTION
-#
 # bounded SECONDS COMMAND...
 #   Run one external command under a ceiling, TERM then KILL, over the
-#   command's own process group.  Every child this gate starts goes
-#   through here; see EVERY CHILD THIS GATE STARTS IS TIME-BOUNDED above
-#   for why, and note that the status is returned UNCHANGED -- an expiry
-#   is 124, a kill after the grace period 137, and each call site decides
-#   what to say about it.
-#
-#   `timeout` is invoked by the path playthrough_require_tools verified,
-#   exactly as every other tool here is.
+#   command's own process group.  Every child this gate starts goes through
+#   here; see EVERY CHILD THIS GATE STARTS IS TIME-BOUNDED above for why, and
+#   note that the status is returned UNCHANGED -- an expiry is 124, a kill
+#   after the grace period 137, and each call site decides what to say about
+#   it.
 # ---------------------------------------------------------------------
 bounded() {
     local seconds="$1"
@@ -1391,10 +996,9 @@ bound_expired() {
     [ "${1:-0}" = "${BOUND_EXPIRED}" ] || [ "${1:-0}" = "${BOUND_KILLED}" ]
 }
 
-# file_bytes PATH -- the size in bytes, or 0.  `wc -c` on a redirection
-# rather than `stat`, so no second tool has to be resolved and a missing
-# file is 0 instead of a diagnostic.  `wc` is invoked by the path
-# playthrough_require_tools verified, as every tool in this file is.
+# file_bytes PATH -- the size in bytes, or 0. `wc -c` on a redirection rather
+# than `stat`, so no second tool has to be resolved and a missing file is 0
+# instead of a diagnostic.
 file_bytes() {
     local bytes=""
     bytes="$("${WC}" -c <"$1" 2>/dev/null || printf '0')"
@@ -1415,10 +1019,7 @@ film_bound() {
 }
 
 # checker_bound -- the ceiling for one Python checker, derived from the
-# population it reads.  The capture count comes from the facts file once
-# group 2 has published it, and from the record's line count before that
-# -- one `wc -l`, so the first checker is bounded too without walking a
-# directory or holding one name in memory.
+# population it reads.
 checker_bound() {
     local count="" seconds=0
     count="$(fact capture_count)"
@@ -1436,13 +1037,6 @@ checker_bound() {
 }
 
 # count_lines FILE -- how many non-empty lines FILE holds, as a number.
-#
-# `grep -c` EXITS NON-ZERO WHEN IT COUNTS ZERO, which is the trap this
-# exists to close: `$(grep -c . "$f" || printf 0)` captures grep's own
-# "0" AND the fallback's, and the two-line result then breaks the integer
-# test it was written for -- observed as a lint verdict reading "0
-# finding(s)" and failing anyway.  The status is discarded and the output
-# is reduced to digits.
 count_lines() {
     local count=""
     count="$("${GREP}" -c . "$1" 2>/dev/null || true)"
@@ -1450,11 +1044,8 @@ count_lines() {
     printf '%s' "${count:-0}"
 }
 
-# excerpt FILE [LINES] -- the first few lines of a captured stream, on
-# one line, for a verdict's observed value.  A diagnostic is READ FROM A
-# FILE and bounded here rather than captured whole into a variable: a
-# tool that prints one line per frame would otherwise put the entire
-# session into the report, and into memory, to explain one failure.
+# excerpt FILE [LINES] -- the first few lines of a captured stream, on one
+# line, for a verdict's observed value.
 excerpt() {
     local file="$1"
     local lines="${2:-4}"
@@ -1467,38 +1058,13 @@ excerpt() {
 }
 
 # THE HELPERS THAT SHELL OUT, AND WHY THEY KEEP THEIR STDERR
-#
-# Each of these turns a failure into an empty string, which is right: a
-# missing stream has to be a VERDICT rather than the end of the run.  What
-# was wrong -- and a review said so -- is that the tool's own explanation
-# went to /dev/null with it, so the report read "observed: <nothing>" for
-# a file that is missing, a file that is not a container, a codec that is
-# not built in and a permission error alike.  The reason exists; it was
-# being thrown away.
-#
-# So every one of them writes its stderr into a file inside the private
-# scratch directory, and the failing checks append a bounded tail of it to
-# what they observed -- bounded so a diagnostic cannot become the report.
-# Scratch is 0700 inside the runtime root, so a path or a filename in a
-# tool message stays as private as every other diagnostic this pipeline
-# writes.
-#
-# THE REASON IS KEPT IN THE FILE AND NOT IN A VARIABLE, and that is a
-# correctness requirement rather than a preference.  Every one of these
-# helpers is called inside `$( )`, which is a SUBSHELL: a variable it
-# assigned would be discarded the instant the substitution closed, and
-# the caller would read an empty reason for every failure -- the exact
-# silence this fix exists to end, reintroduced one layer down.  The file
-# is written by the subshell to the filesystem, so it survives; and
-# because `2>` TRUNCATES at redirection time, the file always holds
-# precisely the stderr of the most recent invocation for that tool,
-# emptied automatically by the next one that succeeds.
+# Each of these turns a failure into an empty string, which is right: a missing
+# stream has to be a VERDICT rather than the end of the run.
 # ---------------------------------------------------------------------
 
-# tool_error_file LABEL -- where a helper's stderr goes.  Before scratch
-# exists there is nowhere private to put it, so the answer is /dev/null
-# and no reason is available; every helper below runs after open_scratch
-# in practice.
+# tool_error_file LABEL -- where a helper's stderr goes. Before scratch exists
+# there is nowhere private to put it, so the answer is /dev/null and no reason
+# is available; every helper below runs after open_scratch in practice.
 tool_error_file() {
     if [ -z "${SCRATCH}" ] || [ ! -d "${SCRATCH}" ]; then
         printf '%s' "/dev/null"
@@ -1508,20 +1074,8 @@ tool_error_file() {
 }
 
 # because TOOL -- " (TOOL said: <reason>)" when TOOL's last invocation
-# explained itself, and NOTHING AT ALL when it did not, so a verdict
-# never carries an empty parenthesis.
-#
-# Two lines and 200 characters at the most.  ffmpeg in particular will
-# print a banner and a hundred lines of build configuration given the
-# chance; a verdict that scrolls is a verdict nobody reads, and this gate
-# reports what was observed next to what was required on one line each.
-#
-# CALL IT IMMEDIATELY AFTER THE PROBE IT EXPLAINS.  Several checks read
-# four fields from one file before reporting on any of them, and all four
-# share the one ffprobe error file, so a `because` deferred to verdict
-# time would attribute the fourth probe's complaint to the first.  The
-# convention is `x="$(probe_value ...)"; x_said="$(because ffprobe)"`,
-# which snapshots the reason while it is still the right one.
+# explained itself, and NOTHING AT ALL when it did not, so a verdict never
+# carries an empty parenthesis.
 because() {
     local tool="${1:-the tool}"
     local path="" reason=""
@@ -1537,8 +1091,8 @@ because() {
 
 # probe_field FILE SELECTOR ENTRIES
 #   One ffprobe read in KEY=value form, with the failure surfaced as an
-#   empty string rather than as an abort, so a missing stream is a
-#   verdict instead of the end of the run.
+#   empty string rather than as an abort, so a missing stream is a verdict
+#   instead of the end of the run.
 probe_field() {
     local err
     err="$(tool_error_file ffprobe)"
@@ -1567,11 +1121,8 @@ probe_format() {
         "${HEAD}" -n 1 || true
 }
 
-# luminance PNG -- "mean std" over the grayscale conversion, or "" when
-# the file cannot be read.  The mean catches a fully black frame, which
-# is what SDL_VIDEODRIVER=dummy produces; the standard deviation
-# additionally catches a uniform solid-colour frame, which a mean-only
-# test would pass.
+# luminance PNG -- "mean std" over the grayscale conversion, or "" when the
+# file cannot be read.
 luminance() {
     local err
     err="$(tool_error_file convert)"
@@ -1591,30 +1142,10 @@ geometry() {
 
 # ---------------------------------------------------------------------
 # ONE DECODE PER FILM, AND ONE EXTRACTION PER OFFSET
-#
-# Four properties of a film need the pictures rather than the header:
-# that every packet decodes, how many frames come out, that the container
-# does not declare more than it can produce, and that the captioned
-# film's pixels are identical to the plain one's.  Each used to walk the
-# stream for itself, so the base film was read three times and the
-# captioned film twice on every run, and the same two offsets were
-# extracted twice from each of them.
-#
-# A decode is O(film), the film is O(session), and the session is
-# deliberately unbounded -- so the passes are made ONCE and cached in the
-# scratch generation, which exists for exactly the length of this run.
-# Freshness needs no reasoning about staleness: the cache cannot outlive
-# the artifacts it describes.
-#
-# film_decode_pass FILE
-#   Decode FILE from end to end, once, and leave the outcome in
-#   FILM_PASS_STATUS, FILM_PASS_FRAMES, FILM_PASS_CEILING and
-#   FILM_PASS_LOG.  -xerror makes a corrupt NAL unit, a partial packet or
-#   a missing picture a failure rather than a warning nobody sees, and
-#   -progress makes the same pass report how many frames it decoded --
-#   which is the number `ffprobe -count_frames` used to be run twice
-#   more to obtain.  Measured on this session: 0.9 s for the pass against
-#   1.8 s for each of the two counts it replaces.
+# Four properties of a film need the pictures rather than the header: that
+# every packet decodes, how many frames come out, that the container does not
+# declare more than it can produce, and that the captioned film's pixels are
+# identical to the plain one's.
 # ---------------------------------------------------------------------
 FILM_PASS_STATUS=""
 FILM_PASS_FRAMES=""
@@ -1634,11 +1165,8 @@ film_decode_pass() {
         bounded "${ceiling}" "${FFMPEG}" -nostdin -v error -xerror \
             -i "${file}" -progress "${progress}" -f null - \
             >/dev/null 2>"${FILM_PASS_LOG}" || status=$?
-        # The LAST frame= line the encoder wrote, which is the count at
-        # the end of the stream.  An expired or wedged pass leaves
-        # whatever it had reached, and the reading is reported as
-        # unusable rather than as a count, because a partial count that
-        # happened to match would be the worst possible outcome.
+        # The LAST frame= line the encoder wrote, which is the count at the end
+        # of the stream.
         frames="$("${SED}" -n 's/^frame=[[:space:]]*//p' \
             "${progress}" 2>/dev/null | "${TAIL}" -n 1 || true)"
         frames="${frames//[^0-9]/}"
@@ -1659,10 +1187,10 @@ film_decode_pass() {
 }
 
 # extracted_frame FILE OFFSET
-#   The path of one frame taken OFFSET seconds into FILE, extracted once
-#   per (film, offset) and reused.  Returns 1 when nothing could be
-#   decoded there, which is itself a verdict at the call site: a film
-#   that stops early cannot answer for its later seconds.
+#   The path of one frame taken OFFSET seconds into FILE, extracted once per
+#   (film, offset) and reused.  Returns 1 when nothing could be decoded there,
+#   which is itself a verdict at the call site: a film that stops early cannot
+#   answer for its later seconds.
 extracted_frame() {
     local file="$1"
     local offset="$2"
@@ -1782,19 +1310,6 @@ USAGE
 # resolve_report_destination PATH
 #   PATH as an absolute path, with its parent resolved through the
 #   filesystem, or a non-zero status when that parent does not exist.
-#
-#   The PARENT is resolved rather than the path itself, because the
-#   report does not exist yet: `cd` into the directory that will hold it
-#   and ask where that actually is.  Resolving it is what makes the
-#   inside-the-tree test meaningful -- a relative path, a symlink or a
-#   trail of `..` would otherwise walk into the checkout while looking
-#   like somewhere else.  Nothing is created here; a caller who names a
-#   directory that does not exist is told so rather than having one made
-#   for them by a gate that promises to write nothing.
-#   The split is parameter expansion rather than `dirname`/`basename`
-#   because this file RESOLVES AND VERIFIES every external command it
-#   uses, and adding one to that machinery to cut a string in half would
-#   be a dependency bought for nothing.
 resolve_report_destination() {
     local given="$1" parent="" leaf=""
     case "${given}" in
@@ -1894,11 +1409,10 @@ ${LUMINANCE_SAMPLES_DEFAULT}}"
         esac
     done
 
-    # The phase is resolved against literal alternatives, and an
-    # unrecognised one is REFUSED rather than defaulted: a typo that
-    # silently produced the full gate would be reported as the phase
-    # that was asked for, and a report about the wrong phase is worse
-    # than no report.
+    # The phase is resolved against literal alternatives, and an unrecognised
+    # one is REFUSED rather than defaulted: a typo that silently produced the
+    # full gate would be reported as the phase that was asked for, and a report
+    # about the wrong phase is worse than no report.
     case "${phase}" in
         "${PHASE_ALL}")
             PHASE="${phase}"
@@ -1921,24 +1435,8 @@ ${LUMINANCE_SAMPLES_DEFAULT}}"
     esac
 
     # WHERE THE REPORT MAY BE WRITTEN, AND WHERE IT MAY NOT.
-    #
-    # This gate is a MEASUREMENT, and a measurement that edits the thing
-    # it measures is not one.  It used to write the report to
-    # playthrough/acceptance-report.txt on a passing run and DELETE that
-    # file on a failing one -- both inside the working tree, and both
-    # after the checks that assert the tree is clean and fully
-    # committed.  A review named the consequence: a `--phase all` run
-    # taken after the final checkpoint left the tree dirty in a file the
-    # gate had just certified as committed, and a failing run silently
-    # removed a tracked artifact.  It also made the promise in this
-    # file's own usage text -- "writes nothing into the working tree" --
-    # untrue.
-    #
-    # So the destination is now the CALLER'S, named explicitly, and it
-    # must lie OUTSIDE the working tree.  Publishing the report as a
-    # committed artifact is a separate, deliberate act performed by the
-    # attestation checkpoint, which commits what this gate measured
-    # rather than having the measurement commit itself.
+    # This gate is a MEASUREMENT, and a measurement that edits the thing it
+    # measures is not one.
     if [ -n "${report_to}" ]; then
         local resolved="" inside=""
         resolved="$(resolve_report_destination "${report_to}")" ||
@@ -1988,9 +1486,9 @@ ${LUMINANCE_SAMPLES_DEFAULT}}"
 #   is exactly "the tree as it was before this feature existed" and
 #   therefore the right thing to diff a change surface against.
 #
-#   `tail -1` rather than `git log --reverse | head -1`: head closing
-#   the pipe early raises SIGPIPE in git, which pipefail would turn into
-#   a failure of the whole assignment.
+#   `tail -1` rather than `git log --reverse | head -1`: head closing the
+#   pipe early raises SIGPIPE in git, which pipefail would turn into a
+#   failure of the whole assignment.
 default_base_commit() {
     local first="" parent=""
     first="$("${GIT}" log --format='%H' -- playthrough 2>/dev/null |
@@ -2008,12 +1506,8 @@ default_base_commit() {
 
 # ---------------------------------------------------------------------
 # SCRATCH
-#
-# Confined to the mode-0700 runtime root env.sh created and verified,
-# never to a predictable path in a world-writable /tmp, and removed on
-# every exit path.  The recursive removal is bounded to the directory
-# mktemp just made, which is the only shape of `rm -rf` this pipeline
-# permits.
+# Confined to the mode-0700 runtime root env.sh created and verified, never to
+# a predictable path in a world-writable /tmp, and removed on every exit path.
 # ---------------------------------------------------------------------
 # SC2317: ShellCheck cannot see that a trap handler is called, so the
 # body reads as dead code to it.  env.sh carries the same suppression for
@@ -2031,22 +1525,6 @@ _va_cleanup() {
 trap _va_cleanup EXIT
 
 # take_mutation_lock -- measure a tree that is standing still.
-#
-# A GATE THAT PASSES SAYS NOTHING IF THE TREE MOVED WHILE IT WAS READING.
-# Every group here reads the artifacts in sequence -- the frame count,
-# then the manifest, then the timeline, then the films -- and a producer
-# appending a frame between the first and the second turns a real
-# disagreement into a pass, or a real pass into a disagreement, with no
-# way afterwards to tell which happened.  Worse, the verdict this gate
-# prints is what the checkpoint that follows it relies on: a `verify`
-# that passed and a `commit` that ran are only evidence together if
-# nothing changed in between.
-#
-# So the lock is taken EXCLUSIVELY, which excludes every shared producer,
-# and it is held for the whole run through the EXIT trap.  A run started
-# by run_pipeline.sh finds the sequencer's own exclusive hold already in
-# place, proves it, and inherits it -- so the gate and the checkpoint the
-# sequencer runs after it sit inside ONE window rather than two.
 take_mutation_lock() {
     playthrough_acquire_mutation_lock exclusive ||
         die "${EX_BUSY}" "this gate could not take THIS checkout's" \
@@ -2071,28 +1549,15 @@ open_scratch() {
             "'$(rel "${base}")'"
     fi
     "${CHMOD}" 700 "${SCRATCH}"
-    # THE OWNER, RECORDED INSIDE THE GENERATION.  It is what lets the
-    # next run tell a generation whose audit is still working from one
-    # whose audit was killed; see THE SCRATCH GENERATION above.
-    # THE PID AND ITS START TIME, because a pid alone is not an identity:
-    # Linux recycles them, so "the pid this file names is alive" and "the
-    # process this file named is alive" are different claims, and the
-    # sweep below acts on the answer by removing a directory.  The pair
-    # is unique for the life of a boot.  A start time the kernel will not
-    # report leaves the pid on its own, which is exactly the older
-    # format's behaviour and is judged the same way.
+    # THE OWNER, RECORDED INSIDE THE GENERATION. It is what lets the next run
+    # tell a generation whose audit is still working from one whose audit was
+    # killed; see THE SCRATCH GENERATION above.
     printf '%s %s\n' "$$" \
         "$(playthrough_proc_start_time "$$" || printf '')" \
         >"${SCRATCH}/${SCRATCH_OWNER_FILE}"
     sweep_stale_scratch "${base}"
     # THE DURABLE COPY STARTS HERE, one line behind stdout, so that every
-    # verdict printed from this point on is also written down.  It is
-    # assembled in the private scratch directory, where a half-written or
-    # abandoned report cannot be mistaken for evidence, and copied out at
-    # the end to the path the CALLER named with `--report-to` -- outside
-    # the checkout, on every run, whatever the verdict.  Publishing it
-    # inside the tree this gate measures is not a measurement's act; the
-    # attestation checkpoint does that, and refuses a failing one.
+    # verdict printed from this point on is also written down.
     REPORT_FILE="${SCRATCH}/acceptance-report.md"
     : >"${REPORT_FILE}" || REPORT_FILE=""
     if [ -n "${REPORT_FILE}" ]; then
@@ -2100,24 +1565,15 @@ open_scratch() {
     fi
 }
 
-# owner_is_alive PID -- whether that process still exists.  Both tests
-# are needed: `kill -0` answers "does it exist AND may I signal it",
-# which is false for a live process belonging to somebody else, and
-# /proc answers existence alone.  A generation is only ever removed when
-# BOTH say it is gone, because the cost of being wrong in that direction
-# is another audit's working directory.
+# owner_is_alive PID -- whether that process still exists.
 owner_is_alive() {
     local pid="$1" recorded="${2-}" current=""
     if ! kill -0 "${pid}" 2>/dev/null && [ ! -d "/proc/${pid}" ]; then
         return 1
     fi
-    # A RECORDED START TIME TURNS "a pid" INTO "that process".  Without
-    # it, a recycled pid makes a killed audit's generation look live and
-    # it is kept for ever; with it, the generation is correctly swept.
-    # The check only ever moves the verdict in that direction: an
-    # unreadable or absent start time falls back to existence alone,
-    # which keeps the directory, and keeping somebody else's working
-    # directory is the safe way to be wrong here.
+    # A RECORDED START TIME TURNS "a pid" INTO "that process". Without it, a
+    # recycled pid makes a killed audit's generation look live and it is kept
+    # for ever; with it, the generation is correctly swept.
     if [ -n "${recorded}" ]; then
         current="$(playthrough_proc_start_time "${pid}" || printf '')"
         if [ -n "${current}" ] && [ "${current}" != "${recorded}" ]; then
@@ -2166,11 +1622,8 @@ scratch_is_stale() {
     [ "$(( now - modified ))" -ge "${SCRATCH_STALE_SECONDS}" ]
 }
 
-# sweep_stale_scratch BASE -- remove the generations of audits that were
-# killed outright.  Bounded to the mode-0700 runtime directory env.sh
-# created and verified, matched on this file's own prefix, never
-# following a symlink, and never touching this run's own generation:
-# those four together are what make `rm -rf` acceptable here at all.
+# sweep_stale_scratch BASE -- remove the generations of audits that were killed
+# outright.
 sweep_stale_scratch() {
     local base="$1"
     local dir="" removed=0
@@ -2192,29 +1645,6 @@ sweep_stale_scratch() {
 
 # publish_report
 #   Write the captured report to its durable path in the working tree.
-#
-#   WHY THIS EXISTS.  A review found the gate streaming every verdict it
-#   measured to stdout and then deleting its scratch directory on exit,
-#   so the
-#   acceptance evidence -- the ffprobe readings, the grayscale
-#   statistics, the checkpoint ids, the no-cheat searches -- survived
-#   only in whatever terminal happened to be attached.  Section 0.9 of
-#   the plan is a set of gates whose satisfaction is meant to be
-#   demonstrable rather than asserted, and a verdict nobody can re-read
-#   is an assertion.  This publishes the report AS A TRACKED ARTIFACT so
-#   that "the artifacts were verified" is itself a committed fact.
-#
-#   ONLY A PASSING RUN PUBLISHES.  A failing report is genuinely useful,
-#   but it belongs on the operator's terminal and in the exit status, not
-#   committed to the tree as though it were acceptance evidence -- and
-#   leaving the PREVIOUS passing report in place while the tree is broken
-#   would be worse still, so a failing run REMOVES a stale one rather
-#   than letting it vouch for artifacts it never measured.
-#   NOTHING HERE COUNTS A VERDICT.  publish_report runs after the totals
-#   have been printed, so a record_info at this point would increment a
-#   number the report has already stated and make the report disagree
-#   with its own arithmetic.  Its lines are emitted with a REPORT prefix,
-#   which reads as what it is: an act, not a measurement.
 publish_report() {
     local target="" lines=""
     if [ -z "${REPORT_FILE}" ] || [ ! -f "${REPORT_FILE}" ]; then
@@ -2232,25 +1662,14 @@ act, not this measurement's"
         printf 'REPORT  could not be written to %s\n' "${target}"
         return 0
     fi
-    # NOBODY ELSE MAY REWRITE THE REPORT.  The redirection above creates
-    # the file under whatever umask this gate inherited, and a security
-    # review measured the delivered acceptance report at mode 0666 -- an
-    # audit record any local account could edit after it was signed off.
-    # Read access is left alone: the report is committed and is meant to
-    # be read.  A failure to tighten it is reported and does not fail the
-    # run, because the verdict on the ARTIFACTS has already been printed
-    # and a note about this file is not evidence about them.
+    # NOBODY ELSE MAY REWRITE THE REPORT.
     playthrough_deny_foreign_write "${target}" \
         "the published acceptance report" ||
         printf 'REPORT  %s\n' "could not be made unwritable by other \
 accounts at ${target}; see the reason above"
     lines="$("${WC}" -l <"${target}" | "${TR}" -d ' ')"
     # THE OUTCOME IS NAMED BESIDE THE PATH, because this file is written
-    # whether the run passed or failed.  It used to be written only on a
-    # pass, which made its mere existence a verdict -- and a verdict
-    # carried by a file's existence is one that a stale copy can tell.
-    # The report states its own result in its VERIFY line, and the
-    # attestation checkpoint is what refuses to commit a failing one.
+    # whether the run passed or failed.
     printf 'REPORT  %s\n' "${target} -- ${lines} lines, the verdict set \
 this run measured (VERIFY $(if [ "${FAILURES}" -ne 0 ]; then \
 printf 'fail'; elif [ "${DIVERGENCES}" -ne 0 ]; then \
@@ -2260,39 +1679,6 @@ printf 'pass-with-divergence'; else printf 'pass'; fi), phase \
 
 # report_publication_target
 #   The path this run will leave a copy of the report at, or nothing.
-#
-#   ONE PREDICATE, READ TWICE: by summarise_run, so the machine block
-#   names the file and the file therefore contains its own path, and by
-#   publish_report, which performs the copy.  Two independent conditions
-#   would be a way for the report to name a file that was never written.
-#
-#   IT IS THE CALLER'S PATH AND NOTHING ELSE.  It used to be
-#   playthrough/acceptance-report.txt unconditionally -- inside the tree
-#   this gate measures, written after the checks that assert that tree is
-#   clean and fully committed, and DELETED on a failing run.  Neither
-#   direction belongs to a measurement: see the note in parse_arguments.
-#   There is no phase condition on it either, because a phase decides
-#   what was measured and the report says which phase that was; a caller
-#   who asks for the report of a pre-commit run is entitled to it.
-#
-#   IT CANNOT FAIL, AND THAT IS THE POINT.  "Nowhere" is the ordinary
-#   answer -- no `--report-to` is the default -- so it is reported the way
-#   this function reports every answer: on stdout, as the empty string.
-#   It used to say "nowhere" by RETURNING 1, and both callers capture it
-#   in a command substitution under `set -e`.  One exempted the status
-#   with `|| true` and the other did not, so a run that passed all 108 of
-#   its checks printed `VERIFY=pass` and then died at the assignment in
-#   publish_report -- the ERR trap naming a line in the one function whose
-#   entire job is to be harmless.  A gate that reports a pass and exits 1
-#   is worse than one that fails honestly, because the exit status is what
-#   run_pipeline.sh reads: the sequencer refused to go on to the commit
-#   while the report it was refusing said every artifact was sound.
-#
-#   The empty string carries the whole answer, so the status carries none
-#   and no caller needs to remember to exempt it.  test_verify_artifacts.py
-#   pins the absence of a failing return AND drives publish_report with no
-#   destination under this file's own shell options, because the source
-#   assertion alone could not prove the branch survives errexit.
 report_publication_target() {
     if [ -z "${REPORT_FILE}" ] || [ ! -f "${REPORT_FILE}" ]; then
         return 0
@@ -2303,44 +1689,11 @@ report_publication_target() {
     printf '%s' "${REPORT_DESTINATION}"
 }
 
-# MEASURED_COMMIT -- resolved once, by main(), before the header is
-# written.  The header states it in prose and the closing notes repeat it
-# machine-readably; reading it twice would let those two disagree, and a
-# report whose prose and whose notes named different trees would be
-# worse than either of them alone.
+# MEASURED_COMMIT -- resolved once, by main(), before the header is written.
 MEASURED_COMMIT=""
 
 
 # measured_commit -- WHICH TREE this report is about.
-#
-# Deliberately a commit and not a clock.  The durable report is a
-# committed artifact, so anything in it that changes without the
-# artifacts changing is churn in the history that carries no
-# information.  A commit id is stable for a given tree, and it says
-# something a timestamp cannot: exactly which evidence was read.
-#
-# AND IT MUST NOT CLAIM MORE THAN THAT.  A commit id describes the
-# measurement only for as long as the working tree still IS that commit.
-# Run this gate over modified sources -- the normal state while the gate
-# itself is being repaired, and the normal state of a pre-commit run,
-# whose entire purpose is to measure artifacts that are not committed
-# yet -- and a bare `HEAD abc123` asserts that the evidence came out of
-# a commit which does not contain it.
-#
-# That is the defect this was repaired for, and the repair is worth
-# stating precisely because the arithmetic was never the problem: the
-# committed report cited a HEAD and a check total that were both
-# correctly DERIVED at the moment it ran, and both false by the time it
-# was read, because nothing in it tied the numbers to the tree they came
-# from.  A derived number is not the same thing as a true citation.
-#
-# So divergence is stated instead of assumed away.  The scope is
-# playthrough/, matching check_nothing_uncommitted, because that one
-# directory holds both the artifacts this gate reads AND the code doing
-# the reading -- a modification to either means the report is not about
-# the commit alone.  A clean tree, which is the state the closed
-# lifecycle commits in, reads exactly as it did before, so the durable
-# artifact never churns.
 measured_commit() {
     local head="" dirty=""
     head="$("${GIT}" rev-parse --short=10 HEAD 2>/dev/null || true)"
@@ -2361,21 +1714,11 @@ measured_commit() {
 
 # ---------------------------------------------------------------------
 # 1  THE MEASURING ENVIRONMENT
-#
 # A gate has to establish that it can measure before it reports what it
-# measured.  A missing tool is a FAILURE of the gate and not a reason to
-# stop: the remaining groups still run, and the ones that needed the
-# absent tool fail individually and say so.
+# measured.
 # ---------------------------------------------------------------------
 # resolve_tools -- resolve and verify EVERY external command, before the
 # scratch directory exists.
-#
-# It runs first in main(), ahead of open_scratch, because open_scratch is
-# itself built out of mktemp and chmod: resolving after it would leave two
-# of the gate's own tools unverified and invoked by bare name, which is
-# precisely the gap a review found.  Nothing is printed here -- the report
-# has not started -- so the outcome is kept and reported as a verdict by
-# check_tool_inventory in group 1.
 resolve_tools() {
     local -a wanted=()
     read -r -a wanted <<<"${REQUIRED_COMMANDS}"
@@ -2431,12 +1774,12 @@ root and not group- or world-writable, resolved BEFORE the scratch \
 directory is opened because mktemp and chmod are what open it"
 }
 
-# THE IMAGEMAGICK ENTRY POINT.  `convert`, `identify` and `compare` are
-# the classic names and exist on both the version 6 and the version 7
-# branches; the unified `magick` name exists only on 7, so anything
-# written against it dies with command-not-found on a 6 host.  This gate
-# calls the classic names and NEVER `magick`, and records which branch it
-# is talking to so a reader of the report knows.
+# THE IMAGEMAGICK ENTRY POINT.  `convert`, `identify` and `compare` are the
+# classic names and exist on both the version 6 and the version 7 branches;
+# the unified `magick` name exists only on 7, so anything written against it
+# dies with command-not-found on a 6 host.  This gate calls the classic names
+# and NEVER `magick`, and records which branch it is talking to so a reader
+# of the report knows.
 check_imagemagick() {
     local version=""
     version="$(bounded "${BOUND_PROBE_SECONDS}" "${CONVERT}" --version \
@@ -2467,35 +1810,16 @@ check_interpreter() {
         "${version} at $(rel "${PYTHON}")"
 }
 
-# THE DEPENDENCY CLOSURE, MEASURED RATHER THAN ASSUMED.
-#
-# The check above establishes that an interpreter runs, which a review
-# rightly said is not the closure: it says nothing about whether any of
-# the six declared libraries is installed, at what version, or whether
-# the graph beneath them is intact.  Section 0.9.1's R9 gate is that the
-# requirements file "resolves cleanly", and the exact `==` pins exist so
-# that a release cannot silently change the rendered film while every
-# gate still reports green -- which is precisely what an unmeasured
-# closure allows.
-#
-# The program is env.sh's, not this file's, because run_pipeline.sh must
-# refuse to produce artifacts under a broken closure and two
-# implementations of one assertion is how they come to disagree.  Here it
-# is consumed as five verdicts and one inventory note, through the same
-# channel as every other Python checker.
+# THE DEPENDENCY CLOSURE, MEASURED RATHER THAN ASSUMED.  The check above
+# establishes that an interpreter runs, which is not the closure: it says
+# nothing about whether any of the six declared libraries is installed, at
+# what version, or whether the graph beneath them is intact.
 check_dependency_closure() {
     local script="${SCRATCH}/closure.py"
     if ! playthrough_write_closure_checker "${script}"; then
-        # ONE FAILURE PER DECLARED VERDICT, so a gate that cannot run
-        # this checker reports the same eight properties as unmeasured
-        # rather than reporting seven fewer checks than it declares.
-        #
-        # THESE NAMES MUST MATCH THE CHECKER'S OWN, BYTE FOR BYTE.  They
-        # are the fallback for a checker that could not be written, so
-        # they stand in for verdicts that would otherwise be absent; a
-        # name that drifted would report a property nothing measures
-        # under a name nothing else uses.  test_verify_artifacts.py
-        # asserts the correspondence.
+        # ONE FAILURE PER DECLARED VERDICT, so a gate that cannot run this
+        # checker reports the same eight properties as unmeasured rather than
+        # reporting seven fewer checks than it declares.
         local name=""
         for name in \
             "the interpreter is the CPython \
@@ -2519,23 +1843,15 @@ the scratch directory, so nothing about the closure was measured" \
         done
         return 0
     fi
-    # NOT run_checker, and for one specific reason: this program EXITS
-    # NON-ZERO when a closure verdict failed, because run_pipeline.sh
-    # needs that status to refuse the run.  run_checker reads any
-    # non-zero exit as a crash of the checker, which would add a spurious
-    # "the closure checks completed" failure on top of every genuine
-    # closure failure.  So a crash is distinguished by its own evidence
-    # instead: a traceback on stderr, or no verdicts at all.
+    # NOT run_checker, and for one specific reason: this program EXITS NON-ZERO
+    # when a closure verdict failed, because run_pipeline.sh needs that status
+    # to refuse the run.
     local out="${SCRATCH}/closure.verdicts"
     local err="${SCRATCH}/closure.stderr"
     local detail=""
     : >"${out}"
     : >"${err}"
-    # BOUNDED like every other interpreter child.  The status is
-    # deliberately discarded rather than inspected -- see above for why a
-    # non-zero exit is a closure verdict rather than a crash -- so an
-    # expiry surfaces as the "no verdicts at all" condition below, which
-    # is the honest reading of a closure that could not be measured.
+    # BOUNDED like every other interpreter child.
     bounded "$(checker_bound)" "${PYTHON}" -B "${script}" \
         "${VERDICT_SEPARATOR}" \
         "${PLAYTHROUGH_REQUIREMENTS}" \
@@ -2552,47 +1868,10 @@ ${detail:-<no diagnostic and no verdicts>}" \
     consume_verdicts <"${out}"
 }
 
-# THE LINTER, RESOLVED IN FOUR STEPS.  The repository's own contract is a
-# bare `flake8` (Makefile:1648-1649), so that is preferred; an explicit
-# override wins over everything, and an importable module is accepted
-# because a virtual environment often installs it that way.  If none of
-# the four resolves, the lint check FAILS rather than being skipped, and
-# says what to do about it.
-#
-# INSIDE THE DECLARED CONTAINER, ONLY THE FIRST THREE STEPS CAN FIRE, AND
-# ONE OF THEM MUST.  supported_env.sh's docker_run passes exactly HOME,
-# TMPDIR, the cleared trust-bypass names and the image's own environment;
-# PLAYTHROUGH_FLAKE8 IS NOT AMONG THEM, so exporting it on the host has
-# no effect on a `supported_env.sh run` of this gate.  The linter has to
-# be discoverable from INSIDE the image -- on its PATH, or importable by
-# the interpreter env.sh resolves there.  That is why the image installs
-# flake8 into its own environment and exposes it on PATH, which is the
-# same shape this host uses (/usr/local/bin/flake8 -> a dedicated venv),
-# and why an image without it makes the lint check FAIL rather than
-# quietly not run.
-# NOTHING IS EXECUTED BEFORE IT IS VERIFIED, INCLUDING THE PROBE.
-#
-# A review found this resolver accepting PLAYTHROUGH_FLAKE8 on the
-# strength of a successful `--version`, which is not a check but the
-# first execution: by the time the exit status came back, an arbitrary
-# path taken from the environment had already run as this user, and it
-# would run again over every file under playthrough/ with its findings
-# read as the repository's lint verdict.  Ownership and writability are
-# the properties that matter and they are knowable WITHOUT running
-# anything, so they are established first, through env.sh's own
-# verifier -- the same one the twenty-three commands in group 1 pass
-# through, so the linter is no longer the single tool held to a weaker
-# standard than `cut`.
-#
-# EACH CANDIDATE IS REDUCED TO THE EXECUTABLE IT WOULD ACTUALLY RUN
-# before that verifier sees it.  For the two module forms the executable
-# is the INTERPRETER -- `flake8` is then an importable module inside it,
-# reachable only by an account that could already rewrite the
-# interpreter's own library -- so the interpreter is what gets verified.
-# A candidate that fails is REFUSED AND NAMED rather than silently
-# skipped: an operator who exported an override is told their override
-# was rejected and why, instead of reading a report that quietly linted
-# with something else.
+# THE LINTER, RESOLVED IN FOUR STEPS. The repository's own contract is a bare
+# `flake8` (Makefile:1648-1649), so that is preferred; an explicit override
+# wins over everything, and an importable module is accepted because a virtual
+# environment often installs it that way.
 verify_flake8_candidate() {
     local path="$1"
     local label="$2"
@@ -2665,32 +1944,26 @@ ${FLAKE8_REJECTED:+ (after refusing: ${FLAKE8_REJECTED})}"
 # THE TRUST STATE, SPLIT BY WHAT EACH BYPASS ACTUALLY ENDANGERS.
 #
 # env.sh registers every diagnostic escape hatch and moves the state to
-# "diagnostic" when any of them is set.  For a stage that RECORDS
-# evidence, any of them is disqualifying -- launch_game.sh and capture.sh
-# refuse outright, and they are right to.  This stage only READS
-# committed evidence, and the bypasses do not all mean the same thing
-# here:
+# "diagnostic" when any of them is set.  For a stage that RECORDS evidence
+# any of them is disqualifying -- launch_game.sh and capture.sh refuse
+# outright.  This stage only READS committed evidence, and the bypasses do
+# not all mean the same thing here:
 #
 #   * A CAPTURE-TIME bypass says the evidence itself may be tainted: an
 #     unverified interpreter or tool decided the readings, an
 #     unauthenticated X server let another account type into the session,
-#     the artwork came from somewhere this host cannot vouch for, or the
-#     run may have rendered a tileset other than the required one.  Those
-#     remain FAILURES, because they bear on what is being judged.
+#     the artwork came from somewhere this host cannot vouch for, or the run
+#     may have rendered a tileset other than the required one.  Those remain
+#     FAILURES, because they bear on what is being judged.
+#   * A PLATFORM bypass says the host doing the READING is past its security
+#     support date.  That is worth saying out loud and it changes nothing
+#     about the bytes in the tree, so it is reported as information:
+#     auditing a committed tree on whatever host is to hand is legitimate,
+#     and failing the run on it would report a defect in a correct artifact
+#     set -- the one thing an acceptance gate must never do.
 #
-#   * A PLATFORM bypass says the host doing the reading is past its
-#     security support date.  That is worth saying out loud and it
-#     changes nothing about the bytes in the tree -- report_platform
-#     below already treats the same condition as information for exactly
-#     this reason, since "auditing a committed tree on whatever host is
-#     to hand is legitimate".  Failing the run on it would report a
-#     defect in a correct artifact set, which is the one thing an
-#     acceptance gate must never do; and the project's own setup guidance
-#     tells operators to export that waiver for host-side stages, so the
-#     old behaviour turned following the instructions into a failure.
-#
-# An inability to VERIFY (PLAYTHROUGH_TRUST_UNVERIFIED) stays a failure
-# too: a check that could not run is not a check that passed.
+# An inability to VERIFY (PLAYTHROUGH_TRUST_UNVERIFIED) stays a failure too:
+# a check that could not run is not a check that passed.
 readonly PLATFORM_CLASS_BYPASSES="PLAYTHROUGH_ALLOW_EOL_PLATFORM"
 
 check_trust_state() {
@@ -2738,29 +2011,12 @@ relaxed check is not evidence"
 }
 
 # THE VIDEO DRIVER, AND WHOSE IT IS.
-#
-# This verdict is about THE PROCESS DOING THE MEASURING and says nothing
-# about the session that was recorded -- and it now says so in its own
-# name, because the earlier wording ("the video driver contract is x11
-# and not dummy") read as a statement about the recording and could never
-# fail: env.sh exports SDL_VIDEODRIVER=x11 unconditionally, so the check
-# was reading back a value this file had set a few lines earlier.  Running
-# the gate with SDL_VIDEODRIVER=dummy in the caller's environment
-# produced a serene pass.
-#
-# What is asserted is therefore the real property: that the environment
-# contract IS in force in this process, which fails if env.sh is edited
-# or replaced by something that does not establish it.  The caller's
-# inherited value is reported beside it, and warned about when it was
-# `dummy`, since an operator whose shell is set that way is one step away
-# from recording a black film.
-#
-# WHAT DOES JUDGE THE RECORDING is elsewhere and is named here so a
-# reader knows where to look: group 6 reads the grayscale statistics of
-# every committed capture and of frames decoded out of both films, and
-# group 9 reads the tileset the engine logged loading at capture time.
-# Those are measurements of the evidence; this is a statement about the
-# audit.
+# This verdict is about THE PROCESS DOING THE MEASURING and says nothing about
+# the session that was recorded -- and it now says so in its own name, because
+# the earlier wording ("the video driver contract is x11 and not dummy") read
+# as a statement about the recording and could never fail: env.sh exports
+# SDL_VIDEODRIVER=x11 unconditionally, so the check was reading back a value
+# this file had set a few lines earlier.
 check_video_driver() {
     local inherited="${_VA_INHERITED_VIDEODRIVER:-<unset>}"
     if [ "${_VA_INHERITED_VIDEODRIVER:-}" = "dummy" ]; then
@@ -2791,12 +2047,7 @@ anything else here means the environment contract was not established \
 and every tool resolution and path in this run is suspect"
 }
 
-# The platform verdict is INFORMATION here, not a verdict on the
-# artifacts.  playthrough_check_platform refuses on an end-of-life
-# release, which is right for a stage that RECORDS evidence and wrong for
-# one that only reads it -- auditing a committed tree on whatever host is
-# to hand is legitimate.  Its diagnosis is suppressed and its finding
-# reported, exactly as playthrough_env_summary does.
+# The platform verdict is INFORMATION here, not a verdict on the artifacts.
 report_platform() {
     playthrough_check_platform >/dev/null 2>&1 || true
     record_info "the host this gate ran on" \
@@ -2876,19 +2127,8 @@ group_environment() {
 
 # ---------------------------------------------------------------------
 # 2  ONE FRAME PER KEYSTROKE
-#
 # The headline invariant of the whole subsystem: exactly one capture per
-# keystroke, exactly one record row per capture.  It is asserted as an
-# IDENTITY between two independently produced counts, which is what makes
-# an unpaired frame impossible to overlook -- and it is the reason the
-# derived transition images live in playthrough/build/transitions/ and
-# never in playthrough/frames/, because mixing them in would destroy the
-# very count this check rests on.
-#
-# The six-key schema comes from manifest.py's own FIELDS tuple and the
-# canonical filename from its own frame_file(), so the committed record
-# is held to exactly the contract its producer enforces on a new row
-# rather than to a second description of it written here.
+# keystroke, exactly one record row per capture.
 # ---------------------------------------------------------------------
 emit_record_checker() {
     emit_checker record <<'PY'
@@ -3025,11 +2265,10 @@ def main(argv):
 
     # --- the record, STREAMED -----------------------------------------
     #
-    # It used to be read whole -- read().splitlines() -- and then held
-    # twice over: the raw lines, and a parsed dict per row.  One row per
-    # keystroke at ~1 kB of interpreter objects means a hundred thousand
-    # keystrokes is hundreds of megabytes resident on a host with under
-    # four gigabytes, for a walk that never looks backwards.
+    # STREAMED, never read whole: one row per keystroke at ~1 kB of
+    # interpreter objects makes a long session hundreds of megabytes
+    # resident on a host with under four gigabytes, for a walk that never
+    # looks backwards.
     #
     # So every property below is decided as its row arrives: the counters
     # accumulate, the findings are bounded, and the only thing that
@@ -3060,11 +2299,9 @@ def main(argv):
     # distinction: an ASCII session's menus and a tiles session's menus
     # look alike, and only the map is drawn from the tileset.
     #
-    # It used to be published as a fact -- one KEY=value line holding a
-    # comma-separated list of every in-game frame -- which the shell then
-    # read into a variable and piped twice.  One index per keystroke in a
-    # single line is a fact whose length is the session's, and a value of
-    # that shape is one argument away from MAX_ARG_STRLEN.  One index per
+    # Written one index per LINE rather than published as a single
+    # comma-separated fact: a value whose length is the session's is one
+    # argument away from MAX_ARG_STRLEN.  One index per
     # LINE in the scratch generation is bounded by the disk and is
     # sampled by line number without any of it being held.
     in_game = open(in_game_path, "w", encoding="utf-8")
@@ -3099,7 +2336,7 @@ def main(argv):
                              % (rows, frame))
             try:
                 canonical = mf.frame_file(frame)
-            except Exception as err:                 # noqa: BLE001
+            except Exception as err:
                 canonical = None
                 note_problem(mislabelled, "frame %r: %s" % (frame, err))
             if canonical is not None and row.get("file") != canonical:
@@ -3161,11 +2398,10 @@ def main(argv):
         ok("every row carries exactly the six documented keys, in "
            "order, and no others", ", ".join(wanted))
 
-    # NON-EMPTINESS, NAMED AS NON-EMPTINESS.  This verdict used to be
-    # called "every row records what was pressed and why", which read as
-    # a verdict on the narration -- and it is not one: "Swing." against
-    # the action `press '2' -- swing` is non-empty and explains nothing.
-    # The rationale contract is the check below; this one is the floor
+    # NON-EMPTINESS, NAMED AS NON-EMPTINESS.  This verdict is not a
+    # judgement on the narration: "Swing." against the action `press '2'
+    # -- swing` is non-empty and explains nothing.  The rationale contract
+    # is the check below; this one is the floor
     # beneath it and now says only what it measures.  The offending rows
     # are collected by the streaming walk above, one row at a time, so
     # nothing is held to answer it.
@@ -3212,12 +2448,10 @@ def main(argv):
 #
 # The requirement is that every entry says WHY the survivor pressed the
 # key, and "why" is not a property a program can read out of a sentence.
-# What a program CAN do is falsify the ways a sentence fails to be one,
-# and the review that raised this found the exact failures by hand:
-# "Swing." beside `press '2' -- swing`, and "Again." repeated down a run
-# of eleven keystrokes.  Both were reported as satisfying the
-# requirement, because the only thing measured was that the string was
-# not empty.
+# What a program CAN do is falsify the ways a sentence fails to be one:
+# "Swing." beside `press '2' -- swing`, or "Again." repeated down a run of
+# eleven keystrokes.  A non-emptiness test reports both as satisfying the
+# requirement.
 #
 # THE SUBJECT IS THE ENTRY'S WHOLE NARRATION -- the action's own note AND
 # the commentary -- and that is a correction made by measurement rather
@@ -3248,10 +2482,9 @@ def main(argv):
 # THE SINGLE-WORD CLASS IS A FAILURE, and it was not always.  It was a
 # WARN, on the argument that a program cannot tell a one-word reason from
 # a one-word placeholder -- "West." on the eighth step west being the
-# survivor's whole thought.  A review measured the delivered record and
-# settled the argument the other way: 44 of 307 entries carry a
-# single-word commentary, 42 of them the character that had just been
-# typed into a search box, and not one of them explains why.  R7 asks for
+# survivor's whole thought.  Measured against a delivered record, a
+# single-word commentary was overwhelmingly the character that had just
+# been typed into a search box rather than a reason.  R7 asks for
 # per-action first-person commentary explaining WHY, and the commentary
 # is what becomes the caption cue and the transcript entry -- so a
 # one-word commentary is a one-word cue whatever its action note says,
@@ -3264,15 +2497,15 @@ def main(argv):
 # this entry account for anything at all" is answered by everything the
 # reader of the RECORD gets, and "is this cue a label" is answered by the
 # field that is published as the cue.  Measured on the delivered record
-# the union framing is what removed 37 false findings against entries
-# whose reason is written in both fields, and the commentary-only
-# word count reports exactly the 44 the review named and nothing else.
+# the union framing is what keeps an entry whose reason is written in
+# both fields from being reported, while the commentary-only word count
+# still catches a commentary that carries no reason at all.
 #
-# THERE IS NO EXEMPTION FOR A TRANSCRIBED KEYSTROKE.  There used to be:
-# a commentary that was just the character pressed was counted as its own
-# "transcription" class, on the argument that the reason for a spelling
-# run belongs to the entry that opens it.  The review found that this
-# exempted 42 of the 44 offenders -- the exemption was doing the work of
+# THERE IS NO EXEMPTION FOR A TRANSCRIBED KEYSTROKE.  Counting a
+# commentary that is just the character pressed as its own
+# "transcription" class -- on the argument that the reason for a spelling
+# run belongs to the entry that opens it -- exempts almost every offender
+# a search box produces, so the exemption does the work of
 # hiding the finding.  A run of keystrokes that spells a word still gets
 # one cue per keystroke on the film, and each of those cues is a
 # published sentence that has to say something.
@@ -3334,7 +2567,7 @@ def timeline_narration(timeline_path):
         import timeline as tl
         iterator = tl.iter_timeline_frames(timeline_path)
         first = next(iterator, None)
-    except Exception:                                 # noqa: BLE001
+    except Exception:
         return None
     if first is None:
         return None
@@ -3349,7 +2582,7 @@ def timeline_narration(timeline_path):
                 entry = next(iterator)
             except StopIteration:
                 entry = None
-            except Exception:                         # noqa: BLE001
+            except Exception:
                 entry = None
     return walk()
 
@@ -3607,7 +2840,7 @@ def check_timeline_timestamps(index, timeline_path):
     """
     try:
         import timeline as tl
-    except Exception as err:                          # noqa: BLE001
+    except Exception as err:
         bad("the timeline's per-frame timestamps are the record's own",
             "timeline.py could not be imported: %s" % err,
             "the producer's own reader, so the reader of these bytes "
@@ -3643,7 +2876,7 @@ def check_timeline_timestamps(index, timeline_path):
                              "%r, the record says %r"
                              % (frame, entry.get("ingame_clock"),
                                 index.clock(frame)))
-    except Exception as err:                          # noqa: BLE001
+    except Exception as err:
         bad("the timeline's per-frame timestamps are the record's own",
             str(err), "a readable timeline to compare against")
         return
@@ -3881,35 +3114,6 @@ PY
 }
 
 # check_no_outstanding_step -- no keystroke was delivered without a frame.
-#
-# THE COUNT IDENTITY CANNOT SEE THIS, AND THAT IS WHY THIS CHECK EXISTS.
-# Group 2's headline verdict compares captures with record rows and record
-# lines, and all THREE of those numbers are written only after a capture
-# has succeeded.  So a keystroke that was delivered and whose capture was
-# then rejected leaves every one of them untouched: the identity reads
-# `305 == 305 == 305` and passes, while 306 keys had actually left for the
-# game.  That is not hypothetical -- a review found precisely it in the
-# superseded recording, where a terminal keystroke at a main-menu
-# "Really quit?" ended the application, the capture that followed was
-# black and was correctly refused, and the gate reported a clean identity
-# over a record that was one keystroke short.
-#
-# The ONLY durable evidence of such a keystroke is session.py's step
-# journal, which is written before the key leaves and cleared only once
-# the row is committed.  An outstanding journal in ANY phase means a step
-# is unfinished: `sending` means delivery is unknown, `delivered` means
-# the key reached the X server with no frame recorded for it, and
-# `captured` means the frame exists but its row does not.  None of the
-# three is a finished record, so the gate requires no journal at all.
-#
-# IT IS ASKED THROUGH `session.py journal`, NOT `session.py status`.
-# `status` opens a session, and opening a session SETTLES an outstanding
-# journal by design -- so asking `status` would REPAIR the very thing this
-# check came to find, and the evidence would disappear into the act of
-# looking for it.  `journal` takes no lock, opens no session and writes
-# nothing; it derives the path exactly as a session would and reads it,
-# which also keeps that derivation in one place rather than restating it
-# here in shell.
 check_no_outstanding_step() {
     local payload="" outstanding="" phase="" frame="" key=""
     payload="$(bounded "${BOUND_PROBE_SECONDS}" \
@@ -3953,44 +3157,6 @@ inferred"
 }
 
 # check_ending_is_save_and_quit -- R11's exit, read off the record.
-#
-# R11 IS FROZEN AND IT NAMES A PATH, NOT AN OUTCOME.  The session ends by
-# realistic sleep or by death, and then "the survivor exits through the
-# in-game Save & Quit path -- immediately after waking if the ending was
-# sleep".  A review found that requirement discharged by REINTERPRETATION
-# instead: the survivor died, the engine's own death cleanup ran, the
-# operator quit from the MAIN MENU, and the record described that
-# sequence as the in-game Save & Quit.  It is not.  The engine's death
-# cleanup is something that happens TO a world; Save & Quit is a
-# deliberate act by a living survivor.
-#
-# WHAT THE ENGINE ACTUALLY REQUIRES, and therefore what this reads for.
-# `data/raw/keybindings.json:3298` declares action id `save`, named
-# "Save and quit", bound to keyboard_char 'S' in DEFAULTMODE.
-# `src/handle_action.cpp:3030-3040` takes ACTION_SAVE through
-# `query_yn("Save and quit?")` to `save()` and `uquit = QUIT_SAVED`,
-# which returns to the MAIN MENU WITH THE APPLICATION STILL ALIVE.  So
-# the compliant ending is two keystrokes, 'S' then the confirmation, and
-# -- this is the part that matters for R2 -- the second one is
-# CAPTURABLE, because the process is still running to be photographed
-# afterwards.  That is not incidental: the same review found a terminal
-# keystroke at a main-menu "Really quit?" ending the application, so the
-# capture that followed was black and correctly refused, leaving 306 keys
-# against 305 frames.  An ending that can be photographed is the fix to
-# both findings at once.
-#
-# A DEATH ENDING DOES NOT SATISFY THIS, DELIBERATELY.  The AAP permits
-# death as an ending CONDITION, and group 7 still accepts the world the
-# engine cleared afterwards as proof that R1's save was committed -- that
-# is a different question, honestly answered there.  But nothing in a
-# death cleanup is the exit R11 names, so it cannot pass here; the two
-# questions are kept apart precisely because conflating them is the
-# defect being fixed.
-#
-# THE KEY IS READ FROM THE OBSERVATIONS SIDECAR because the manifest's
-# six-field schema is the one the prompt fixed and does not carry the
-# keystroke; playthrough/build/observations.jsonl records `key` per
-# capture, one row per frame.
 check_ending_is_save_and_quit() {
     local path="${PLAYTHROUGH_OBSERVATIONS}"
     local outcome="" ceiling="" status=0
@@ -4096,23 +3262,9 @@ Quit path, and its last keystroke was capturable" \
 
 # ---------------------------------------------------------------------
 # THE EVIDENCE AUTHENTICITY CHECKS
-#
 # Everything else in this group asks whether the record is INTERNALLY
-# consistent.  These four ask the question that consistency cannot
-# answer: whether any of it was changed after the fact.
-#
-# A review put the gap precisely -- "every attestation is mutable with
-# its evidence" -- and found two live consequences of nothing looking:
-# frame 298 had been read TWICE with neither row saying it replaced the
-# other (and a dict keyed by frame index silently kept whichever came
-# last), while frame 307, the final capture of the session, had no
-# acknowledgment at all.  Both were invisible to a gate that reported
-# VERIFY=pass.
-#
-# So: two checks on the acknowledgment ledger, and two on the hash chain
-# that seals the evidence from outside itself.  The chain's own head is
-# published as a commit trailer, and THAT comparison is a property of the
-# commit, so it lives in group 7 with the rest of the history.
+# consistent. These four ask the question that consistency cannot answer:
+# whether any of it was changed after the fact.
 # ---------------------------------------------------------------------
 emit_evidence_checker() {
     emit_checker evidence <<'PY'
@@ -4157,7 +3309,7 @@ def check_ledger(session, manifest, acks_path, captures):
     """The two acknowledgment properties."""
     try:
         rows = session.read_acknowledgments(acks_path)
-    except Exception as err:                          # noqa: BLE001
+    except Exception as err:
         bad(RECONCILED, "the ledger could not be read: %s" % err,
             "a readable append-only acknowledgment ledger")
         bad(COVERED, "the ledger could not be read: %s" % err,
@@ -4213,7 +3365,7 @@ def check_anchor(manifest, anchor_path):
     """The two hash-chain properties."""
     try:
         rows = manifest.read_anchor_rows(anchor_path)
-    except Exception as err:                          # noqa: BLE001
+    except Exception as err:
         bad(CHAIN, "the anchor could not be read: %s" % err,
             "a readable append-only evidence anchor")
         bad(SEALED, "the anchor could not be read: %s" % err,
@@ -4261,7 +3413,7 @@ def check_anchor(manifest, anchor_path):
     try:
         broken = manifest.verify_anchor(anchor_path, require_all=False)
         pending = manifest.unsealed_artifacts(anchor_path, rows=rows)
-    except Exception as err:                          # noqa: BLE001
+    except Exception as err:
         bad(SEALED, "the seal could not be checked: %s" % err,
             "every sealed artifact re-hashed and unchanged")
         return
@@ -4290,7 +3442,7 @@ def main(argv):
     try:
         import manifest
         import session
-    except Exception as err:                          # noqa: BLE001
+    except Exception as err:
         for name in (RECONCILED, COVERED, CHAIN, SEALED):
             bad(name, "the producing modules could not be imported: %s"
                 % err,
@@ -4337,27 +3489,8 @@ group_record() {
 
 # ---------------------------------------------------------------------
 # 3  THE TIMELINE -- THE FLOOR, THE CEILING AND THE INVARIANT
-#
-# The claim the film makes is that its pacing is the game's own clock.
-# This group is where that claim is checked, one arithmetic property at a
-# time.
-#
-# THE FLOOR IS NOT AN OPTIMISATION OPPORTUNITY.  A menu keystroke
-# consumes no game time at all, and such a frame is held at 0.25 s
-# rather than merged, dropped or "optimised away"; an entry count below
-# the capture count is therefore a failure even though the film would
-# look identical.
-#
-# THE CEILING IS STRICT.  A raw delta of exactly 10.0 s is NOT a
-# transition; only a delta GREATER than the ceiling is.  Both directions
-# of that correspondence are asserted, because a flag without a delta and
-# a delta without a flag are different bugs with the same symptom -- the
-# film and the cues drifting apart by exactly one second, once.
-#
-# THE PRODUCERS' OWN CONSTANTS ARE CROSS-CHECKED.  timeline.py,
-# make_transitions.py and render_movie.py are imported and their
-# constants compared against the values this gate measures with, so a
-# future edit to a producer cannot quietly move the goalposts.
+# The claim the film makes is that its pacing is the game's own clock. This
+# group is where that claim is checked, one arithmetic property at a time.
 # ---------------------------------------------------------------------
 emit_timeline_checker() {
     emit_checker timeline <<'PY'
@@ -4635,7 +3768,7 @@ def check_constants(tooling_dir, floor, ceil, trans, per_group, tol,
             if not near(got, want, eps):
                 problems.append("timeline.%s is %s, gate expects %s"
                                 % (label, got, want))
-    except Exception as err:                          # noqa: BLE001
+    except Exception as err:
         problems.append("timeline.py could not be imported: %s" % err)
     try:
         import make_transitions as mt
@@ -4645,7 +3778,7 @@ def check_constants(tooling_dir, floor, ceil, trans, per_group, tol,
             problems.append(
                 "make_transitions.FRAMES_PER_GROUP is %s, gate expects "
                 "%s" % (mt.FRAMES_PER_GROUP, per_group))
-    except Exception as err:                          # noqa: BLE001
+    except Exception as err:
         problems.append("make_transitions.py could not be imported: %s"
                         % err)
     try:
@@ -4656,7 +3789,7 @@ def check_constants(tooling_dir, floor, ceil, trans, per_group, tol,
             problems.append(
                 "render_movie.DURATION_TOLERANCE is %s, gate expects %s"
                 % (rm.DURATION_TOLERANCE, tol))
-    except Exception as err:                          # noqa: BLE001
+    except Exception as err:
         problems.append("render_movie.py could not be imported: %s"
                         % err)
     if problems:
@@ -4792,17 +3925,17 @@ def check_provenance(document, count, inventory_path):
     frame substituted at any index breaks a hash the timeline declares,
     whether or not that index happened to be sampled.
     """
-    # EVERY EXPECTED BLOCK, NOT WHICHEVER ONES ARE THERE.  This used to
-    # build the list of keys the document happened to carry and then
-    # report success naming all three, so a timeline that declared one
+    # EVERY EXPECTED BLOCK, NOT WHICHEVER ONES ARE THERE.  Building the
+    # list from the keys the document happens to carry and then reporting
+    # success naming all three would let a timeline that declared one
     # sidecar -- or a regenerated one that quietly dropped the amendment
-    # ledger it applied -- passed a check whose own message said the
-    # ledger had been verified.  A missing block is now the strongest
+    # ledger it applied -- pass a check whose own message said the ledger
+    # had been verified.  A missing block is therefore the strongest
     # problem of the three, because the others are at least falsifiable.
     expected_sidecars = ("manifest", "amendments", "captures")
     # THE VERDICT BELOW IS EMITTED ON EVERY INPUT, including a document
-    # that declares nothing at all.  An early return here is what let a
-    # shrinking report read as a passing one.
+    # that declares nothing at all.  An early return here is what would
+    # let a shrinking report read as a passing one.
     problems = []
     observed = []
     for key in expected_sidecars:
@@ -4876,18 +4009,18 @@ def check_provenance(document, count, inventory_path):
     # even when that index was not among the sampled ones.
     #
     # The digests it takes are published to the shared inventory, so the
-    # group 4 sweep that used to hash the same population a second time
-    # reads them instead.  One pass over the pixel evidence per run.
+    # group 4 sweep reads them instead of hashing the same population a
+    # second time.  One pass over the pixel evidence per run.
     check_capture_digests(document, inventory_path)
 
     # The digest sidecar's own arithmetic: one verified digest per
     # capture, and as many as there are entries.
     #
-    # UNCONDITIONAL, so the verdict cannot disappear.  It used to be
-    # nested inside `if isinstance(captures, dict)`, so a timeline with
-    # no `captures` block emitted NO verdict at all and the report simply
-    # got one check shorter -- and "82 of 82 passed" reads exactly as
-    # green as "84 of 84 passed".  Every check in this file has a defined
+    # UNCONDITIONAL, so the verdict cannot disappear.  Nested inside `if
+    # isinstance(captures, dict)` a timeline with no `captures` block
+    # would emit NO verdict and the report would simply get one check
+    # shorter -- and "82 of 82 passed" reads exactly as green as "84 of 84
+    # passed".  Every check in this file has a defined
     # verdict on every input, and an absent declaration is one of the
     # inputs.
     captures = document.get("captures")
@@ -4987,11 +4120,11 @@ def check_declared(document, count, floor, ceil, trans, rows, eps):
         ok("the timeline's declared entry count matches its entries",
            "%d entries" % count)
 
-    # AND THIS VERDICT DOES NOT DISAPPEAR EITHER.  It used to `return`
-    # when the record's row count was unavailable, which left group 3 one
-    # NAME short; the per-group equality does catch that, but it reports
-    # "the timeline is short of a check" rather than the actual cause.
-    # Saying which input was missing is the more useful failure.
+    # AND THIS VERDICT DOES NOT DISAPPEAR EITHER.  Returning when the
+    # record's row count is unavailable would leave group 3 one NAME
+    # short; the per-group equality does catch that, but it reports "the
+    # timeline is short of a check" rather than the actual cause.  Saying
+    # which input was missing is the more useful failure.
     if rows is None:
         bad("the timeline has one entry per recorded keystroke -- no "
             "zero-delta frame was dropped or merged",
@@ -5270,7 +4403,7 @@ def main(argv):
     try:
         import timeline as tl
         header = tl.read_timeline_header(timeline_path)
-    except Exception as err:                              # noqa: BLE001
+    except Exception as err:
         bad("the timeline parses as JSON", str(err),
             "a JSON object carrying a frames array")
         return 0
@@ -5280,7 +4413,7 @@ def main(argv):
     try:
         walk = walk_entries(entries, floor, ceil, trans, epsilon,
                             windows_path)
-    except Exception as err:                              # noqa: BLE001
+    except Exception as err:
         # A malformed entry is a document that does not parse, and it is
         # reported as exactly that.  The window list is emptied again
         # because a PARTIAL one -- written up to the bad entry -- would
@@ -5310,11 +4443,10 @@ def main(argv):
     info("clock readings reconciled against the previous frame rather "
          "than guessed",
          "%d of %d entries" % (walk.reconciled, walk.count))
-    # WHERE THE CEILING ENGAGED, BOUNDED.  Every flagged frame used to be
-    # joined into this one line, so a session that slept through a
-    # thousand nights put a thousand clauses into one verdict -- and into
-    # one shell variable on the way to the report.  The count is the fact;
-    # a handful of examples is the illustration.
+    # WHERE THE CEILING ENGAGED, BOUNDED.  Joining every flagged frame
+    # into one line would put a clause per slept night into a single
+    # verdict, and into one shell variable on the way to the report.  The
+    # count is the fact; a handful of examples is the illustration.
     info("where the ceiling engaged",
          ("%d place(s): %s"
           % (walk.flag_count,
@@ -5358,19 +4490,7 @@ group_timeline() {
 
 # ---------------------------------------------------------------------
 # 4  THE CONTAINER
-#
-# 1920x1080 and not 1920x1072.  The game's window is 1072 pixels tall --
-# 67 rows of a 16-pixel font (src/sdltiles.cpp:595-596), windowed
-# borderless by default (src/options.cpp:2715-2724) -- but what is
-# photographed is the X ROOT, which is exactly 1920x1080.  A film at 1072
-# would mean the window was captured instead, and the four-pixel
-# letterbox is the visible sign that the root was.
-#
-# The duration is compared against the timeline's own total.  A SHORTFALL
-# is the signature of a concat list whose final `file` entry was not
-# repeated after its `duration` line, which was measured once as a
-# 10.52 s container against an 11.75 s subtitle stream: the film simply
-# stops before its captions do.
+# 1920x1080 and not 1920x1072.
 # ---------------------------------------------------------------------
 check_container_streams() {
     local file="$1"
@@ -5452,10 +4572,7 @@ took effect"
 }
 
 # "No audio stream" is only worth asserting about a container ffprobe can
-# actually read.  A file it cannot parse reports no audio too, and
-# accepting that as a pass would be the kind of vacuous verdict this gate
-# exists to prevent -- so an unreadable container fails HERE as well,
-# rather than being silently credited with an absence.
+# actually read.
 check_no_audio() {
     local file="" label="" streams="" video="" said=""
     for file in "${PLAYTHROUGH_MOVIE}" "${PLAYTHROUGH_MOVIE_CC}"; do
@@ -5485,19 +4602,10 @@ narration"
     done
 }
 
-# THE FRAME COUNT, UNDER VARIABLE FRAME RATE.  The concat demuxer is fed
-# one entry per still image -- every capture plus every materialised
-# transition image -- and its final `file` entry is deliberately repeated
-# so the last duration takes effect, which yields that one extra encoded
-# frame.  So the count is the image inventory, or the inventory plus one,
-# and nothing else.
-# decoded_frames FILE -- how many pictures actually come out of it.
-#
-# A DECODE, not a header read: the header of a file cut to a third of its
-# length still declares the full count.  The number comes from the ONE
-# end-to-end pass film_decode_pass makes over each film (see ONE DECODE
-# PER FILM above), so asking for it a second or third time costs nothing;
-# it used to be a separate `ffprobe -count_frames` walk per question.
+# THE FRAME COUNT, UNDER VARIABLE FRAME RATE. The concat demuxer is fed one
+# entry per still image -- every capture plus every materialised transition
+# image -- and its final `file` entry is deliberately repeated so the last
+# duration takes effect, which yields that one extra encoded frame.
 decoded_frames() {
     film_decode_pass "$1"
     printf '%s' "${FILM_PASS_FRAMES}"
@@ -5509,10 +4617,9 @@ check_frame_count() {
     observed="$(decoded_frames "${PLAYTHROUGH_MOVIE}")"
     said="$(because ffprobe)"
     if ! is_count "${observed}"; then
-        # THE FALLBACK IS A HEADER-FREE PACKET WALK, and it is reached
-        # only when the decode pass could not report a count at all -- a
-        # wedged decode, a container the decoder refuses.  It is bounded
-        # like every other child here.
+        # THE FALLBACK IS A HEADER-FREE PACKET WALK, and it is reached only
+        # when the decode pass could not report a count at all -- a wedged
+        # decode, a container the decoder refuses.
         observed="$(bounded "$(film_bound "${PLAYTHROUGH_MOVIE}")" \
             "${FFPROBE}" -v error -select_streams v:0 \
             -count_packets -show_entries stream=nb_read_packets \
@@ -5546,14 +4653,9 @@ the file is truncated and the pictures past the cut cannot be decoded"
 }
 
 # THE CONTAINER'S OWN CLAIM, AGAINST WHAT COMES OUT OF IT.
-#
 # nb_frames lives in the moov atom, which -movflags +faststart puts at the
-# FRONT of the file; a film truncated to a third of its length still
-# declares every frame it once had.  So the header is read and the stream
-# is decoded, and the two must agree.  A container that declares no
-# nb_frames at all is NOT a failure -- that is ordinary under variable
-# frame rate, which is how this film is encoded -- and the honest reading
-# is reported instead.
+# FRONT of the file; a film truncated to a third of its length still declares
+# every frame it once had.
 check_declared_frames_agree() {
     local file="" label="" declared="" decoded="" said=""
     for file in "${PLAYTHROUGH_MOVIE}" "${PLAYTHROUGH_MOVIE_CC}"; do
@@ -5588,16 +4690,9 @@ that is gone"
     done
 }
 
-# THE WHOLE FILM, DECODED.  Every packet through the decoder with
-# -xerror, so a corrupt NAL unit, a partial final packet or a missing
-# picture is a failure rather than a warning nobody sees.
-#
-# THE PASS ITSELF IS SHARED with the two frame-count checks above: it is
-# made once per film by film_decode_pass and read here from the scratch
-# generation, which is what keeps a gate over an unbounded film to one
-# decode of it rather than three.  Measured cost on this session: 0.9 s
-# for the base film's single pass, against 4.5 s for the three walks it
-# replaces.
+# THE WHOLE FILM, DECODED. Every packet through the decoder with -xerror, so a
+# corrupt NAL unit, a partial final packet or a missing picture is a failure
+# rather than a warning nobody sees.
 check_film_decodes() {
     local file="" label="" detail=""
     for file in "${PLAYTHROUGH_MOVIE}" "${PLAYTHROUGH_MOVIE_CC}"; do
@@ -5633,33 +4728,28 @@ themselves are decoded here"
 
 # ---------------------------------------------------------------------
 # THE RENDER INPUTS
+# The container facts above are read from the film's own metadata, and metadata
+# is not the film.  Two whole classes of fault live in that gap:
 #
-# The container facts above are read from the film's own metadata, and
-# metadata is not the film.  Two whole classes of fault live in that gap:
-#
-#   * THE LIST THE ENCODER WAS GIVEN.  playthrough/build/concat.txt is
-#     what paces the film -- one `file` line and one `duration` line per
-#     still, and the final `file` line repeated so the last duration
-#     takes effect.  A list whose durations were rewritten, or whose
-#     repeated final entry was tidied away, produces a film that no
-#     longer matches the captions; and because the film is built BEFORE
-#     this gate runs, its metadata satisfies every duration check
-#     regardless of what the list says.  Measured: a list summing to
-#     212.5 s beside a timeline of 219.5 s passed every check this gate
-#     used to make.
-#
-#   * THE FILM'S OWN BYTES.  `-movflags +faststart` places the moov atom
-#     at the FRONT of the file, so codec, resolution, pixel format,
-#     duration and nb_frames all survive gross data loss: a film
-#     truncated to a third of its length still reports 1920x1080 h264,
-#     219.56 s and 339 frames.  The render stage already declares the
-#     film's sha256 and byte count in build/movie.json, so holding the
-#     file to that declaration costs nothing and closes the gap.
+#   * THE LIST THE ENCODER WAS GIVEN.  playthrough/build/concat.txt is what
+#     paces the film -- one `file` line and one `duration` line per still,
+#     and the final `file` line repeated so the last duration takes effect.
+#     A list whose durations were rewritten, or whose repeated final entry
+#     was tidied away, produces a film that no longer matches the captions;
+#     and because the film is built BEFORE this gate runs, its metadata
+#     satisfies every duration check regardless of what the list says.
+#   * THE FILM'S OWN BYTES.  `-movflags +faststart` places the moov atom at
+#     the FRONT of the file, so codec, resolution, pixel format, duration
+#     and nb_frames all survive gross data loss -- a film truncated to a
+#     third of its length still reports the right geometry, duration and
+#     frame count.  The render stage declares the film's sha256 and byte
+#     count in build/movie.json, so holding the file to that declaration
+#     costs nothing and closes the gap.
 #
 # The list is checked by RE-DERIVING it from the committed timeline with
 # render_movie.py's own planner and comparing byte-for-byte, which is
-# stronger than any list of properties: the list is a pure function of
-# the timeline, so anything that differs is a film built from inputs the
+# stronger than any list of properties: the list is a pure function of the
+# timeline, so anything that differs is a film built from inputs the
 # timeline does not describe.
 # ---------------------------------------------------------------------
 emit_render_checker() {
@@ -5795,7 +4885,7 @@ def check_planned(rm, document, timeline_path, concat_path):
     try:
         plan = rm.plan_render(document, None, timeline_path)
         rewritten = rm.format_concat_list(plan)
-    except Exception as err:                          # noqa: BLE001
+    except Exception as err:
         bad("the concat list is exactly the list this timeline plans",
             "the render stage's own planner refuses this timeline: %s"
             % err,
@@ -6416,7 +5506,7 @@ def main(argv):
     # therefore refused rather than measured against.
     try:
         seconds = float(mt.transition_seconds(document))
-    except Exception:                                 # noqa: BLE001
+    except Exception:
         seconds = float(mt.EXPECTED_TRANSITION)
 
     # THE PLANNER STILL SEES THE WHOLE DOCUMENT, and it has to: it plans
@@ -6546,13 +5636,7 @@ $("${WC}" -c <"${PLAYTHROUGH_MOVIE_CC}" 2>/dev/null || echo '?') bytes"
 
 # ---------------------------------------------------------------------
 # 5  THE CAPTION TRACK AND THE TRANSCRIPTS
-#
-# The captions must be a SELECTABLE track and not pixels.  mov_text is
-# the only subtitle codec broadly supported inside MP4, and the proof
-# that it was muxed rather than drawn is pixel-level: the same instant
-# extracted from the captioned film and from the plain one must differ in
-# ZERO pixels.  If the text had been burned in, that comparison would
-# count every glyph.
+# The captions must be a SELECTABLE track and not pixels.
 # ---------------------------------------------------------------------
 check_subtitle_stream() {
     local readout="" codec="" language="" streams="" said=""
@@ -6596,20 +5680,17 @@ code), so a player can offer it by name"
     fi
 }
 
-# THE MUX MUST NOT HAVE RE-ENCODED THE PICTURE.  `-c copy` copies the
-# video packets; if the captioned film's video stream differs in codec or
-# geometry, something re-encoded it and the picture is no longer the one
-# that was verified.
+# THE MUX MUST NOT HAVE RE-ENCODED THE PICTURE.  `-c copy` copies the video
+# packets; if the captioned film's video stream differs in codec or geometry,
+# something re-encoded it and the picture is no longer the one that was
+# verified.
 check_captioned_video_survived() {
     check_container_streams "${PLAYTHROUGH_MOVIE_CC}" \
         "$(rel "${PLAYTHROUGH_MOVIE_CC}")"
 }
 
-# THE BURNED-IN TEST.  Extract the same timestamp from both films and
-# require zero differing pixels.  `compare` exits non-zero when the
-# images differ, so its status is captured deliberately rather than
-# allowed to abort the run, and the metric it prints on stderr is the
-# evidence either way.
+# THE BURNED-IN TEST. Extract the same timestamp from both films and require
+# zero differing pixels.
 check_captions_not_burned_in() {
     local plain="" captioned="" metric="" status=0 offset=""
     local compared=0
@@ -6620,10 +5701,9 @@ check_captions_not_burned_in() {
         offsets+=("${offset}")
     done <"$(offsets_file)"
     for offset in "${offsets[@]}"; do
-        # ONE EXTRACTION PER (FILM, OFFSET), shared with the luminance
-        # gate: both checks read the same instant out of both films, and
-        # extracting it twice was two seeks and two decodes for one
-        # picture.  See ONE DECODE PER FILM above.
+        # ONE EXTRACTION PER (FILM, OFFSET), shared with the luminance gate:
+        # both checks read the same instant out of both films, and extracting
+        # it twice was two seeks and two decodes for one picture.
         if ! plain="$(extracted_frame "${PLAYTHROUGH_MOVIE}" \
                 "${offset}")"; then
             problems+=("no frame could be decoded out of \
@@ -6636,13 +5716,10 @@ $(rel "${PLAYTHROUGH_MOVIE}") at ${offset}s$(because ffmpeg)")
 $(rel "${PLAYTHROUGH_MOVIE_CC}") at ${offset}s$(because ffmpeg)")
             continue
         fi
-        # `compare` exits non-zero when the images differ, which is a
-        # RESULT and not an error, so it runs as the condition of an `if`:
-        # inside one, a non-zero status is a value the shell was asked
-        # for, and neither errexit nor the ERR trap fires.  Capturing the
-        # status with `$?` after a bare call used to print a spurious
-        # FATAL line naming this file, twice, whenever the tool was
-        # absent.
+        # `compare` exits non-zero when the images differ, which is a RESULT
+        # and not an error, so it runs as the condition of an `if`: inside one,
+        # a non-zero status is a value the shell was asked for, and neither
+        # errexit nor the ERR trap fires.
         status=0
         if metric="$(bounded "${BOUND_PROBE_SECONDS}" \
                 "${COMPARE}" -metric AE "${captioned}" "${plain}" \
@@ -6652,11 +5729,7 @@ $(rel "${PLAYTHROUGH_MOVIE_CC}") at ${offset}s$(because ffmpeg)")
             status=$?
         fi
         metric="${metric%% *}"
-        # The metric is VALIDATED before it is quoted.  When `compare`
-        # cannot be executed at all, what comes back on this channel is
-        # the shell's own diagnostic, and printing that as a pixel count
-        # produced the unreadable "compare reported
-        # playthrough/tooling/verify_artifacts.sh: differing pixel(s)".
+        # The metric is VALIDATED before it is quoted.
         if ! is_count "${metric}"; then
             problems+=("compare could not be executed at ${offset}s \
 (exit ${status}); it printed no pixel count")
@@ -6907,9 +5980,8 @@ def check_cue_file(path, frames, eps, index_path):
             # hand at the same moment.  Writing them down is what lets
             # check_markdown make the comparison without either file, or
             # the timeline, being resident: it reads one line back per
-            # entry.  It used to be the start alone, and the sentence
-            # comparison was consequently written against a whole-file
-            # read that no longer exists.
+            # entry: the start alone would leave the sentence
+            # comparison needing a whole-file read.
             index.write(json.dumps(
                 {"start": start,
                  "text": [line for line in text if line.strip()],
@@ -7039,7 +6111,7 @@ def check_markdown(path, index_path, cues, frame_count, tooling_dir,
         import make_srt as ms
         wrapper = ms.wrap_cue_text
         width = ms.CUE_LINE_WIDTH
-    except Exception as err:                          # noqa: BLE001
+    except Exception as err:
         note_problem(
             sentence_problems,
             "make_srt.py could not be imported (%s), so the cue text "
@@ -7054,7 +6126,7 @@ def check_markdown(path, index_path, cues, frame_count, tooling_dir,
     sys.path.insert(0, tooling_dir)
     try:
         import manifest as mf
-    except Exception as err:                          # noqa: BLE001
+    except Exception as err:
         bad("the readable record is free of meta and engineering "
             "language", "manifest.py could not be imported: %s" % err,
             "the curated vocabulary applied to every entry")
@@ -7133,7 +6205,7 @@ def check_markdown(path, index_path, cues, frame_count, tooling_dir,
                 recorded = cue_record.get("text") or []
                 try:
                     expected = wrapper(body, width)
-                except Exception as err:               # noqa: BLE001
+                except Exception as err:
                     note_problem(sentence_problems,
                                  "entry %d could not be wrapped: %s"
                                  % (entries, err))
@@ -7236,7 +6308,7 @@ def main(argv):
             # keeps one entry rather than all of them.
             for entry in tl.iter_timeline_frames(timeline_path):
                 total = entry.get("cue_end")
-    except Exception as err:                          # noqa: BLE001
+    except Exception as err:
         info("the timeline was not available to compare against",
              str(err))
         frames = None
@@ -7311,25 +6383,21 @@ group_captions() {
 
 # ---------------------------------------------------------------------
 # 6  THE LUMINANCE GATE
+# The guard against SDL_VIDEODRIVER=dummy, and the reason a black film cannot
+# pass unnoticed.  BOTH TERMS ARE LOAD-BEARING:
 #
-# The guard against SDL_VIDEODRIVER=dummy, and the reason a black film
-# cannot pass unnoticed.  BOTH TERMS ARE LOAD-BEARING:
-#
-#   * mean > 0 catches a fully black frame, which is exactly what the
-#     dummy driver produces -- the game runs, the captures succeed, the
-#     encode succeeds, every count tallies, and nothing is visible.
+#   * mean > 0 catches a fully black frame, which is exactly what the dummy
+#     driver produces -- the game runs, the captures succeed, the encode
+#     succeeds, every count tallies, and nothing is visible.
 #   * std > 0 additionally catches a uniform solid-colour frame, which a
 #     mean-only test would happily pass.
 #
 # The threshold is strictly `> 0` and never a magnitude.  How bright a
-# capture is depends on the tileset and on what the survivor was looking
-# at; a gate that demanded a particular mean would fail honest captures
-# of a dark cellar.  The calibration reading is reported as provenance so
-# a reader knows where the number in the plan came from.
-#
-# The comparison goes through awk.  `[ "0.27" -gt 0 ]` is not a working
-# test in any shell -- it is an integer operator applied to a string, and
-# it fails at the syntax level rather than returning a wrong answer.
+# capture is depends on the tileset and on what the survivor was looking at;
+# a gate that demanded a particular mean would fail honest captures of a
+# dark cellar.  The comparison goes through awk, because
+# `[ "0.27" -gt 0 ]` is an integer operator applied to a string and fails at
+# the syntax level rather than returning a wrong answer.
 # ---------------------------------------------------------------------
 sample_indices() {
     local count="$1"
@@ -7345,19 +6413,8 @@ sample_indices() {
     }' | "${SORT}" -n -u
 }
 
-# sample_file HOW_MANY FILE -- an even spread of at most HOW_MANY lines
-# of FILE, always including the first and the last.
-#
-# The companion to sample_indices, for the case where the population is a
-# LIST rather than a range: group 9 measures colour depth on the in-game
-# captures group 2 published, and those are not 1..N.
-#
-# TWO PASSES OVER THE FILE, HOLDING NOTHING.  The first counts the lines
-# and the second prints the wanted ones by line number.  It used to read
-# the population from stdin, which meant holding EVERY line in awk's own
-# memory to be able to index it at the end -- one entry per in-game
-# keystroke, for a reading that wants eight of them.  A second pass over
-# a file costs a re-read; holding the population costs the session.
+# sample_file HOW_MANY FILE -- an even spread of at most HOW_MANY lines of
+# FILE, always including the first and the last.
 sample_file() {
     local how_many="$1"
     local file="$2"
@@ -7384,24 +6441,6 @@ sample_file() {
 }
 
 # extract_offsets -- the seconds at which the films are sampled.
-#
-# The historical 1 s reading comes first so the report stays comparable
-# with earlier runs, then each fraction of the timeline total.  An offset
-# inside a transition window is moved to just past that window, every
-# offset is held below the end of the film, and the result is sorted and
-# de-duplicated.  All of it in awk, because it is floating-point
-# arithmetic and the shell cannot do that.
-#
-# THE TRANSITION WINDOWS ARRIVE AS A FILE, NOT AS AN ARGUMENT.  Group 3
-# publishes one window per line in the scratch generation, and this
-# program reads that file.  They used to be joined into a single
-# space-separated `awk -v` value, which is an argument on an exec line and
-# therefore bounded by MAX_ARG_STRLEN -- 131,072 bytes on Linux, however
-# much room the whole argv has.  At about 13 bytes a window that ceiling
-# is roughly ten thousand transitions, and a session long enough to sleep
-# through ten thousand nights is exactly the session this pipeline exists
-# to allow.  Past it the gate would have died with E2BIG rather than
-# reporting anything at all.
 extract_offsets() {
     local total="" windows=""
     total="$(fact timeline_total)"
@@ -7455,10 +6494,9 @@ extract_offsets() {
     }' "${windows}" | "${SORT}" -n -u
 }
 
-# windows_file -- the path of the transition-window list group 3 wrote,
-# or of an empty stand-in when group 3 has not run.  Named here so the
-# awk program above always has a file to read: awk with no input file
-# would wait on stdin.
+# windows_file -- the path of the transition-window list group 3 wrote, or of
+# an empty stand-in when group 3 has not run. Named here so the awk program
+# above always has a file to read: awk with no input file would wait on stdin.
 windows_file() {
     local path="${SCRATCH}/transition-windows"
     if [ ! -f "${path}" ]; then
@@ -7467,10 +6505,8 @@ windows_file() {
     printf '%s' "${path}"
 }
 
-# in_game_file -- the path of the in-game capture list group 2 wrote, one
-# index per line.  Group 9's colour-depth reading samples it; see WHICH
-# CAPTURES SHOW THE GAME BEING PLAYED in the record checker for why it is
-# a file rather than a fact.
+# in_game_file -- the path of the in-game capture list group 2 wrote, one index
+# per line.
 in_game_file() {
     local path="${SCRATCH}/in-game-frames"
     if [ ! -f "${path}" ]; then
@@ -7479,10 +6515,7 @@ in_game_file() {
     printf '%s' "${path}"
 }
 
-# offsets_file -- the sampled offsets, computed once and reused.  Both
-# the burned-in comparison and the film-luminance reading walk them, and
-# a second computation would mean a second reading of the window list for
-# an answer that cannot have changed inside one run.
+# offsets_file -- the sampled offsets, computed once and reused.
 offsets_file() {
     local path="${SCRATCH}/extract-offsets"
     if [ ! -s "${path}" ]; then
@@ -7493,25 +6526,6 @@ offsets_file() {
 
 # ---------------------------------------------------------------------
 # digest_inventory -- the one place a file's sha256 is recorded per run.
-#
-# Two checkers hold committed images to the digests their producers took:
-# group 3 sweeps every capture against build/frame_digests.jsonl, and
-# group 4 holds every image the concat list names, plus every materialised
-# transition, against build/transitions.json.  Between them they used to
-# hash every capture TWICE and every transition image TWICE -- four whole
-# passes over the pixel evidence, at the disk's read rate, on a session
-# whose length is deliberately unbounded.  Measured shape at 100k frames:
-# tens of gigabytes read twice over for one answer.
-#
-# So a digest is taken ONCE and appended here as
-#
-#     <sha256> <TAB> <bytes> <TAB> <path>
-#
-# by whichever checker reaches the file first, and the others read it
-# instead of hashing again.  The file lives in the scratch generation, so
-# it cannot outlive the artifacts it describes and there is no staleness
-# to reason about; the byte count travels with the digest so an entry can
-# be held to the file it claims to be about.
 digest_inventory() {
     local path="${SCRATCH}/digest-inventory"
     if [ ! -f "${path}" ]; then
@@ -7543,12 +6557,6 @@ check_one_frame_luminance() {
     fi
     LAST_LUMINANCE="${reading}"
     # THE GEOMETRY IS MEASURED HERE, on the frame already being read.
-    # check_frame_geometry existed with no caller at all -- ShellCheck
-    # reported it as unreachable and a review asked for it to be
-    # integrated or removed -- and this is the check it belongs to: a
-    # capture that is not the full X root is not the frame the crop
-    # geometry, the clock region and every duration were computed for,
-    # and it is exactly as invisible as a black one.
     if ! geometry_reading="$(check_frame_geometry "${path}")"; then
         record_fail "${label} is at the X root's own resolution" \
             "${geometry_reading}$(because identify)" \
@@ -7574,11 +6582,10 @@ solid-colour frame"
 # check_frame_geometry PATH -- nothing, and 0, when the capture is at the
 # X root's own resolution; the reading it took, and 1, when it is not.
 #
-# THIS HELPER USED TO BE UNREACHABLE.  It sat here with no caller at all,
-# which shellcheck reported as SC2317, and the answer was to WIRE IT IN
-# rather than delete it: the frame it belongs to is the one
-# check_one_frame_luminance is already reading, and a capture that is not
-# the full X root is not the frame the sidebar crop, the clock region and
+# IT IS WIRED INTO THE FRAME ALREADY BEING READ.  The frame it belongs to
+# is the one check_one_frame_luminance is reading, and a capture that is
+# not the full X root is not the frame the sidebar crop, the clock region
+# and
 # every duration were computed for -- exactly as invisible as a black
 # one.  The bulk rule still lives in check_sampled_captures, where ONE
 # awk program compares every sampled reading against
@@ -7599,13 +6606,6 @@ check_frame_geometry() {
 }
 
 # capture_path INDEX -- the canonical path of one capture.
-#
-# The name is built from env.sh's PLAYTHROUGH_FRAME_FORMAT, which is the
-# same format capture.sh writes with and manifest.py records; a second
-# hard-coded '%05d' here is exactly the divergence that indirection
-# exists to prevent.  SC2059 objects to a variable used as a printf
-# format, which is the point, and the expansion is asserted rather than
-# assumed.
 capture_path() {
     local name=""
     # shellcheck disable=SC2059
@@ -7619,12 +6619,6 @@ capture_path() {
 # measure_captures LIST_FILE OUTPUT
 #   Read geometry and grayscale statistics for every path in LIST_FILE,
 #   in chunks, writing "path width height mean std" per line.
-#
-#   A CHUNK THAT FAILS IS RE-READ ONE FILE AT A TIME, so a single
-#   unreadable capture costs its own reading rather than the fifteen
-#   beside it: ImageMagick abandons the whole invocation when one input
-#   will not open, and a chunked reading that silently lost fifteen frames
-#   would be exactly the vacuous verdict this gate exists to prevent.
 measure_captures() {
     local list="$1"
     local output="$2"
@@ -7712,11 +6706,10 @@ did not expand" "a printf format containing %05d"
                 "a printf format containing %05d"
             return 0
         fi
-        # The REPOSITORY-RELATIVE spelling, because these paths are
-        # printed in the report when a frame fails: the gate has already
-        # chdir'd to the repository root, so they open identically, and
-        # nothing in the report ever names a directory outside the
-        # checkout.
+        # The REPOSITORY-RELATIVE spelling, because these paths are printed in
+        # the report when a frame fails: the gate has already chdir'd to the
+        # repository root, so they open identically, and nothing in the report
+        # ever names a directory outside the checkout.
         printf '%s\n' "$(rel "${path}")" >>"${list}"
     done < <(sample_indices "${count}" "${sample_count}")
 
@@ -7756,12 +6749,7 @@ did not expand" "a printf format containing %05d"
             }
         }
         END { printf "COUNT %d\n", seen }' "${readings}")"
-    # THE DIAGNOSTIC LISTS ARE BOUNDED.  A whole capture set that came
-    # back blank -- the SDL_VIDEODRIVER=dummy signature, which is the
-    # failure this gate exists for -- would otherwise put one entry per
-    # capture into three shell arrays and then into one report line.  The
-    # verdict is reached on the FACT that a frame was blank; the count
-    # says how many, and a handful of indices says where to look.
+    # THE DIAGNOSTIC LISTS ARE BOUNDED.
     while IFS= read -r detail; do
         kind="${detail%% *}"
         case "${kind}" in
@@ -7827,15 +6815,14 @@ photographed instead of the root"
 }
 
 # WHAT THE CAPTURE STAGE ITSELF MEASURED, AT THE MOMENT IT MEASURED IT.
-#
 # The sweep above reads the pixels as they are NOW.  This reads what
 # capture.sh recorded for each frame as it was taken -- committed in
 # playthrough/build/observations.jsonl, one row per capture, carrying the
 # frame's sha256 alongside the grayscale mean and standard deviation the
-# capturer measured before it accepted the frame.  Two independent
-# witnesses to the same property, one contemporaneous and one current,
-# and the row is bound to the bytes by its own digest so a row cannot be
-# about some other frame.
+# capturer measured before it accepted the frame.  Two independent witnesses
+# to the same property, one contemporaneous and one current, and the row is
+# bound to the bytes by its own digest so a row cannot be about some other
+# frame.
 check_recorded_luminance() {
     local path="${PLAYTHROUGH_OBSERVATIONS}"
     local outcome="" ceiling="" status=0
@@ -7848,13 +6835,7 @@ capture with the mean and standard deviation it measured at the time"
         return 0
     fi
     ceiling="$(checker_bound)"
-    # BOUNDED, AND READ A ROW AT A TIME.  The sidecar carries one row per
-    # capture, so this child scales with the session exactly as the
-    # checkers in the groups above do: it streams the file, and the only
-    # thing it accumulates per row is the frame number the distinct-count
-    # is proved from.  The diagnostic list is capped, because "every row
-    # was already blank" is the realistic shape of a failure here and an
-    # unbounded list would hold one string per capture to print five.
+    # BOUNDED, AND READ A ROW AT A TIME.
     outcome="$(bounded "${ceiling}" "${PYTHON}" -B -c '
 import json
 import sys
@@ -7942,10 +6923,9 @@ for every frame as it was taken" \
     esac
 }
 
-# The film is measured independently of its sources, because a black
-# FILM is a distinct fault from a black capture: a wrong pixel format, a
-# mis-built concat list or a re-encode could blank the picture after the
-# captures were verified.
+# The film is measured independently of its sources, because a black FILM is a
+# distinct fault from a black capture: a wrong pixel format, a mis-built concat
+# list or a re-encode could blank the picture after the captures were verified.
 check_film_luminance() {
     local file="" label="" extracted="" offset="" readings="" reading=""
     local failures=0 taken=0
@@ -7960,10 +6940,7 @@ check_film_luminance() {
         taken=0
         readings=""
         for offset in "${offsets[@]}"; do
-            # THE SAME EXTRACTION THE BURNED-IN COMPARISON USED.  Both
-            # checks read the same instant out of the same two films, and
-            # extracting it twice was two seeks and two decodes for one
-            # picture; see ONE DECODE PER FILM above.
+            # THE SAME EXTRACTION THE BURNED-IN COMPARISON USED.
             if ! extracted="$(extracted_frame "${file}" \
                     "${offset}")"; then
                 record_fail "frames taken out of ${label} are not \
@@ -8003,65 +6980,8 @@ group_luminance() {
 
 # ---------------------------------------------------------------------
 # 7  VERSION CONTROL -- THE "COMMITTED IN APPEARANCE ONLY" GUARD
-#
 # This is the group that exists because `git add` reports success while
-# skipping an ignored file.  Cataclysm-DDA names its per-character save
-# files with a leading '#' (src/game_io.cpp:601-641), .gitignore carries
-# `\#*` at line 131, an unanchored `*.log` at line 31 and `debug.log` at
-# line 79, and without the terminal `!/playthrough/**` negation the save
-# is silently absent from every commit while every other count still
-# tallies.  So membership is asserted TWICE, from both directions: the
-# file is in `git ls-files`, AND `git check-ignore` denies knowing it.
-#
-# TWO SHAPES OF CHARACTER SAVE ARE BOTH CORRECT.  With world compression
-# enabled -- WORLD_COMPRESSION2 defaults to true -- the write is
-# `playerfile + SAVE_EXTENSION + zzip_suffix`, i.e. `#<b64>.sav.zzip`
-# (src/game_io.cpp:601-641, src/worldfactory.h:25); without it, the plain
-# `#<b64>.sav`.  Either satisfies this gate.  Demanding only the plain
-# form would manufacture a failure on a default world.
-#
-# `.shortcuts` IS NEVER REQUIRED.  SAVE_EXTENSION_SHORTCUTS exists at
-# src/path_info.h:17, but the only write of it is inside
-# `#if defined(__ANDROID__)` (src/game_io.cpp:629-634): it is an Android
-# file and will never appear on a Linux host.  A gate that required it
-# would fail every correct run.
-#
-# AND A DEATH ENDING LEAVES NO LIVE WORLD BEHIND AT ALL, WHICH IS THE
-# ENGINE'S OWN DOING AND NOT A LOST ARTIFACT.  Death is a sanctioned
-# ending, and when the survivor who died was the world's only character
-# `turn_handler::cleanup_at_end()` (src/do_turn.cpp:111-207) does two
-# things that this group has to know about:
-#
-#   1. `move_save_to_graveyard()` (src/game_io.cpp:247-275) RENAMES every
-#      `save/<World>/#<b64>.*` file into
-#      `<userdir>/graveyard/<timestamp>/`.  The survivor's save is
-#      relocated, not deleted -- and the leading '#' moves with it, so
-#      the graveyard copy is subject to .gitignore's `\#*` rule exactly
-#      as the live one was.  Tracking it proves the same property.
-#   2. `characters.empty()` is then true, and WORLD_END decides what
-#      happens to the world.  Its engine DEFAULT is "reset"
-#      (src/options.cpp:2836-2841), which calls
-#      `delete_world(name, false)` (src/worldfactory.cpp:2458-2496) --
-#      documented there as "Clear out everything except options and mods
-#      and compression dictionaries".  `isForbidden()`
-#      (src/worldfactory.cpp:2449-2456) spares only worldoptions.json,
-#      mods.json and *.dict, so master.gsav, the maps, the overmaps and
-#      the live character files are all removed.
-#
-# So on a death-ended world, `master.gsav` is ABSENT BY DESIGN and a gate
-# that demanded one in the index would fail every correct death ending.
-# The proof that R1 was honoured is then in HISTORY, which is what R1
-# asks for anyway -- a commit after character creation and another after
-# the ending.  This group therefore accepts the death shape only when all
-# three of its parts are present: a commit reachable from HEAD that
-# carries a master.gsav, a tracked relocated save in the graveyard, and a
-# WORLD_END of "reset" or "delete" in the tracked worldoptions.json.
-#
-# THAT THIRD REQUIREMENT IS WHAT KEEPS THE CHECK STRONG.  The failure
-# this whole group exists to catch is the silent one: `git add` skipping
-# an ignored save and exiting 0.  In that failure NO commit carries a
-# master.gsav and NO graveyard save is tracked, so the death shape is not
-# available to it and the verdict is still FAIL.
+# skipping an ignored file.
 # ---------------------------------------------------------------------
 git_tracked() {
     "${GIT}" ls-files -- "$@" 2>/dev/null || true
@@ -8087,30 +7007,9 @@ checkout to '$(rel "${PLAYTHROUGH_REPO_ROOT}")'" \
 }
 
 # WHETHER THIS CHECKOUT'S GIT CREDENTIAL IS READABLE BY ANYBODY ELSE.
-#
-# A review found a live bearer token in this checkout's own
-# .git/config -- a push URL of the shape
-# https://x-access-token:<secret>@host/... -- in a file that was mode
-# 0644.  Two halves of that, and only one is anybody's to fix here.
-#
-# The token's PRESENCE is the platform's arrangement.  `credential.helper`
-# is set empty in this checkout and `credential.interactive` is false, so
-# the URL is the repository's only authentication path; removing the
-# credential from it would break publication outright, and revoking or
-# rotating the token is the platform's act and not this pipeline's.  So
-# this gate does not demand that it be gone.
-#
-# The token's REACH is a file mode, and that is measurable and fixable.
-# A group- or world-readable config hands the token to every local
-# account, every child process and every git hook, so this FAILS on one.
-# The check is deliberately conditional on a credential actually being
-# present: a config with nothing secret in it has nothing for its mode to
-# expose, and failing it would be noise that trains a reader to ignore
-# the line that matters.
-#
-# commit_artifacts.sh asserts the same property before it commits, so
-# this is the audit of a control rather than the only place it is
-# applied.
+# A push URL of the shape https://x-access-token:<secret>@host/... puts a
+# live bearer token in .git/config, so the file's mode is the difference
+# between a contained credential and a disclosed one.
 check_git_config_credential_mode() {
     local name="git's own configuration does not expose this \
 checkout's credential to other accounts"
@@ -8172,27 +7071,14 @@ character_save_paths() {
         "${GREP}" -E '/#[^/]*\.sav(\.zzip)?$' || true
 }
 
-# saves_on_disk PATTERN -- matching files that EXIST, whatever git thinks
-# of them, printed one absolute path per line.
-#
-# This is deliberately independent of the index, and the reason is the
-# failure mode itself: if the save is not tracked, a list built from `git
-# ls-files` is empty, and a check-ignore run over that empty list would
-# examine nothing and report success.  The two halves of the guard have
-# to be measured from two different places or they collapse into one.
-# `find -name` rather than a glob built from a variable: the pattern is
-# then an argument rather than something the shell has to be trusted not
-# to split, and the depth bounds keep the search to save/<World>/<file>.
+# saves_on_disk PATTERN -- matching files that EXIST, whatever git thinks of
+# them, printed one absolute path per line.
 saves_on_disk() {
     "${FIND}" "${PLAYTHROUGH_SAVE_DIR}" -mindepth 2 -maxdepth 2 -type f \
         -name "$1" -print 2>/dev/null || true
 }
 
-# Where a death puts the survivor's save.  graveyarddir_path() is
-# `user_dir / "graveyard"` (src/path_info.cpp:300-302) and
-# move_save_to_graveyard writes one `<timestamp>` directory beneath it
-# per death (src/game_io.cpp:247-275), so the saves sit exactly two
-# levels down -- the same depth the live ones sit at under save/.
+# Where a death puts the survivor's save.
 readonly PLAYTHROUGH_GRAVEYARD_DIR="${PLAYTHROUGH_USERDIR}/graveyard"
 
 # graveyard_save_paths -- the TRACKED character save files a death
@@ -8211,11 +7097,8 @@ graveyard_saves_on_disk() {
         -type f -name '#*.sav' -print 2>/dev/null || true
 }
 
-# world_end_value -- the WORLD_END this world was played under, read out
-# of the COMMITTED worldoptions.json.  Committed rather than on-disk
-# because it is being used as evidence: the file a stranger can read is
-# the one in the commit.  Nothing is printed when it cannot be read, and
-# the caller treats that as "no death shape available".
+# world_end_value -- the WORLD_END this world was played under, read out of the
+# COMMITTED worldoptions.json.
 world_end_value() {
     local path=""
     path="$(git_tracked "${PLAYTHROUGH_SAVE_DIR}" |
@@ -8232,56 +7115,47 @@ world_end_value() {
 # WHY A HISTORICAL master.gsav MUST BE THIS SURVIVOR'S, AND NOT MERELY
 # SOMEBODY'S.
 #
-# This used to answer "the newest commit reachable from HEAD whose tree
-# carries a master.gsav", and check_save_tracked accepted that as proof
-# that a death-cleared world's save HAD been committed.  A review found
-# the hole: the branch carries the checkpoints of EVERY survivor ever
-# recorded on it, so a commit belonging to a PREVIOUS survivor -- a world
-# that was played, saved, committed and then abandoned generations ago --
-# satisfied the claim for the current one.  The evidence and the session
-# it vouched for need never have had anything to do with each other, and
-# a companion finding caught exactly that in prose: commits from a
-# retired survivor's era cited as proof of the current survivor's
-# ordering.
+# "The newest commit reachable from HEAD whose tree carries a master.gsav"
+# is not a proof about THIS survivor: the branch carries the checkpoints of
+# every survivor ever recorded on it, so a commit belonging to a world that
+# was played, saved, committed and then abandoned generations ago would
+# satisfy the claim for the current one, and the evidence and the session it
+# vouched for need never have had anything to do with each other.
 #
-# So a carrier is now bound to THIS SURVIVOR'S GENERATION, by two
-# independent facts that the history already carries:
+# So a carrier is bound to THIS SURVIVOR'S GENERATION, by two independent
+# facts the history already carries:
 #
 #   1. IT IS AT OR AFTER THIS SURVIVOR'S CREATION.  checkpoint_anchor
-#      resolves the newest `creation` checkpoint reachable from HEAD --
-#      the one the committer itself anchors to -- and the candidate must
-#      have that commit as an ancestor.  A previous survivor's commit
-#      sits BEFORE the current creation and is refused by construction.
-#      `--is-ancestor X X` is true, so the creation commit may be its own
-#      carrier, which is right: creation is the first point at which a
-#      save exists to commit.
+#      resolves the newest `creation` checkpoint reachable from HEAD -- the
+#      one the committer itself anchors to -- and the candidate must have
+#      that commit as an ancestor, so a previous survivor's commit is
+#      refused by construction.  `--is-ancestor X X` is true, so the
+#      creation commit may be its own carrier, which is right: creation is
+#      the first point at which a save exists to commit.
 #   2. IT IS ABOUT THE SAME SURVIVOR.  survivor_at reads
 #      config/lastworld.json out of the candidate's own tree and it must
-#      name the same world and character HEAD names.  This is the check
-#      that still holds if the branch were ever rebased or grafted such
-#      that the ancestry alone stopped being discriminating.
+#      name the same world and character HEAD names.  This still holds if
+#      the branch were rebased or grafted such that ancestry alone stopped
+#      being discriminating.
 #
-# FAILING CLOSED IS THE DIRECTION.  When there is no creation checkpoint
-# to anchor to, or HEAD's own survivor cannot be read, no candidate is
-# accepted -- an unbindable claim is not a weaker claim, it is no claim.
-# The reason is published in HISTORY_MASTER_REASON so the verdict can say
-# WHICH of the three things was wrong rather than only that nothing was
-# found; "no commit carries one" and "one exists but belongs to somebody
-# else" are very different diagnoses.
+# FAILING CLOSED IS THE DIRECTION: with no creation checkpoint to anchor to,
+# or HEAD's own survivor unreadable, no candidate is accepted -- an
+# unbindable claim is not a weaker claim, it is no claim.  The reason is
+# published in HISTORY_MASTER_REASON so the verdict can say WHICH of the
+# three things was wrong; "no commit carries one" and "one exists but belongs
+# to somebody else" are very different diagnoses.
 #
 # `rev-list HEAD -- <dir>` lists only the commits where that directory
-# CHANGED, so this walks the checkpoints rather than the whole history,
-# and the tree is then read directly instead of being inferred from the
-# diff: a commit that DELETED the file also "touches" it, and only the
-# tree can tell the two apart.
+# CHANGED, so this walks the checkpoints rather than the whole history, and
+# the tree is then read directly instead of being inferred from the diff: a
+# commit that DELETED the file also "touches" it, and only the tree can tell
+# the two apart.
 #
-# IT SETS GLOBALS RATHER THAN PRINTING, and that is not a style choice.
-# The caller used to read it as `carrier="$(history_master_commit)"` --
-# a COMMAND SUBSTITUTION, which is a subshell, so a reason assigned
-# inside it never reached the verdict that needed it.  Measured while
-# writing this: the diagnosis came out as the caller's fallback text
-# every time.  Both answers therefore come back in variables the caller
-# can actually read.
+# IT SETS GLOBALS RATHER THAN PRINTING, and that is not a style choice: read
+# as `carrier="$(history_master_commit)"` the call is a command substitution,
+# hence a subshell, and a reason assigned inside it would never reach the
+# verdict that needs it.  Both answers come back in variables the caller can
+# actually read.
 HISTORY_MASTER_REASON=""
 HISTORY_MASTER_COMMIT=""
 resolve_history_master_commit() {
@@ -8365,10 +7239,9 @@ $(rel "${PLAYTHROUGH_GRAVEYARD_DIR}")"
             local unaccounted=""
             if [ -z "${carrier}" ]; then
                 # resolve_history_master_commit's own reason, which
-                # distinguishes "nothing carries one" from "one exists
-                # and belongs to a previous survivor" -- two very
-                # different diagnoses that a bare absence used to report
-                # identically.
+                # distinguishes "nothing carries one" from "one exists and
+                # belongs to a previous survivor" -- two very different
+                # diagnoses that a bare absence used to report identically.
                 unaccounted="${HISTORY_MASTER_REASON:-no commit \
 reachable from HEAD carries one either}"
             fi
@@ -8431,29 +7304,8 @@ nothing"
 }
 
 # ---------------------------------------------------------------------
-# check-ignore IS THE PROOF THAT NOTHING IS SILENTLY EXCLUDED -- AND IT
-# HAS TO BE RUN THE HARD WAY, OR IT PROVES NOTHING AT ALL.
-#
-# Two traps, both measured on this checkout:
-#
-#   1. WITHOUT --no-index, `git check-ignore` CONSULTS THE INDEX and
-#      reports any TRACKED path as not-ignored, whatever .gitignore says.
-#      Measured: with the terminal negation deleted, a tracked character
-#      save still came back "not ignored" -- so the naive form of this
-#      check passes even when the rule that saves the file has been
-#      removed.  It is vacuous exactly when it matters, because on a
-#      fresh session the file is NOT yet tracked and `git add` will
-#      apply the patterns, not the index.
-#   2. WITH --no-index, check-ignore exits ZERO whenever ANY pattern
-#      matches -- INCLUDING A NEGATION.  Measured: the same path exits 0
-#      both ways, printing `.gitignore:275:!/playthrough/**` when the
-#      negation is present and `.gitignore:131:\#*` when it is not.  So
-#      the exit status cannot answer the question either.
-#
-# The pattern that DECIDED is what answers it: -v prints it, and a
-# pattern beginning with '!' means re-included.  So the verdict here is
-# read off the pattern, and the only outcomes accepted are "no pattern
-# matched" and "the deciding pattern was a negation".
+# check-ignore IS THE PROOF THAT NOTHING IS SILENTLY EXCLUDED -- AND IT HAS TO
+# BE RUN THE HARD WAY, OR IT PROVES NOTHING AT ALL.
 # ---------------------------------------------------------------------
 deciding_ignore_pattern() {
     "${GIT}" check-ignore -v --no-index -- "$1" 2>/dev/null |
@@ -8483,10 +7335,9 @@ check_nothing_ignored() {
             paths+=("${path}")
         done < <(saves_on_disk "${pattern}")
     done
-    # A death moves the character save into the graveyard, where its
-    # name still begins with '#'.  It is the file `\#*` would swallow on
-    # a death-ended session, so it belongs in this sample whenever it
-    # exists.
+    # A death moves the character save into the graveyard, where its name still
+    # begins with '#'. It is the file `\#*` would swallow on a death-ended
+    # session, so it belongs in this sample whenever it exists.
     while IFS= read -r path; do
         [ -n "${path}" ] || continue
         paths+=("${path}")
@@ -8567,20 +7418,13 @@ file"
 film, transcripts and the requirements are all committed"
 }
 
-# THE DECIMATION CHECK.  If the tracked capture count is lower than the
-# count on disk, frames were sampled, deduplicated or partly added.  That
-# is a failure and not an optimisation: repository size never outranks
-# completeness here.
+# THE DECIMATION CHECK. If the tracked capture count is lower than the count on
+# disk, frames were sampled, deduplicated or partly added. That is a failure
+# and not an optimisation: repository size never outranks completeness here.
 check_tracked_frame_count() {
     local tracked="" ondisk=""
     tracked="$(git_tracked_count "${PLAYTHROUGH_FRAMES_DIR}")"
     # GROUP 2'S COUNT WHEN THERE IS ONE, AND THIS GROUP'S OWN OTHERWISE.
-    # The post-commit phase measures the history without re-measuring the
-    # artifacts, so group 2 has not run and no fact has been published --
-    # and this check must not fail for the absence of a number it can
-    # take for itself.  Counting the record's lines is one process and no
-    # resident list, and group 2 asserts elsewhere that that number is
-    # the capture count.
     ondisk="$(fact capture_count)"
     if ! is_count "${ondisk}"; then
         ondisk="$(count_lines "${PLAYTHROUGH_MANIFEST}")"
@@ -8645,39 +7489,16 @@ interpreter call adds -B, and the .gitignore negation deliberately adds \
 no re-exclusion, so a stray file here WOULD become trackable"
 }
 
-# WHAT EACH PATH IS, AND WHAT IT CARRIES.
-#
-# The committer refuses both of these before it stages anything, and that
-# is the right place for a control whose job is to stop a bad commit from
-# being taken.  It is not sufficient on its own, for a reason this very
-# remediation demonstrates: NOT EVERY COMMIT IN THIS HISTORY IS TAKEN BY
-# commit_artifacts.sh.  A tooling change is committed with ordinary git,
-# and a checkpoint's gates say nothing about a commit that never ran them.
-#
-# So the gate asks the same questions of the tree it is measuring,
-# independently of who committed it -- and asks them BY RUNNING THE
-# COMMITTER'S OWN read-only `scan`, rather than by restating eleven
-# regular expressions and a reviewed baseline here.  Two copies of a rule
-# set are two things to keep in step, and they answer differently the
-# first time one of them is updated.  `scan` takes no lock (it is a
-# reporter, like `status`), so it cannot deadlock against the exclusive
-# hold this gate is running under.
-#
-# What it establishes, in one property because the diagnosis names which
-# half of it failed:
-#
-#   * a hard link into this tree publishes bytes that live somewhere else
-#     and is an ordinary regular file to every other test here;
-#   * a symlink is invisible to a `find -type f` sweep entirely;
-#   * a file owned by another account was put here by somebody else;
-#   * another filesystem mounted inside the tree is a whole tree of
-#     content nobody in this pipeline produced;
-#   * and an innocuously named file holding a credential satisfies every
-#     structural question either of those asks.
-#
-# It is artifact-shaped, so the pre-commit phase answers it; a commit does
-# not change what a path is or what it contains, and `--phase all` is how
-# it is re-measured deliberately.
+# WHAT EACH PATH IS, AND WHAT IT CARRIES.  One property, because the
+# diagnosis names which half of it failed: a hard link publishes bytes
+# that live elsewhere and looks like an ordinary file to every other test
+# here, a symlink is invisible to a `find -type f` sweep, a file owned by
+# another account was put here by somebody else, a filesystem mounted
+# inside the tree is content nobody in this pipeline produced, and an
+# innocuously named file holding a credential satisfies every structural
+# question the others ask.  The committer runs the same rules before it
+# stages anything, and this delegates to it rather than keeping a second
+# copy of the rule set.
 check_staging_soundness() {
     local name="every artifact is a single-linked regular file this \
 account owns, carrying no secret material"
@@ -8698,13 +7519,11 @@ question wherever it is asked"
     status=$?
     set -e
     # THE LAST LINE ONLY, and that is about the committed report rather
-    # than about brevity.  `scan` re-asserts the repository first, so its
-    # output opens with the branch name and the git-configuration
-    # containment note -- both true, neither an answer to THIS question,
-    # and the branch name in particular would make a committed acceptance
-    # report differ between branches while measuring an identical tree.
-    # The conclusion is the last line either way: the soundness statement
-    # when it holds, the refusal's own diagnosis when it does not.
+    # than about brevity: `scan` re-asserts the repository first, so its
+    # output opens with the branch name, which would make a committed
+    # acceptance report differ between branches while measuring an
+    # identical tree.  The conclusion is the last line either way -- the
+    # soundness statement, or the refusal's own diagnosis.
     output="$(printf '%s\n' "${output}" | "${SED}" -e '/^[[:space:]]*$/d' \
         -e 's/^playthrough: //' -e 's/^FATAL: //' | "${TAIL}" -n 1)"
     if [ "${status}" -eq 0 ]; then
@@ -8721,26 +7540,10 @@ what it is called"
 }
 
 # NOBODY BUT THE OWNER MAY WRITE TO THE EVIDENCE.
-#
-# A security review measured the delivered tree and found FIFTEEN
-# directories at mode 2777 and a hundred and fifty-one files at 0666 --
-# the survivor's save and its log, the engine's options and keybindings,
-# the captioned film and the acceptance report among them.  Every one of
-# those was rewritable, and every one of those directories was a place
-# any local account could delete a frame from and put another in its
-# place.  Nothing in the pipeline said so, because nothing looked.
-#
-# THE PROPERTY IS WRITE, NOT READ, and that distinction is the whole
-# reason this is a fair check rather than an unachievable one.  This tree
-# is committed to a git repository and is meant to be read; making it
-# owner-only would protect nothing that is not about to be published.
-# What may never be true of evidence is that somebody else can change it.
-#
-# The producers enforce it as they go -- playthrough_mkdirs on the
-# artifact directories, capture.sh on the frames directory, launch_game.sh
-# via the engine's umask, embed_captions.sh on the captioned film,
-# publish_report on the report -- and this is the sweep that proves they
-# all did, over every path rather than over the ones somebody remembered.
+# A security review measured the delivered tree and found FIFTEEN directories
+# at mode 2777 and a hundred and fifty-one files at 0666 -- the survivor's save
+# and its log, the engine's options and keybindings, the captioned film and the
+# acceptance report among them.
 check_no_foreign_write() {
     local name="nothing under playthrough/ is writable by any account \
 but its owner"
@@ -8770,21 +7573,10 @@ go-w $(rel "${PLAYTHROUGH_DIR}")' and find out which producer left it \
 open"
 }
 
-# THE COMMIT ORDER.  Ancestry, not dates: a timestamp can be anything,
-# whereas "this commit is reachable from that one" is a fact about the
-# graph.  The dossier had to exist before the first gameplay frame, so its
-# earliest commit must be a STRICT ancestor of the first capture's.
-#
-# BOTH VERDICTS BELOW SAY WHAT WAS MEASURED, and that is a correction
-# rather than a flourish.  The first used to read "at least one after the
-# survivor was created and one after the session was saved and quit",
-# which a COUNT OF COMMITS cannot establish: two commits that both
-# happened after the session ended satisfy the count exactly as well.
-# Which commit is which is established by the checkpoint trailers, in
-# check_lifecycle_checkpoints, and this verdict now says so instead of
-# claiming it.  The second used to be titled as though it had read the
-# dossier's prose; what it reads is the first commit that introduced each
-# path and the ancestry between them, so that is what it reports.
+# THE COMMIT ORDER. Ancestry, not dates: a timestamp can be anything, whereas
+# "this commit is reachable from that one" is a fact about the graph. The
+# dossier had to exist before the first gameplay frame, so its earliest commit
+# must be a STRICT ancestor of the first capture's.
 first_commit_for() {
     "${GIT}" log --format='%H' -- "$1" 2>/dev/null | "${TAIL}" -n 1 || true
 }
@@ -8859,61 +7651,42 @@ capture's -- on separate branches neither precedes the other, and the \
 requirement is an order rather than a coexistence"
 }
 
-# WHICH IDENTITY WILL SIGN THESE ARTIFACTS, AND WHETHER THE HISTORY
-# AGREES WITH IT.
+# WHICH IDENTITY WILL SIGN THESE ARTIFACTS, AND WHETHER THE HISTORY AGREES
+# WITH IT.
 #
-# THIS CHECK ASKED AN IMPOSSIBLE QUESTION AND SO COULD NEVER PASS.  It
-# required a REPOSITORY-LOCAL pair, read with `git config --local --get`,
-# on the authority of the plan's section 0.3.1 ("set the repository-local
-# git identity") and section 0.10.2 ("the git identity is set
-# repository-locally", under least privilege).  The reasoning was sound
-# as far as it went: an identity held in the account is one a container,
-# a different account or a fresh checkout of this branch does not have.
-#
-# But the environment this record is produced in FORBIDS CREATING ONE.
-# It fixes the committer identity itself and prohibits running
+# THIS DELIBERATELY DOES NOT REQUIRE A REPOSITORY-LOCAL PAIR, and that is a
+# recorded divergence from the plan's sections 0.3.1 and 0.10.2 rather than
+# an oversight.  The reasoning for a local pair was sound as far as it went
+# -- an identity held in the account is one a container, another account or a
+# fresh checkout does not have -- but the environment this record is produced
+# in fixes the committer identity itself and PROHIBITS running
 # `git config user.name` or `user.email` at any scope, so the only way to
-# satisfy the check would have been to violate that prohibition.
-# Measured here: `git config --local --get user.name` exits 1, while
-# `git var GIT_AUTHOR_IDENT` resolves `Blitzy Agent
-# <agent@blitzy.com>` -- and every commit touching playthrough/ is
-# authored by exactly that.  So the gate reported a FAILURE about the one
-# property it was not allowed to fix, and a review separately found the
-# acceptance report and REPORT.md claiming a repository-local identity
-# that was never there: the check's impossibility and the documents'
-# false claim are the same defect seen from two sides.
+# satisfy such a check would be to violate that prohibition.  A gate that
+# reports a failure about the one property it is not allowed to fix is
+# measuring the wrong thing.
 #
-# So this now measures the strongest property that is BOTH required and
-# achievable, and it measures it authoritatively:
+# So this measures the strongest property that is BOTH required and
+# achievable, authoritatively:
 #
 #   * an identity RESOLVES for committing at all, read through `git var
 #     GIT_AUTHOR_IDENT`, which is what git will actually stamp -- the
-#     environment, then this repository, then the account, then the
-#     system.  Without one, no checkpoint can be taken and the save
-#     data, captures and film cannot become the committed evidence R1
-#     and R3 require, so this half is a genuine failure.
+#     environment, then this repository, then the account, then the system.
+#     Without one no checkpoint can be taken and the save data, captures and
+#     film cannot become the committed evidence R1 and R3 require, so this
+#     half is a genuine failure.
 #   * it AGREES with the author of the newest commit that touched
-#     playthrough/.  This was always the load-bearing half: a
-#     configuration that disagrees with the history describes a
-#     different machine.  Before the first such commit there is nothing
-#     to compare with, and that is stated rather than silently skipped.
+#     playthrough/.  This is the load-bearing half: a configuration that
+#     disagrees with the history describes a different machine.  Before the
+#     first such commit there is nothing to compare with, and that is stated
+#     rather than silently skipped.
 #
 # WHERE the pair came from is reported either way, and when it is not
-# repository-local the verdict SAYS SO and names the divergence rather
-# than hiding it -- an honest "this differs from the plan, here is why"
-# is the point of the exercise, and it is recorded in
-# playthrough/TECHNICAL_NOTES.md as well.
+# repository-local the verdict SAYS SO and names the divergence rather than
+# hiding it -- it is recorded in playthrough/TECHNICAL_NOTES.md as well.
 
-# The host directive that displaces the plan's repository-local
-# requirement, QUOTED WORD FOR WORD so a reader can weigh the two
-# instructions against each other without taking this file's paraphrase
-# of either.  A review asked for exactly this: a divergence that
-# summarises the rule it obeyed instead of citing it is asking to be
-# believed.  The backticks the directive is written with are ESCAPED
-# rather than single-quoted: a single-quoted string cannot be continued
-# across lines -- the backslash and the newline would both survive into
-# the value -- so the quotation is assembled in double quotes, where a
-# `\`` is a backtick and not a command substitution.
+# The host directive that displaces the plan's repository-local requirement,
+# QUOTED WORD FOR WORD so a reader can weigh the two instructions against each
+# other without taking this file's paraphrase of either.
 readonly IDENTITY_DIRECTIVE="All git commits must be authored and \
 committed as \`Blitzy Agent <agent@blitzy.com>\`. Never run \
 \`git config user.name\`/\`user.email\`, and never override the \
@@ -8922,8 +7695,8 @@ author/committer identity."
 # record_identity_divergence OBSERVED
 #   The one divergence this check can record, written once.  It was
 #   written twice -- once for the no-commits-yet branch and once for the
-#   agreeing branch -- and two copies of a citation is two places for it
-#   to drift from the directive it quotes.
+#   agreeing branch -- and two copies of a citation is two places for it to
+#   drift from the directive it quotes.
 record_identity_divergence() {
     record_divergence "git has an identity to commit these artifacts \
 under, and the history agrees with it" "$1" \
@@ -8954,13 +7727,7 @@ check_git_identity() {
         2>/dev/null || true)"
     local_email="$("${GIT}" config --local --get user.email \
         2>/dev/null || true)"
-    # THE AUTHORITATIVE ANSWER, not one scope of it.  `git var
-    # GIT_AUTHOR_IDENT` is what git will actually stamp on a commit: it
-    # resolves the GIT_AUTHOR_* environment, then this repository, then
-    # the account, then the system, and fails outright when none of them
-    # yields a usable pair.  Reading one scope with `git config --local`
-    # answers a different question, and the wrong one for "can these
-    # artifacts be committed, and by whom".
+    # THE AUTHORITATIVE ANSWER, not one scope of it.
     ident="$("${GIT}" var GIT_AUTHOR_IDENT 2>/dev/null || true)"
     if [ -n "${ident}" ]; then
         # "Name <email> <unixtime> <tz>" -- drop the time and the zone
@@ -9000,12 +7767,7 @@ under, and the history agrees with it" "${observed_new}"
         fi
         return 0
     fi
-    # BEING RESOLVABLE IS NOT THE WHOLE REQUIREMENT.  An identity that
-    # disagrees with the one the evidence was actually committed under
-    # describes a machine rather than this history, so the resolved pair
-    # is compared against the author of the newest commit that touched
-    # playthrough/.  This is the half of the old check that was always
-    # the load-bearing one, and it is kept exactly.
+    # BEING RESOLVABLE IS NOT THE WHOLE REQUIREMENT.
     if [ "${configured}" = "${committed}" ]; then
         observed_ok="${configured}, resolved from ${scope}, and \
 the newest commit touching $(rel "${PLAYTHROUGH_DIR}") is authored by \
@@ -9029,7 +7791,6 @@ configuration is describing a different machine than the history does"
 
 # ---------------------------------------------------------------------
 # THE COMMITTED IGNORE RULES.
-#
 # committed_file PATH -- the contents of one path as HEAD carries it, or
 # nothing when HEAD does not carry it at all.
 committed_file() {
@@ -9084,11 +7845,9 @@ ${REQUIRED_ATTRIBUTES[*]}"
         return 0
     fi
     for row in "${REQUIRED_ATTRIBUTES[@]}"; do
-        # THE WHOLE LINE, LITERALLY.  A substring match would accept
-        # '*.mp4 binary' inside a comment about it, and a pattern match
-        # would read the '*' as a glob.  The awk pass trims the ends and
-        # collapses runs of whitespace, so a row written with a tab or
-        # an extra space is recognised as the row it is.
+        # THE WHOLE LINE, LITERALLY. A substring match would accept '*.mp4
+        # binary' inside a comment about it, and a pattern match would read the
+        # '*' as a glob.
         if ! printf '%s\n' "${content}" |
                 "${AWK}" '{ gsub(/^[ \t]+|[ \t]+$/, "");
                             gsub(/[ \t]+/, " "); print }' |
@@ -9118,36 +7877,26 @@ check_committed_vcs_rules() {
 }
 
 # ---------------------------------------------------------------------
-# THE LIFECYCLE CHECKPOINTS, AND THE ONE INCONSISTENCY A ROW COUNT
-# CANNOT SEE
+# THE LIFECYCLE CHECKPOINTS, AND THE ONE INCONSISTENCY A ROW COUNT CANNOT
+# SEE
 #
 # commit_artifacts.sh marks two commits with a trailer: the `creation`
 # checkpoint, taken when the survivor exists and no frame does, and the
-# `final` one, taken after the session is saved and closed.  The
-# committer anchors `final` to the newest `creation` in the history.
+# `final` one, taken after the session is saved and closed.  The committer
+# anchors `final` to the newest `creation` in the history.
 #
-# Anchoring by trailer alone is not enough, and the gap is not
-# theoretical: a `final` checkpoint whose anchor records a DIFFERENT
-# survivor was accepted, because the only lifecycle assertion was that
-# the record had grown -- and a record re-recorded from scratch for a
-# new survivor has "grown" by that measure too.  The result is a history
-# whose two lifecycle commits describe somebody whose files are no
-# longer in the tree.
+# ANCHORING BY TRAILER ALONE IS NOT ENOUGH, and the gap is not theoretical:
+# if the only lifecycle assertion is that the record has GROWN, then a record
+# re-recorded from scratch for a new survivor has "grown" by that measure
+# too, and the history's two lifecycle commits then describe somebody whose
+# files are no longer in the tree.
 #
-# INTERNAL CONSISTENCY IS NECESSARY AND IS NOT SUFFICIENT, and a review
-# found exactly that gap here.  For every `final` checkpoint, the
-# survivor its own tree names must be the survivor its anchoring
-# `creation` names -- true of an honest lifecycle, false in the
-# cross-survivor case, and a property of the graph rather than of a
-# count.  But it says nothing about WHICH recording the pair is about.  A
-# history holding one internally consistent pair for a survivor who has
-# since been superseded satisfied it completely, and the divergence
-# between that pair and the evidence actually in the tree was reported as
-# a WARNING -- which does not affect the exit status.  So the gate passed
-# on a tree whose committed frames, manifest, film and save belonged to
-# somebody with no checkpoint pair at all, and R1's "committed at both
-# mandated points" was reported as satisfied by two commits about
-# somebody else's session.
+# INTERNAL CONSISTENCY IS NECESSARY AND IS NOT SUFFICIENT.  A history holding
+# one internally consistent pair for a survivor who has since been superseded
+# satisfies it completely, while the committed frames, manifest, film and
+# save belong to somebody with no checkpoint pair at all -- and R1's
+# "committed at both mandated points" would be reported as satisfied by two
+# commits about somebody else's session.
 #
 # So there are TWO checks here, and both of them FAIL rather than warn:
 #
@@ -9155,16 +7904,13 @@ check_committed_vcs_rules() {
 #      survivor, and the anchor a strict ancestor of it.  Ancestry is
 #      asserted explicitly rather than inferred from `git log`'s
 #      reachability, and `anchor != final` with it, because a creation
-#      checkpoint that IS its own final is not a lifecycle: the two
-#      commits exist to bracket a session, and one commit brackets
-#      nothing.
-#
+#      checkpoint that IS its own final is not a lifecycle: the two commits
+#      exist to bracket a session, and one commit brackets nothing.
 #   2. THE NEWEST PAIR IS ABOUT THE SURVIVOR IN THE TREE.  HEAD's own
 #      lastworld.json names the world and character whose evidence is
-#      committed; the newest `final` and the newest `creation` must both
-#      name that same world and character.  This is the check that makes
-#      "the save was committed at both mandated points" a statement about
-#      THIS session, and it is the one a superseded pair now fails.
+#      committed; the newest `final` and the newest `creation` must both name
+#      that same world and character.  This is the check that makes "the save
+#      was committed at both mandated points" a statement about THIS session.
 # ---------------------------------------------------------------------
 
 # checkpoint_commits NAME -- every commit carrying the trailer, newest
@@ -9200,12 +7946,7 @@ survivor_at() {
         return 1
 }
 
-# The facts BOTH checkpoint checks are about, read once.  They are state
-# rather than arguments because each check is called directly from
-# group_version_control under the phase predicate: a check that another
-# check calls is a check whose gating is invisible at the call site, and
-# this file's rule is that the classification stays visible beside the
-# group it belongs to.
+# The facts BOTH checkpoint checks are about, read once.
 LIFECYCLE_HEAD_SURVIVOR=""
 LIFECYCLE_NEWEST_FINAL=""
 LIFECYCLE_NEWEST_CREATION=""
@@ -9245,11 +7986,7 @@ session was saved and closed"
             continue
         fi
         # A LIFECYCLE IS TWO COMMITS, AND THE FIRST STRICTLY PRECEDES THE
-        # SECOND.  `git log --grep <commit>` already walks only ancestors,
-        # so reachability is implied -- but implied is not asserted, and
-        # the one case reachability does NOT exclude is the anchor being
-        # the final itself, which would mean a session bracketed by a
-        # single commit taken before it started.
+        # SECOND.
         if [ "${anchor}" = "${commit}" ]; then
             mismatched+=("${commit:0:10} is its own \
 '${CHECKPOINT_CREATION_NAME}' anchor, so one commit stands for both \
@@ -9305,11 +8042,10 @@ two apart"
 #   The check that binds the history to the tree.  A divergence here used
 #   to be a WARNING, which does not affect the exit status -- so a gate
 #   reporting "the save was committed at both mandated points" could be
-#   describing a session whose files are no longer in the checkout.  R1
-#   asks for the save of THIS survivor to be committed after creation and
-#   again after Save & Quit; a pair about somebody else does not satisfy
-#   it, however self-consistent it is, and the answer to that is a
-#   failure.
+#   describing a session whose files are no longer in the checkout.  R1 asks
+#   for the save of THIS survivor to be committed after creation and again
+#   after Save & Quit; a pair about somebody else does not satisfy it,
+#   however self-consistent it is, so the answer to that is a FAILURE.
 check_checkpoints_are_this_session() {
     local head_survivor="${LIFECYCLE_HEAD_SURVIVOR}"
     local newest_final="${LIFECYCLE_NEWEST_FINAL}"
@@ -9319,10 +8055,8 @@ tree"
     local final_survivor="" creation_survivor=""
     local -a wrong=()
 
-    # NO PAIR IS ITS OWN ANSWER, and it is answered here rather than by
-    # the sibling check reporting on this one's behalf.  Each check
-    # answers for itself, so each can be called from the group under the
-    # phase predicate and neither depends on the other having run.
+    # NO PAIR IS ITS OWN ANSWER, and it is answered here rather than by the
+    # sibling check reporting on this one's behalf.
     if [ -z "${newest_final}" ] || [ -z "${newest_creation}" ]; then
         record_fail "${name}" \
             "there is no checkpoint pair to be about anybody -- the \
@@ -9335,10 +8069,7 @@ carries"
         return 0
     fi
 
-    # AN UNREADABLE HEAD IS A FAILURE, not a reason to skip.  Without
-    # knowing which survivor the tree is about, the whole property is
-    # unmeasurable -- and an unmeasurable property reported as a pass is
-    # the vacuous verdict this gate exists to prevent.
+    # AN UNREADABLE HEAD IS A FAILURE, not a reason to skip.
     if [ -z "${head_survivor}" ]; then
         record_fail "${name}" \
             "HEAD carries no readable \
@@ -9366,10 +8097,7 @@ ${newest_creation:0:10} names no survivor its own tree can be read for")
         wrong+=("the newest '${CHECKPOINT_CREATION_NAME}' checkpoint \
 ${newest_creation:0:10} records '${creation_survivor}'")
     fi
-    # THE PAIR MUST BE A PAIR.  Both being about the right survivor is
-    # still not a lifecycle unless the creation precedes the final, so the
-    # same ancestry the loop above asserts per final is asserted for the
-    # two commits this session is actually judged on.
+    # THE PAIR MUST BE A PAIR.
     if [ "${#wrong[@]}" -eq 0 ]; then
         if [ "${newest_creation}" = "${newest_final}" ]; then
             wrong+=("${newest_final:0:10} carries both trailers, so one \
@@ -9401,12 +8129,6 @@ creation and again after Save & Quit"
 
 # The second half of the lifecycle, and the one a superseded pair used to
 # satisfy: the recording IN THE TREE must have been checkpointed itself.
-#
-# Both halves are required and neither implies the other.  A history can
-# carry a self-consistent pair for a retired survivor (which is what
-# HEAD's history carries today) and a history could carry a `final`
-# checkpoint for the current survivor anchored to somebody else's
-# `creation`.  The first is caught here, the second above.
 check_head_generation_checkpoints() {
     local -a finals=()
     local commit="" anchor="" mine="" theirs=""
@@ -9487,61 +8209,6 @@ requirement is about"
 }
 
 # check_evidence_anchor_trailer -- the chain head, in the history.
-#
-# THE HALF OF THE ANCHOR THAT MAKES IT INDEPENDENT.  Group 2 proves the
-# chain is internally sound and that every sealed artifact still matches
-# its seal.  Both of those read files that sit in the same tree as the
-# evidence, so an attacker who rewrites an artifact and then rewrites the
-# ledger to match satisfies them -- the chain would be recomputed from
-# the forged rows and agree with itself.
-#
-# What that attacker cannot recompute is a COMMIT.  A commit object's
-# name is a hash of its own content, including its message, so the head
-# published in this trailer is fixed the moment the checkpoint is taken:
-# changing it changes the commit id and every id after it, which is a
-# rewrite of published history rather than an edit of a file.  So the
-# comparison here -- the head the ledger ends on against the head the
-# newest checkpoint commit declared -- is the one that cannot be
-# satisfied by editing the working tree.
-#
-# A COMMIT WITH NO TRAILER IS A FAILURE, not an exemption.  The trailer
-# is written by commit_artifacts.sh at every checkpoint; a checkpoint
-# without one is either an older commit from before the anchor existed --
-# in which case the current head has never been published and the anchor
-# proves nothing about this history -- or a checkpoint taken by something
-# other than the committer.  Both are worth reporting rather than
-# passing.
-#
-# AND IT IS ASKED OF EACH CHECKPOINT, NOT OF THE HISTORY AS A WHOLE.  A
-# review found this check taking the NEWEST commit carrying a trailer
-# anywhere in the history and comparing that one against the ledger --
-# which passes on a history where the trailer arrived long after the
-# lifecycle checkpoints it is supposed to bind.  That is exactly this
-# history: the delivered `creation`, `final` and `media` commits carry no
-# trailer, because the anchor mechanism was built after them, and every
-# anchor row is a retrospective seal.  A retrospective seal is a true
-# statement about the bytes and NOT a contemporaneous witness to when
-# they were made, so the two are now told apart:
-#
-#   FAIL        no commit publishes the head, or the head it publishes is
-#               not the one the ledger ends on;
-#   DIVERGENCE  the head is published, but one or more REQUIRED
-#               lifecycle checkpoints carry no trailer of their own --
-#               each is NAMED, with the honest reason it cannot be
-#               repaired: history is not rewritten here (no rewriting,
-#               no force-push), so a checkpoint taken before the
-#               mechanism existed can never acquire a contemporaneous
-#               one;
-#   PASS        the head is published and every required checkpoint
-#               carries its own trailer.
-#
-# WHAT WOULD CLOSE THE DIVERGENCE, stated so nobody mistakes the seal for
-# more than it is: a re-recording taken through the hardened committer,
-# whose creation/final/media commits each carry their own trailer, and the
-# head published in an EXTERNAL immutable attestation -- a transparency
-# log or a signature held outside this repository.  Neither is available
-# to an offline pipeline that must not rewrite published history, so the
-# gap is reported at every run rather than smoothed over.
 
 # commit_anchor_trailer COMMIT -- the anchor head COMMIT declares, if any.
 commit_anchor_trailer() {
@@ -9550,10 +8217,9 @@ commit_anchor_trailer() {
         "${HEAD}" -n 1 || true
 }
 
-# unanchored_checkpoints -- every required lifecycle checkpoint reachable
-# from HEAD that publishes no anchor head of its own, as
-# "<short> (<milestone>)" entries.  The names are bounded like every other
-# population this gate reports.
+# unanchored_checkpoints -- every required lifecycle checkpoint reachable from
+# HEAD that publishes no anchor head of its own, as "<short> (<milestone>)"
+# entries.
 unanchored_checkpoints() {
     local milestone commit
     for milestone in "${CHECKPOINT_CREATION_NAME}" \
@@ -9671,23 +8337,10 @@ group_version_control() {
         check_head_generation_checkpoints
         check_evidence_anchor_trailer
     else
-        # The number is DERIVED from the declared table rather than
-        # spelled out in prose, because a spelled-out one is a second
-        # place for the truth to live and it went stale the moment a
-        # twelfth deferred check was added.
-        #
-        # IT IS THE PHASE'S DEFERRAL, NOT THIS GROUP'S.  It was
-        # GROUP_CHECKS_ALL[7] - GROUP_CHECKS_PRE_COMMIT[7], which is 13:
-        # every deferred check but one lives in this group, and the
-        # fourteenth is group 9's change surface.  The sentence around it
-        # says "properties of the COMMIT ... deferred to the post-commit
-        # phase", which is a claim about the PHASE, so a group-scoped
-        # count made the report say 13 where this file's own usage text
-        # and section 7 documentation both say "the fourteen" -- two
-        # numbers for one quantity, which is the defect the derivation
-        # was introduced to prevent, merely moved.  Summed across the
-        # groups it is one number, and the enumeration below closes with
-        # the change surface so that the count and the list agree.
+        # The number is DERIVED from the declared table rather than spelled out
+        # in prose, because a spelled-out one is a second place for the truth
+        # to live and it went stale the moment a twelfth deferred check was
+        # added.
         record_info "$((EXPECTED_CHECKS_ALL - \
 EXPECTED_CHECKS_PRE_COMMIT)) properties of the COMMIT are deferred to \
 the ${PHASE_POST_COMMIT} phase" \
@@ -9703,44 +8356,48 @@ that makes them true, and this phase runs ahead of it"
 
 
 # ---------------------------------------------------------------------
-# 8  NO CHEATING, AS A CHECKABLE PROPERTY
+# 8  NO EVIDENCE OF DEBUG OR CHEAT USE IN THE AUDITED ARTIFACTS
 #
-# This is where a claim of good faith stops resting on the word of
-# whoever played the session and becomes a property of a committed file
-# that a stranger can verify.
+# WHAT THIS GROUP CAN AND CANNOT ESTABLISH.  It inspects three committed
+# artifacts and reports what they contain: the user keybindings file, the
+# engine's own log, and the record with the documents derived from it.
+# Those observations CORROBORATE the no-cheating requirement; they do not
+# prove it.  A file can be deleted or rewritten before it is committed, a
+# log need not mention everything the engine did, and an absence of
+# vocabulary is not an absence of behaviour -- spawning, a stat edit, a
+# teleport or a map reveal leave no trace in any of these three if nobody
+# wrote one.  So the verdicts are phrased as what was observed, and the
+# group is named for evidence rather than for proof.
 #
-# All three of the engine's debug actions -- `debug_mode` ("Toggle debug
-# mode"), `debug` ("Debug menu") and `debug_hour_timer` -- are declared in
-# data/raw/keybindings.json WITHOUT a `bindings` array, at lines
-# 3398-3403, 3404-3409 and 3466-3471.  Unbound by default means
-# unreachable by any keystroke: to use them at all somebody would have to
-# bind one, and a user binding is written to
-# <userdir>/config/keybindings.json (src/path_info.cpp:400-402), which is
-# a COMMITTED artifact.  So the absence of that file, or its silence about
-# those three ids, is independent evidence.
-#
-# The engine's own log is read as well, because it is the other place a
-# debug session would leave a mark, and it is committed too.
+# Why the observations are worth making anyway.  The engine's three debug
+# actions -- `debug_mode` ("Toggle debug mode"), `debug` ("Debug menu")
+# and `debug_hour_timer` -- are declared in data/raw/keybindings.json
+# WITHOUT a `bindings` array (lines 3398-3403, 3404-3409, 3466-3471), so
+# reaching them needs a user binding, and a user binding is written to
+# <userdir>/config/keybindings.json (src/path_info.cpp:400-402), which
+# this feature commits.  A stranger can therefore repeat every check
+# below against the same bytes, which is more than an assurance from
+# whoever played the session.
 # ---------------------------------------------------------------------
 check_no_debug_binding() {
     local path="${PLAYTHROUGH_KEYBINDINGS_JSON}"
     local hits=""
     if [ ! -f "${path}" ]; then
-        record_pass "no keybinding exists for any debug action" \
-            "$(rel "${path}") does not exist, so nothing was ever \
-bound; the engine ships debug, debug_mode and debug_hour_timer with no \
-bindings array, which leaves them unreachable"
+        record_pass "the committed keybindings bind no debug action" \
+            "$(rel "${path}") is absent, so the engine's shipped \
+bindings are the ones that applied, and it ships debug, debug_mode and \
+debug_hour_timer with no bindings array"
         return 0
     fi
     hits="$("${GREP}" -nE "${DEBUG_ACTION_PATTERN}" "${path}" \
         2>/dev/null || true)"
     if [ -z "${hits}" ]; then
-        record_pass "no keybinding exists for any debug action" \
+        record_pass "the committed keybindings bind no debug action" \
             "$(rel "${path}") exists and names none of debug, \
 debug_mode or debug_hour_timer"
         return 0
     fi
-    record_fail "no keybinding exists for any debug action" \
+    record_fail "the committed keybindings bind no debug action" \
         "$(rel "${path}"): $(printf '%s' "${hits}" | "${HEAD}" -n 4 |
             "${TR}" '\n' ';')" \
         "no mention of \"debug\", \"debug_mode\" or \
@@ -9763,7 +8420,7 @@ check_no_debug_activation() {
         fi
     done
     if [ "${inspected}" -eq 0 ]; then
-        record_pass "the engine's own log records no debug-mode \
+        record_pass "the engine's own log shows no debug-mode \
 activation" \
             "the engine wrote no log at \
 $(rel "${PLAYTHROUGH_USERDIR}")/{config/debug.log,debug.log}, so there \
@@ -9771,28 +8428,21 @@ is nothing in one to find"
         return 0
     fi
     if [ "${#findings[@]}" -eq 0 ]; then
-        record_pass "the engine's own log records no debug-mode \
+        record_pass "the engine's own log shows no debug-mode \
 activation" \
             "${inspected} log(s) read, no mention of debug mode or the \
 debug menu"
         return 0
     fi
-    record_fail "the engine's own log records no debug-mode \
+    record_fail "the engine's own log shows no debug-mode \
 activation" "${findings[*]}" \
         "no such line -- no debug mode, no debug menu, no spawning, no \
 stat editing, no teleport, no map reveal, not even to avoid death"
 }
 
 # THE RECORD, READ FOR WHAT IT SAYS HAPPENED.
-#
-# The two checks above examine what was POSSIBLE (nothing was bound) and
-# what the engine LOGGED (nothing was activated).  This one reads the
-# account of what was done: the immutable record, the amendment ledger
-# that corrects it, the timeline computed from both, and the two
-# transcripts written from the timeline.  All five are committed, so a
-# stranger can repeat this check; and because the record is the direct
-# evidence of which keys were pressed and why, a debug action named in it
-# is the plainest possible failure of the no-cheating requirement.
+# The two checks above examine what was POSSIBLE (nothing was bound) and what
+# the engine LOGGED (nothing was activated).
 check_no_cheat_vocabulary() {
     local path="" hits="" inspected=0
     local -a findings=()
@@ -9834,42 +8484,25 @@ being broken rather than merely risked"
 }
 
 group_no_cheating() {
-    group 8 "no cheating, as a checkable property"
+    group 8 "no evidence of debug or cheat use in the audited artifacts"
     check_no_debug_binding
     check_no_debug_activation
     check_no_cheat_vocabulary
+    # The scope of the three verdicts above, stated in the report itself rather
+    # than left to a reader to infer.
+    record_info "what these three verdicts do and do not establish" \
+        "they report the contents of three committed artifacts -- the \
+user keybindings, the engine's log, and the record with the documents \
+derived from it.  They corroborate the no-cheating requirement; they \
+cannot prove it, because a file can be rewritten before it is \
+committed, a log need not mention everything the engine did, and an \
+absence of vocabulary is not an absence of behaviour"
 }
 
 # ---------------------------------------------------------------------
 # 9  THE BINARY, THE REQUIRED ARTWORK AND REPOSITORY HYGIENE
-#
-# The tiles-and-never-curses rule is discharged from the binary's own
-# mouth: `--version` prints the build's feature list, and `+tiles` in it
-# is the proof.  That rule is about the BINARY: a build linked against
-# SDL2 and rendering through the SDL tiles path satisfies it whichever
-# tileset is selected.
-#
-# WHICH ARTWORK WAS DRAWN IS A SEPARATE REQUIREMENT, AND IT IS ASSERTED
-# SEPARATELY.  Installing the CDDA-Tilesets pack and configuring MSXotto+
-# is required outright, and nothing else in this gate can see it -- a
-# session rendered in ASCIITiles satisfies every count, every duration,
-# every cue and the luminance gate identically.  So four independent
-# assertions follow the binary check: the installed pack is the one the
-# TRACKED anchor describes, the COMMITTED option values select it, the
-# ENGINE'S OWN LOG records having loaded it, and the CAPTURES THEMSELVES
-# carry colour depth that only sprite artwork can produce.  The third and
-# fourth are capture-time evidence: they describe the session that was
-# recorded rather than the host that is auditing it.
-#
-# flake8 IS SCOPED TO playthrough/ AND MUST BE.  A global exit code of
-# zero is not achievable at HEAD: measured here, flake8 7.3.0 reports four
-# pre-existing F824 findings under tools/ -- two at
-# tools/generate_changelog.py:689, one at :550 and one at
-# tools/json_tools/util.py:378 -- none of which is this feature's, and
-# asserting a global zero would report a failure that belongs to somebody
-# else.  `.flake8` is deliberately NOT given a `playthrough` exclude
-# either: the new code satisfies the repository's existing 79-column
-# contract rather than being exempted from it, and that too is asserted.
+# The tiles-and-never-curses rule is discharged from the binary's own mouth:
+# `--version` prints the build's feature list, and `+tiles` in it is the proof.
 # ---------------------------------------------------------------------
 check_binary_is_tiles() {
     local banner=""
@@ -9900,25 +8533,10 @@ never an acceptable substitute"
 }
 
 # THE INSTALLED PACK AND THE COMMITTED CONFIGURATION.
-#
-# Written in Python because both readings belong to modules that already
-# exist: tileset_provenance.py owns the TRACKED anchor and reads a
-# tileset.txt exactly the way launch_game.sh and the engine do, so the
-# id this gate judges is the id those two resolve.  A second, local
-# re-implementation of either reading is the divergence the indirection
-# exists to prevent.
-#
-# THE BYTE-LEVEL TREE COMPARISON IS REPORTED, NOT FAILED, AND THE REASON
-# IS PRECISE.  gfx/ is git-ignored (.gitignore:52), so the artwork is
-# host state rather than committed evidence: a pack legitimately
-# re-composed on the auditing host by tools/gfx_tools/compose.py differs
-# from the anchored bytes in its generated files while being the same
-# artwork from the same upstream commit.  The anchor's job is to gate the
-# RECORDING -- launch_game.sh verifies the complete tree against it
-# before every launch and refuses -- so failing a read-only audit on it
-# would be judging the host instead of the evidence.  What IS failed here
-# is identity: the pack that is installed must be the tileset the anchor
-# describes, and the committed options must select it.
+# Written in Python because both readings belong to modules that already exist:
+# tileset_provenance.py owns the TRACKED anchor and reads a tileset.txt exactly
+# the way launch_game.sh and the engine do, so the id this gate judges is the
+# id those two resolve.
 emit_tileset_checker() {
     emit_checker tileset <<'PY'
 """Assert the required tileset: installed, anchored and configured."""
@@ -9987,7 +8605,7 @@ def load(provenance):
     """The tracked anchor, or a failure verdict and nothing."""
     try:
         return provenance.load_anchor(provenance.anchor_path(None))
-    except Exception as err:                          # noqa: BLE001
+    except Exception as err:
         bad("the required tileset is installed and is the one the "
             "tracked anchor describes", str(err),
             "playthrough/tooling/tileset_provenance.json readable -- it "
@@ -10014,7 +8632,7 @@ def check_installed(provenance, anchor, directory, required, aliases):
     try:
         name = provenance.tileset_field(directory, "NAME")
         view = provenance.tileset_field(directory, "VIEW")
-    except Exception as err:                          # noqa: BLE001
+    except Exception as err:
         problems.append("tileset.txt could not be read: %s" % err)
     if name is None:
         problems.append("%s/tileset.txt declares no NAME: line"
@@ -10057,7 +8675,7 @@ def report_anchor_bytes(provenance, anchor, directory, name, view):
         rows = provenance.scan_tree(directory, None)
         problems = provenance.compare(anchor, rows, name, view,
                                       directory)
-    except Exception as err:                          # noqa: BLE001
+    except Exception as err:
         warn("the installed artwork against the tracked anchor's bytes",
              "the comparison could not be performed: %s" % err)
         return
@@ -10113,7 +8731,7 @@ def main(argv):
     sys.path.insert(0, tooling_dir)
     try:
         import tileset_provenance as provenance
-    except Exception as err:                          # noqa: BLE001
+    except Exception as err:
         bad("the required tileset is installed and is the one the "
             "tracked anchor describes",
             "tileset_provenance.py could not be imported: %s" % err,
@@ -10144,7 +8762,7 @@ def main(argv):
         try:
             name = provenance.tileset_field(directory, "NAME")
             view = provenance.tileset_field(directory, "VIEW")
-        except Exception:                             # noqa: BLE001
+        except Exception:
             name = view = None
     report_anchor_bytes(provenance, anchor, directory, name, view)
     check_configured(options_path, required, aliases)
@@ -10288,12 +8906,7 @@ trust-bypass names and nothing else, so a host-side PLAYTHROUGH_FLAKE8 \
 never arrives and the linter must be installed in the image"
         return 0
     fi
-    # THE OUTPUT GOES TO A FILE, and the ceiling is real.  A linter is
-    # not session-length work -- it reads the tooling directory -- but it
-    # is a child of this gate, and a child with no bound can hold the
-    # pipeline's lock for ever.  Its findings are counted from the file
-    # and quoted from it in bounded form rather than captured whole into
-    # a shell variable.
+    # THE OUTPUT GOES TO A FILE, and the ceiling is real.
     local log="${SCRATCH}/flake8.log"
     set +e
     bounded "${BOUND_LINT_SECONDS}" "${FLAKE8_CMD[@]}" playthrough/ \
@@ -10367,18 +8980,8 @@ guard, the cue arithmetic and the timecode formatter"
         >"${log}" 2>&1
     status=$?
     set -e
-    # THE ELAPSED TIME IS STRIPPED, and that is about the durable report
-    # rather than about tidiness.  unittest prints "Ran 361 tests in
-    # 2.675s", and that number changes on every run -- so leaving it in
-    # would make a committed acceptance report differ from one run to the
-    # next while measuring an identical tree, which is churn in the
-    # history carrying no information, and would make a second verify
-    # before a commit fail its own "nothing left uncommitted" check on a
-    # file this gate had just rewritten.  How many tests ran and whether
-    # they passed is the evidence; how many seconds they took is not.
-    # Read from the LOG FILE rather than from a captured variable, so a
-    # suite that prints a line per test cannot put its whole output into
-    # this shell's memory to produce one summary line.
+    # THE ELAPSED TIME IS STRIPPED, and that is about the durable report rather
+    # than about tidiness.
     summary="$("${GREP}" -E '^(Ran |OK|FAILED)' "${log}" 2>/dev/null |
         "${SED}" -E 's/ in [0-9]+\.[0-9]+s$//' |
         "${TR}" '\n' ' ' || true)"
@@ -10402,10 +9005,10 @@ expiry means it is wedged"
 that can be unit tested, so it is"
 }
 
-# THE CHANGE SURFACE.  The engine, its tests, its content, its build
-# system and its CI are consumed read-only; the only pre-existing tracked
-# files this feature is allowed to have touched are .gitignore and
-# .gitattributes, and both changes are additive appends.
+# THE CHANGE SURFACE.  The engine, its tests, its content, its build system
+# and its CI are consumed read-only; the only pre-existing tracked files this
+# feature is allowed to have touched are .gitignore and .gitattributes, and
+# both changes are additive appends.
 check_change_surface() {
     local base="${BASE_COMMIT}"
     local changed="" allowed=""
@@ -10450,10 +9053,8 @@ path(s) since ${base:0:10}, all of them under playthrough/ or one of: \
 ${ALLOWED_FOREIGN_PATHS}"
         return 0
     fi
-    # Bounded, because an ill-chosen base can put a thousand upstream
-    # paths in this list, and a finding nobody can read is a finding
-    # nobody acts on.  The count is the number that matters; the first
-    # few name the kind of thing that leaked in.
+    # Bounded, because an ill-chosen base can put a thousand upstream paths in
+    # this list, and a finding nobody can read is a finding nobody acts on.
     local total="${#foreign_paths[@]}"
     local shown="${foreign_paths[*]:0:8}"
     if [ "${total}" -gt 8 ]; then
@@ -10469,25 +9070,6 @@ only for this feature"
 # check_security_controls
 #   Every security control this tooling relies on is present, and the
 #   report says which ones they are.
-#
-#   WHY A CHECK AND NOT A PARAGRAPH.  A review found the acceptance
-#   report and REPORT.md recording a known plan divergence as a pass AND
-#   "omitting security controls" -- the two halves of one problem, which
-#   is that the report described the run in terms of counts and said
-#   nothing about what was actually being enforced.  A reader could not
-#   tell a run with these controls from a run without them.
-#
-#   So the controls are INVENTORIED HERE, by asserting each one is still
-#   in the code, and the names are printed in the observed text -- which
-#   means playthrough/acceptance-report.txt carries the list as evidence
-#   rather than as a claim somebody maintains by hand.  A control that is
-#   removed or renamed fails this check instead of quietly disappearing
-#   from the report.
-#
-#   Each entry is `label|file|marker`.  The marker is the smallest thing
-#   whose absence means the control is gone -- a function name or a
-#   verdict name -- not a fragment of prose, which could be reworded
-#   without weakening anything.
 readonly SECURITY_CONTROLS="\
 credential containment: the git config carrying the push token is \
 owner-only|commit_artifacts.sh|assert_credential_containment
@@ -10566,18 +9148,13 @@ present, and this report names them" \
 
 group_hygiene() {
     group 9 "the binary, the required artwork and repository hygiene"
-    # THE ARTIFACT-SHAPED HALF OF THIS GROUP.  The binary, the artwork,
-    # the pixels of the captures, the linter and the timeline suite are
-    # all properties of the tree as it stands, answered by the
-    # pre-commit phase; the commit does not touch any of them, so the
-    # post-commit phase does not re-run them.  `all` does.
+    # THE ARTIFACT-SHAPED HALF OF THIS GROUP.
     if artifact_phase; then
         check_binary_is_tiles
-        # The options file is handed over in its REPOSITORY-RELATIVE
-        # spelling: the gate has already chdir'd to the repository root,
-        # so it opens identically, and every path this report prints
-        # stays relative to the checkout rather than naming somebody's
-        # home directory.
+        # The options file is handed over in its REPOSITORY-RELATIVE spelling:
+        # the gate has already chdir'd to the repository root, so it opens
+        # identically, and every path this report prints stays relative to the
+        # checkout rather than naming somebody's home directory.
         run_checker tileset \
             "${PLAYTHROUGH_TOOLING_DIR}" \
             "$(rel "${PLAYTHROUGH_OPTIONS_JSON}")" \
@@ -10591,11 +9168,10 @@ group_hygiene() {
         check_staging_soundness
         check_security_controls
     fi
-    # The change surface is measured from a base commit to HEAD, so it
-    # is a property of the COMMIT: before the checkpoint, the artifacts
-    # this feature added are not in HEAD to be measured, and on a tree
-    # where nothing has been committed yet there is no base commit to
-    # measure from either.
+    # The change surface is measured from a base commit to HEAD, so it is a
+    # property of the COMMIT: before the checkpoint, the artifacts this feature
+    # added are not in HEAD to be measured, and on a tree where nothing has
+    # been committed yet there is no base commit to measure from either.
     if tracking_phase; then
         check_change_surface
     fi
@@ -10608,13 +9184,7 @@ behind"
 
 # ---------------------------------------------------------------------
 # 10  THE INVENTORY OF THIS REPORT
-#
 # The last check, and the only one whose subject is the report itself.
-# Everything above measures the artifacts; this measures whether they
-# were all measured.  It exists because the failure it catches is
-# invisible without it: a checker that died halfway, a check that
-# returned early, or an assertion an edited artifact managed to remove
-# leaves a report that is shorter and just as green.
 # ---------------------------------------------------------------------
 # distinct_checks_in GROUP -- how many different check names that group
 # reported.  Distinct, not total, so a check that legitimately reports
@@ -10656,13 +9226,7 @@ check_check_inventory() {
     # has not registered yet, so group 10's declared 1 is compared
     # against a seen count of 0 + this one.
     for ((index = 1; index <= GROUP_COUNT; index++)); do
-        # THREE PHASES, THREE TABLES, CHOSEN BY THE PHASE ITSELF.  This
-        # used to select on tracking_phase(), which is true for `all` AND
-        # for `post-commit` because it means "this phase measures the
-        # history" -- so the post-commit phase compared its own 31
-        # verdicts against the whole audit's 122 and reported every
-        # artifact group as SHORT while performing exactly what it
-        # declared.  The counts are per phase, so the choice is too.
+        # THREE PHASES, THREE TABLES, CHOSEN BY THE PHASE ITSELF.
         case "${PHASE}" in
             "${PHASE_PRE_COMMIT}")
                 declared="${GROUP_CHECKS_PRE_COMMIT[index]}" ;;
@@ -10726,16 +9290,7 @@ group_inventory() {
 
 # ---------------------------------------------------------------------
 # THE SUMMARY
-#
-# One human line, then the machine block.  Nothing here decides the exit
-# status: that is taken once, at file scope, after every group has run,
-# which is what makes "run every check" true rather than aspirational.
-#
-# The message is assembled into a variable and printed with a '%s'
-# format.  A multi-line printf FORMAT would need a backslash before each
-# newline, and a backslash inside a single-quoted format is a literal
-# backslash rather than a line continuation -- it would print in the
-# report.
+# One human line, then the machine block.
 # ---------------------------------------------------------------------
 summarise_run() {
     # A divergence IS a performed check -- it registered a name
@@ -10759,9 +9314,6 @@ summarise_run() {
         message="${message}they claim to be."
     elif [ "${FAILURES}" -eq 0 ]; then
         # NOTHING FAILED AND THE RUN STILL DOES NOT CLAIM COMPLIANCE.
-        # The sentence a reader takes away has to say so: this used to
-        # end "the committed artifacts are what they claim to be" while
-        # a known departure from the plan sat above it reported as PASS.
         message="SUMMARY  ${PASSES} of ${total} checks passed with "
         message="${message}${DIVERGENCES} DIVERGENCE(S) from the plan "
         message="${message}(${counted}), ${INFOS} informational "
@@ -10779,13 +9331,8 @@ summarise_run() {
     fi
     say '%s\n' "${message}"
     note VERIFY_PHASE "${PHASE}"
-    # THE TREE, MACHINE-READABLY.  The header says this in prose, which
-    # a human reads and no caller can act on.  A checkpoint that
-    # publishes this report has to be able to prove the report is about
-    # the commit it is being committed onto -- otherwise a report
-    # generated, left to sit while more commits landed, and then
-    # committed is stale in exactly the way that was found here, and
-    # only a human comparing two strings by eye would notice.
+    # THE TREE, MACHINE-READABLY. The header says this in prose, which a human
+    # reads and no caller can act on.
     note VERIFY_MEASURED_COMMIT "${MEASURED_COMMIT}"
     note VERIFY_CHECKS "${total}"
     note VERIFY_EXPECTED_CHECKS "${EXPECTED_CHECKS}"
@@ -10798,24 +9345,15 @@ summarise_run() {
     note VERIFY_TIMELINE_TOTAL "$(fact timeline_total '?')"
     note VERIFY_TRANSITIONS "$(fact transition_groups '?')"
     local report_target=""
-    # No `|| true`: report_publication_target cannot fail, by design and
-    # by test.  An exemption here would read as though it could, and the
-    # other call site's MISSING exemption is what once killed a passing
-    # run -- so the rule is the function's, not each caller's.
+    # No `|| true`: report_publication_target cannot fail, by design and by
+    # test.
     report_target="$(report_publication_target)"
     if [ -n "${report_target}" ]; then
         note VERIFY_REPORT "$(rel "${report_target}")"
     else
         note VERIFY_REPORT none
     fi
-    # THE ONE TOKEN EVERY CALLER READS.  A third value rather than
-    # folding a divergence into `pass`: a review found this gate
-    # publishing VERIFY=pass while a known departure from the plan sat
-    # in the report above it, and the acceptance report and REPORT.md
-    # then inherited the word `pass` without the prose that qualified it.
-    # A caller that only understands pass/fail treats
-    # `pass-with-divergence` as neither, which is the correct default for
-    # something it has no rule for.
+    # THE ONE TOKEN EVERY CALLER READS.
     if [ "${FAILURES}" -ne 0 ]; then
         note VERIFY fail
     elif [ "${DIVERGENCES}" -ne 0 ]; then
@@ -10827,10 +9365,7 @@ summarise_run() {
 
 main() {
     parse_arguments "$@"
-    # EVERY EXTERNAL COMMAND FIRST.  open_scratch is made of mktemp and
-    # chmod, so resolving after it would leave the gate's own tools
-    # unverified; the verdict on this is reported by check_tool_inventory
-    # in group 1, where the report has begun.
+    # EVERY EXTERNAL COMMAND FIRST.
     resolve_tools
     take_mutation_lock
     open_scratch
@@ -10848,10 +9383,7 @@ playthrough capture subsystem"
 $(rel "${PLAYTHROUGH_DIR}")/ at the repository root"
     MEASURED_COMMIT="$(measured_commit)"
     say '%s\n' "measuring the tree at ${MEASURED_COMMIT}"
-    # THE PHASE IS THE FIRST THING THE REPORT SAYS.  A pre-commit report
-    # is legitimately shorter than a post-commit one, and a reader who
-    # was not told which phase produced it cannot tell a deferred check
-    # from a missing one.
+    # THE PHASE IS THE FIRST THING THE REPORT SAYS.
     if ! tracking_phase; then
         printf '%s\n' "phase '${PHASE}': every property of the \
 ARTIFACTS; the properties of the COMMIT are deferred to the \
@@ -10884,21 +9416,15 @@ artifacts and the history alike (${EXPECTED_CHECKS} checks declared)"
     group_inventory
 
     summarise_run
-    # LAST, so the durable copy carries the summary and the machine
-    # block it is summarised by.  publish_report reports its own outcome
-    # to stdout WITHOUT counting a verdict: the totals have already been
-    # printed, and a note that increments them after the fact would make
-    # the report disagree with its own arithmetic.
+    # LAST, so the durable copy carries the summary and the machine block it is
+    # summarised by.
     publish_report
     return "${EX_OK}"
 }
 
-# main always returns success; the verdict on the ARTIFACTS is the
-# failure counter, and it is turned into an exit status exactly once,
-# here, after every group has been given its chance to report.  `exit`
-# at file scope also keeps the ERR trap out of it: a non-zero `return`
-# from main would fire the trap and print a spurious FATAL line about a
-# gate that worked perfectly.
+# main always returns success; the verdict on the ARTIFACTS is the failure
+# counter, and it is turned into an exit status exactly once, here, after every
+# group has been given its chance to report.
 main "$@"
 
 if [ "${FAILURES}" -ne 0 ]; then

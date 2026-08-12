@@ -18,65 +18,58 @@ carries MoviePy and Pillow -- the system ``python3`` carries neither --
 and ``-B`` keeps a re-included ``__pycache__`` out of the tree.
 
 WHY IMAGES RATHER THAN VIDEO SEGMENTS
-The transition could have been spliced in as a rendered clip, and that
-would have forced render_movie.py to concatenate a mixed list of images
-and video, cutting and re-encoding at every join.  Materialising it as
-images instead keeps the WHOLE movie one ffmpeg concat-demuxer pass over
-image entries: no segment cutting, no mixed demuxer list, and no codec
-or parameter mismatch to go wrong.  The timeline arithmetic stays
-trivially consistent with it, because a transition is then simply more
-image entries carrying their own ``duration`` lines.
-
-It is also what makes MoviePy load-bearing rather than decorative.  It
-does the fade mathematics and the text composition -- the two things
-ffmpeg would need a filter graph for -- and ffmpeg remains the sole
-encoder, which sidesteps MoviePy's documented slowness on a long
-timeline.
+Spliced in as a rendered clip, the transition would force
+render_movie.py to concatenate a mixed list of images and video, cutting
+and re-encoding at every join.  As images it keeps the WHOLE movie one
+ffmpeg concat-demuxer pass: no segment cutting, no mixed demuxer list,
+no codec mismatch, and timeline arithmetic that stays trivially
+consistent because a transition is simply more image entries carrying
+their own ``duration`` lines.  It is also what makes MoviePy
+load-bearing rather than decorative -- it does the fade mathematics and
+the text composition, the two things ffmpeg would need a filter graph
+for, while ffmpeg remains the sole encoder.
 
 TWELVE FRAMES PER GROUP, EXACTLY
 ``iter_frames(fps=12)`` over a 1.0 s segment yields twelve frames, and
-that count is a contract rather than a detail.  verify_artifacts.sh
-counts the groups on disk against the ``transition_after`` flags in the
-timeline, and render_movie.py charges exactly TRANSITION seconds of
-video per group when it walks the cue cursor.  A thirteenth frame or an
-eleventh would desynchronise the captions from the picture, silently and
-cumulatively -- correct at the start of the film and further out with
-every transition.  So the segment length is read from the timeline
-document rather than assumed, and a value other than 1.0 s is refused
-instead of quietly producing the wrong number of frames.
+that count is a contract rather than a detail: verify_artifacts.sh counts
+the groups on disk against the ``transition_after`` flags, and
+render_movie.py charges exactly TRANSITION seconds of video per group
+when it walks the cue cursor.  A thirteenth frame or an eleventh would
+desynchronise the captions from the picture silently and cumulatively --
+correct at the start of the film and further out with every transition.
+So the segment length is read from the timeline document rather than
+assumed, and a value other than 1.0 s is refused instead of quietly
+producing the wrong number of frames.
 
 CONCATENATION, NEVER COMPOSITION
 MoviePy 2.x has a defect under which a cross-fade applied through its
 compositing clip class does not render: the composition succeeds, the
 frames come out, and the fade is simply absent.  Nothing fails, so
 nothing reports it -- the only symptom is a hard cut where a fade was
-asked for.  concatenate_videoclips renders the same effects correctly.
-That is why this module composes by concatenation and why the
-compositing class is not imported at all.  Note what this module does
-NOT do about it: it counts its frames and checks their geometry, and a
-hard cut would pass both, so nothing here establishes that a fade
-rendered.  The pixel-level checks live elsewhere -- capture.sh measures
-the grayscale mean and standard deviation of every frame it writes, and
-the acceptance gate reads them again from frames pulled back out of the
-finished film -- and the claim is left there rather than made here.
+asked for.  concatenate_videoclips renders the same effects correctly,
+which is why this module composes by concatenation and why the
+compositing class is not imported at all.
 
-EVERY MOVIEPY EXAMPLE OLDER THAN v2 IS WRONG HERE
-the v1 ``editor`` submodule no longer exists and the imports come from
-``moviepy`` directly; every ``.set_*`` became ``.with_*``; effects are
-classes applied through ``with_effects([...])`` rather than methods; and
-because v2 replaced ImageMagick with Pillow, ``TextClip``'s ``font``
-argument is a FILESYSTEM PATH to a font file.  That last point is why
-data/font/Terminus.ttf is handed over directly and why no ImageMagick
-font configuration is involved anywhere.
+WHAT IS CHECKED HERE, AND WHAT NO CHECK ESTABLISHES
+This module verifies transition GEOMETRY and COUNT: every capture it
+reads and every PNG it writes is re-measured against the size the film
+is cut at, each group holds exactly FRAMES_PER_GROUP images with
+contiguous ordinals, and the groups on disk match the flags.  A hard cut
+would pass all of that.  Nothing here, and no check downstream,
+establishes that the fade CURVE rendered -- verify_artifacts.sh's
+transition check counts groups and ordinals without reading a pixel, and
+the luminance probes it does take are deliberately placed OUTSIDE
+transition windows, because a frame lifted from inside a fade or a title
+card is legitimately near-black and would tell that gate nothing.  The
+fade rests on the choice of composition API above, and is confirmed by
+watching the film; it is not asserted by a measurement.
 
 THE CARD IS SET IN THE GAME'S OWN TYPEFACE
 data/font/Terminus.ttf is what the engine renders the session in, so the
 only non-captured imagery in the film is typographically continuous with
 the game rather than looking like an external overlay.  A missing font
-file is a hard failure NAMING that path: silently falling back to a
-system face would change the look of the film without saying so, and a
-transition that does not match the frames around it advertises itself as
-an overlay.  No other font is introduced.
+file is a hard failure NAMING that path: falling back to a system face
+would change the look of the film without saying so.
 
 THE TRANSITION IS A DECLARED DEVICE, NOT A CAPTURE
 These twelve images are the ONLY frames in the movie that no keystroke
@@ -87,42 +80,47 @@ and none of them may ever be written into playthrough/frames/.
 FRAME-DIRECTORY PURITY IS AN INTEGRITY CONSTRAINT
 playthrough/frames/ holds exactly one PNG per keystroke and nothing
 else, which is what makes the acceptance gate possible at all: the frame
-count must equal the manifest's line count.  Mixing derived imagery in
-would destroy that identity, so derived frames go to
-playthrough/build/transitions/ and this module opens nothing under
-playthrough/frames/ for writing.  Every FINAL PNG it produces is
-confined to the transitions directory -- no command line flag can change
-that, because the output prefix is validated to resolve inside a
-directory named build/transitions and refused anywhere else.
+count must equal the manifest's line count.  Derived imagery mixed in
+would destroy that identity, so every FINAL PNG is confined to
+playthrough/build/transitions/ -- no command line flag can change that,
+because the output prefix is validated to resolve inside a directory
+named build/transitions and refused anywhere else -- and this module
+opens nothing under playthrough/frames/ for writing.
 
-Its RUNTIME STATE is a separate question, and the answer is not "the
-same directory".  The generation lock lives in the pipeline's scratch
-directory OUTSIDE the tree entirely, for the .gitignore reason
-LOCK_NAME records.  The staging and retired directories a switch needs
-are necessarily inside, because a rename has to stay within one
-filesystem and one parent -- so they are dot-prefixed siblings under
+Runtime state is a separate question.  The generation lock lives in the
+pipeline's scratch directory OUTSIDE the tree entirely, for the
+.gitignore reason LOCK_NAME records; the staging and retired directories
+a switch needs must be inside it, because a rename has to stay within
+one filesystem and one parent, so they are dot-prefixed siblings under
 playthrough/build/ (STAGING_PREFIX, RETIRED_PREFIX), removed on the way
-out, and swept by a later run if a kill prevented that.
+out and swept by a later run if a kill prevented that.
 
 IDEMPOTENT AND DETERMINISTIC, BECAUSE THE ARTIFACTS ARE COMMITTED
-A re-run composes a COMPLETE generation in a staging directory beside the
-destination and switches it in by rename, under a lock, so a timeline
+A re-run composes a COMPLETE generation in a staging directory beside
+the destination and switches it in by rename, under a lock: a timeline
 with fewer flags than the last run leaves no stale group behind, an
 interrupted run publishes nothing at all, and two concurrent runs
-serialise instead of deleting each other's frames.  The group count on
-disk therefore always equals the current flag count.  Nothing random and
-no timestamp enters an output: the same timeline over the same captures
-produces the same bytes, which is what lets the movie be reproduced from
-the committed inputs.
+serialise instead of deleting each other's frames.  Nothing random and
+no timestamp enters an output, so the same timeline over the same
+captures produces the same bytes -- which is what lets the movie be
+reproduced from the committed inputs.
 
 WHY EVERY FRAME IS NORMALISED BEFORE IT IS SAVED
-``iter_frames`` returns MIXED dtypes -- ``uint8`` for the frames that
-pass through untouched and ``float64`` for every frame the fade scaled
--- and ``PIL.Image.fromarray`` raises TypeError on a float64 array
-rather than writing a slightly wrong PNG.  Measured on this host under
-moviepy 2.2.1 and Pillow 11.3.0.  So each frame is clipped, rounded and
+``iter_frames`` returns MIXED dtypes -- ``uint8`` for frames that pass
+through untouched, ``float64`` for every frame the fade scaled -- and
+``PIL.Image.fromarray`` raises TypeError on a float64 array rather than
+writing a slightly wrong PNG.  So each frame is clipped, rounded and
 cast to 8-bit RGB explicitly; the alternative is a module that works for
 the card and dies on the fade.
+
+EVERY MOVIEPY EXAMPLE OLDER THAN v2 IS WRONG HERE
+The v1 ``editor`` submodule does not exist, so imports come from
+``moviepy`` directly; every ``.set_*`` is ``.with_*``; effects are
+classes applied through ``with_effects([...])``; and because v2 replaced
+ImageMagick with Pillow, ``TextClip``'s ``font`` argument is a
+FILESYSTEM PATH to a font file -- which is why data/font/Terminus.ttf is
+handed over directly and why no ImageMagick font configuration is
+involved anywhere.
 
 Only the declared dependencies are imported -- moviepy, Pillow and numpy
 from playthrough/tooling/requirements.txt, the standard library, and the
@@ -148,20 +146,17 @@ try:
     # for the one limit that is deliberately NOT imposed.
     import resource
 except ImportError:            # pragma: no cover - POSIX only
-    resource = None            # type: ignore[assignment]
-
+    resource = None
 from typing import (Any, Dict, Iterable, List, Mapping, NamedTuple,
                     Optional, Sequence, Set, Tuple)
 
 # Set BEFORE the third-party and sibling imports below.  env.sh exports
-# PYTHONDONTWRITEBYTECODE=1, but this module is documented as runnable
-# on its own, and a standalone `python3 playthrough/tooling/
-# make_transitions.py` without that environment would compile the
-# sibling to playthrough/tooling/__pycache__/ -- which .gitignore's
-# terminal `!/playthrough/**` negation then makes COMMITTABLE.  A stray
-# .pyc in a committed evidence tree is an artifact nobody authored.  The
-# flag must precede the import it protects, because the interpreter
-# consults it at compile time; every documented command also passes -B.
+# PYTHONDONTWRITEBYTECODE=1, but this module is documented as runnable on its
+# own, and a standalone `python3 playthrough/tooling/ make_transitions.py`
+# without that environment would compile the sibling to
+# playthrough/tooling/__pycache__/ -- which .gitignore's terminal
+# `!/playthrough/**` negation then makes COMMITTABLE.  A stray .pyc in a
+# committed evidence tree is an artifact nobody authored.
 sys.dont_write_bytecode = True
 
 # numpy and Pillow are hard runtime dependencies: numpy is the array
@@ -174,14 +169,14 @@ try:
     import numpy as np
     NUMPY_IMPORT_ERROR: Optional[BaseException] = None
 except ImportError as _numpy_import_error:  # pragma: no cover
-    np = None  # type: ignore[assignment]
+    np = None
     NUMPY_IMPORT_ERROR = _numpy_import_error
 
 try:
     from PIL import Image
     PILLOW_IMPORT_ERROR: Optional[BaseException] = None
 except ImportError as _pillow_import_error:  # pragma: no cover
-    Image = None  # type: ignore[assignment]
+    Image = None
     PILLOW_IMPORT_ERROR = _pillow_import_error
 
 # MoviePy 2.x, imported from the package root.  The v1 `editor`
@@ -194,10 +189,10 @@ try:
                          vfx)
     MOVIEPY_IMPORT_ERROR: Optional[BaseException] = None
 except ImportError as _moviepy_import_error:  # pragma: no cover
-    ImageClip = None  # type: ignore[assignment]
-    TextClip = None  # type: ignore[assignment]
-    concatenate_videoclips = None  # type: ignore[assignment]
-    vfx = None  # type: ignore[assignment]
+    ImageClip = None
+    TextClip = None
+    concatenate_videoclips = None
+    vfx = None
     MOVIEPY_IMPORT_ERROR = _moviepy_import_error
 
 # The sibling module, imported flat as the repository's own tools/ do.
@@ -237,26 +232,20 @@ EXPECTED_TRANSITION = 1.0
 # assertion reads as arithmetic instead of as a magic number.
 FRAMES_PER_GROUP = int(round(FPS * EXPECTED_TRANSITION))
 
-# The card's text, in-world and unadorned.  The ellipses are U+2026
-# HORIZONTAL ELLIPSIS characters, not three full stops -- the same
-# character the engine's own interface uses.  Nothing about the
-# machinery appears on screen: no frame number, no duration, no elapsed
-# game time.  The reader of the film is a survivor's audience, not an
-# operator reading a progress bar.
+# The card's text, in-world and unadorned.  The ellipses are U+2026 HORIZONTAL
+# ELLIPSIS characters, not three full stops -- the same character the engine's
+# own interface uses.
 CARD_TEXT = "…time passes…"
 
 CARD_FONT_SIZE = 48
 CARD_COLOR = "white"
 CARD_BG_COLOR = "black"
 
-# The captured resolution, and the resolution the encoder is told to
-# write.  The X root is exactly 1920x1080 while the game WINDOW is
-# 1920x1072 at +0+4 -- WindowWidth/WindowHeight are derived from the
-# terminal grid and the font cell (src/sdltiles.cpp:595-596) under a
-# FULLSCREEN default of "windowedbl" (src/options.cpp:2715-2724) -- and
-# capture.sh photographs the root.  So a transition frame matches the
-# ROOT, not the window: 1920x1080, with the same four-pixel letterbox
-# the captures carry.
+# The captured resolution, and the resolution the encoder is told to write.
+# The X root is exactly 1920x1080 while the game WINDOW is 1920x1072 at +0+4 --
+# WindowWidth/WindowHeight are derived from the terminal grid and the font cell
+# (src/sdltiles.cpp:595-596) under a FULLSCREEN default of "windowedbl"
+# (src/options.cpp:2715-2724) -- and capture.sh photographs the root.
 FRAME_WIDTH = 1920
 FRAME_HEIGHT = 1080
 
@@ -315,21 +304,19 @@ PNG_SUFFIX = ".png"
 # ---------------------------------------------------------------------
 # THE GENERATION MANIFEST
 #
-# THE DEFECT IT EXISTS FOR.  A published group set had no provenance
-# whatsoever.  render_movie.py accepted a group because twelve files with
-# the right NAMES and the right PIXEL DIMENSIONS existed for each flagged
-# index -- and a name and a size are not evidence.  Three failures walked
-# straight through that:
+# A NAME AND A SIZE ARE NOT EVIDENCE.  Twelve files with the right names
+# and the right pixel dimensions for each flagged index say nothing about
+# where they came from, and three faults pass such a check untouched:
 #
 #   * A group composed from a DIFFERENT timeline.  Frame 42 is flagged in
 #     both, both runs write trans_00042_00..11.png, both sets are 1920 by
 #     1080, and the film silently fades between two captures from a
 #     session that is not the one being rendered.
-#   * A group left behind for an index that is NO LONGER FLAGGED.  The
-#     per-entry check only ever looked at the indices the current timeline
-#     flags, so a stale group for an index the recomputed timeline dropped
-#     was never even inspected -- while verify_artifacts.sh, which globs
-#     the whole directory, counts it.
+#   * A group left behind for an index that is NOT FLAGGED.  A per-entry
+#     check looks only at the indices the current timeline flags, so a
+#     stale group for an index a recomputed timeline dropped is never
+#     inspected -- while verify_artifacts.sh, which globs the whole
+#     directory, counts it.
 #   * A frame whose CONTENT changed after it was composed.  Same name,
 #     same geometry, different pixels.
 #
@@ -339,29 +326,25 @@ PNG_SUFFIX = ".png"
 # render_movie.py REQUIRES it and checks the group index set GLOBALLY
 # against the flags -- so an extra group is a refusal, not an omission.
 #
-# WHERE IT LIVES, AND WHY IT MOVED.  It was written INSIDE the group set,
-# so that the same atomic rename published both.  Code review found that
-# to break the transitions directory's own schema, which admits
-# `trans_*.png` and nothing else: the acceptance gate globs that
-# directory, the AAP lists only PNGs in it, and a tracked JSON file
-# sitting among them is a surplus entry.  The record now lives beside the
-# film's and the transcripts' own, at playthrough/build/transitions.json,
-# and the directory holds nothing but transition frames.
+# WHERE IT LIVES, AND WHY IT IS NOT INSIDE THE GROUP SET.  The
+# transitions directory admits `trans_*.png` and nothing else -- the
+# acceptance gate globs it and a tracked JSON file among the frames is a
+# surplus entry -- so the record sits beside the film's and the
+# transcripts' own, at playthrough/build/transitions.json.
 #
-# THE PAIR IS STILL PUBLISHED AS ONE GENERATION.  Two artifacts that only
-# mean anything together must not be able to disagree, which is the whole
-# reason the manifest was put inside the directory in the first place --
-# so the move does not simply give that up.  The switch and the record
-# are published under the generation JOURNAL timeline.py owns and
-# make_srt.py already uses: the journal names both targets and their
-# digests before the first rename, an interruption between them is
-# reported by the next run and repaired by republishing, and render_movie
-# refuses a group set whose record does not describe it.  Fail loud and
-# recoverable, rather than silently mixed.
+# THE PAIR IS NEVERTHELESS PUBLISHED AS ONE GENERATION, because two
+# artifacts that only mean anything together must not be able to
+# disagree.  The switch and the record go out under the generation
+# JOURNAL timeline.py owns and make_srt.py also uses: the journal names
+# both targets and their digests before the first rename, an
+# interruption between them is reported by the next run and repaired by
+# republishing, and render_movie refuses a group set whose record does
+# not describe it.  Fail loud and recoverable, rather than silently
+# mixed.
 #
-# The legacy in-directory name is recognised as this module's OWN litter,
-# so a directory published by an older version is cleaned rather than
-# carried across the switch.
+# A record written inside the directory by an older version of this
+# module is recognised as its OWN litter, so such a directory is cleaned
+# rather than carried across the switch.
 #
 # Deterministic by construction: no timestamp, no host name, no absolute
 # path.  Two runs over one timeline produce byte-identical manifests, so a
@@ -391,45 +374,25 @@ MAX_PIXELS = 64 * 1024 * 1024
 # test_make_transitions.py.
 MAX_FRAME_BYTES = 64 * 1024 * 1024
 
-# The CPU budget, in seconds, granted to one composition.
-#
-# DELIBERATELY THE SAME VALUE ocr_clock.py uses, and asserted to
-# be by test_make_transitions.py.  The two modules each own their
-# own decode door -- they are standalone scripts and neither
-# imports the other -- so the caps are stated twice, and the
-# agreement between them is a CHECKED property rather than a
-# convention somebody has to remember.  A copied constant that
-# nothing compares is a second definition waiting to drift.
+# The CPU budget, in seconds, granted to one composition.  DELIBERATELY THE
+# SAME VALUE ocr_clock.py uses, and asserted to be by test_make_transitions.py.
 DECODE_CPU_SECONDS = 30
 
-# The sha256 of data/font/Terminus.ttf as this repository ships it.
-#
-# A FONT IS PARSED INPUT.  FreeType is a native parser reached through
-# Pillow, and the face is named by a path joined onto a checkout root --
-# so "the font we expect" is an ASSUMPTION until the bytes are hashed.
-# An attacker who can place a file at data/font/Terminus.ttf gets the
-# native parser, and the card is composed on every run.
-#
-# This is deliberately the same value as ocr_clock.GLYPH_FONT_SHA256 and
-# is declared here rather than imported, because importing that module
-# would make pytesseract a hard dependency of composing a transition
-# (the same reason timeline.py restates its own field names).  The test
-# suite asserts the two constants are equal, so they cannot drift.
+# The sha256 of data/font/Terminus.ttf as this repository ships it.  A FONT IS
+# PARSED INPUT.
 FONT_SHA256 = (
     "e0d645677fa32557a16b3be8533c552c2939fd507d7b8515ead5d9cf494cb2a6")
 
 # Read the font in blocks rather than whole.
 DIGEST_BLOCK = 65536
 
-# The group index is ZERO-BASED: for any capture N the timeline flags
-# with transition_after, the group runs trans_NNNNN_00.png through
-# trans_NNNNN_11.png -- so capture 1 yields trans_00001_00.png only if
-# capture 1 is itself flagged.  A capture the timeline does not flag has
-# no group and therefore no file at all, and that absence is correct:
-# composing one to fill an apparent gap would put imagery in the film
-# that no timeline entry asked for.  Zero-based is chosen once and
-# applied everywhere, because the second field is an offset within the
-# group rather than a count of anything.
+# The group index is ZERO-BASED: for any capture N the timeline flags with
+# transition_after, the group runs trans_NNNNN_00.png through
+# trans_NNNNN_11.png -- so capture 1 yields trans_00001_00.png only if capture
+# 1 is itself flagged.  A capture the timeline does not flag has no group and
+# therefore no file at all, and that absence is correct: composing one to fill
+# an apparent gap would put imagery in the film that no timeline entry asked
+# for.
 FIRST_GROUP_INDEX = 0
 
 # The frame index field is five digits wide, so the capture it names has
@@ -464,12 +427,10 @@ EXIT_FAILED = 1
 class TransitionError(Exception):
     """The transition cannot be composed or written honestly.
 
-    Raised in place of producing imagery that would misrepresent the
-    session -- a group of the wrong length, a frame of the wrong size, a
-    card in a font the game does not use, or a write aimed anywhere
-    other than the transitions directory.  Every one of those would
-    still yield a playable movie, which is exactly why each is an
-    exception rather than a warning.
+    Raised in place of producing imagery that would misrepresent the session --
+    a group of the wrong length, a frame of the wrong size, a card in a font
+    the game does not use, or a write aimed anywhere other than the transitions
+    directory.
     """
 
 
@@ -605,12 +566,8 @@ def repo_root(explicit: Optional[str] = None) -> str:
     3. two directories above this file, which is the idiom
        tools/json_tools/util.py:13-16 uses.
 
-    A NOMINATED ROOT THAT IS NOT A CHECKOUT IS FATAL, not skipped.
-    Steps 1 and 2 are instructions: somebody said which checkout to
-    read.  Falling through to this module's own would answer a question
-    nobody asked -- and it would find a different data/font/Terminus.ttf
-    or none at all, which is a card in the wrong typeface rather than an
-    error anyone would notice.
+    A NOMINATED ROOT THAT IS NOT A CHECKOUT IS FATAL, not skipped. Steps 1 and
+    2 are instructions: somebody said which checkout to read.
     """
     nominated: List[Tuple[str, str]] = []
     if explicit:
@@ -647,12 +604,8 @@ def repo_root(explicit: Optional[str] = None) -> str:
 def font_path(repo_root_dir: Optional[str] = None) -> str:
     """Return the game's Terminus face, proved to be readable.
 
-    The path is joined from literal components onto a verified checkout
-    root, so nothing user-supplied is concatenated into it.  Absence is
-    a hard failure NAMING data/font/Terminus.ttf, because the documented
-    alternative -- letting Pillow pick a default face -- would change
-    the look of the film silently and make the transition read as an
-    external overlay rather than as part of the game.
+    The path is joined from literal components onto a verified checkout root,
+    so nothing user-supplied is concatenated into it.
     """
     resolved = _join(repo_root(repo_root_dir), FONT_REL_PARTS)
     if not os.path.exists(resolved):
@@ -710,12 +663,9 @@ def font_digest(path: str) -> str:
 def _approved_root(root: Optional[str] = None) -> str:
     """Return the only tree this module may read captures from or write.
 
-    Delegated to timeline.approved_root() rather than reimplemented, so
-    the renderer, the caption generator and this module cannot end up
-    with three opinions about where an artifact is allowed to live.  It
-    resolves to playthrough/ from the module's own location and NEVER
-    from the environment; `root` is a call site's argument so a test can
-    hold the same rules against a directory it owns.
+    Delegated to timeline.approved_root() rather than reimplemented, so the
+    renderer, the caption generator and this module cannot end up with three
+    opinions about where an artifact is allowed to live.
     """
     try:
         return timeline.approved_root(root)
@@ -731,11 +681,8 @@ def _resolved(path: str) -> str:
 def _within(path: str, root: str) -> bool:
     """Return True when `path` is `root` itself or lies beneath it.
 
-    Both sides are expected to be fully resolved already, so a `..`
-    segment or a symlink cannot smuggle a path past the test.  Spelled
-    out here rather than borrowed from a sibling's internals, because a
-    containment rule this module's integrity rests on should be readable
-    in the module that rests on it.
+    Both sides are expected to be fully resolved already, so a `..` segment or
+    a symlink cannot smuggle a path past the test.
     """
     return path == root or path.startswith(root + os.sep)
 
@@ -767,12 +714,9 @@ def _validated_directory(value: Any, label: str) -> str:
 def frames_dir(root: Optional[str] = None) -> str:
     """Return the capture directory this module READS from.
 
-    ``$PLAYTHROUGH_FRAMES_DIR`` from playthrough/tooling/env.sh wins so
-    that a clone-indexed run and this module agree; otherwise the
-    sibling `frames` directory of the approved root.  Either way the
-    result is proved to be inside the approved root, because a capture
-    read from outside the tree would put imagery in the film that the
-    session's own evidence does not account for.
+    ``$PLAYTHROUGH_FRAMES_DIR`` from playthrough/tooling/env.sh wins so that a
+    clone-indexed run and this module agree; otherwise the sibling `frames`
+    directory of the approved root.
     """
     approved = _approved_root(root)
     from_env = os.environ.get(ENV_FRAMES_DIR)
@@ -791,16 +735,9 @@ def frames_dir(root: Optional[str] = None) -> str:
 def default_transitions_dir(root: Optional[str] = None) -> str:
     """Return the directory the derived frames are WRITTEN to.
 
-    ``$PLAYTHROUGH_TRANSITIONS_DIR`` from playthrough/tooling/env.sh
-    wins, and is then held to two rules that are not negotiable: it must
-    resolve inside the approved root, and it must not resolve into the
-    capture directory.  The second rule is the one that matters most --
-    playthrough/frames/ holds exactly one PNG per keystroke, and a
-    single derived frame landing there would break the frame-count
-    equals manifest-line-count identity that the whole
-    one-frame-per-keystroke gate rests on.  So the environment can move
-    this directory around inside the tree, and cannot aim it at the
-    captures.
+    ``$PLAYTHROUGH_TRANSITIONS_DIR`` from playthrough/tooling/env.sh wins, and
+    is then held to two rules that are not negotiable: it must resolve inside
+    the approved root, and it must not resolve into the capture directory.
     """
     approved = _approved_root(root)
     from_env = os.environ.get(ENV_TRANSITIONS_DIR)
@@ -834,13 +771,10 @@ def default_transitions_dir(root: Optional[str] = None) -> str:
 def _assert_output_directory(directory: str, root: str) -> None:
     """Refuse an output directory that is not a transitions directory.
 
-    Three properties, each closing a different way a write could land
-    somewhere it must not: the directory resolves inside the approved
-    root, its trailing components are literally build/transitions, and
-    it is not the capture directory or anything under it.  The middle
-    check is deliberately about the NAME -- it is what makes "this
-    module only ever writes into build/transitions" a property a reader
-    can verify by inspection rather than a claim to be trusted.
+    Three properties, each closing a different way a write could land somewhere
+    it must not: the directory resolves inside the approved root, its trailing
+    components are literally build/transitions, and it is not the capture
+    directory or anything under it.
     """
     if not _within(directory, root):
         raise TransitionError(
@@ -880,11 +814,7 @@ def validated_output_prefix(
     """Return an absolute output stem this module may write under.
 
     A prefix is a path stem, not a directory: `.../trans_00042` becomes
-    `.../trans_00042_00.png` through `.../trans_00042_11.png`.  The stem
-    is checked for shape and its DIRECTORY is checked by
-    :func:`_assert_output_directory`, so the public composing entry
-    point is held to the same containment rules as a whole run and
-    cannot be used to slip a frame into playthrough/frames/.
+    `.../trans_00042_00.png` through `.../trans_00042_11.png`.
     """
     resolved = _validated_directory(out_prefix, "the output prefix")
     if os.path.isdir(resolved):
@@ -912,17 +842,13 @@ def _validated_image_path(
 ) -> str:
     """Return an absolute, readable PNG path, or raise.
 
-    Shape, then form, then existence: a non-empty string or os.PathLike
-    with no NUL byte, naming a .png, that is there and is a regular
-    file.  A RELATIVE value is resolved against the CHECKOUT ROOT rather
-    than the working directory, which is both what the timeline's own
-    "playthrough/frames/frame_00001.png" means and what keeps this
-    module correct however it was invoked.
+    Shape, then form, then existence: a non-empty string or os.PathLike with no
+    NUL byte, naming a .png, that is there and is a regular file.
 
-    A missing frame is a hard failure and never a skipped group.  The
-    frame it names is one the session actually took; if it is gone, the
-    transition cannot honestly fade out of it, and composing something
-    else in its place would be a fabrication.
+    A missing frame is a hard failure and never a skipped group.  The frame it
+    names is one the session actually took; if it is gone, the transition
+    cannot honestly fade out of it, and composing something else in its place
+    would be a fabrication.
     """
     if value is None:
         raise TransitionError("%s is required" % label)
@@ -966,12 +892,9 @@ def validated_capture_path(
 ) -> str:
     """Return an absolute capture path from playthrough/frames/.
 
-    The value arrives from playthrough/timeline.json -- which is to say
-    from outside this module -- so it is resolved and then PROVED to lie
-    inside the capture directory rather than joined and opened.  An
-    absolute path, a `..` segment and a symlink aiming out of the tree
-    are all caught by testing the resolved form, which is what keeps a
-    timeline-derived path from reaching open() unvalidated.
+    The value arrives from playthrough/timeline.json -- which is to say from
+    outside this module -- so it is resolved and then PROVED to lie inside the
+    capture directory rather than joined and opened.
     """
     resolved = _validated_image_path(value, label, root)
     directory = captures if captures else frames_dir(root)
@@ -994,7 +917,7 @@ def timeline_entries(document: Any) -> List[Dict[str, Any]]:
     """Return the frames array of a timeline document.
 
     A BARE ARRAY IS REFUSED, and the reason is worth stating because
-    accepting one used to look harmless.  timeline.validate_timeline()
+    accepting one looks harmless.  timeline.validate_timeline()
     -- the canonical check on the clamp bounds, the transition rule, the
     contiguity of the cue windows and the manifest attestation -- begins
     by requiring an OBJECT and returns immediately for anything else.
@@ -1038,14 +961,10 @@ def timeline_entries(document: Any) -> List[Dict[str, Any]]:
 def transition_seconds(document: Any) -> float:
     """Return the segment length the timeline charged, checked.
 
-    The value is READ from the document rather than assumed, so the two
-    stages cannot hold different opinions about how long a transition
-    is -- and then it is checked against EXPECTED_TRANSITION, because
-    FRAMES_PER_GROUP frames at FPS frames per second is that length and
-    no other.  A mismatch means the timeline was computed under
-    different constants than this module can materialise, which would
-    put the picture and the captions permanently out of step, so it
-    fails here rather than rendering.
+    The value is READ from the document rather than assumed, so the two stages
+    cannot hold different opinions about how long a transition is -- and then
+    it is checked against EXPECTED_TRANSITION, because FRAMES_PER_GROUP frames
+    at FPS frames per second is that length and no other.
     """
     if isinstance(document, dict) and KEY_TRANSITION in document:
         value = document[KEY_TRANSITION]
@@ -1081,10 +1000,9 @@ def transition_seconds(document: Any) -> float:
 def _entry_frame_index(entry: Dict[str, Any], position: int) -> int:
     """Return an entry's capture index, checked against the name width.
 
-    The index is what names the output files through a five-digit field,
-    so a value that would not fit is refused rather than silently
-    widened -- a six-digit name sorts differently and would reorder the
-    concat list.
+    The index is what names the output files through a five-digit field, so a
+    value that would not fit is refused rather than silently widened -- a
+    six-digit name sorts differently and would reorder the concat list.
     """
     value = entry.get(KEY_FRAME, position)
     if isinstance(value, bool) or not isinstance(value, int):
@@ -1123,9 +1041,8 @@ def plan_groups(
 ) -> List[Group]:
     """Resolve one Group per flagged entry, in timeline order.
 
-    A transition sits BETWEEN a flagged frame and its successor, so each
-    group needs both: `current` is faded out of and `successor` is faded
-    in to.
+    A transition sits BETWEEN a flagged frame and its successor, so each group
+    needs both: `current` is faded out of and `successor` is faded in to.
 
     THE FLAGGED-LAST-ENTRY CASE IS REFUSED, and nothing is written.  In a
     well-formed timeline it cannot arise: timeline.raw_deltas() gives the
@@ -1136,14 +1053,8 @@ def plan_groups(
     reaching it means the document is malformed, and this raises
     TransitionError naming that problem code.
 
-    It is neither skipped nor honoured, because the only two ways to
-    honour it are both dishonest.  Fading the last capture back into
-    ITSELF is imagery of an event that did not happen, and the whole
-    film's honesty rests on every frame being a photograph of something
-    the survivor saw; emitting a short group or none would leave
-    render_movie.py charging a second of video that the images do not
-    fill.  The right repair is upstream -- recompute the timeline -- so
-    the refusal points there rather than absorbing the anomaly here.
+    It is neither skipped nor honoured, because the only two ways to honour it
+    are both dishonest.
     """
     captures = frames_dir(root)
     groups: List[Group] = []
@@ -1197,17 +1108,14 @@ def plan_groups(
 def expected_size() -> Tuple[int, int]:
     """Return the (width, height) every frame in the film must have.
 
-    1920x1080 is the captured resolution: the X root is exactly that
-    while the game window is 1920x1072 at +0+4, and capture.sh
-    photographs the root, so the captures carry a four-pixel letterbox
-    and need no rescaling.  render_movie.py encodes at the same size.
+    1920x1080 is the captured resolution: the X root is exactly that while the
+    game window is 1920x1072 at +0+4, and capture.sh photographs the root, so
+    the captures carry a four-pixel letterbox and need no rescaling.
 
     ``$PLAYTHROUGH_SCREEN_WIDTH`` and ``$PLAYTHROUGH_SCREEN_HEIGHT`` from
     playthrough/tooling/env.sh are honoured, because env.sh is the single
-    definition of the layout and a run at another geometry must not be
-    given transitions of the wrong size.  A resolved size other than
-    1920x1080 is reported once, since the encoder's own -s flag is
-    written for that value.
+    definition of the layout and a run at another geometry must not be given
+    transitions of the wrong size.
     """
     size: List[int] = []
     for name, default in ((ENV_SCREEN_WIDTH, FRAME_WIDTH),
@@ -1241,27 +1149,18 @@ def expected_size() -> Tuple[int, int]:
 def _assert_decodable_provenance(path: str) -> None:
     """Refuse to compose from a file anybody but this account can rewrite.
 
-    The counterpart of ocr_clock.assert_decodable_provenance, which
-    carries the full reasoning; the short version is that the pinned
-    Pillow 11.3.0 has published advisories in native decoders, and the
-    stated ground for accepting that risk is that this pipeline only ever
-    decodes PNGs it captured itself.  A security review found the frames
-    group- and world-writable, so that ground did not hold, and a mode
-    set at creation is a fact about the past.  This checks it at the
-    moment the bytes reach MoviePy.
+    The counterpart of ocr_clock.assert_decodable_provenance, which carries the
+    full reasoning; the short version is that the pinned Pillow 11.3.0 has
+    published advisories in native decoders, and the stated ground for
+    accepting that risk is that this pipeline only ever decodes PNGs it
+    captured itself.
 
-    THE CHECK AND THE READ ARE ONE OPERATION NOW.  A later review found
-    the other half of the race: these properties were read with `lstat`
-    and the frame was then handed to MoviePy BY PATHNAME, which reopens
-    it and hands it to Pillow -- so a concurrent writer with this
-    account's uid could substitute another inode in between and the
-    decoder would parse something nothing had validated (CWE-367).
-    read_verified_frame() closes that by opening once with O_NOFOLLOW,
-    asking `fstat` about the descriptor, and returning the bytes read
-    through it; _verified_frame_array() decodes those bytes and the clip
-    is built from the resulting array.  This function is the
-    descriptor-less half, kept public for a caller that wants the
-    question answered about a path it is not about to decode.
+    THE CHECK AND THE READ ARE ONE OPERATION NOW.  A later review found the
+    other half of the race: these properties were read with `lstat` and the
+    frame was then handed to MoviePy BY PATHNAME, which reopens it and hands it
+    to Pillow -- so a concurrent writer with this account's uid could
+    substitute another inode in between and the decoder would parse something
+    nothing had validated (CWE-367).
 
     :raises TransitionError: naming the property that failed.
     """
@@ -1275,11 +1174,8 @@ def _assert_decodable_provenance(path: str) -> None:
 def _open_frame_descriptor(path: str) -> int:
     """Open `path` for reading without following a final symlink.
 
-    O_NOFOLLOW makes "this is not a symlink" a property of the open
-    itself rather than of a preceding stat.  O_NONBLOCK is there because
-    this is the call that would otherwise block forever on a fifo planted
-    under a capture's name; the descriptor is checked for being a regular
-    file immediately afterwards.
+    O_NOFOLLOW makes "this is not a symlink" a property of the open itself
+    rather than of a preceding stat.
 
     :raises TransitionError: naming what the open refused.
     """
@@ -1329,13 +1225,11 @@ def read_verified_frame(path: str) -> bytes:
     """Return a capture's bytes, validated as they were read.
 
     One open, one fstat, one read, in that order, so every property the
-    provenance rule asks is asked of the descriptor the bytes came out
-    of.  The counterpart of ocr_clock.read_verified_frame, which carries
-    the full reasoning.
+    provenance rule asks is asked of the descriptor the bytes came out of.
 
-    The size is bounded twice -- against what `fstat` reported and
-    against what was actually read -- because a file being appended to
-    while it is read passes the first and not the second.
+    The size is bounded twice -- against what `fstat` reported and against what
+    was actually read -- because a file being appended to while it is read
+    passes the first and not the second.
 
     :raises TransitionError: naming the property that failed.
     """
@@ -1374,13 +1268,12 @@ def read_verified_frame(path: str) -> bytes:
 class decode_limits(object):
     """Bound one composition in CPU time, and forbid a core dump.
 
-    The counterpart of ocr_clock.decode_limits, and identical in
-    behaviour -- see that class for the full reasoning, including the
-    measurement that made RLIMIT_AS the wrong instrument here (numpy
-    reserves 2.5 GiB of address space at import, so a ceiling tight
-    enough to bound a decode refuses the import, and one loose enough to
-    import bounds nothing; verified by lowering it to 300 MiB after
-    import and watching a full decode still succeed).
+    The counterpart of ocr_clock.decode_limits, and identical in behaviour --
+    see that class for the full reasoning, including the measurement that made
+    RLIMIT_AS the wrong instrument here (numpy reserves 2.5 GiB of address
+    space at import, so a ceiling tight enough to bound a decode refuses the
+    import, and one loose enough to import bounds nothing; verified by lowering
+    it to 300 MiB after import and watching a full decode still succeed).
 
     RLIMIT_CORE is 0 so a native decoder that segfaults on a malformed
     PNG writes no core file containing the decoded frames.  RLIMIT_CPU is
@@ -1441,13 +1334,12 @@ class decode_limits(object):
 def _image_size_of(data: bytes, path: str) -> Tuple[int, int]:
     """Return the (width, height) a PNG's own IHDR chunk declares.
 
-    The bytes-shaped half of :func:`_image_size`, so a frame that has
-    already been read through a verified descriptor is measured from
-    those bytes rather than by opening its name a second time.  Pure
-    Python throughout: no native decoder sees this.
+    The bytes-shaped half of :func:`_image_size`, so a frame that has already
+    been read through a verified descriptor is measured from those bytes rather
+    than by opening its name a second time.
 
-    :raises TransitionError: for anything that is not a PNG whose first
-        chunk is a well-formed IHDR of a plausible size.
+    :raises TransitionError: for anything that is not a PNG whose first chunk
+        is a well-formed IHDR of a plausible size.
     """
     signature = PNG_MAGIC
     if data[:len(signature)] != signature:
@@ -1477,20 +1369,18 @@ def _image_size_of(data: bytes, path: str) -> Tuple[int, int]:
 def _verified_frame_array(path: str, size: Tuple[int, int]) -> Any:
     """Return one capture as an RGB array, read and decoded once.
 
-    THE WHOLE OF THE FIX FOR THE DECODE RACE, in one function: the bytes
-    are read through a validated descriptor, the geometry is taken from
-    those same bytes, and the decode is Pillow restricted to the PNG
-    plugin over an in-memory buffer -- so no pathname is handed to a
-    native decoder at any point and nothing can be substituted between
-    the check and the parse.
+    THE WHOLE OF THE FIX FOR THE DECODE RACE, in one function: the bytes are
+    read through a validated descriptor, the geometry is taken from those same
+    bytes, and the decode is Pillow restricted to the PNG plugin over an
+    in-memory buffer -- so no pathname is handed to a native decoder at any
+    point and nothing can be substituted between the check and the parse.
 
-    The array is what the clip is built from.  MoviePy's ImageClip
-    accepts either a filename or an array and hands a filename to Pillow
-    itself, which would reopen the path and undo the guarantee; an array
-    cannot be reopened.
+    The array is what the clip is built from.  MoviePy's ImageClip accepts
+    either a filename or an array and hands a filename to Pillow itself, which
+    would reopen the path and undo the guarantee; an array cannot be reopened.
 
-    :raises TransitionError: naming what failed, from the read, the
-        geometry check or the decode.
+    :raises TransitionError: naming what failed, from the read, the geometry
+        check or the decode.
     """
     _require_numpy()
     _require_pillow()
@@ -1523,14 +1413,12 @@ def _verified_frame_array(path: str, size: Tuple[int, int]) -> Any:
 def _image_size(path: str) -> Tuple[int, int]:
     """Return a PNG's (width, height) without decoding its pixels.
 
-    Read from the IHDR chunk in pure Python.  Pillow identifies a file
-    by its CONTENT and ships a plugin per format, so ``Image.open`` on a
-    path called frame_00001.png would hand a crafted PSD, DDS, TIFF or
-    FLI to that format's native parser -- which is where Pillow's
-    memory-corruption advisories live, and this pipeline is pinned to
-    11.3.0 because moviepy 2.2.1 declares ``pillow<12.0``.  The
-    commonest question asked of a capture is "is it 1920x1080?", and
-    answering it from 24 bytes of header means no decoder runs at all.
+    Read from the IHDR chunk in pure Python.  Pillow identifies a file by its
+    CONTENT and ships a plugin per format, so ``Image.open`` on a path called
+    frame_00001.png would hand a crafted PSD, DDS, TIFF or FLI to that format's
+    native parser -- which is where Pillow's memory-corruption advisories live,
+    and this pipeline is pinned to 11.3.0 because moviepy 2.2.1 declares
+    ``pillow<12.0``.
     """
     signature = PNG_MAGIC
     try:
@@ -1567,10 +1455,9 @@ def _assert_capture_size(path: str, size: Tuple[int, int]) -> None:
     """Refuse a capture that is not the size the film is cut at.
 
     concatenate_videoclips takes its geometry from the first clip, so a
-    mis-sized capture would either produce a group that does not match
-    the frames around it or fail deep inside the composition with a
-    diagnostic about array shapes.  Checked here, where the message can
-    name the file.
+    mis-sized capture would either produce a group that does not match the
+    frames around it or fail deep inside the composition with a diagnostic
+    about array shapes.
     """
     actual = _image_size(path)
     if actual != size:
@@ -1589,10 +1476,8 @@ def title_card(
 ) -> Any:
     """Return the "…time passes…" card, set in the game's own face.
 
-    MoviePy 2 replaced ImageMagick with Pillow, so `font` is a
-    filesystem path to a font file and no ImageMagick configuration is
-    involved.  The card is white on black at the full frame size, so it
-    is the fade's destination rather than an overlay on top of one.
+    MoviePy 2 replaced ImageMagick with Pillow, so `font` is a filesystem path
+    to a font file and no ImageMagick configuration is involved.
     """
     _require_moviepy()
     try:
@@ -1656,10 +1541,9 @@ def _write_png(array: Any, path: str) -> None:
     """Write one 8-bit RGB PNG, refusing to follow a link.
 
     O_NOFOLLOW is the point of opening by descriptor: the output name is
-    predictable, and a symlink planted there would otherwise redirect
-    the write -- plausibly onto a capture or onto the movie -- while the
-    write itself reported success.  O_TRUNC is what makes a re-run
-    overwrite in place rather than append.
+    predictable, and a symlink planted there would otherwise redirect the write
+    -- plausibly onto a capture or onto the movie -- while the write itself
+    reported success.
     """
     _require_pillow()
     flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW
@@ -1693,13 +1577,9 @@ def _assert_written(path: str, size: Tuple[int, int]) -> None:
 def _assert_name_format() -> None:
     """Refuse to write if env.sh and this module name files differently.
 
-    playthrough/tooling/env.sh is the single definition of the artifact
-    layout and exports ``$PLAYTHROUGH_TRANSITION_FORMAT`` so that the
-    writer, the concat list and the verifier agree byte for byte.  The
-    format is not simply adopted from the environment, because these
-    names are a contract with render_movie.py and verify_artifacts.sh
-    rather than a preference; instead the two are held to being the
-    SAME, so they cannot drift apart without somebody being told.
+    playthrough/tooling/env.sh is the single definition of the artifact layout
+    and exports ``$PLAYTHROUGH_TRANSITION_FORMAT`` so that the writer, the
+    concat list and the verifier agree byte for byte.
     """
     declared = os.environ.get(ENV_TRANSITION_FORMAT)
     if declared and declared.strip() and \
@@ -1718,13 +1598,10 @@ def _assert_name_format() -> None:
 def group_frame_paths(out_prefix: str) -> List[str]:
     """Return the paths one group occupies, in order.
 
-    The index is zero-based, so for any capture N the timeline flags
-    with transition_after the group runs trans_NNNNN_00.png through
-    trans_NNNNN_11.png; capture 1 yields trans_00001_00.png only if
-    capture 1 is itself flagged, and an unflagged capture has no group
-    and no file.  Zero-based is chosen once and applied everywhere,
-    because the second field is an offset within the group rather than
-    a count of anything.
+    The index is zero-based, so for any capture N the timeline flags with
+    transition_after the group runs trans_NNNNN_00.png through
+    trans_NNNNN_11.png; capture 1 yields trans_00001_00.png only if capture 1
+    is itself flagged, and an unflagged capture has no group and no file.
     """
     _assert_name_format()
     return [out_prefix + TRANSITION_SUFFIX_FORMAT % ordinal
@@ -1743,33 +1620,25 @@ def compose_transition_group(
 ) -> List[str]:
     """Compose one transition and write it out as PNG frames.
 
-    This is the whole cinematic unit: a fade out of `current`, the
-    "…time passes…" card, and a fade in to `successor`.  It is the
-    single implementation -- :func:`make_transitions` drives it once per
-    flagged entry, and run_pipeline.sh reaches this module rather than
-    reimplementing the composition.
+    This is the whole cinematic unit: a fade out of `current`, the "…time
+    passes…" card, and a fade in to `successor`.
 
     :param current: the capture being faded OUT of.
     :param successor: the capture being faded IN to.
-    :param out_prefix: the output stem, e.g. ``.../trans_00042``;
-        ``_00.png`` through ``_11.png`` are appended.  Validated to
-        resolve inside a build/transitions directory within the approved
-        root, so no caller can aim a frame at playthrough/frames/.
+    :param out_prefix: the output stem, e.g. ``.../trans_00042``; ``_00.png``
+        through ``_11.png`` are appended.
     :param font: the typeface for the card; defaults to the game's own
         data/font/Terminus.ttf.
     :param size: the frame size; defaults to :func:`expected_size`.
-    :param root: the artifact tree the output prefix and the source
-        captures must resolve inside; defaults to the pipeline's
-        playthrough/ directory.  A test passes its own; nothing in the
-        environment can move it.
-    :param repo_root_dir: the checkout the card's typeface is resolved
-        against, since data/font/Terminus.ttf is the game's own font and
-        lives outside playthrough/; defaults to the checkout this module
-        sits in.
+    :param root: the artifact tree the output prefix and the source captures
+        must resolve inside; defaults to the pipeline's playthrough/ directory.
+    :param repo_root_dir: the checkout the card's typeface is resolved against,
+        since data/font/Terminus.ttf is the game's own font and lives outside
+        playthrough/; defaults to the checkout this module sits in.
     :returns: the paths written, in order.
     :raises TransitionError: for a missing font, a missing or mis-sized
-        capture, an output prefix pointing anywhere it may not, a group
-        of the wrong length, or a frame written at the wrong size.
+        capture, an output prefix pointing anywhere it may not, a group of the
+        wrong length, or a frame written at the wrong size.
     """
     _require_moviepy()
     _require_numpy()
@@ -1780,26 +1649,23 @@ def compose_transition_group(
     geometry = size if size else expected_size()
 
     # The inputs are checked for shape, existence and size but NOT for
-    # containment inside playthrough/frames/.  Containment is a property
-    # of the paths the TIMELINE supplies, and plan_groups() enforces it
-    # there, at the point where untrusted input enters; this entry point
-    # exists so a caller with two frames in hand can compose from them.
-    # The direction that matters for integrity is the write, and that is
-    # contained unconditionally by validated_output_prefix() above.
+    # containment inside playthrough/frames/.  Containment is a property of the
+    # paths the TIMELINE supplies, and plan_groups() enforces it there, at the
+    # point where untrusted input enters; this entry point exists so a caller
+    # with two frames in hand can compose from them.
     source = _validated_image_path(
         current, "the frame being faded out of", root)
     target = _validated_image_path(
         successor, "the frame being faded in to", root)
     # ONE READ EACH, VALIDATED AS IT IS READ, AND NO PATHNAME REACHES A
-    # DECODER.  This used to be four separate reads of two names -- an
-    # IHDR read for the geometry, an lstat for the provenance, and then
-    # MoviePy reopening each path and handing it to Pillow -- and a
-    # review named the consequence: with a same-uid writer able to
-    # replace the inode in between, the bytes that were parsed were not
-    # the bytes that were checked (CWE-367).  _verified_frame_array does
-    # the read, the geometry check and the format-restricted decode
-    # through one descriptor and returns an array, which cannot be
-    # reopened by anybody.
+    # DECODER.  Checking a geometry by one open, a provenance by an
+    # lstat, and then letting MoviePy reopen the path for Pillow, is four
+    # reads of two names: a same-uid writer able to replace the inode in
+    # between makes the bytes that are parsed different from the bytes
+    # that were checked (CWE-367).  _verified_frame_array does the read,
+    # the geometry check and the format-restricted decode through ONE
+    # descriptor and returns an array, which cannot be reopened by
+    # anybody.
     source_frame = _verified_frame_array(source, geometry)
     target_frame = _verified_frame_array(target, geometry)
 
@@ -1939,21 +1805,21 @@ def _ensure_directory(directory: str) -> None:
 # The staged generation
 #
 # WHY THE DIRECTORY IS REPLACED RATHER THAN EDITED.  Composing in place
-# did two destructive things before it had produced anything: it
-# unlinked every frame the new timeline did not account for, and then
-# O_TRUNCated each surviving name as it wrote.  So an interruption
-# anywhere in the middle -- a full disk, a signal, a MoviePy failure on
-# group nine of eleven -- left the directory holding some frames from
-# this timeline, some from the last one, and some truncated to zero
-# bytes.  Every one of them matches `trans_*.png`, so verify_artifacts.sh
-# counts them, and a film assembled from that directory splices a
-# transition that was never composed for it.
+# is destructive before it has produced anything: it unlinks every frame
+# the new timeline does not account for, then O_TRUNCates each surviving
+# name as it writes.  An interruption anywhere in the middle -- a full
+# disk, a signal, a MoviePy failure on group nine of eleven -- leaves the
+# directory holding some frames from this timeline, some from the last
+# one, and some truncated to zero bytes.  Every one of them matches
+# `trans_*.png`, so verify_artifacts.sh counts them, and a film assembled
+# from that directory splices a transition that was never composed for
+# it.
 #
-# Worse, two runs at once interleaved: both reconciled against their own
-# expectations, so each deleted the other's frames while writing its
-# own, and the directory ended up describing neither timeline.
+# Worse, two runs at once interleave: each reconciles against its own
+# expectations, so each deletes the other's frames while writing its own,
+# and the directory ends up describing neither timeline.
 #
-# So a generation is now built COMPLETE AND VERIFIED in a staging
+# So a generation is built COMPLETE AND VERIFIED in a staging
 # directory beside the destination, under an exclusive lock that makes
 # concurrent runs wait rather than interleave, and only then switched in.
 # The switch is two renames within one directory, so the window in which
@@ -1964,14 +1830,11 @@ def _ensure_directory(directory: str) -> None:
 
 STAGING_PREFIX = ".transitions-staging-"
 
-# The suffix a frame carries while it is being composed.  Each streamed
-# frame is written here and renamed into place only once the whole group
-# has been produced and counted, so a segment that yields the wrong
-# number of frames -- or a device that fails half way -- publishes
-# NOTHING and leaves any previous group of the same name intact.  That
-# is what lets the frames be streamed one at a time (which is why the
-# composition needs ~223 MiB rather than ~554 MiB) without giving up
-# all-or-nothing publication.
+# The suffix a frame carries while it is being composed.  Each streamed frame
+# is written here and renamed into place only once the whole group has been
+# produced and counted, so a segment that yields the wrong number of frames --
+# or a device that fails half way -- publishes NOTHING and leaves any previous
+# group of the same name intact.
 STAGED_FRAME_SUFFIX = ".composing"
 RETIRED_PREFIX = ".transitions-retired-"
 
@@ -1985,12 +1848,9 @@ LOCK_NAME = "transitions"
 def _publish_generation(staging: str, directory: str) -> None:
     """Switch a verified staging directory in for the destination.
 
-    Two renames inside one parent: the live directory is retired to a
-    unique name, the staging directory takes its place, and the retired
-    one is then removed.  A rename either happens or does not, so no
-    reader ever sees a half-composed generation -- and if the second
-    rename fails, the first is undone so the previous generation is
-    restored rather than lost.
+    Two renames inside one parent: the live directory is retired to a unique
+    name, the staging directory takes its place, and the retired one is then
+    removed.
     """
     parent = os.path.dirname(directory)
     retired = None
@@ -2031,9 +1891,8 @@ def _remove_tree(directory: str) -> None:
     """Delete a directory this module created, and only its own files.
 
     Never recurses and never follows a link: the only entries a retired
-    generation can hold are the regular files this module wrote, so
-    anything else is left behind along with the directory rather than
-    removed blindly.
+    generation can hold are the regular files this module wrote, so anything
+    else is left behind along with the directory rather than removed blindly.
     """
     try:
         names = os.listdir(directory)
@@ -2072,13 +1931,10 @@ def _remove_tree(directory: str) -> None:
 def generation_manifest_path(directory: str) -> str:
     """Return the provenance path for a transitions directory.
 
-    BESIDE the directory, not inside it: playthrough/build/ holds every
-    derived committed intermediate -- the concat list, the film's
-    generation manifest, the transcripts' -- and the transitions
-    directory itself admits `trans_*.png` and nothing else.  Taking the
-    directory as the argument keeps every caller, this module's and
-    render_movie.py's, asking the one question it actually has an answer
-    to: where is the record for THIS group set.
+    BESIDE the directory, not inside it: playthrough/build/ holds every derived
+    committed intermediate -- the concat list, the film's generation manifest,
+    the transcripts' -- and the transitions directory itself admits
+    `trans_*.png` and nothing else.
     """
     parent = os.path.dirname(os.path.normpath(directory))
     if not parent:
@@ -2096,10 +1952,9 @@ def build_generation_manifest(
     """Return the provenance record for one composed generation.
 
     Pure apart from reading the bytes it hashes.  Binds four things the
-    renderer cannot otherwise check: the TIMELINE these groups were
-    computed from, by that document's own digest; the two CAPTURES each
-    group was faded between, by theirs; the card's TYPEFACE; and this
-    run's own OUTPUT bytes.
+    renderer cannot otherwise check: the TIMELINE these groups were computed
+    from, by that document's own digest; the two CAPTURES each group was faded
+    between, by theirs; the card's TYPEFACE; and this run's own OUTPUT bytes.
     """
     width, height = geometry
     record: Dict[str, Any] = {
@@ -2152,12 +2007,7 @@ def read_generation_manifest(directory: str) -> Dict[str, Any]:
     playthrough/build/transitions.json, because the directory itself
     admits `trans_*.png` and nothing else.
 
-    :raises TransitionError: when it is absent, unreadable or not a
-        record.  ABSENCE IS A FAULT, not a default: a group set without
-        provenance is a group set nobody can attribute to a timeline, and
-        accepting one is the defect this manifest exists to close.  An
-        interrupted publication can leave exactly that state, which is
-        why the generation journal reports it and a re-run repairs it.
+    :raises TransitionError: when it is absent, unreadable or not a record.
     """
     path = generation_manifest_path(directory)
     if os.path.islink(path):
@@ -2223,17 +2073,14 @@ def generation_manifest_problems(
     """Report every way a published group set fails its provenance.
 
     THE GLOBAL CHECK.  `flagged` is EVERY frame index the timeline being
-    rendered carries ``transition_after`` on, and the group set on disk
-    must be exactly that -- so a stale group left behind for an index the
-    recomputed timeline no longer flags is a REFUSAL rather than something
-    nobody looks at.  The per-entry check that preceded this one could
-    only ever inspect the indices the current timeline flags, which is
-    precisely why an extra group was invisible to it while
-    verify_artifacts.sh, which globs the whole directory, counted it.
+    rendered carries ``transition_after`` on, and the group set on disk must be
+    exactly that -- so a stale group left behind for an index the recomputed
+    timeline no longer flags is a REFUSAL rather than something nobody looks
+    at.
 
-    Read-only.  An empty list means the frames in `directory` were
-    composed by this module, from this timeline, out of these captures,
-    and still carry the bytes it wrote.
+    Read-only.  An empty list means the frames in `directory` were composed by
+    this module, from this timeline, out of these captures, and still carry the
+    bytes it wrote.
     """
     problems: List[str] = []
     try:
@@ -2403,34 +2250,29 @@ def _group_set_problems(
 def _publish_generation_manifest(directory: str, text: str) -> str:
     """Replace the provenance record beside `directory`.  Returns it.
 
-    Staged as a dot-prefixed sibling in the same directory and renamed,
-    so a reader sees the whole previous record or the whole new one, and
-    both the file and its parent are fsynced -- a rename is not durable
-    until the directory entry is.
+    Staged as a dot-prefixed sibling in the same directory and renamed, so a
+    reader sees the whole previous record or the whole new one, and both the
+    file and its parent are fsynced -- a rename is not durable until the
+    directory entry is.
 
-    Published AFTER the switch and under the generation journal, so the
-    one ordering an interruption can leave behind is a group set whose
-    record is stale, which render_movie.py refuses by digest and the next
-    run repairs.  The reverse order would leave a record describing
-    frames that are not there, which reads like a complete generation.
+    Published AFTER the switch and under the generation journal, so the one
+    ordering an interruption can leave behind is a group set whose record is
+    stale, which render_movie.py refuses by digest and the next run repairs.
 
-    THE SIBLING IS REMOVED ON EVERY PRE-PUBLICATION FAILURE, and it used
-    not to be.  A short os.write or a failing fsync raised, the `finally`
-    closed the descriptor, and `.transitions.json.publishing` was left
-    sitting in playthrough/build/ -- inside the tree .gitignore
-    re-includes wholesale, and outside the transitions directory that
-    _own_litter() sweeps, so nothing would ever clear it and a later
-    `git add -A playthrough/` would commit a half-written provenance
-    record nobody authored.  Only the rename's own failure path unlinked
-    it.  A code review found it; the whole sequence is wrapped now, and
-    publish_transitions() sweeps a stale sibling at the start of a run
-    as well, so an interruption no process survived is cleared too.
+    THE SIBLING IS REMOVED ON EVERY PRE-PUBLICATION FAILURE.  A short
+    os.write or a failing fsync raises, and an unswept
+    `.transitions.json.publishing` would sit in playthrough/build/ --
+    inside the tree .gitignore re-includes wholesale, and outside the
+    transitions directory _own_litter() sweeps -- until a later `git add
+    -A playthrough/` committed a half-written provenance record nobody
+    authored.  So the whole sequence is wrapped, and
+    publish_transitions() also sweeps a stale sibling at the start of a
+    run, which clears an interruption no process survived.
 
-    A SHORT WRITE IS RETRIED RATHER THAN REPORTED.  os.write may write
-    fewer bytes than it was given without anything being wrong, so the
-    old check turned an ordinary partial write into a failed generation.
-    It loops until the buffer is on the descriptor, and only a write
-    that makes no progress at all is an error.
+    A SHORT WRITE IS RETRIED RATHER THAN REPORTED.  os.write may write fewer
+    bytes than it was given with nothing being wrong, so the loop runs until
+    the buffer is on the descriptor and only a write that makes no progress
+    at all is an error.
     """
     target = generation_manifest_path(directory)
     parent = os.path.dirname(target) or os.curdir
@@ -2526,16 +2368,13 @@ def _discard_staged_manifest(path: str) -> None:
 def _sweep_staged_manifest(directory: str) -> None:
     """Clear a provenance sibling an earlier run left behind.
 
-    THE HALF NO FAILURE PATH CAN COVER.  A run killed outright -- SIGKILL,
-    the power going -- runs no handler at all, so the sibling survives
-    with nobody to remove it.  It is swept at the START of a generation
-    instead, under the same lock, where the file is unambiguously stale:
-    this run is about to write its own.
+    THE HALF NO FAILURE PATH CAN COVER.  A run killed outright -- SIGKILL, the
+    power going -- runs no handler at all, so the sibling survives with nobody
+    to remove it.
 
-    Only a plain file is removed, and never a symlink or a directory: the
-    name is inside the committed tree, and following a link planted there
-    would be exactly the write outside the tree every other path in this
-    module refuses.
+    Only a plain file is removed, and never a symlink or a directory: the name
+    is inside the committed tree, and following a link planted there would be
+    exactly the write outside the tree every other path in this module refuses.
     """
     staged = staged_manifest_path(directory)
     try:
@@ -2810,11 +2649,8 @@ def _glob_names(directory: str) -> Set[str]:
 def _assert_nothing_appeared(directory: str, before: Set[str]) -> None:
     """Refuse a transition frame that arrived during the run.
 
-    Raised BEFORE the switch, so the published directory -- and the file
-    that appeared in it -- are left exactly as they are.  The
-    acceptance gate globs this directory, and a frame the timeline does
-    not account for is one it will count, so it is reported rather than
-    silently replaced.
+    Raised BEFORE the switch, so the published directory -- and the file that
+    appeared in it -- are left exactly as they are.
     """
     appeared = sorted(_glob_names(directory) - before)
     if not appeared:
@@ -2896,13 +2732,9 @@ def _foreign_entries(directory: str) -> List[str]:
 def _is_own_litter(name: str) -> bool:
     """True for a half-built or superseded file THIS module left behind.
 
-    A run killed mid-composition can leave a staging frame beside the
-    published ones, and a directory published by an older version of this
-    module carries that version's in-directory provenance record.  Both
-    are this module's own, so both are swept rather than carried across
-    the switch -- which is the opposite of how a file this module never
-    wrote is treated.  Carrying the legacy record would keep a
-    non-`trans_*.png` entry in a directory whose schema admits none.
+    A run killed mid-composition can leave a staging frame beside the published
+    ones, and a directory published by an older version of this module carries
+    that version's in-directory provenance record.
     """
     return (name.startswith(STAGING_PREFIX) or
             name.endswith(STAGED_FRAME_SUFFIX) or
@@ -3088,16 +2920,13 @@ def build_parser() -> argparse.ArgumentParser:
 def relative_to_repo(path: str) -> str:
     """Express a path relative to the checkout, for reporting.
 
-    The summary is a machine-readable line that ends up in run logs and
-    in the report, and an absolute path there discloses the filesystem
-    layout of the host -- the home directory, the operator's name, the
-    build root -- to every reader of an artifact that says nothing about
-    them otherwise.  Repository-relative is the same information the
-    reader actually needs and none of the information they do not.
+    The summary is a machine-readable line that ends up in run logs and in the
+    report, and an absolute path there discloses the filesystem layout of the
+    host -- the home directory, the operator's name, the build root -- to every
+    reader of an artifact that says nothing about them otherwise.
 
-    A path outside the checkout is reduced to its basename behind a
-    marker, so the line stays honest about the file being elsewhere
-    without naming where.
+    A path outside the checkout is reduced to its basename behind a marker, so
+    the line stays honest about the file being elsewhere without naming where.
     """
     try:
         checkout = repo_root()
@@ -3135,13 +2964,9 @@ def main(
 ) -> int:
     """Run the command line and return an exit status.
 
-    `root` is a call site's argument and nothing else: argparse never
-    produces it, no environment variable reaches it, and the shell entry
-    point below never passes one.  It exists so a test can hold the real
-    command line -- this function, its refusals and its exit status --
-    against a temporary tree it owns, instead of writing into the
-    committed artifact tree, which is a session's evidence and not a
-    fixture.
+    `root` is a call site's argument and nothing else: argparse never produces
+    it, no environment variable reaches it, and the shell entry point below
+    never passes one.
 
     :returns: 0 on success, 1 for any refusal.  argparse exits 2 on a
         command line error of its own accord.

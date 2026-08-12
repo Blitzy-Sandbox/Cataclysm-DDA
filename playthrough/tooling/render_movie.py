@@ -12,7 +12,7 @@ in as separate video segments, the whole movie is a single concat
 demuxer list of image entries.  There is no segment cutting, no mixed
 demuxer list, and no codec or parameter mismatch to reconcile -- a
 transition is simply twelve more image entries carrying their own
-duration lines.  The timeline arithmetic stays trivially consistent
+duration lines -- and the timeline arithmetic stays trivially consistent
 with the container for the same reason.
 
 WHAT IS READ AND WHAT IS WRITTEN
@@ -24,54 +24,43 @@ PNG per keystroke and that identity is what the whole
 one-frame-per-keystroke gate rests on.
 
 THE TIMELINE IS THE SINGLE SOURCE OF TRUTH
-Every duration comes from playthrough/timeline.json and none is
-computed here.  make_srt.py walks the same document for its cue
-windows, so the picture and the captions are paced by the same numbers
-by construction rather than by coincidence.  This module's job is to
-make the CONTAINER agree with those numbers too, and then to prove it
-did by measuring the finished file and printing the comparison.
+Every duration comes from playthrough/timeline.json and none is computed
+here.  make_srt.py walks the same document for its cue windows, so the
+picture and the captions are paced by the same numbers by construction
+rather than by coincidence.  This module's job is to make the CONTAINER
+agree with those numbers too, and then to prove it did by measuring the
+finished file and printing the comparison.
 
 *** THE REPEATED FINAL file ENTRY IS NOT OPTIONAL ***
-The last entry's duration line does not take effect unless its file
-line is repeated once more afterwards with no duration of its own.
-That is the canonical concat demuxer idiom for variable per-image
-durations, and omitting it truncates the container while every other
-count still matches -- which is the single easiest way to ruin the film
-silently, because every caption past the shortfall then points beyond
-the end of the video.  Measured on this host with -bf 0 on a 134.000 s
-timeline: 134.040 s with the repeated entry, 133.800 s without it.  So
-the file line count must be exactly the duration line count PLUS ONE,
-and :func:`concat_counts` asserts that on the bytes that were written.
+The last entry's duration line does not take effect unless its file line
+is repeated once more afterwards with no duration of its own.  That is
+the canonical concat demuxer idiom for variable per-image durations, and
+omitting it truncates the container while every other count still
+matches -- the single easiest way to ruin the film silently, because
+every caption past the shortfall then points beyond the end of the
+video.  So the file line count must be exactly the duration line count
+PLUS ONE, and :func:`concat_counts` asserts that on the bytes that were
+written.
 
 *** -bf 0 IS LOAD-BEARING, NOT A TUNING CHOICE ***
 libx264's default B-frame reorder delay leaves the final DTS behind the
 final PTS, and the mov muxer derives the track duration from the DTS
-timeline.  Under -fps_mode vfr, where the PTS deltas are wildly
-uneven, that loses the trailing frames' durations outright.  Measured
-on this host, ffmpeg 7.1.1: an 11.250 s three-image timeline whose PTS
-came out perfectly (0, 0.24, 1.24, 11.24) reported a container duration
-of 1.520 s, and a realistic 134.000 s timeline with two transition
-groups reported 129.800 s -- 4.2 s short, silently.  Setting
--video_track_timescale does not help; -bf 0 fixes it exactly (11.280 s
-and 134.040 s).  A slideshow of static captures gains essentially
-nothing from B-frames, and their reorder delay is precisely what
-corrupts the timing, so they are switched off.  Without this the
-mandated container-versus-timeline comparison could not be satisfied at
-all.
+timeline.  Under -fps_mode vfr, where the PTS deltas are wildly uneven,
+that loses the trailing frames' durations outright -- a container
+reported seconds short of its own timeline, silently.
+-video_track_timescale does not help; -bf 0 fixes it exactly.  A
+slideshow of static captures gains essentially nothing from B-frames,
+and their reorder delay is precisely what corrupts the timing, so they
+are switched off.  Without this the mandated container-versus-timeline
+comparison could not be satisfied at all.
+(playthrough/TECHNICAL_NOTES.md records the measurements.)
 
 *** A CONCAT ENTRY RESOLVES AGAINST THE LIST'S OWN DIRECTORY ***
 ffmpeg joins a relative concat entry onto the directory of the LIST
-FILE, not onto the process working directory.  Reproduced on this host:
-a list at pt/build/concat.txt holding "file 'pt/frames/a.png'", run
-with the root as the working directory, fails with
-
-    Impossible to open 'pt/build/pt/frames/a.png'
-
-Piping the list is no escape -- with the list on standard input the
-base becomes "fd:" and the entries come out as 'fd:pt/frames/a.png' --
-and the demuxer exposes no base-directory option (ffmpeg -h
-demuxer=concat offers only safe, auto_convert and
-segment_time_metadata).
+FILE, not onto the process working directory, and piping the list is no
+escape -- with the list on standard input the base becomes "fd:".  The
+demuxer exposes no base-directory option (ffmpeg -h demuxer=concat
+offers only safe, auto_convert and segment_time_metadata).
 
 So the entries are spelled relative to THE LIST FILE'S OWN DIRECTORY,
 which is the base the demuxer actually resolves against: `../frames/...`
@@ -116,16 +105,16 @@ USE
     "$PLAYTHROUGH_PYTHON" -B "$RM" --concat-only
     "$PLAYTHROUGH_PYTHON" -B "$RM" --timeline PATH
 
-    env.sh exports PLAYTHROUGH_PYTHON, the pinned CPython 3.12 this
-    tooling is installed against, and -B keeps a re-included
-    __pycache__ out of the tree.
-
     import render_movie
     plan = render_movie.plan_render(document)
     text = render_movie.format_concat_list(plan)
 
-Re-running is idempotent: the same timeline and the same frames produce
-a byte-identical concat list and a fresh encode of it.
+env.sh exports PLAYTHROUGH_PYTHON, the pinned CPython 3.12 this tooling
+is installed against, and -B keeps a re-included __pycache__ out of the
+tree.
+
+Re-running is idempotent: the same timeline and the same frames produce a
+byte-identical concat list and a fresh encode of it.
 
 Standard library only, plus the sibling timeline and make_transitions
 modules.  Nothing here needs playthrough/tooling/requirements.txt: this
@@ -150,16 +139,13 @@ from decimal import Decimal
 from typing import (Any, Dict, List, Mapping, NamedTuple, Optional,
                     Sequence, Tuple)
 
-# Set BEFORE the sibling imports below, which are the only imports here
-# that can write into the repository working tree.  env.sh exports
-# PYTHONDONTWRITEBYTECODE=1, but this module is documented as runnable
-# on its own, and a standalone invocation without that environment would
-# compile the siblings to playthrough/tooling/__pycache__/ -- which
-# .gitignore's terminal `!/playthrough/**` negation then makes
-# COMMITTABLE.  A stray .pyc in a committed evidence tree is an artifact
-# nobody authored.  The flag must precede the imports it protects,
-# because the interpreter consults it at compile time; every documented
-# command also passes -B.
+# Set BEFORE the sibling imports below, which are the only imports here that
+# can write into the repository working tree.  env.sh exports
+# PYTHONDONTWRITEBYTECODE=1, but this module is documented as runnable on its
+# own, and a standalone invocation without that environment would compile the
+# siblings to playthrough/tooling/__pycache__/ -- which .gitignore's terminal
+# `!/playthrough/**` negation then makes COMMITTABLE.  A stray .pyc in a
+# committed evidence tree is an artifact nobody authored.
 sys.dont_write_bytecode = True
 
 try:
@@ -221,17 +207,9 @@ except ImportError:
 CONCAT_FORMAT = "concat"
 CONCAT_SAFE = "0"
 
-# Variable frame rate.  This is what makes ffmpeg honour the per-image
-# duration lines instead of resampling them onto a constant grid, and
-# it is therefore the flag the whole diegetic-pacing requirement rests
-# on.
-#
-# NOTHING MAY SET AN OUTPUT FRAME RATE ALONGSIDE IT.  ffmpeg refuses
-# the combination outright -- "One of -r/-fpsmax was specified together
-# a non-CFR -vsync/-fps_mode.  This is contradictory." and exit 234 --
-# so an output frame rate added "for safety" does not degrade the film,
-# it prevents the film.  There is deliberately no way to reach one from
-# this module's command line.
+# Variable frame rate.  This is what makes ffmpeg honour the per-image duration
+# lines instead of resampling them onto a constant grid, and it is therefore
+# the flag the whole diegetic-pacing requirement rests on.
 FPS_MODE = "vfr"
 
 # See "-bf 0 IS LOAD-BEARING" in the module docstring.  Zero B-frames
@@ -268,23 +246,10 @@ LOGLEVEL = "error"
 # one along.
 PROBE_FORMAT = "json"
 
-# Wall-clock ceilings for the two children this module runs.  A hung
-# tool is a fault to REPORT: without a limit, one unresolvable entry in
-# the concat list leaves ffmpeg waiting forever and the pipeline -- one
-# sequential script -- stops with no diagnosis at all.
-#
-# The two limits are asymmetric for a structural reason rather than a
-# measured one: the encode is a full libx264 pass over every entry in
-# the concat list at 1920x1080, so its cost grows with the length of the
-# session, while the probe reads container metadata and decodes nothing,
-# so its cost is independent of the film.  Neither value is a
-# performance budget.  Both are outer bounds, far enough above anything
-# this pipeline can produce that reaching one means the child is stuck
-# rather than slow -- which is why no figure from a particular session
-# is written here: it would go stale the moment the capture set is
-# replaced, and the bound does not depend on it.  The film's real
-# duration is measured after the encode and compared against
-# timeline.json, which is where that number belongs.
+# Wall-clock ceilings for the two children this module runs.  A hung tool is a
+# fault to REPORT: without a limit, one unresolvable entry in the concat list
+# leaves ffmpeg waiting forever and the pipeline -- one sequential script --
+# stops with no diagnosis at all.
 ENCODE_TIMEOUT = 3600.0
 PROBE_TIMEOUT = 120.0
 
@@ -314,10 +279,8 @@ MIN_OUTPUT_BYTES = 4096
 #
 #     container - timeline_total  is in  [+0.02, +0.06]
 #
-# deterministically, whatever the length of the film.  Measured on this
-# host: 11.250 -> 11.280 (+0.03), 134.000 -> 134.040 (+0.04), and a
-# 396-entry 570.500 s stress list -> 570.560 (+0.06), whose worst
-# per-entry deviation from the exact cumulative sum was +0.020 s.
+# deterministically, whatever the length of the film.
+# playthrough/TECHNICAL_NOTES.md records the measured values.
 #
 # The failure this comparison exists to catch is much larger and has
 # the opposite sign.  Dropping the repeated final entry loses the last
@@ -338,18 +301,12 @@ DURATION_TOLERANCE = 0.12
 # 0.12 s, so it is not refused here -- but it is never granted quietly.
 TOLERANCE_ADVISORY = 0.25
 
-# AND THIS IS WHERE IT STOPS BEING A TOLERANCE.  Past this the check no
-# longer distinguishes an encoder's rounding from a container that lost
-# an entry, and the duration comparison is the ONLY gate that can catch
-# a truncated film: the frame count still matches, every capture is
-# present, and only the length is wrong.  A caller that could pass
-# --tolerance 3600 could therefore publish a film whose captions run off
-# the end of it while every check reported success.
-#
-# One second is deliberately far wider than any real encoder rounding --
-# the measured worst case on this host is 0.12 s -- and still narrower
-# than the 0.25 s FLOOR of a single frame's on-screen time, so a film
-# missing even one frame's worth of duration cannot hide beneath it.
+# AND THIS IS WHERE IT STOPS BEING A TOLERANCE.  Past this the check no longer
+# distinguishes an encoder's rounding from a container that lost an entry, and
+# the duration comparison is the ONLY gate that can catch a truncated film: the
+# frame count still matches, every capture is present, and only the length is
+# wrong.  A caller that could pass --tolerance 3600 could therefore publish a
+# film whose captions run off the end of it while every check reported success.
 TOLERANCE_CEILING = 1.0
 
 # ---------------------------------------------------------------------
@@ -394,17 +351,14 @@ ENV_CONCAT_LIST = "PLAYTHROUGH_CONCAT_LIST"
 ENV_MOVIE = "PLAYTHROUGH_MOVIE"
 TOOL_ENV_PREFIX = "PLAYTHROUGH_BIN_"
 
-# Where the two artifacts land when nothing nominates them, relative to
-# the playthrough directory.  Joined from literal components, never
-# concatenated from anything a caller supplied.  The `build` component
-# names the ONLY directory this module ever creates: make_transitions.py
-# owns build/transitions/, this module owns build/concat.txt, and
-# creating that parent is the whole of its directory management.
+# Where the two artifacts land when nothing nominates them, relative to the
+# playthrough directory.  Joined from literal components, never concatenated
+# from anything a caller supplied.
 CONCAT_REL_PARTS = ("build", "concat.txt")
 MOVIE_REL_PARTS = ("cata-play.mp4",)
 
 # The same two paths spelled for a human, so a refusal names them the
-# way the AAP and playthrough/README.md do.
+# way playthrough/README.md does.
 CONCAT_REL_DESC = "playthrough/" + "/".join(CONCAT_REL_PARTS)
 MOVIE_REL_DESC = "playthrough/" + "/".join(MOVIE_REL_PARTS)
 
@@ -418,20 +372,12 @@ MOVIE_SUFFIX = ".mp4"
 FFMPEG = "ffmpeg"
 FFPROBE = "ffprobe"
 
-# The shell the trust gate is asked through, named here beside the other
-# two because it is a tool of exactly the same standing.
-#
-# IT USED TO BE THE LITERAL STRING "bash" IN A subprocess ARGUMENT LIST,
-# resolved through PATH like any bare command name -- and a review named
-# what that costs.  assert_trusted_render is the control that decides
-# whether this film may be encoded at all, and it reaches its verdict
-# from the EXIT STATUS of that shell.  A `bash` earlier on PATH that does
-# nothing but `exit 0` therefore returns "trusted" without reading
-# env.sh, without evaluating a single check, and the encode proceeds --
-# so the one gate standing between a relaxed host and a committed film
-# was the only tool in this module resolved without verification, while
-# ffmpeg and ffprobe, which merely move pixels, were both checked.  The
-# asymmetry was exactly backwards.
+# The shell the trust gate is asked through, named here beside the other two
+# because it is a tool of exactly the same standing.  A LITERAL "bash" IN A
+# subprocess ARGUMENT LIST is resolved through PATH like any bare command
+# name, and assert_trusted_render is the control that decides whether this
+# film may be encoded at all -- reaching its verdict from the EXIT STATUS of
+# that shell.  So the shell is resolved the way every other tool here is.
 SHELL = "bash"
 
 # Which apt package ships each tool, so a missing-tool message says what
@@ -454,12 +400,12 @@ EXIT_FAILED = 1
 # THE TRUST GATE
 #
 # The film is a COMMITTED artifact, so it is evidence in exactly the
-# sense a kept frame is -- and a security review found that the
-# end-of-life platform waiver did not force the diagnostic state, leaving
-# capture and mux "eligible as trusted production evidence despite
-# known-unpatched parser/X risks".  It is a registered trust bypass now,
-# capture.sh and launch_game.sh refuse under it, embed_captions.sh
-# refuses the mux under it, and this module refuses the encode.
+# sense a kept frame is.  The end-of-life platform waiver is therefore a
+# REGISTERED TRUST BYPASS rather than a convenience: a waiver that left
+# the trust state alone would make capture and mux "eligible as trusted
+# production evidence despite known-unpatched parser/X risks".  Under it
+# capture.sh and launch_game.sh refuse, embed_captions.sh refuses the
+# mux, and this module refuses the encode.
 #
 # THE ANSWER COMES FROM env.sh, NOT FROM A VARIABLE.  Reading an exported
 # PLAYTHROUGH_TRUST_STATE would be a control a caller defeats by
@@ -478,14 +424,11 @@ EXIT_FAILED = 1
 ENV_SCRIPT_REL_PARTS = ("playthrough", "tooling", "env.sh")
 TRUST_CONTEXT = "the film render"
 TRUST_TIMEOUT = 60
-# Sourced, then asked BOTH questions, in embed_captions.sh's own order:
-# is this platform still receiving security fixes, and is any check
-# relaxed?  Both are required and neither implies the other -- an
-# unwaived end-of-life host is "trusted" until something calls the
-# platform check, and a waived one is in support of nothing.  The path
-# arrives as $1 so nothing is interpolated into the program text, and
-# stdout is discarded because env.sh's summary is not this module's
-# business; only the status and stderr are.
+# Sourced, then asked BOTH questions, in embed_captions.sh's own order: is this
+# platform still receiving security fixes, and is any check relaxed?  Both are
+# required and neither implies the other -- an unwaived end-of-life host is
+# "trusted" until something calls the platform check, and a waived one is in
+# support of nothing.
 TRUST_PROGRAM = (
     'set +e\n'
     '. "$1" >/dev/null 2>&1 || exit 97\n'
@@ -500,12 +443,11 @@ TRUST_EXIT_PLATFORM = 96
 class RenderError(Exception):
     """The film cannot be rendered honestly from these inputs.
 
-    Raised in place of encoding something that would be wrong: a
-    missing frame, a duration the timeline should never have produced,
-    a flagged entry with no transition frames on disk, a path that
-    resolves outside the tree, or a container whose length does not
-    match the numbers the captions were written from.  A wrong film is
-    worse than no film, because it looks like a right one.
+    Raised in place of encoding something that would be wrong: a missing frame,
+    a duration the timeline should never have produced, a flagged entry with no
+    transition frames on disk, a path that resolves outside the tree, or a
+    container whose length does not match the numbers the captions were written
+    from.
     """
 
 
@@ -523,14 +465,10 @@ def _warn(message: str) -> None:
 class ConcatEntry(NamedTuple):
     """One image entry of the concat list.
 
-    `path` is absolute and has already been proved to lie inside the
-    directory its `kind` belongs to.  `relative` is the same file
-    spelled relative to the render root with forward slashes, which is
-    the form the committed list carries.  `duration` is the seconds this
-    image occupies on screen -- read from the timeline for a capture,
-    and the group's share of the transition second for a transition
-    frame.  `frame` is the capture index the entry is or follows, and
-    `ordinal` places a transition frame within its group.
+    `path` is absolute and has already been proved to lie inside the directory
+    its `kind` belongs to.  `relative` is the same file spelled relative to the
+    render root with forward slashes, which is the form the committed list
+    carries.
     """
 
     path: str
@@ -544,12 +482,8 @@ class ConcatEntry(NamedTuple):
 class Plan(NamedTuple):
     """Everything the encode needs, resolved and checked.
 
-    Built before a byte is written, so a defect in the timeline or a
-    missing file stops the run while the previous artifacts are still
-    intact.  `expected_total` is sum(durations) + sum(transitions)
-    computed from the entries; `declared_total` is what the document
-    says the same quantity is, or None for a bare array.  They are
-    compared rather than assumed equal.
+    Built before a byte is written, so a defect in the timeline or a missing
+    file stops the run while the previous artifacts are still intact.
     """
 
     entries: List[ConcatEntry]
@@ -609,12 +543,9 @@ def _module_dir() -> str:
 def _approved_root(root: Optional[str] = None) -> str:
     """Return the only tree this module may read from or write into.
 
-    Delegated to timeline.approved_root() rather than reimplemented, so
-    the renderer, the caption generator and the transition composer
-    cannot end up with three opinions about where an artifact may live.
-    It resolves to playthrough/ from the module's own location and NEVER
-    from the environment; `root` is a call site's argument so that a
-    test can hold the same rules against a directory it owns.
+    Delegated to timeline.approved_root() rather than reimplemented, so the
+    renderer, the caption generator and the transition composer cannot end up
+    with three opinions about where an artifact may live.
     """
     try:
         return approved_root(root)
@@ -625,11 +556,8 @@ def _approved_root(root: Optional[str] = None) -> str:
 def _publishable_root(root: Optional[str] = None) -> Optional[str]:
     """Return the repository root when a render there could be committed.
 
-    ``None`` when it could not -- when the tree is not a git working
-    tree, which is what a temporary render root is.  The distinction is
-    the whole basis of the trust gate: an artifact that cannot be
-    committed cannot become evidence, and the pipeline's integrity claim
-    is about committed artifacts (R1, R3).
+    ``None`` when it could not -- when the tree is not a git working tree,
+    which is what a temporary render root is.
     """
     base = os.path.dirname(_approved_root(root))
     return base if os.path.exists(os.path.join(base, ".git")) else None
@@ -638,14 +566,11 @@ def _publishable_root(root: Optional[str] = None) -> Optional[str]:
 def assert_trusted_render(root: Optional[str] = None) -> Optional[str]:
     """Refuse the encode while the trust state is diagnostic.
 
-    Returns the repository root the gate ran against, or ``None`` when it
-    did not apply.  Raises :class:`RenderError` when the state is
-    diagnostic, and ALSO when the answer cannot be obtained at all: a
-    gate that cannot run stops the run, because "I could not ask" and
-    "the answer was no" leave the same film unattested.
+    Returns the repository root the gate ran against, or ``None`` when it did
+    not apply.
 
-    The reason is env.sh's own, quoted verbatim, so an operator reads the
-    same sentence here that capture.sh and embed_captions.sh print.
+    The reason is env.sh's own, quoted verbatim, so an operator reads the same
+    sentence here that capture.sh and embed_captions.sh print.
     """
     base = _publishable_root(root)
     if base is None:
@@ -698,16 +623,13 @@ def assert_trusted_render(root: Optional[str] = None) -> Optional[str]:
 def render_root(root: Optional[str] = None) -> str:
     """Return the directory a concat entry is spelled relative to.
 
-    The parent of the approved root -- the repository root in a real
-    checkout -- because that is exactly what the timeline's own
+    The parent of the approved root -- the repository root in a real checkout
+    -- because that is exactly what the timeline's own
     "playthrough/frames/frame_00001.png" is relative to, and what
-    make_transitions._validated_image_path() resolves such a value
-    against.  Deriving it from the approved root rather than from
-    $PLAYTHROUGH_REPO_ROOT keeps one answer to "relative to what"
-    instead of two that could disagree.
+    make_transitions._validated_image_path() resolves such a value against.
 
-    This is also the working directory ffmpeg is given, so that the
-    committed list means the same thing to a reader and to the encoder.
+    This is also the working directory ffmpeg is given, so that the committed
+    list means the same thing to a reader and to the encoder.
     """
     return os.path.dirname(_approved_root(root))
 
@@ -757,18 +679,8 @@ def _validated_output(
 ) -> str:
     """Return an absolute path this module is allowed to write.
 
-    Four rules, each closing a different way a write could land
-    somewhere it must not.  The path must resolve inside the approved
-    root, because both products are committed artifacts of this session
-    and an artifact written outside the tree is one nobody can audit.
-    It must NOT resolve inside playthrough/frames/: that directory holds
-    exactly one PNG per keystroke and nothing else, and a stray file
-    there would break the frame-count equals manifest-line-count
-    identity the one-frame-per-keystroke gate rests on.  It must not
-    already be something other than a regular file, so a directory, a
-    FIFO or a device node is refused rather than written to.  And when a
-    suffix is required it must carry it, because the container format is
-    selected by extension.
+    Four rules, each closing a different way a write could land somewhere it
+    must not.
     """
     resolved = _validated_path_value(value, label)
     approved = _approved_root(root)
@@ -814,31 +726,19 @@ def _assert_canonical_destination(
 ) -> None:
     """Refuse anything but this stage's two exact destinations.
 
-    CONTAINMENT IS NOT ENOUGH, and this is the gap it leaves.  Every
-    artifact this pipeline produces lives under playthrough/, so a rule
-    that only says "inside the approved root, and not in frames/" still
-    accepts playthrough/manifest.jsonl, playthrough/timeline.json,
+    CONTAINMENT IS NOT ENOUGH, and this is the gap it leaves.  Every artifact
+    this pipeline produces lives under playthrough/, so a rule that only says
+    "inside the approved root, and not in frames/" still accepts
+    playthrough/manifest.jsonl, playthrough/timeline.json,
     playthrough/transcript.srt and anything under playthrough/userdir/.
-    A --output or a $PLAYTHROUGH_MOVIE naming one of those would have an
-    h264 stream written over the session's own evidence -- the manifest
-    that every count is derived from, the timeline that both this module
-    and make_srt.py read as the single source of truth, or the save the
-    engine wrote.  The write would report success and the loss would
-    surface, much later, as some unrelated stage failing to parse a file.
 
-    So the destinations are ENUMERATED rather than merely bounded: this
-    module writes playthrough/build/concat.txt and
-    playthrough/cata-play.mp4, and nothing else, ever.  The comparison
-    is on the resolved path so a checkout reached through a symlinked
-    ancestor still matches, and the permitted set is built from the same
-    REL_PARTS constants the defaults are built from, so the two cannot
-    drift apart.
+    So the destinations are ENUMERATED rather than merely bounded: this module
+    writes playthrough/build/concat.txt and playthrough/cata-play.mp4, and
+    nothing else, ever.
 
-    $PLAYTHROUGH_MOVIE and $PLAYTHROUGH_CONCAT_LIST therefore no longer
-    relocate these artifacts.  That is the intended loss: they are
-    committed evidence with one place to live, and env.sh exports them
-    so that every stage AGREES about where that place is -- not so that
-    it can be moved.
+    $PLAYTHROUGH_MOVIE and $PLAYTHROUGH_CONCAT_LIST therefore cannot
+    relocate either artifact: a value that does not resolve to one of these
+    two exact destinations is refused rather than honoured.
     """
     approved = _approved_root(root)
     permitted = {
@@ -860,11 +760,10 @@ def _assert_canonical_destination(
 def _captures_dir(root: Optional[str] = None) -> str:
     """Return the capture directory, through its own owner.
 
-    make_transitions.frames_dir() honours $PLAYTHROUGH_FRAMES_DIR and
-    proves the result is inside the approved root; borrowing it keeps
-    the renderer and the transition composer reading the same
-    directory, which matters because both resolve timeline paths
-    against it.
+    make_transitions.frames_dir() honours $PLAYTHROUGH_FRAMES_DIR and proves
+    the result is inside the approved root; borrowing it keeps the renderer and
+    the transition composer reading the same directory, which matters because
+    both resolve timeline paths against it.
     """
     try:
         return make_transitions.frames_dir(root)
@@ -883,12 +782,9 @@ def _transitions_dir(root: Optional[str] = None) -> str:
 def default_concat_path(root: Optional[str] = None) -> str:
     """Return the concat list this module writes.
 
-    $PLAYTHROUGH_CONCAT_LIST from playthrough/tooling/env.sh wins,
-    because env.sh is the single definition of the artifact layout and a
-    clone-indexed run must not write over another clone's list.
-    Otherwise playthrough/build/concat.txt, joined from literal
-    components onto the approved root so the module is still correct
-    when nothing has been sourced.
+    $PLAYTHROUGH_CONCAT_LIST from playthrough/tooling/env.sh wins, because
+    env.sh is the single definition of the artifact layout and a clone-indexed
+    run must not write over another clone's list.
     """
     from_env = os.environ.get(ENV_CONCAT_LIST)
     if from_env and from_env.strip():
@@ -917,28 +813,12 @@ def default_movie_path(root: Optional[str] = None) -> str:
 def _relative_entry(absolute: str, base: str) -> str:
     """Return `absolute` as a concat entry relative to `base`.
 
-    `base` IS THE DIRECTORY THE LIST FILE ITSELF SITS IN, because that
-    is the directory ffmpeg's concat demuxer resolves a relative entry
-    against -- not the working directory the encoder is launched from.
-    Measured: a list in playthrough/build/ carrying
-    `playthrough/frames/frame_00001.png` makes ffmpeg open
-    `playthrough/build/playthrough/frames/frame_00001.png` and fail with
-    "Impossible to open".  So the committed list carries `../frames/...`
-    for a capture and `transitions/...` for a transition frame, and the
-    committed list is therefore the file the encoder is handed.
+    `base` IS THE DIRECTORY THE LIST FILE ITSELF SITS IN, because that is the
+    directory ffmpeg's concat demuxer resolves a relative entry against -- not
+    the working directory the encoder is launched from.
 
-    An entry may climb out of `base` -- `../frames/` is the normal
-    spelling for a capture -- so climbing is not what is checked here.
-    Containment is established before this function is reached:
-    validated_capture_path() proves a capture lies inside
-    playthrough/frames/, _assert_group() proves a transition frame lies
-    inside playthrough/build/transitions/, and _absolute_entry() proves
-    it again on the way back. An ABSOLUTE result is still refused,
-    because it would make the committed list depend on this checkout's
-    location.  A single quote is refused too: the concat script format
-    has no way to escape one inside a single-quoted entry, so a path
-    containing one could not be expressed at all and must not be
-    silently mangled into something that parses as a different file.
+    An entry may climb out of `base` -- `../frames/` is the normal spelling for
+    a capture -- so climbing is not what is checked here.
     """
     relative = os.path.relpath(absolute, base)
     if os.path.isabs(relative):
@@ -959,17 +839,16 @@ def _relative_entry(absolute: str, base: str) -> str:
 def _assert_entry_size(path: str, width: int, height: int) -> None:
     """Refuse an image that is not the size the film is cut at.
 
-    THE ENCODER WOULD OTHERWISE HIDE THIS.  The command carries
-    `-s WIDTHxHEIGHT`, so an image of any other size is silently
-    RESCALED into the film rather than rejected: a capture taken at the
-    game window's 1920x1072 instead of the X root's 1920x1080, or a
-    transition frame composed against a different geometry, would be
-    stretched and the container would still probe at the right
-    resolution with every count matching.
+    THE ENCODER WOULD OTHERWISE HIDE THIS.  The command carries `-s
+    WIDTHxHEIGHT`, so an image of any other size is silently RESCALED into the
+    film rather than rejected: a capture taken at the game window's 1920x1072
+    instead of the X root's 1920x1080, or a transition frame composed against a
+    different geometry, would be stretched and the container would still probe
+    at the right resolution with every count matching.
 
-    Read from the IHDR chunk, so no decoder runs on a file that only
-    claims to be a PNG -- see make_transitions._image_size() for why
-    that matters with Pillow pinned below 12.
+    Read from the IHDR chunk, so no decoder runs on a file that only claims to
+    be a PNG -- see make_transitions._image_size() for why that matters with
+    Pillow pinned below 12.
     """
     try:
         actual = make_transitions._image_size(path)
@@ -991,12 +870,11 @@ def _absolute_entry(
 ) -> str:
     """Return a committed entry made absolute for the encoder.
 
-    The value arrives from bytes this module wrote and read back, which
-    is to say from the filesystem, so it is treated as untrusted all the
-    same: it must be relative, free of a NUL byte and of a quote, and
-    the joined result must resolve inside one of the directories the
-    film is allowed to draw imagery from.  Nothing else can reach the
-    encoder's input list.
+    The value arrives from bytes this module wrote and read back, which is to
+    say from the filesystem, so it is treated as untrusted all the same: it
+    must be relative, free of a NUL byte and of a quote, and the joined result
+    must resolve inside one of the directories the film is allowed to draw
+    imagery from.
     """
     if not relative or "\x00" in relative:
         raise RenderError(
@@ -1042,8 +920,6 @@ def verified_tool(name: str) -> str:
     """Return an absolute, executable path for the tool called `name`.
 
     :raises RenderError: when the tool is absent or is not executable.
-        The message names the package, because "FileNotFoundError:
-        'ffmpeg'" tells an operator nothing about what to install.
     """
     from_env = os.environ.get(_tool_env_var(name), "").strip()
     if from_env and os.path.isabs(from_env):
@@ -1074,14 +950,8 @@ def verified_tool(name: str) -> str:
 def _assert_trustworthy_tool(real: str, name: str, origin: str) -> None:
     """Refuse an encoder that somebody else could have replaced.
 
-    `os.access(X_OK)` says only "this is executable" -- it says nothing
-    about WHO can rewrite it.  This module runs whatever
-    $PLAYTHROUGH_BIN_FFMPEG names, and every frame of the committed film
-    passes through it, so an ffmpeg in a world-writable directory, or one
-    owned by another unprivileged account, is a binary any local process
-    can swap for its own before the render.  The film would then be
-    produced by something nobody inspected, and it would look exactly
-    like a successful run.
+    `os.access(X_OK)` says only "this is executable" -- it says nothing about
+    WHO can rewrite it.
 
     Three properties, checked on the RESOLVED path and on every ancestor
     directory of it:
@@ -1092,10 +962,8 @@ def _assert_trustworthy_tool(real: str, name: str, origin: str) -> None:
         world-writable, because write access to a directory is the right
         to replace what is in it.
 
-    Ancestors matter as much as the file: /usr/bin/ffmpeg owned by root
-    is no protection at all if /usr/bin is world-writable.  This mirrors
-    playthrough_verify_executable() in playthrough/tooling/env.sh, which
-    walks the same chain for the shell half of the pipeline.
+    Ancestors matter as much as the file: /usr/bin/ffmpeg owned by root is no
+    protection at all if /usr/bin is world-writable.
     """
     try:
         info = os.lstat(real)
@@ -1169,22 +1037,20 @@ DURATION_DECIMALS = 6
 MICROSECONDS = 10 ** DURATION_DECIMALS
 
 # ---------------------------------------------------------------------
-# TWO WIDTHS, AND WHY THE LIST NO LONGER STRIPS ZEROS
+# TWO WIDTHS, AND WHY NEITHER STRIPS ZEROS
 #
-# THE DEFECT.  Every duration used to be written at microsecond precision
-# and then stripped of trailing fractional zeros, so a captured frame's
-# 0.25 s came out as "0.25", 1 s as "1.0" and the ceiling as "10.0".  The
-# arithmetic was right -- ffmpeg parses "0.25" and 0.250 identically -- but
-# the committed concat list is EVIDENCE, and as evidence it disagreed with
-# every other artifact describing the same numbers: timeline.json writes
-# durations at three decimals, verify_artifacts.sh reads the clamp bounds
-# as 0.250 and 10.000, and the report quotes them that way.  A reader
-# comparing the list against the timeline had to know that "10.0" and
-# 10.000 were the same value and that "0.083333" was a different KIND of
-# number from either.
+# ffmpeg parses "0.25" and 0.250 identically, so stripping trailing
+# fractional zeros would be arithmetically harmless -- but the committed
+# concat list is EVIDENCE, and as evidence it has to agree with every other
+# artifact describing the same numbers.  timeline.json writes durations at
+# three decimals, verify_artifacts.sh reads the clamp bounds as 0.250 and
+# 10.000, and the report quotes them that way; a reader comparing the list
+# against the timeline should not have to know that "10.0" and 10.000 are
+# the same value while "0.083333" is a different KIND of number from
+# either.
 #
-# So the two kinds are now written at the width each is computed at, and
-# neither is stripped:
+# So each kind is written at the width it is computed at, and neither is
+# stripped:
 #
 #   * A CAPTURED FRAME's duration comes from timeline.py, which clamps and
 #     rounds to milliseconds.  Three decimals is exactly that resolution:
@@ -1208,13 +1074,11 @@ def format_duration(seconds: float) -> str:
     """Return `seconds` as a concat duration at microsecond width.
 
     The width used for a TRANSITION SHARE, which is computed in whole
-    microseconds: a twelfth of a second is "0.083333" and the remainder
-    frame "0.083337".  Fixed width, never stripped, so a re-run is
-    byte-identical and the number in the list is the number that was
-    computed.
+    microseconds: a twelfth of a second is "0.083333" and the remainder frame
+    "0.083337".
 
-    :func:`format_capture_duration` is the other half; see the note above
-    for why the two widths differ and what the difference says.
+    :func:`format_capture_duration` is the other half; see the note above for
+    why the two widths differ and what the difference says.
     """
     return _format_seconds(seconds, DURATION_DECIMALS)
 
@@ -1266,24 +1130,13 @@ def transition_durations(
 ) -> List[float]:
     """Split a transition's seconds across its frames, EXACTLY.
 
-    The timeline charges exactly `seconds` of video time per transition
-    and the container has to agree, so the split is done in whole
-    microseconds and the remainder is never dropped.  `frames - 1`
-    frames take an equal base share and THE LAST ONE TAKES THE EXACT
-    REMAINDER, so twelve frames over one second come out as eleven at
-    0.083333 s and one at 0.083337 s, summing to 1.000000 s and not to
-    0.999996 s.
+    The timeline charges exactly `seconds` of video time per transition and the
+    container has to agree, so the split is done in whole microseconds and the
+    remainder is never dropped.
 
-    That difference looks negligible and is not: a group that falls 4 us
-    short would drift the picture away from the cues by that much every
-    time the ceiling engages, in the same direction, for the rest of the
-    film.
-
-    The remainder is charged ONCE, at the END, rather than spread over
-    the leading frames.  Both spellings sum correctly, but this one
-    keeps every frame of a group identical except the last, so a
-    duration read out of the committed list is the group's base share
-    and the one exception is where the arithmetic says it is.
+    That difference looks negligible and is not: a group that falls 4 us short
+    would drift the picture away from the cues by that much every time the
+    ceiling engages, in the same direction, for the rest of the film.
     """
     frames = make_transitions.FRAMES_PER_GROUP if count is None else count
     if not isinstance(frames, int) or isinstance(frames, bool):
@@ -1355,10 +1208,7 @@ def _entry_duration(entry: Dict[str, Any], position: int) -> float:
     """Return an entry's clamped duration, checked against the clamp.
 
     A value outside [FLOOR, CEIL] means timeline.py did not produce this
-    document, or something edited it afterwards.  Either way the film's
-    pacing and the caption cues no longer come from the same rule, so it
-    is refused rather than encoded.  EPSILON absorbs the representation
-    of a decimal boundary in binary floating point and nothing more.
+    document, or something edited it afterwards.
     """
     value = entry.get("duration")
     if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -1398,11 +1248,8 @@ def group_paths(
 ) -> List[str]:
     """Return the twelve transition frames that follow `frame`.
 
-    The stem and the group size come from make_transitions, which wrote
-    them, so the renderer cannot look for a name the composer does not
-    produce.  The prefix is put through that module's own output-prefix
-    validator, so the paths are proved to lie inside the transitions
-    directory before any of them is opened.
+    The stem and the group size come from make_transitions, which wrote them,
+    so the renderer cannot look for a name the composer does not produce.
     """
     stem = _join(
         directory,
@@ -1422,12 +1269,10 @@ def _assert_group(
 ) -> None:
     """Refuse a flagged entry whose group is not exactly on disk.
 
-    EXACTLY the twelve expected frames, no fewer and no more.  Too few
-    means make_transitions.py was not run, or was run against a
-    different timeline, and the container would then be short of imagery
-    for a second it has already charged to video time.  Too many means
-    something else is writing into that directory under this module's
-    naming, and a stray frame would be silently encoded into the film.
+    EXACTLY the twelve expected frames, no fewer and no more.  Too few means
+    make_transitions.py was not run, or was run against a different timeline,
+    and the container would then be short of imagery for a second it has
+    already charged to video time.
     """
     expected = [os.path.basename(path) for path in paths]
     missing = [name for name, path in zip(expected, paths)
@@ -1494,16 +1339,15 @@ def plan_render(
 ) -> Plan:
     """Resolve and check every input before a byte is written.
 
-    THE WHOLE OF THE INPUT CONTRACT IS ASSERTED HERE, so that a defect
-    stops the run while the previous concat list and the previous movie
-    are still intact and still consistent with each other.  In order:
-    the document satisfies its own invariant; the transition length is
-    the one that can be materialised; every entry's frame index,
-    duration and flag are well formed; every capture named exists and
-    lies inside playthrough/frames/; every flagged entry's group is
-    exactly on disk AND is attributed by its own generation manifest to
-    THIS timeline; and the total the entries imply is the total the
-    document declares.
+    THE WHOLE OF THE INPUT CONTRACT IS ASSERTED HERE, so that a defect stops
+    the run while the previous concat list and the previous movie are still
+    intact and still consistent with each other.  In order: the document
+    satisfies its own invariant; the transition length is the one that can be
+    materialised; every entry's frame index, duration and flag are well formed;
+    every capture named exists and lies inside playthrough/frames/; every
+    flagged entry's group is exactly on disk AND is attributed by its own
+    generation manifest to THIS timeline; and the total the entries imply is
+    the total the document declares.
 
     A MISSING FRAME ABORTS AND IS NEVER SKIPPED.  Skipping one would
     preserve every appearance of success -- the encode would run, the
@@ -1512,9 +1356,7 @@ def plan_render(
     it by that frame's window.
 
     :param timeline_path: the document's own path, needed to hold the
-        transition groups' provenance against it.  When it is not given
-        the default timeline is assumed, which is what a direct call
-        without an explicit document path means.
+        transition groups' provenance against it.
     """
     try:
         entries = make_transitions.timeline_entries(document)
@@ -1529,21 +1371,15 @@ def plan_render(
             "timeline entry; a document with none is not a record of a "
             "session.")
 
-    # THE CANONICAL GATE, AND IT IS NO LONGER CONDITIONAL.  This used to
-    # read `if isinstance(document, dict)` -- which meant a bare ARRAY of
-    # entries skipped it silently, and a bare array was exactly what
-    # make_transitions.timeline_entries() used to accept.  So a
-    # hand-written list of durations could pace the whole film with no
-    # clamp bounds checked, no totals to check the entries against, no
-    # constants proving what the clamp was applied under, and no
+    # THE CANONICAL GATE, AND IT IS UNCONDITIONAL.  Gating on
+    # `isinstance(document, dict)` would let a bare ARRAY of entries skip it
+    # silently, and a hand-written list of durations could then pace the whole
+    # film with no clamp bounds checked, no totals to check the entries
+    # against, no constants proving what the clamp was applied under, and no
     # provenance naming the evidence any of it came from.
-    #
     # assert_timeline_document() requires all three: an object, zero
-    # validate_timeline() problems, and a manifest attestation that
-    # matches the manifest on disk.  The last one is what catches a stale
-    # timeline left beside a re-recorded session -- the one failure no
-    # internal invariant can see, because a stale document is perfectly
-    # self-consistent.
+    # validate_timeline() problems, and a manifest attestation that matches the
+    # manifest on disk.
     try:
         assert_timeline_document(document, root, label="timeline")
     except TimelineError as err:
@@ -1603,27 +1439,20 @@ def plan_render(
         groups += 1
 
     # THE PROVENANCE OF THE GROUP SET, CHECKED GLOBALLY AND ONLY ONCE.
-    # _assert_group() above proves each flagged index has exactly its
-    # twelve files at the right geometry, and a name and a size are not
-    # evidence: the same twelve names exist in every session that flags
-    # frame 42.  This holds the whole directory to the provenance record
-    # make_transitions.py publishes BESIDE it, at
-    # playthrough/build/transitions.json -- which binds the groups to a
-    # timeline by that document's digest, to the captures they were faded
-    # between, and to their own bytes -- and holds the group INDEX SET to
-    # the flags in THIS document, so a stale group for an index the
-    # recomputed timeline no longer flags is refused instead of being
-    # invisible here and counted by verify_artifacts.sh.
-    #
-    # The record moved out of the directory because that directory admits
-    # `trans_*.png` and nothing else, and the two halves are held
-    # together by the generation journal rather than by sharing one
-    # rename -- so a group set whose record does not describe it is a
-    # REFUSAL here, which is what makes the split safe.
-    #
-    # Skipped only when the timeline flags nothing at all, in which case
-    # there is no group set to attribute; _assert_group() is likewise never
-    # reached, and the directory may legitimately not exist.
+    # _assert_group() above proves each flagged index has exactly its twelve
+    # files at the right geometry, and a name and a size are not evidence: the
+    # same twelve names exist in every session that flags frame 42.  This holds
+    # the whole directory to the provenance record make_transitions.py
+    # publishes BESIDE it, at playthrough/build/transitions.json -- which binds
+    # the groups to a timeline by that document's digest, to the captures they
+    # were faded between, and to their own bytes -- and holds the group INDEX
+    # SET to the flags in THIS document, so a stale group for an index the
+    # recomputed timeline no longer flags is refused instead of being invisible
+    # here and counted by verify_artifacts.sh.  The record sits outside the
+    # directory because that directory admits `trans_*.png` and nothing else,
+    # and the two halves are held together by the generation journal rather
+    # than by sharing one rename -- so a group set whose record does not
+    # describe it is a REFUSAL here, which is what makes the split safe.
     if flagged_frames:
         source = (default_timeline_path() if timeline_path is None
                   else timeline_path)
@@ -1714,19 +1543,13 @@ def _assert_counts(
 def format_concat_list(plan: Plan) -> str:
     """Return the committed concat list, exactly as it is written.
 
-    In frame order: a `file` line and its `duration` line per entry,
-    with each flagged capture followed immediately by its twelve
-    transition frames, each carrying its own share of the transition
-    second.  Then -- and this is the part that must never be tidied away
-    -- the final `file` line ONCE MORE with no duration after it, so
-    that the last entry's duration takes effect and the container
-    reaches the length the captions were written for.  Whatever ends up
-    last in the sequence is what gets repeated, whether that is a
-    capture or the twelfth frame of a group.
+    In frame order: a `file` line and its `duration` line per entry, with each
+    flagged capture followed immediately by its twelve transition frames, each
+    carrying its own share of the transition second.
 
     A capture's duration is written at millisecond width and a transition
-    share's at microsecond width, each being the resolution it was
-    computed at; see the note above :func:`format_duration`.
+    share's at microsecond width, each being the resolution it was computed at;
+    see the note above :func:`format_duration`.
     """
     if not plan.entries:
         raise RenderError("there are no entries to write")
@@ -1750,13 +1573,10 @@ def format_concat_list(plan: Plan) -> str:
 def concat_counts(text: str) -> Tuple[int, int]:
     """Return (file lines, duration lines) and check the relation.
 
-    The structural half of the truncation gate, and the deterministic
-    half: the file line count must be exactly the duration line count
-    plus one, because every entry contributes both and the final entry
-    contributes one extra file line.  This catches a dropped repeated
-    entry on the bytes themselves, without needing an encoder to notice
-    it, which matters because the container symptom is a length nobody
-    would question in isolation.
+    The structural half of the truncation gate, and the deterministic half: the
+    file line count must be exactly the duration line count plus one, because
+    every entry contributes both and the final entry contributes one extra file
+    line.
     """
     files = 0
     durations = 0
@@ -1788,15 +1608,14 @@ def resolved_committed_entries(
 ) -> List[str]:
     """Resolve every `file` entry of the committed list, in order.
 
-    Each entry is re-read from the bytes that were written and resolved
-    against `base` -- the list's own directory, which is what ffmpeg
-    resolves it against -- and proved to name a real file inside one of
-    the `allowed` directories.  Returns the absolute paths in list
-    order.
+    Each entry is re-read from the bytes that were written and resolved against
+    `base` -- the list's own directory, which is what ffmpeg resolves it
+    against -- and proved to name a real file inside one of the `allowed`
+    directories.
 
-    Reading them back from the bytes rather than from the plan is
-    deliberate: a short or corrupted write is caught here, because the
-    readback would then not reproduce the plan's sequence.
+    Reading them back from the bytes rather than from the plan is deliberate: a
+    short or corrupted write is caught here, because the readback would then
+    not reproduce the plan's sequence.
     """
     resolved: List[str] = []
     seen = False
@@ -1830,13 +1649,11 @@ def verify_committed_list(
 ) -> List[str]:
     """Prove the committed list is the sequence the plan resolved.
 
-    The list handed to the encoder is the one committed to the
-    repository, so it is verified rather than trusted: every entry is
-    resolved from its own bytes and the resulting sequence must equal
-    the plan's paths PLUS THE REPEATED FINAL ENTRY, which is what makes
-    the last image's duration take effect.  A mismatch means the bytes
-    on disk are not the film that was planned, and the encode is refused
-    rather than producing a container nobody can reproduce.
+    The list handed to the encoder is the one committed to the repository, so
+    it is verified rather than trusted: every entry is resolved from its own
+    bytes and the resulting sequence must equal the plan's paths PLUS THE
+    REPEATED FINAL ENTRY, which is what makes the last image's duration take
+    effect.
     """
     resolved = resolved_committed_entries(committed, base, allowed)
     expected = [entry.path for entry in plan.entries]
@@ -1857,10 +1674,8 @@ def verify_committed_list(
 def _sync_directory(parent: str) -> None:
     """Force a rename in `parent` to the device, tolerating refusal.
 
-    os.replace() is atomic with respect to a reader, but the directory
-    entry it creates is not durable until the directory itself is
-    synced.  A filesystem that refuses is reported rather than allowed
-    to end the run: the data itself is already fsynced.
+    os.replace() is atomic with respect to a reader, but the directory entry it
+    creates is not durable until the directory itself is synced.
     """
     try:
         descriptor = os.open(parent, os.O_RDONLY | os.O_DIRECTORY)
@@ -1879,18 +1694,15 @@ def _sync_directory(parent: str) -> None:
 def write_text(path: str, text: str) -> str:
     """Write `text` to `path` atomically.  Returns the path written.
 
-    UTF-8 with newline="\\n", so the artifact has LF endings whatever
-    the platform and never a byte-order mark -- a mark in front of the
-    first `file` line would stop the demuxer recognising it.
+    UTF-8 with newline="\n", so the artifact has LF endings whatever the
+    platform and never a byte-order mark -- a mark in front of the first `file`
+    line would stop the demuxer recognising it.
 
-    THE REPLACEMENT IS ATOMIC.  Opening the destination "w" truncates it
-    first, so an interruption between the truncation and the last byte
-    would leave half a concat list where a complete one had been, which
-    is worse than a stale one because the stale one at least describes a
-    film that was actually encoded.  So the text goes to a temporary
-    file in the SAME directory, is flushed and fsynced, and is then
-    moved into place with os.replace(), which either fully succeeds or
-    leaves the previous file untouched.
+    THE REPLACEMENT IS ATOMIC.  Opening the destination "w" truncates it first,
+    so an interruption between the truncation and the last byte would leave
+    half a concat list where a complete one had been, which is worse than a
+    stale one because the stale one at least describes a film that was actually
+    encoded.
     """
     parent = os.path.dirname(path)
     if not os.path.isdir(parent):
@@ -1972,24 +1784,16 @@ def stage_concat_list(
 ) -> Tuple[str, str, str]:
     """Stage the concat list beside its target.  Returns three strings.
 
-    ``(target, staging, text)`` -- where the list will be published, where
-    it is now, and the bytes it carries.
+    ``(target, staging, text)`` -- where the list will be published, where it
+    is now, and the bytes it carries.
 
-    STAGED IN THE TARGET'S OWN DIRECTORY, WHICH IS LOAD-BEARING.  Every
-    `file` entry is spelled relative to the LIST's directory, because that
-    is what ffmpeg's concat demuxer resolves it against.  Staging it
-    anywhere else -- a temporary directory, the scratch area -- would make
-    those entries resolve somewhere else or not at all, so the encoder
-    would have to be handed a different list from the one committed, which
-    is precisely the defect this module already fixed once.  Staged here,
-    the bytes handed to ffmpeg and the bytes published are the SAME BYTES,
-    moved by a rename rather than rewritten.
+    STAGED IN THE TARGET'S OWN DIRECTORY, WHICH IS LOAD-BEARING.  Every `file`
+    entry is spelled relative to the LIST's directory, because that is what
+    ffmpeg's concat demuxer resolves it against.
 
-    The bytes are read back and the structural
-    file-equals-duration-plus-one relation is asserted on what is actually
-    on disk rather than on the string in memory.  A concat list is the
-    instruction sheet for the encode; verifying it costs microseconds and
-    catches a full disk.
+    The bytes are read back and the structural file-equals-duration-plus-one
+    relation is asserted on what is actually on disk rather than on the string
+    in memory.
     """
     target = concat_target(path, root)
     text = format_concat_list(plan)
@@ -2027,15 +1831,14 @@ def write_concat_list(
 ) -> Tuple[str, str]:
     """Write and publish the concat list.  Returns (path, text written).
 
-    THE CONCAT-ONLY PATH.  ``--concat-only`` exists so an operator can
-    inspect the instruction sheet without spending an encode, and in that
-    mode there is no movie for the list to be consistent with, so
-    publishing it on its own is the whole of the job.
+    THE CONCAT-ONLY PATH.  ``--concat-only`` exists so an operator can inspect
+    the instruction sheet without spending an encode, and in that mode there is
+    no movie for the list to be consistent with, so publishing it on its own is
+    the whole of the job.
 
     The full render does NOT come through here: it stages the list, encodes
-    from the staged bytes, and publishes the list and the movie together as
-    one generation.  See :func:`stage_concat_list` and
-    :func:`publish_generation` for why.
+    from the staged bytes, and publishes the list and the movie together as one
+    generation.
     """
     target, staging, text = stage_concat_list(plan, path, root)
     try:
@@ -2062,19 +1865,14 @@ def encode_command(
 ) -> List[str]:
     """Return the ffmpeg argument list, built rather than interpolated.
 
-    A LIST, never a string and never a shell.  That is the repository's
-    CodeQL python leg gate
-    [.github/workflows/codeql-analysis.yml:35] and it also means a path
-    containing a space, a quote or a semicolon cannot change what runs.
+    A LIST, never a string and never a shell.  That is the repository's CodeQL
+    python leg gate [.github/workflows/codeql-analysis.yml:35] and it also
+    means a path containing a space, a quote or a semicolon cannot change what
+    runs.
 
-    There is no filter argument here and there is no way to add one:
-    the captions are muxed as a SELECTABLE mov_text track by
-    embed_captions.sh, and burning them into the picture is forbidden.
-    There is no audio input either, so the container carries no audio
-    stream -- nothing needs suppressing, because nothing is offered.
-    And there is no output frame-rate argument, which is not an omission
-    but a requirement: ffmpeg refuses one alongside a non-constant
-    -fps_mode outright.
+    There is no filter argument here and there is no way to add one: the
+    captions are muxed as a SELECTABLE mov_text track by embed_captions.sh, and
+    burning them into the picture is forbidden.
     """
     return [
         ffmpeg,
@@ -2103,19 +1901,14 @@ def _run(
     """Run a tool under a hard time limit and return its stdout.
 
     Standard input is /dev/null because ffmpeg reads the terminal for
-    interactive commands and will otherwise consume whatever the parent
-    was reading -- observed on this host swallowing the remainder of a
-    shell script and printing its own "Enter command:" prompt.  Standard
-    error is captured and SURFACED on failure rather than swallowed: the
-    one line that says which frame could not be opened is the whole
-    diagnostic.
+    interactive commands and will otherwise consume whatever the parent was
+    reading -- observed on this host swallowing the remainder of a shell script
+    and printing its own "Enter command:" prompt.
 
-    EVERY CHILD IS BOUNDED AND EVERY CHILD IS REAPED.  Without a
-    timeout, one malformed entry in the concat list is enough for ffmpeg
-    to sit forever on an input it cannot resolve, and the whole pipeline
-    -- which is a single sequential script -- stops with no diagnosis and
-    no process to inspect.  A hung tool is a fault to REPORT, not a
-    reason to wait indefinitely.
+    EVERY CHILD IS BOUNDED AND EVERY CHILD IS REAPED.  Without a timeout, one
+    malformed entry in the concat list is enough for ffmpeg to sit forever on
+    an input it cannot resolve, and the whole pipeline -- which is a single
+    sequential script -- stops with no diagnosis and no process to inspect.
 
     Termination is deterministic rather than best-effort: the child is
     started in its OWN process group, so the timeout kills the group and
@@ -2126,8 +1919,8 @@ def _run(
     something else entirely three stages later.
 
     :param timeout: wall-clock seconds.  The caller chooses, because an
-        encode of a long film and a metadata probe are not the same
-        order of magnitude.
+        encode of a long film and a metadata probe are not the same order
+        of magnitude.
     """
     try:
         process = subprocess.Popen(
@@ -2170,11 +1963,9 @@ def _terminate_group(
 ) -> None:
     """Kill a timed-out child's whole process group, then reap it.
 
-    SIGKILL rather than SIGTERM: this is already the timeout path, so
-    the tool has had its chance to finish, and a handler that ignores
-    SIGTERM would leave exactly the orphan this exists to prevent.  The
-    group id is the child's pid because it was started with
-    start_new_session=True.
+    SIGKILL rather than SIGTERM: this is already the timeout path, so the tool
+    has had its chance to finish, and a handler that ignores SIGTERM would
+    leave exactly the orphan this exists to prevent.
     """
     try:
         os.killpg(process.pid, signal.SIGKILL)
@@ -2192,26 +1983,21 @@ def _terminate_group(
 # Publication
 #
 # WHY THE MOVIE IS NOT ENCODED ONTO ITS OWN PATH.  `ffmpeg -y` truncates
-# its output the moment it opens it, and the verification -- the ffprobe
-# duration comparison that is the ONLY check able to catch a truncated
-# film -- ran afterwards, against that same path.  So every failure mode
-# the check exists to detect had already destroyed the previous good
-# movie by the time it was detected: a short container, a missing
-# repeated final entry, an encoder killed half way, a full disk.  The run
-# reported the problem and exited non-zero, and playthrough/cata-play.mp4
-# was left holding a film nobody had verified, in place of one that had
-# been.  It is a committed artifact, so the loss reached the repository.
+# its output the moment it opens it, so encoding onto the canonical path
+# would destroy the previous verified film before the ffprobe duration
+# comparison -- the ONLY check able to catch a truncated container -- had
+# run: a short container, a missing repeated final entry, an encoder
+# killed half way or a full disk would each be reported only after the
+# committed artifact was already gone.
 #
-# So the encode now goes to a unique staging sibling, the staging file is
+# So the encode goes to a unique staging sibling, the staging file is
 # probed and verified there, and only a file that passed every check is
 # renamed onto the canonical path -- atomically, so a reader sees either
 # the previous movie or the new one and never a partial encode.  A
 # failure removes the staging file and leaves the published movie exactly
-# as it was.
-#
-# The staging file is a SIBLING because os.replace() is only atomic
-# within one filesystem, and it keeps the .mp4 suffix because ffmpeg
-# selects the muxer from the extension.
+# as it was.  The staging file is a SIBLING because os.replace() is only
+# atomic within one filesystem, and it keeps the .mp4 suffix because
+# ffmpeg selects the muxer from the extension.
 # ---------------------------------------------------------------------
 
 # The artifact this module publishes, for timeline.ArtifactLock.  The
@@ -2246,10 +2032,8 @@ def is_staging_name(name: str) -> bool:
 def clear_stale_staging(output: str) -> List[str]:
     """Remove staging files a killed run left beside `output`.
 
-    Called with the lock held, so nothing being removed here can belong
-    to a live run.  It matters because .gitignore re-includes everything
-    under playthrough/: a staging file that outlived its process would
-    otherwise be staged for commit as though it were the film.
+    Called with the lock held, so nothing being removed here can belong to a
+    live run.
     """
     directory = os.path.dirname(output)
     stem = os.path.splitext(os.path.basename(output))[0]
@@ -2323,26 +2107,19 @@ def encode(
     """Encode the film in one pass.  Returns the output path.
 
     THE LIST THE ENCODER IS HANDED IS THE BYTES THAT GET COMMITTED.  Its
-    entries are spelled relative to its own directory, which is what
-    ffmpeg's concat demuxer resolves them against, so it needs no second
-    form to be runnable.  That matters beyond tidiness: while a transient
-    absolute copy was handed to ffmpeg instead, the artifact committed as
-    the film's input was never the input, and re-running the encode from
-    the committed list failed outright.
+    entries are spelled relative to its own directory, which is what ffmpeg's
+    concat demuxer resolves them against, so it needs no second form to be
+    runnable.
 
     `list_path` is the file to hand ffmpeg, and the full render passes the
-    STAGED list -- which sits in the published list's own directory, so
-    every entry resolves identically and the bytes are moved into place by
-    a rename afterwards rather than rewritten.  That is what lets the
-    encode happen BEFORE the list is published without the encoder and the
-    repository ever seeing different instructions.  It defaults to the
-    published path for the concat-only and direct-call cases.
+    STAGED list -- which sits in the published list's own directory, so every
+    entry resolves identically and the bytes are moved into place by a rename
+    afterwards rather than rewritten.
 
-    The list is verified before it is used either way: every entry is
-    re-read from the bytes on disk and resolved back to the planned
-    absolute path, so a short or corrupted write, or an entry pointing
-    outside the two approved directories, stops the encode instead of
-    pacing a film from it.
+    The list is verified before it is used either way: every entry is re-read
+    from the bytes on disk and resolved back to the planned absolute path, so a
+    short or corrupted write, or an entry pointing outside the two approved
+    directories, stops the encode instead of pacing a film from it.
     """
     allowed = [_captures_dir(root)]
     if plan.group_count:
@@ -2352,10 +2129,10 @@ def encode(
                           allowed, plan)
     ffmpeg = verified_tool(FFMPEG)
     # Run from the render root for consistency with every other stage.
-    # The working directory no longer bears on how an entry resolves --
-    # the demuxer resolves each one against the LIST's directory -- so
-    # this is a convention rather than a load-bearing choice, and the
-    # film is the same from any working directory.
+    # The working directory does not bear on how an entry resolves -- the
+    # demuxer resolves each one against the LIST's directory -- so this is
+    # a convention rather than a load-bearing choice, and the film is the
+    # same from any working directory.
     _run(encode_command(ffmpeg, concat, output,
                         plan.width, plan.height),
          render_root(root), "the ffmpeg encode")
@@ -2368,20 +2145,19 @@ def encode(
 # ---------------------------------------------------------------------
 # THE GENERATION: the concat list and the movie, published together
 #
-# THE DEFECT.  The list was written and published BEFORE the lock was
-# taken and before a byte was encoded, and the movie was published after.
-# Two consequences, both silent:
+# THE TWO ARTIFACTS ONLY MEAN ANYTHING TOGETHER.  Publishing the list
+# before the lock is taken and before a byte is encoded, with the movie
+# published after, has two silent consequences:
 #
-#   * A FAILED OR INTERRUPTED ENCODE left a NEW concat list beside an OLD
-#     movie.  Each file was internally valid, the list described a film
-#     that was never made, and nothing on disk recorded that they
-#     disagreed -- so `ffprobe` on the movie and a read of the list gave
-#     two different answers about the same session and both looked
-#     authoritative.
-#   * The list was published OUTSIDE the lock, so two runs could
-#     interleave: one publishing its list while the other encoded from it.
+#   * A FAILED OR INTERRUPTED ENCODE leaves a NEW concat list beside an OLD
+#     movie.  Each file is internally valid, the list describes a film that
+#     was never made, and nothing on disk records that they disagree -- so
+#     `ffprobe` on the movie and a read of the list give two different
+#     answers about the same session and both look authoritative.
+#   * A list published OUTSIDE the lock lets two runs interleave: one
+#     publishing its list while the other encodes from it.
 #
-# So the whole publication is now one generation.  The lock is taken
+# So the whole publication is ONE generation.  The lock is taken
 # first, the list is staged in its own target directory (which is what
 # makes the encoder's bytes and the committed bytes the same bytes), the
 # encode runs from the staged list, the container is verified, and only
@@ -2403,10 +2179,8 @@ def generation_manifest_path(root: Optional[str] = None) -> str:
     """Return playthrough/build/movie.json.
 
     Joined onto the APPROVED root -- playthrough/ -- exactly as
-    CONCAT_REL_PARTS is, because the manifest lives beside the concat list
-    it describes.  render_root() is the parent of that and is what a
-    concat ENTRY is spelled relative to; the two are one directory apart
-    and confusing them puts the manifest outside the committed tree.
+    CONCAT_REL_PARTS is, because the manifest lives beside the concat list it
+    describes.
     """
     return _join(_approved_root(root),
                  (BUILD_DIR_NAME, GENERATION_MANIFEST_NAME))
@@ -2499,16 +2273,11 @@ def publish_generation(
 ) -> Dict[str, Any]:
     """Switch in the concat list and the movie as one generation.
 
-    Returns the manifest record that was written.  Called with the lock
-    held and only after the container has been verified, so nothing here
-    can fail for a reason that should have stopped the run.
+    Returns the manifest record that was written.  Called with the lock held
+    and only after the container has been verified, so nothing here can fail
+    for a reason that should have stopped the run.
 
-    The journal goes down FIRST, durably, naming both targets and both
-    digests.  Between the two renames the tree is momentarily half
-    switched, and the journal is what makes that state readable instead of
-    permanent: the next run reports exactly which file should hold what,
-    and this stage -- deterministic for a given timeline -- finishes it by
-    publishing again.
+    The journal goes down FIRST, durably, naming both targets and both digests.
     """
     record = build_generation_manifest(
         plan, timeline_path, list_target, list_text, movie_target, probe)
@@ -2564,28 +2333,27 @@ def _assert_generation_published(
 
 
 # ---------------------------------------------------------------------
-# Verification.  EVIDENCE OVER ASSERTION: the module measures the file
-# it just produced and prints the measurement next to the number it was
-# supposed to be, instead of reporting "ok".  A container that came up
-# short is the one failure mode with no visible symptom -- every count
-# still matches, the frames are all there, and only the length is wrong
-# -- so the comparison is mandatory rather than optional.
+# Verification
+#
+# EVIDENCE OVER ASSERTION: the module measures the file it just produced
+# and prints the measurement next to the number it was supposed to be,
+# instead of reporting "ok".  A container that came up short is the one
+# failure mode with no visible symptom -- every count still matches, the
+# frames are all there, and only the length is wrong -- so the comparison
+# is mandatory rather than optional.
 # ---------------------------------------------------------------------
 
 def probe_command(ffprobe: str, path: str) -> List[str]:
     """Return the ffprobe argument list.
 
-    One invocation for everything: the container's duration and every
-    stream's type, codec and geometry.  Asking once means the numbers
-    that get compared all describe the same file at the same moment.
+    One invocation for everything: the container's duration and every stream's
+    type, codec and geometry.  Asking once means the numbers that get compared
+    all describe the same file at the same moment.
 
-    `-count_packets` is what makes the image count checkable.  Under
-    `-fps_mode vfr` the header's `nb_frames` is routinely absent, so
-    without it a film that dropped or duplicated an image entry passes
-    the codec, geometry and duration checks with nothing objecting.
-    Counting packets demuxes the stream, which costs a pass over the
-    file and is worth it for the one check that compares the picture
-    count against the plan.
+    `-count_packets` is what makes the image count checkable.  Under `-fps_mode
+    vfr` the header's `nb_frames` is routinely absent, so without it a film
+    that dropped or duplicated an image entry passes the codec, geometry and
+    duration checks with nothing objecting.
     """
     return [
         ffprobe,
@@ -2697,20 +2465,17 @@ def verify_problems(
 ) -> List[str]:
     """Return every way the container disagrees with the plan.
 
-    An empty list means: exactly one video stream, h264, at the
-    resolution the captures were taken at, no audio stream at all, and a
-    duration within `tolerance` of sum(durations) + sum(transitions).
+    An empty list means: exactly one video stream, h264, at the resolution the
+    captures were taken at, no audio stream at all, and a duration within
+    `tolerance` of sum(durations) + sum(transitions).
 
-    The duration comparison is the one that earns its keep.  It catches
-    a dropped repeated final entry, a transition group whose emitted
-    durations did not sum to the second the timeline charged, and a
-    stale timeline.json -- three different defects, all silent, all
-    caught by one subtraction.
+    The duration comparison is the one that earns its keep.  It catches a
+    dropped repeated final entry, a transition group whose emitted durations
+    did not sum to the second the timeline charged, and a stale timeline.json
+    -- three different defects, all silent, all caught by one subtraction.
 
-    The PICTURE COUNT is checked beside it, because duration alone
-    cannot see a dropped image that another entry's duration absorbed.
-    The expected count is one per planned entry PLUS ONE for the
-    repeated final entry, which the demuxer emits as a real picture.
+    The PICTURE COUNT is checked beside it, because duration alone cannot
+    see a dropped image whose seconds another entry's duration absorbed.
     """
     problems: List[str] = []
     if probe.video_streams != 1:
@@ -2775,16 +2540,13 @@ def verify_problems(
 def relative_to_repo(path: str) -> str:
     """Express a path relative to the checkout, for reporting.
 
-    The summary is a machine-readable line that lands in run logs and in
-    the report, and an absolute path there discloses the filesystem
-    layout of the host -- the home directory, the operator's name, the
-    build root -- to every reader of an artifact that says nothing about
-    them otherwise.  Repository-relative is exactly the information the
-    reader needs and none of the information they do not.
+    The summary is a machine-readable line that lands in run logs and in the
+    report, and an absolute path there discloses the filesystem layout of the
+    host -- the home directory, the operator's name, the build root -- to every
+    reader of an artifact that says nothing about them otherwise.
 
-    A path outside the checkout is reduced to its basename behind a
-    marker, so the line stays honest about the file being elsewhere
-    without naming where.
+    A path outside the checkout is reduced to its basename behind a marker, so
+    the line stays honest about the file being elsewhere without naming where.
     """
     try:
         checkout = os.path.dirname(_approved_root())
@@ -2930,17 +2692,12 @@ def main(
 ) -> int:
     """Run the command line and return an exit status.
 
-    Zero only when every input checked out, the concat list was written
-    and verified on disk, and -- unless --concat-only was given -- the
-    encode succeeded and the finished container matched the timeline.  A
-    run_pipeline.sh stage reads nothing but this status, so a status
-    that is wrong is a whole stage that appears to have worked.
+    Zero only when every input checked out, the concat list was written and
+    verified on disk, and -- unless --concat-only was given -- the encode
+    succeeded and the finished container matched the timeline.
 
-    `root` is a call site's argument and nothing else: argparse never
-    produces it and no environment variable reaches it.  It exists so
-    that a test can hold the REAL command line against a directory it
-    owns instead of writing into the committed artifact tree, which is
-    the captured evidence of a session and is not a fixture.
+    `root` is a call site's argument and nothing else: argparse never produces
+    it and no environment variable reaches it.
     """
     args = build_parser().parse_args(argv)
     try:
@@ -2974,20 +2731,13 @@ def main(
             if not args.quiet:
                 print(summary_line(plan, list_path))
             return EXIT_OK
-        # PLAN, STAGE, ENCODE, VERIFY, THEN PUBLISH BOTH -- in that order
-        # and ALL of it under the lock.  The list used to be published
-        # before the lock was taken and before a byte was encoded, so a
-        # failed encode left a new list beside an old movie: two valid
-        # files describing different sessions, with nothing on disk saying
-        # so.  Now the list is staged in its own target directory, the
-        # encode runs from those exact bytes, the container is measured
-        # while it is still a staging sibling, and the list and the film
-        # are switched in together under a journal.
-        # THE TRUST GATE, before the lock and before a byte is
-        # encoded.  A film produced while a security check was relaxed
-        # is not evidence, and this one would be committed.  It applies
-        # only where the destination tree can publish -- a render into a
-        # temporary root is not evidence and is not gated.
+        # PLAN, STAGE, ENCODE, VERIFY, THEN PUBLISH BOTH -- in that order and
+        # ALL of it under the lock, for the reason THE GENERATION states: a
+        # list published before the encode leaves a new list beside an old
+        # movie whenever the encode fails.  So the list is staged in its own
+        # target directory, the encode runs from those exact bytes, the
+        # container is measured while it is still a staging sibling, and the
+        # list and the film are switched in together under a journal.
         assert_trusted_render(root)
         with ArtifactLock(LOCK_NAME, root):
             plan = plan_render(document, root, source)

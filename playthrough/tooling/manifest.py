@@ -24,29 +24,24 @@ SCHEMA -- exactly six keys, in this order, on every row:
                             description to be unambiguous
     commentary    str       the survivor's first-person reason for it
 
-Nothing else is permitted, and a row carrying an unexpected key or
-missing a required one is refused rather than written.  Durations,
-transition flags and caption cue windows belong to
-playthrough/timeline.json, the single source of truth for timing;
-recording them here as well would create the second source of truth the
-pipeline exists to avoid.  Engineering and diagnostic observations
-belong to playthrough/TECHNICAL_NOTES.md.
+A row carrying an unexpected key or missing a required one is refused
+rather than written.  Durations, transition flags and caption cue windows
+belong to playthrough/timeline.json, the single source of truth for
+timing; recording them here as well would create the second source of
+truth the pipeline exists to avoid.  Engineering and diagnostic
+observations belong to playthrough/TECHNICAL_NOTES.md.
 
 A RECORDED ROW IS NEVER EDITED, AND THIS MODULE HOLDS NO CODE THAT
 COULD.  There is no rewrite, no read-modify-write, no truncate and no
 "w" mode anywhere: the only write is :func:`append_row`, and the only
 other writer is :func:`append_amendment`, which appends to a DIFFERENT
-file.  A security review found the previous exception to that rule --
-an ``extend_action`` path that rebuilt the whole manifest through a
-temporary and renamed it over the original -- and it is gone rather
-than hardened, because a mechanism that can rewrite captured evidence
-is a defect however carefully it is guarded.
+file.  A path that rebuilt the manifest through a temporary and renamed
+it over the original would be a defect however carefully it was guarded,
+because a mechanism that CAN rewrite captured evidence is the hazard.
 
-CORRECTIONS ARE AMENDMENTS, IN THEIR OWN APPEND-ONLY LEDGER.  When a
-recorded row turns out to overstate what its own capture shows, or to
-carry a word the in-character record may not carry, the correction is
-appended to playthrough/amendments.jsonl as an AMENDMENT keyed to the
-sha256 of the immutable manifest line it corrects:
+CORRECTIONS ARE AMENDMENTS, IN THEIR OWN APPEND-ONLY LEDGER at
+playthrough/amendments.jsonl, each keyed to the sha256 of the immutable
+manifest line it corrects:
 
     amendment      int   1..n, in the order amendments were made
     amended_ts     str   when the amendment was recorded, UTC
@@ -62,10 +57,10 @@ sha256 of the immutable manifest line it corrects:
 Both files are then evidence: the manifest says what was recorded, the
 ledger says what was later established and on what basis, and
 :func:`resolve_rows` applies an amendment to a derivative ONLY when its
-``source_sha256`` still matches the row on disk.  A digest that does
-not match is a refusal, not a skip -- a stale amendment means the two
-records disagree about history, and that is exactly the condition
-nothing downstream may paper over.
+``source_sha256`` still matches the row on disk.  A digest that does not
+match is a refusal, not a skip -- a stale amendment means the two records
+disagree about history, and that is exactly the condition nothing
+downstream may paper over.
 
 ``ingame_clock`` IS THE HONESTY FIELD.  ``display::time_string()``
 (src/display.cpp:207-218) returns an exact time only when the survivor
@@ -74,27 +69,22 @@ has a watch; otherwise one of the coarse phrases from
 Under the seeded 24_HOUR=24h option an exact reading is fixed-width
 "%02d:%02d:%02d" (src/calendar.cpp:638-663), which is what makes it
 legible at all.  When the clock could not be read the value is None and
-serialises as JSON null.  It is never interpolated, never carried
-forward from the previous row and never guessed; reconciling an
-unreadable or non-monotonic reading is timeline.py's job, downstream and
-visibly flagged.  This module records what was seen.
+serialises as JSON null.  It is never interpolated, never carried forward
+from the previous row and never guessed; reconciling an unreadable or
+non-monotonic reading is timeline.py's job, downstream and visibly
+flagged.  This module records what was seen.
 
 THE WRITE CONTRACT.  A row is not reported as appended until it has been
 written, flushed AND forced to the device; a failure anywhere on that
 path raises ManifestError rather than being downgraded to a warning,
 because the frame-count identity is checked against this file.
 ``real_ts`` is mandatory and taking it is deliberately the caller's act:
-this module will not stamp "now" on the caller's behalf, because the
-instant a row is appended is not the instant the frame was captured, and
-quietly recording one as the other is fabricated evidence.
-:func:`append_row` documents the fields it takes and what it guarantees.
+the instant a row is appended is not the instant the frame was captured,
+and quietly recording one as the other is fabricated evidence.
 
 THE COMMAND LINE IS READ-ONLY on purpose -- appending is available to
 importers only, so session.py keeps sole ownership of the frame counter
-and no shell caller can slip a row in beside it.  Source
-``playthrough/tooling/env.sh`` first: it exports ``PLAYTHROUGH_PYTHON``,
-the pinned CPython 3.12 this tooling is installed against, and ``-B``
-keeps a re-included ``__pycache__`` out of the tree::
+and no shell caller can slip a row in beside it::
 
     . playthrough/tooling/env.sh
     MF='playthrough/tooling/manifest.py'
@@ -104,26 +94,25 @@ keeps a re-included ``__pycache__`` out of the tree::
     "$PLAYTHROUGH_PYTHON" -B "$MF" digests --require-frames
 
 Where the record may live is not negotiable.  Every path this module
-opens -- for reading as well as for appending -- must resolve inside
-the playthrough/ directory derived from this module's OWN location,
-with no symlinked component, and is opened with O_NOFOLLOW.
-PLAYTHROUGH_MANIFEST, PLAYTHROUGH_FRAMES_DIR and a --manifest argument
-are honoured within that tree and refused outside it: a record that an
-environment variable could redirect to /etc/passwd, to a device node
-or to somebody else's checkout would not be evidence of anything.  The
-append itself is serialised with an exclusive fcntl advisory lock that
-is MANDATORY -- a lock that cannot be taken refuses the write rather
-than proceeding unserialised -- so two writers that both come through
-this module cannot interleave a row, and a failed append's rollback
-cannot remove bytes the other put there.  Being advisory, it says
-nothing about a reader that does not take it, which is why the readers
-refuse an unparseable line instead of trusting the lock.
+opens -- for reading as well as for appending -- must resolve inside the
+playthrough/ directory derived from this module's OWN location, with no
+symlinked component, and is opened with O_NOFOLLOW.  PLAYTHROUGH_MANIFEST,
+PLAYTHROUGH_FRAMES_DIR and a --manifest argument are honoured within that
+tree and refused outside it: a record an environment variable could
+redirect to /etc/passwd, to a device node or to somebody else's checkout
+would not be evidence of anything.  The append is serialised with an
+exclusive fcntl advisory lock that is MANDATORY -- a lock that cannot be
+taken refuses the write rather than proceeding unserialised -- so two
+writers coming through this module cannot interleave a row, and a failed
+append's rollback cannot remove bytes the other put there.  Being
+advisory it says nothing about a reader that does not take it, which is
+why the readers refuse an unparseable line instead of trusting the lock.
 
 Standard library only -- nothing here needs
-playthrough/tooling/requirements.txt.  fcntl makes this POSIX-only,
-which matches the pipeline's Linux/X11 scope.  Paths follow
-playthrough/tooling/env.sh, the single definition of the artifact
-layout, whose PLAYTHROUGH_MANIFEST, PLAYTHROUGH_FRAMES_DIR and
+playthrough/tooling/requirements.txt.  fcntl makes this POSIX-only, which
+matches the pipeline's Linux/X11 scope.  Paths follow
+playthrough/tooling/env.sh, the single definition of the artifact layout,
+whose PLAYTHROUGH_MANIFEST, PLAYTHROUGH_FRAMES_DIR and
 PLAYTHROUGH_FRAME_FORMAT exports are honoured when they are set.
 """
 
@@ -152,30 +141,8 @@ FIELDS = (
     "commentary",
 )
 
-# THE STAGING PREFIX, WHICH NOW ONLY EVER GETS SWEPT.
-#
-# THERE IS NO WRITER BEHIND IT ANY MORE, AND THAT IS THE POINT.  A
-# superseded version of this module could rewrite the record: it wrote
-# the whole file to a sibling under this prefix and renamed it, so that
-# a row recorded wrongly could be corrected in place.  Code review
-# found that facility to be the defect rather than the fix -- a captured
-# row is evidence, and 26 committed rows had been rewritten after the
-# keystroke that produced them -- so every rewrite entry point, its
-# planning and publication halves, and the staging opener were removed.
-# What this module can do to playthrough/manifest.jsonl is append one
-# validated row, and nothing else; a correction is a note in
-# playthrough/TECHNICAL_NOTES.md, which is what the file's own contract
-# has always said.
-#
-# The prefix survives for exactly one reason: sweep_staging() must still
-# be able to remove a leftover that the retired writer -- or an
-# interruption of it, before it was retired -- left on disk.  These
-# siblings live inside playthrough/, which .gitignore re-includes
-# wholesale with its terminal `!/playthrough/**` negation, so a survivor
-# is an untracked file that `git add -A playthrough/` would commit into
-# an evidence tree nobody authored it into.  The prefix matches both the
-# deterministic name and the unique names earlier versions produced, so
-# one sweep clears every generation of them.
+# THE STAGING PREFIX, WHICH NOW ONLY EVER GETS SWEPT.  THERE IS NO WRITER
+# BEHIND IT ANY MORE, AND THAT IS THE POINT.
 STAGING_PREFIX = ".manifest-"
 STAGING_SUFFIX = ".jsonl"
 STAGING_OF = "the record"
@@ -237,19 +204,9 @@ AMENDABLE_FIELDS = ("action", "commentary")
 # than a comparison that silently never matches.
 SHA256_RE = re.compile(r"\A[0-9a-f]{64}\Z")
 
-# playthrough/build/frame_digests.jsonl -- the capture attestation
-# ledger, beside the telemetry sidecar it corroborates rather than
-# beside the frames it describes.
-#
-# WHY IT EXISTS.  A security review found that nothing in the record
-# attested the BYTES of a captured frame: the sidecar carried the path,
-# the geometry, the luminance and the clock, so a same-sized non-blank
-# replacement file passed the whole chain, and the interrupted-step
-# recovery went further and took a frame's modification time for the
-# instant it was captured.  capture.sh now hashes each PNG the moment it
-# is published and reports FRAME_SHA256; session.py appends it here, and
-# every stage that consumes a frame verifies the bytes against this
-# ledger before timing, transitioning, rendering or committing them.
+# playthrough/build/frame_digests.jsonl -- the capture attestation ledger,
+# beside the telemetry sidecar it corroborates rather than beside the frames it
+# describes.  WHY IT EXISTS.
 DIGESTS_REL_PARTS = ("build", "frame_digests.jsonl")
 
 DIGEST_FIELDS = (
@@ -291,20 +248,10 @@ GIT_OBJECT_RE = re.compile(r"\A[0-9a-f]{40}(?:[0-9a-f]{24})?\Z")
 # holding one in memory whole.
 DIGEST_BLOCK = 65536
 
-# real_ts: the wall-clock instant of the capture, in UTC, to the
-# millisecond, in one fixed form on every row so that the column sorts
-# lexically as well as chronologically.  Production metadata only --
-# video pacing comes from the in-game clock, never from here.
-#
-# "ONE FIXED FORM" IS A RULE ABOUT THE FILE, AND IT IS CHECKED.  Any
-# timezone-aware ISO-8601 spelling is accepted at the door and rewritten
-# to this form by canonical_real_ts(), so nothing this module writes can
-# break the property; row_field_problems() then reports a STORED value
-# that is not in it, which is the only way one could arrive -- a hand
-# edit or a foreign tool.  Both halves are needed: without the rewrite a
-# legitimate timestamp would be refused, and without the check a
-# mixed-format column would sort wrongly while every row in it read
-# perfectly well on its own.
+# real_ts: the wall-clock instant of the capture, in UTC, to the millisecond,
+# in one fixed form on every row so that the column sorts lexically as well as
+# chronologically.  Production metadata only -- video pacing comes from the
+# in-game clock, never from here.
 REAL_TS_FORMAT = "%Y-%m-%dT%H:%M:%S"
 REAL_TS_SUFFIX = "Z"
 REAL_TS_EXAMPLE = "2026-05-14T09:12:03.481Z"
@@ -325,17 +272,11 @@ CLOCK_MAX_HOUR = 23
 CLOCK_MAX_MINUTE = 59
 CLOCK_MAX_SECOND = 59
 
-# Bounds on the free-text fields, both about what happens to these
-# strings AFTER this file: `action` and `commentary` are copied into
-# playthrough/transcript.md and become the SRT cue text.
-#
-# MAX_FIELD_LENGTH is a refusal and is set far above anything a person
-# writes, so it catches machine output and runaway loops without ever
-# arguing with legitimate prose.  CUE_ADVISORY_LENGTH is only an
-# advisory, and its value comes from the other end of the pipeline: a
-# cue occupies its frame's on-screen window, timeline.py caps that
-# window at 10 s, and a few hundred characters is what a reader gets
-# through in that time.
+# Bounds on the free-text fields, both about what happens to these strings
+# AFTER this file: `action` and `commentary` are copied into
+# playthrough/transcript.md and become the SRT cue text.  MAX_FIELD_LENGTH is a
+# refusal and is set far above anything a person writes, so it catches machine
+# output and runaway loops without ever arguing with legitimate prose.
 MAX_FIELD_LENGTH = 2000
 CUE_ADVISORY_LENGTH = 400
 
@@ -387,40 +328,24 @@ CLOCK_UNRECOGNISED = "unrecognised"
 # requirement is explicit that engineering and "gamey" observations stay
 # out of it and live in playthrough/TECHNICAL_NOTES.md instead.
 #
-# This used to be a list of SUBSTRINGS checked ADVISORILY: a hit printed
-# a warning and the row was appended anyway.  Both halves were wrong.
+# THE GATE REFUSES RATHER THAN WARNS, before the key is sent and before
+# the transcript is published.  A warning on stderr during a session that
+# produces four hundred rows is a warning nobody reads, and by the time
+# anybody does the row is already evidence -- and evidence is not
+# rewritten afterwards.
 #
-#   * The coverage was short.  It named neither "game", nor "engine",
-#     nor a source file, nor pathfinding, nor a move counter, nor
-#     cheating -- and every one of those had reached the record as it
-#     stood when the review was taken.  In THAT recording, since
-#     superseded, one row explained that "the game itself is talking to
-#     me now", named a C++ source file and a line number, and called it
-#     "the engine's own complaint about its own pathfinding"; another
-#     reported that "my move counter went to zero"; two reported what
-#     "the sidebar" said; the last stated "I did not cheat".  None of
-#     them is in the record shipped here, which is what a blocking gate
-#     is for.
-#   * Advisory was the wrong strength.  A warning on stderr during a
-#     session that produces four hundred rows is a warning nobody reads,
-#     and by the time anybody does the row is already evidence -- and
-#     evidence is not rewritten afterwards.  So the gate now REFUSES,
-#     before the key is sent and before the transcript is published.
-#
-# WHY PATTERNS RATHER THAN SUBSTRINGS.  The old bluntness is exactly
-# what kept it advisory: "frame" matched the four rows that say "the
-# frame of the door", which are the survivor's own words about a
-# doorway, and refusing those would be wrong.  Each entry below is
-# therefore a regular expression written to match the META sense and
-# not the in-world one, and the two hardest cases are called out where
-# they are handled:
+# WHY PATTERNS RATHER THAN SUBSTRINGS.  A substring is too blunt to
+# refuse on: "frame" also matches "the frame of the door", which is the
+# survivor's own words about a doorway.  Each entry below is therefore a
+# regular expression written to match the META sense and not the in-world
+# one, and the two hardest cases are called out where they are handled:
 #
 #   * `engine` matches `\bengines?\b` and `\bengine's\b`, which does NOT
 #     match "engineer" or "engineering" -- the survivor of the recording
-#     these patterns were derived from was a mechanical engineer and said
-#     so in three rows.  The bluntness that remains is deliberate: a
-#     survivor on foot has no reason to name a motor, and "the engine" is
-#     how the software gets talked about.
+#     a survivor whose trade is engineering says so in their own words.
+#     The bluntness that remains is deliberate: a survivor on foot has no
+#     reason to name a motor, and "the engine" is how the software gets
+#     talked about.
 #   * `frame` matches only a frame with a NUMBER or a frame that is
 #     counted or indexed.  A door frame is the survivor's own.
 #
@@ -463,18 +388,15 @@ META_PATTERNS = (
                r"ies)\b"),
     ("requirement", r"\bR1[0-3]\b|\bR[1-9]\b"),
     # THE INTERFACE AS FURNITURE, AND THE CHARACTER SHEET AS ARITHMETIC.
-    # This block is the second thing a review found in the transcript
-    # committed at the time, and it was invisible to every pattern above:
-    # the rows named the input device and the screen furniture the
-    # survivor was looking at ("the first key I tried", the cursor moving
-    # down a list, a tab, the sex field, the trait page), and they
-    # accounted for the survivor's own body in the numbers the creator
-    # prices it in ("Stat money", "thirty-eight points", "thirty-five per
-    # cent off what I can carry", "three points back"), and they named
-    # two engine modes by their interface names ("safe mode", "Scores").
-    # None of that is a survivor's sentence -- a survivor has a body, a
-    # trade and a list of things wrong with them, not statistics -- so
-    # the concepts belong here beside the rest.
+    # A row can name no software at all and still be out of character by
+    # naming the input device or the screen furniture the survivor was
+    # looking at (the first key tried, a cursor moving down a list, a tab,
+    # the sex field, the trait page), by accounting for the survivor's own
+    # body in the numbers the creator prices it in ("Stat money", "thirty
+    # -eight points", "three points back"), or by naming an engine mode by
+    # its interface name ("safe mode", "Scores").  None of that is a
+    # survivor's sentence -- a survivor has a body, a trade and a list of
+    # things wrong with them, not statistics.
     #
     # The same precision rule applies as above, and two cases are worth
     # calling out because the blunt reading would refuse honest prose:
@@ -484,8 +406,7 @@ META_PATTERNS = (
     #     is a set of car keys and is the survivor's.
     #   * `character sheet` matches a point that is COUNTED or POOLED,
     #     not the idiom: "no point being coy" and "a nip point on the
-    #     third floor" were both in the record these patterns were
-    #     measured against, and both had to stay.
+    #     third floor" are the survivor's own prose and must stay.
     #
     # `tab`, `score` and `per cent` are blocked outright, ambiguity and
     # all, under the rule stated above: a survivor has no in-world tab,
@@ -682,12 +603,10 @@ _ORDINAL_WORDS = {
 }
 
 # Markers saying a field was never filled in.  A refusal, like the
-# META_PATTERNS gate beside it, but for a different reason and with a
-# different remedy: a row is the authoritative record of what one
-# keystroke did and why, and every structural check -- the six-field
-# schema, the 1..n identity, the frame-set equality -- passes straight
-# over a field reading "placeholder".  A meta remark says the wrong sort
-# of thing; a sentinel says nothing at all.
+# META_PATTERNS gate beside it, but for a different reason and with a different
+# remedy: a row is the authoritative record of what one keystroke did and why,
+# and every structural check -- the six-field schema, the 1..n identity, the
+# frame-set equality -- passes straight over a field reading "placeholder".
 PLACEHOLDER_WORDS = (
     "placeholder", "todo", "fixme", "tbd", "xxx", "wip",
 )
@@ -713,25 +632,17 @@ _SENTINEL_WORD_RE = re.compile(
 # BY session.py and deliberately imports nothing of it back.
 ACTION_SEPARATOR = " -- "
 
-# "press '<key>'", optionally followed by the separator and a reason.
-# The key itself is one or more non-quote characters -- which keysym
-# names may be SENT is session.py's vocabulary and is validated there
-# against the string that reaches xdotool; what is checked here is that
-# the row names a keystroke at all.  The note may say anything except
-# nothing, and may not carry the separator a second time, which is what
-# keeps the identity half unambiguous to session.assert_action_derived.
+# "press '<key>'", optionally followed by the separator and a reason.  The key
+# itself is one or more non-quote characters -- which keysym names may be SENT
+# is session.py's vocabulary and is validated there against the string that
+# reaches xdotool; what is checked here is that the row names a keystroke at
+# all.
 _ACTION_SHAPE_RE = re.compile(
     r"\Apress '[^'\n]+'(?: -- (?! )(?:(?! -- ).)+)?\Z")
 
 
 class ManifestError(Exception):
-    """A row was refused, or a manifest on disk is malformed.
-
-    Raised in place of writing, so that a bad row never reaches the
-    file: a manifest that is wrong is worse than a session that stops,
-    because the count identity between the frames directory and this
-    file is what proves one capture per keystroke.
-    """
+    """A row was refused, or a manifest on disk is malformed."""
 
 
 # Keys of the warnings already emitted in this process, so that an
@@ -775,13 +686,7 @@ def _playthrough_dir():
 
 
 def repo_root():
-    """Return the repository root, from this module's own location.
-
-    playthrough/tooling -> playthrough -> the checkout.  Derived rather
-    than read from the environment for the same reason approved_root()
-    is: a path a variable could move is not a path anything may be
-    reported relative to.
-    """
+    """Return the repository root, from this module's own location."""
     return os.path.realpath(os.path.dirname(_playthrough_dir()))
 
 
@@ -818,20 +723,7 @@ def relative_to_repo(path):
 
 
 def approved_root(root=None):
-    """Return the only directory tree this module may read or write.
-
-    Derived from this module's own location and NEVER from the
-    environment.  That is the whole point: PLAYTHROUGH_MANIFEST, a
-    --manifest argument and a caller's typo are all untrusted input,
-    and a record of what was captured is not evidence if any of them
-    can move it somewhere else on the host.  playthrough/ is the root
-    because every artifact of this pipeline lives beneath it.
-
-    `root` exists so that a test can point exactly the same rules at a
-    temporary directory it owns, which is the only supported way to
-    relocate the tree -- it is an explicit argument at the call site,
-    not something an environment variable can reach.
-    """
+    """Return the only directory tree this module may read or write."""
     if root is None:
         return os.path.realpath(_playthrough_dir())
     if isinstance(root, os.PathLike):
@@ -991,19 +883,7 @@ def _mutation_satisfies(want, have):
 
 
 def mutation_lock_inherited(mode, root=None):
-    """Return True when a verified ancestor already holds this lock.
-
-    False means nothing claims to.  A claim that does not hold up is a
-    ManifestError rather than a False: a caller who set the marker by
-    hand is either mistaken about what is running or trying to make a
-    stage skip its lock, and a stage that quietly acquired one instead
-    would release it out from under whoever really held it.
-
-    The claim is PROVED, not believed: the descriptor named must still be
-    open in this process and must resolve to this checkout's lock file,
-    and the kernel must agree that something holds it.  An inherited
-    descriptor is the only evidence a child can have.
-    """
+    """Return True when a verified ancestor already holds this lock."""
     want = _mutation_mode(mode)
     have = os.environ.get(ENV_MUTATION_HELD, "").strip()
     if not have:
@@ -1071,15 +951,7 @@ def _mutation_is_held(path):
 
 
 class MutationLock:
-    """This checkout's quiescence, taken as a context manager.
-
-    Producers take it :data:`MUTATION_SHARED`; the shell's gate and
-    committer take it exclusively.  A stage whose ancestor already holds
-    one strong enough does nothing at all -- see
-    :func:`mutation_lock_inherited` for why re-acquiring would deadlock
-    against its own parent, and why the inherited claim is proved rather
-    than trusted.
-    """
+    """This checkout's quiescence, taken as a context manager."""
 
     def __init__(self, mode=MUTATION_SHARED, root=None,
                  timeout=MUTATION_LOCK_TIMEOUT):
@@ -1151,13 +1023,7 @@ class MutationLock:
             time.sleep(MUTATION_LOCK_POLL)
 
     def release(self):
-        """Drop the lock, if this object took it.  Idempotent.
-
-        A hold that was INHERITED is not released here: releasing a lock
-        this process did not take would leave the ancestor believing it
-        still had the tree to itself, which is worse than never having
-        locked at all.
-        """
+        """Drop the lock, if this object took it. Idempotent."""
         self._inherited = False
         descriptor, self._descriptor = self._descriptor, None
         if descriptor is None:
@@ -1202,17 +1068,7 @@ def _assert_within_root(resolved, label, root=None):
 
 
 def _assert_no_symlink(resolved, root, label):
-    """Refuse `resolved` if it or a component below `root` is a link.
-
-    Containment alone is not enough.  A link INSIDE the tree still
-    points somewhere else inside the tree, so one planted link could
-    redirect every appended row into another artifact -- the frames
-    directory, the timeline, the movie -- and the append would look
-    entirely successful.  The final component is checked first because
-    that is the case that is well defined however the path was
-    spelled; the walk then covers every directory between the root and
-    the file.
-    """
+    """Refuse `resolved` if it or a component below `root` is a link."""
     if os.path.islink(resolved):
         raise ManifestError(
             "%s is a symbolic link: %s.  This module writes files, it "
@@ -1259,15 +1115,7 @@ def _open_nofollow(path, flags, mode=0o600):
 
 
 def default_manifest_path():
-    """Return the manifest this pipeline writes and reads.
-
-    Honours PLAYTHROUGH_MANIFEST from playthrough/tooling/env.sh when
-    it is set, because that file is the single definition of the
-    artifact layout, and otherwise falls back to
-    <repository>/playthrough/manifest.jsonl derived from this module's
-    location -- so the module is still correct when nothing has been
-    sourced, as when it is imported by an ad-hoc test.
-    """
+    """Return the manifest this pipeline writes and reads."""
     from_env = os.environ.get("PLAYTHROUGH_MANIFEST")
     if from_env and from_env.strip():
         return os.path.abspath(from_env)
@@ -1275,14 +1123,7 @@ def default_manifest_path():
 
 
 def default_frames_dir():
-    """Return the directory holding one PNG per keystroke.
-
-    Honours PLAYTHROUGH_FRAMES_DIR for the same reason
-    default_manifest_path() honours PLAYTHROUGH_MANIFEST.  Derived
-    transition images live under playthrough/build/transitions/ and
-    never here: the count identity between this directory and the
-    manifest is only meaningful while the directory stays pure.
-    """
+    """Return the directory holding one PNG per keystroke."""
     from_env = os.environ.get("PLAYTHROUGH_FRAMES_DIR")
     if from_env and from_env.strip():
         return os.path.abspath(from_env)
@@ -1290,13 +1131,7 @@ def default_frames_dir():
 
 
 def _validated_path(value, label):
-    """Return `value` as an absolute file path, or raise.
-
-    Every filesystem entry point in this module runs through here, so
-    that no unvalidated path is ever handed to open() or os.path.join:
-    the value must be a non-empty string or os.PathLike, must not
-    carry a NUL byte, and must not name a directory.
-    """
+    """Return `value` as an absolute file path, or raise."""
     if value is None:
         raise ManifestError("%s is required" % label)
     if isinstance(value, os.PathLike):
@@ -1344,14 +1179,6 @@ def _validated_manifest_target(value, root=None):
     a captured session has exactly one place to live, so that is what
     is required, compared after resolution so a checkout reached through
     a symlinked ancestor still matches.
-
-    The ONLY way to work at another location is the explicit
-    call-site-only `root` argument, which relocates the whole approved
-    tree for a caller that owns it -- a test in a temporary directory.
-    Neither the environment nor the command line can reach it, and even
-    then the file must still be named manifest.jsonl directly under that
-    root, so the rule being exercised is the production rule rather than
-    a weaker one.
     """
     resolved = _validated_path(value, "manifest path")
     approved = _assert_within_root(resolved, "the manifest path", root)
@@ -1371,13 +1198,7 @@ def _validated_manifest_target(value, root=None):
 
 
 def _validated_manifest_path(value, root=None):
-    """Return an absolute manifest path that is safe to append to.
-
-    The parent directory must already exist.  Creating it here would
-    let a mistyped path quietly grow a second manifest somewhere else
-    in the tree, and directory creation is playthrough_mkdirs()' job
-    in playthrough/tooling/env.sh, not this module's.
-    """
+    """Return an absolute manifest path that is safe to append to."""
     resolved = _validated_manifest_target(value, root)
     parent = os.path.dirname(resolved)
     if not os.path.isdir(parent):
@@ -1397,20 +1218,6 @@ def assert_appendable(manifest_path=None, root=None):
     hundred per cent decidable from the path alone -- the name, the
     containment, the symlink-freedom, the existence of the directory --
     must be decided while the game is still untouched.
-
-    Returns the resolved path, so the caller can keep the same value it
-    was checked against rather than deriving it a second time.  Raises
-    ManifestError with exactly the diagnostic append_row() would have
-    raised later, because this delegates to the same private validator
-    rather than restating it: a second, kinder copy of the rule here
-    would let a path pass this check and fail that one, which is the
-    very ordering defect this function was added to remove.
-
-    Nothing is created, opened, truncated or written.  Whether the file
-    can actually be APPENDED to -- a permission, an immutable flag, a
-    read-only filesystem -- is a property of the file and the device
-    rather than of the path, and session.py pre-flights that separately
-    for both of its append targets.
     """
     if manifest_path is None:
         manifest_path = default_manifest_path()
@@ -1478,13 +1285,7 @@ def frame_file(frame):
 
 
 def _check_frame_format_contract():
-    """Warn once if env.sh's frame format has drifted from ours.
-
-    env.sh defines PLAYTHROUGH_FRAME_FORMAT so that the capturer, this
-    writer and the concat list agree byte for byte.  A drift there
-    would break the count identity silently, which is exactly the
-    class of failure this pipeline refuses to have.
-    """
+    """Warn once if env.sh's frame format has drifted from ours."""
     from_env = os.environ.get("PLAYTHROUGH_FRAME_FORMAT")
     if from_env and from_env != FRAME_NAME_FORMAT:
         _warn_once(
@@ -1495,13 +1296,7 @@ def _check_frame_format_contract():
 
 
 def _reject_line_breaks(value, label):
-    """Raise if `value` spans more than one line.
-
-    A row is one JSON object on one line.  json.dumps would escape an
-    embedded newline rather than break the file, but a multi-line
-    keystroke description or clock reading is not a thing that was
-    observed, so it is refused at the door.
-    """
+    """Raise if `value` spans more than one line."""
     if "\n" in value or "\r" in value:
         raise ManifestError(
             "%s must be a single line: one row is one JSON object on "
@@ -1509,23 +1304,7 @@ def _reject_line_breaks(value, label):
 
 
 def _reject_control_characters(value, label):
-    """Raise if `value` carries a control character.
-
-    The line-break check above catches the two controls that would
-    change this file's shape; this catches the rest, and it exists
-    because the manifest is not the end of the road for these strings.
-    `action` and `commentary` are copied into playthrough/transcript.md
-    and into the SRT cue text, and JSON is perfectly happy to carry a
-    NUL as "\\u0000" through both -- so a value that survives the
-    manifest intact can still corrupt a caption file, a terminal that
-    prints it, or the ffmpeg mux that reads it.
-
-    There is no legitimate source for one either: these fields are a
-    keystroke and a sentence a person wrote, neither of which contains
-    a NUL, a backspace or an escape.  A value that does is a program
-    error or pasted machine output, and both are worth stopping at the
-    door rather than embedding in the evidence.
-    """
+    """Raise if `value` carries a control character."""
     for char in value:
         code = ord(char)
         if code < 0x20 or code == 0x7F or 0x80 <= code <= 0x9F:
@@ -1540,18 +1319,7 @@ def _reject_control_characters(value, label):
 
 
 def _reject_runaway_length(value, label):
-    """Raise if `value` is far longer than anything observed can be.
-
-    A generous ceiling rather than a style rule: 2000 characters is
-    already several paragraphs, and one keystroke's description or one
-    survivor's reason is a sentence.  A value this long is a stuck loop
-    or a pasted log, and it would land in an SRT cue that no player
-    could read and that no frame is on screen long enough to show.
-
-    Deliberately far above anything a person writes, so it can never
-    refuse legitimate prose -- the readability advisory below is what
-    speaks to length that is merely long.
-    """
+    """Raise if `value` is far longer than anything observed can be."""
     if len(value) > MAX_FIELD_LENGTH:
         raise ManifestError(
             "%s is %d characters, and the limit is %d.  A row describes "
@@ -1602,17 +1370,7 @@ def _validated_file(value, frame):
 
 
 def is_possible_clock(value):
-    """True when `value` is a time an in-game clock could display.
-
-    SHAPE AND RANGE, because the shape alone admits "24:00:00".  Named
-    to match ocr_clock.py's helper of the same name, which applies the
-    identical rule when it decides whether an OCR reading may be
-    believed, so the two modules cannot drift into disagreeing about
-    what a credible clock looks like.
-
-    This is a question, not a repair: a caller that gets False records
-    the value it was given, verbatim, and says so.
-    """
+    """True when `value` is a time an in-game clock could display."""
     if not isinstance(value, str):
         return False
     text = value.strip()
@@ -1664,15 +1422,7 @@ def classify_ingame_clock(value):
 
 
 def _validated_ingame_clock(value):
-    """Return the clock reading exactly as it was read, or None.
-
-    None is a success, not a defect: it is how a clock that could not
-    be read is recorded, and it serialises as JSON null.  No default
-    is ever substituted, no neighbouring row is ever consulted, and an
-    unrecognised reading is kept verbatim with a warning rather than
-    refused -- refusing it would pressure the caller into inventing a
-    value, which is the one thing that must never happen here.
-    """
+    """Return the clock reading exactly as it was read, or None."""
     if value is None:
         return None
     if not isinstance(value, str):
@@ -1713,18 +1463,7 @@ def _validated_ingame_clock(value):
 
 
 def find_meta_vocabulary(text):
-    """Return the out-of-character CONCEPTS `text` carries, in order.
-
-    THE ONE IMPLEMENTATION.  session.py refuses a commentary before the
-    key is sent and make_srt.py refuses one before the transcript is
-    published, and both ask this -- so the gate cannot be stricter in one
-    place than another, and a sentence that passes at write time cannot
-    fail at publication time.
-
-    Each concept is matched by a pattern written for the meta sense
-    (see META_PATTERNS): "engineer" is not "engine", and the frame of a
-    door is not frame 308.
-    """
+    """Return the out-of-character CONCEPTS `text` carries, in order."""
     if not isinstance(text, str):
         return []
     return [name for name, expression in _META_RES
@@ -1732,13 +1471,7 @@ def find_meta_vocabulary(text):
 
 
 def meta_vocabulary_problem(text, label="commentary"):
-    """Return the refusal for an out-of-character `text`, or None.
-
-    One message, used by every consumer, naming the concepts found and
-    where the observation belongs instead.  Returning None rather than
-    raising keeps it usable both as a validator (raise) and as a reporter
-    (collect into a problem list).
-    """
+    """Return the refusal for an out-of-character `text`, or None."""
     hits = find_meta_vocabulary(text)
     if not hits:
         return None
@@ -1835,12 +1568,10 @@ _DATE_MONTH_FIRST_RE = re.compile(
 # published -- rather than a check that would have to guess at tense.
 # ---------------------------------------------------------------------
 
-# "it is", "it's", "it is now", "the clock reads/says/shows", "the time
-# is", "today is", "the date is".  Present tense, first person or
-# instrument: the forms in which a person states the case rather than
-# recalling, planning or measuring one.  Deliberately excludes "it has
-# been", "it was", "since", "until" and "at", which are the four ways
-# every false positive above got in.
+# "it is", "it's", "it is now", "the clock reads/says/shows", "the time is",
+# "today is", "the date is".  Present tense, first person or instrument: the
+# forms in which a person states the case rather than recalling, planning or
+# measuring one.
 _ASSERTION_RE = re.compile(
     r"(?<![a-z])(?:it\s+is\s+now|it\s+is|it's|the\s+clock\s+"
     r"(?:reads|says|shows|said)|the\s+time\s+is|the\s+time\s+reads|"
@@ -1879,14 +1610,7 @@ def _word_number(value):
 
 
 def _stated_seconds(hour, minute, tail):
-    """Return seconds since midnight for a 12- or 24-hour statement.
-
-    A twelve-hour statement is ambiguous by nature, so BOTH readings are
-    returned and the comparison accepts whichever is closer -- that is the
-    honest treatment: "five in the afternoon" is 17:00, but a bare "five"
-    could be either, and refusing a sentence for the ambiguity of English
-    would catch nothing real.
-    """
+    """Return seconds since midnight for a 12- or 24-hour statement."""
     if hour is None or not 0 <= hour <= 23:
         return ()
     minute = 0 if minute is None else minute
@@ -2004,20 +1728,12 @@ def _earliest_date_in(window):
 def stated_times(text):
     """Return each time of day `text` ASSERTS, as (seconds, hedged).
 
-    `seconds` is a tuple of the candidate readings (two for an ambiguous
-    twelve-hour statement, one otherwise) and `hedged` says whether the
-    sentence claimed precision.
-
     ONLY AN ASSERTION OF THE PRESENT IS RETURNED -- a time introduced by
     "it is", "it's", "the clock reads" or "the time is", and beginning
     within ASSERTION_TIME_WINDOW characters of it.  A time merely
     mentioned is NOT returned: see the note above _ASSERTION_RE for the
     42 honest sentences that taught this restriction, and for what covers
     that ground instead.
-
-    Read-only, and conservative twice over: only the three shapes above
-    are recognised, so an unrecognised way of saying a time is not
-    checked rather than guessed at.
     """
     if not isinstance(text, str) or not text.strip():
         return []
@@ -2033,12 +1749,7 @@ def stated_times(text):
 
 
 def stated_dates(text):
-    """Return each (day, month) `text` ASSERTS.  Read-only.
-
-    `day` may be None for a statement that names only a month.  The month
-    is a lower-cased string and the day an integer, which is what
-    observed_date_parts() returns for the sidebar's own line, so the
-    comparison is between like and like.
+    """Return each (day, month) `text` ASSERTS. Read-only.
 
     ONLY AN ASSERTION OF THE PRESENT is returned, on the same principle
     as stated_times() -- reached either directly ("it is the twentieth of
@@ -2064,15 +1775,7 @@ def stated_dates(text):
 
 
 def observed_date_parts(date_text):
-    """Return (day, month) read out of a sidebar date line, or None.
-
-    The line is the engine's own -- "Thursday, May 20" under the default
-    SHOW_MONTHS, or a season and a day number when it is off
-    (src/display.cpp:193-205) -- and this reads whichever it is without
-    interpreting anything else.  None means the line said nothing this
-    can compare, which is treated as "cannot check" and never as
-    agreement.
-    """
+    """Return (day, month) read out of a sidebar date line, or None."""
     if not isinstance(date_text, str) or not date_text.strip():
         return None
     lowered = date_text.lower()
@@ -2132,28 +1835,17 @@ def clock_honesty_problems(commentary, clock, date_text,
     note above _ASSERTION_RE says why at length.
 
     :param commentary: the survivor's own words.
-    :param clock: the reading the sentence's author had in front of them
-        -- the previous frame's, since the commentary explains why the
-        next key is about to be pressed.
+    :param clock: the reading the sentence's author had in front of them -- the
+        previous frame's, since the commentary explains why the next key is
+        about to be pressed.
     :param date_text: the sidebar date line for the same frame.
     :param label: what a message calls the field.
-    :param check_dates: False says THE CALLER HOLDS NO DATE EVIDENCE AT
-        ALL, which is different in kind from a date line that could not
-        be read.  The manifest schema carries no date column, so a
-        standalone audit of that file has no channel through which a date
-        could have been observed and leaves date statements
-        unadjudicated; the write-time gate and the publication gate both
-        do have one (the telemetry sidecar and the timeline's
-        `ingame_date`), so for them a missing line means the survivor
-        could not see a date, and stating one is refused.
-    :param also_clock: a SECOND observed reading the statement may agree
-        with instead -- the frame the caption is displayed over, which the
-        auditing callers have and the writing caller does not, because at
-        write time the key has not been sent yet.  Both readings are
-        observed and both are committed, so agreeing with either is
-        honest; the asymmetry only ever makes the WRITE-time gate the
-        stricter of the two, which is the safe direction and the better
-        discipline (say what the frame shows, not what it is about to).
+    :param check_dates: False says THE CALLER HOLDS NO DATE EVIDENCE AT ALL,
+        which is different in kind from a date line that could not be read.
+    :param also_clock: a SECOND observed reading the statement may agree with
+        instead -- the frame the caption is displayed over, which the auditing
+        callers have and the writing caller does not, because at write time the
+        key has not been sent yet.
     :param also_date: the same, for the date line.
     """
     problems = []
@@ -2251,14 +1943,7 @@ def _format_seconds(total):
 
 
 def find_placeholder_words(text):
-    """Return the placeholder markers in `text`, sorted.
-
-    Whole-word and case-insensitive, so ordinary prose is not caught.
-    Like :func:`find_meta_vocabulary` a hit is a refusal, and the two are
-    kept separate because the remedy differs: a sentinel means the field
-    was never filled in and has to be written, while a meta remark is a
-    real observation recorded in the wrong place.
-    """
+    """Return the placeholder markers in `text`, sorted."""
     if not isinstance(text, str):
         return []
     return sorted({match.group(0).lower()
@@ -2291,18 +1976,6 @@ def action_shape_problem(action, label):
     caller: a runtime QA pass recorded that as a defence-in-depth gap,
     unreachable through `session.py step` and open to anything else that
     imports this module.
-
-    The check is deliberately about SHAPE and not about vocabulary.  Which
-    keysym names may be sent is session.py's question, and duplicating its
-    table here would give the pipeline two answers to it; that a row names
-    a keystroke at all is this module's, because this module is what
-    writes the row.
-
-    Kept separate from :func:`sentinel_problems` and applied by
-    :func:`build_row` alone, not by the READER: the committed record is
-    419 rows of exactly this shape, and a reader that refused anything
-    else would turn a foreign row into an unreadable manifest rather than
-    a reported one.
     """
     if not isinstance(action, str):
         return None
@@ -2319,18 +1992,7 @@ def action_shape_problem(action, label):
 
 
 def sentinel_problems(action, commentary, label):
-    """Report every way these two fields fail to be a record.
-
-    `label` prefixes each message -- "row 116" from the reader,
-    "action" from the writer -- so the same rule reads correctly
-    wherever it is applied.  Pure: nothing is read, repaired or
-    rewritten.
-
-    An empty list means both fields say something.  It does NOT mean
-    either is TRUE: no code can check an action against the pixels of
-    the frame it describes, which is why a field admitting it does not
-    describe the keystroke has to be refused here.
-    """
+    """Report every way these two fields fail to be a record."""
     problems = []
     for name, value in (("action", action),
                         ("commentary", commentary)):
@@ -2367,12 +2029,11 @@ def sentinel_problems(action, commentary, label):
 #
 # Every string in these two fields is copied VERBATIM into
 # playthrough/transcript.md, and Markdown passes raw HTML straight
-# through to whatever renders it.  A review found the guard that knows
-# this -- make_srt.assert_no_raw_markup -- applied to the transcript's
-# generated HEADING alone, so a commentary reading
-# `<img src=x onerror=...>` reached the committed document while the
-# narrower caption gate (which looks for styling tags and override
-# codes) passed it: `img` is not a styling tag.
+# through to whatever renders it.  Applying the guard that knows this --
+# make_srt.assert_no_raw_markup -- to the transcript's generated HEADING
+# alone lets a commentary reading `<img src=x onerror=...>` reach the
+# committed document, because the narrower caption gate looks for
+# styling tags and override codes and `img` is not a styling tag.
 #
 # So the rule lives HERE, beside the other content rules, and is applied
 # at the two moments text ENTERS the record -- build_row() and
@@ -2409,10 +2070,6 @@ EVENT_HANDLER_RE = re.compile(r"\bon[a-z]+\s*=", re.IGNORECASE)
 
 def raw_markup_problem(value, label="commentary"):
     """Report text that a renderer would EXECUTE rather than show.
-
-    Pure, and returns the first problem rather than a list: one
-    occurrence is already a refusal, and naming the character a reader
-    has to go and find is what makes the message actionable.
 
     :returns: the problem, or None when the text is safe to publish.
     """
@@ -2452,25 +2109,6 @@ def narration_words(value):
 def narration_substance_problem(value, label="commentary"):
     """Report a commentary that names a keystroke instead of a reason.
 
-    R7 asks for first-person commentary explaining WHY the survivor
-    acted, and a review found 44 of the delivered 307 entries carrying a
-    single word -- 42 of them the letter that had just been typed into a
-    search box, plus "Next." and "Five.".  Every structural check passed
-    over them: they are non-empty, in voice, free of markup, and they
-    close as sentences.  What they do not do is account for anything.
-    A one-word label is the one shape that can be told from a reason
-    mechanically, so it is refused HERE, where the row is written and
-    the driver still knows what they were doing and why.
-    Anything longer is a judgement the writer of the sentence makes.
-    The acceptance gate reports the same class over the effective
-    narration; this closes the door the record comes in through.
-
-    WRITER ONLY.  The delivered record still holds those 44 rows,
-    because it is append-only and evidence is not rewritten: they are
-    corrected in playthrough/amendments.jsonl, which is what every
-    derivative reads through resolve_rows().  A reader given this rule
-    would refuse to read the very record the ledger exists to correct.
-
     :returns: the problem, or None.
     """
     words = narration_words(value)
@@ -2486,15 +2124,7 @@ def narration_substance_problem(value, label="commentary"):
 
 
 def _validated_commentary(value):
-    """Return the survivor's own words, or refuse them.
-
-    Length that is merely long is advised about and recorded as given;
-    an out-of-character sentence is REFUSED, because it would go verbatim
-    into the transcript and onto the film as a caption.  So are the two
-    classes a review found reaching the committed transcript: raw markup
-    (see raw_markup_problem) and a one-word label standing in for a
-    reason (see narration_substance_problem).
-    """
+    """Return the survivor's own words, or refuse them."""
     text = _validated_text(value, "commentary")
     if len(text) > CUE_ADVISORY_LENGTH:
         # Advisory, not a refusal: this is about a caption being
@@ -2509,15 +2139,10 @@ def _validated_commentary(value):
             "is at most 10 s, and this becomes one SRT cue): %r -- "
             "recorded as given, but consider saying it in a sentence"
             % (len(text), text[:80] + "..."))
-    # THE VOICE GATE, AND IT REFUSES.  It used to warn and append the
-    # row anyway, which meant a stderr line during a four-hundred-row
-    # session decided whether an engineering observation reached the
-    # committed transcript and the film's caption track.  By the time
-    # anybody read that line the row was evidence, and evidence is not
-    # rewritten afterwards -- so the refusal happens here, before the
-    # row exists.  See META_PATTERNS for why the patterns are precise
-    # rather than blunt: this has to be able to refuse "the engine's own
-    # pathfinding" without refusing "mechanical engineer".
+    # THE VOICE GATE, AND IT REFUSES.  Warning and appending the row
+    # anyway would leave a stderr line, in a session hundreds of rows
+    # long, deciding whether an engineering observation reaches the
+    # committed transcript and the film's caption track.
     problem = meta_vocabulary_problem(text, "commentary")
     if problem is not None:
         raise ManifestError(problem)
@@ -2543,14 +2168,7 @@ def _format_moment(moment):
 
 
 def utc_timestamp(moment=None):
-    """Return `moment` in the manifest's fixed real_ts form.
-
-    UTC, millisecond precision, "Z"-suffixed -- for example
-    "2026-05-14T09:12:03.481Z".  One form on every row, so the column
-    sorts lexically as well as chronologically.  Called with no
-    argument it stamps the current instant, which is what session.py
-    does at the moment it captures a frame.
-    """
+    """Return `moment` in the manifest's fixed real_ts form."""
     if moment is None:
         moment = datetime.datetime.now(datetime.timezone.utc)
     if not isinstance(moment, datetime.datetime):
@@ -2563,13 +2181,6 @@ def utc_timestamp(moment=None):
 def canonical_real_ts(value):
     """Normalise a supplied real_ts to the one fixed form.
 
-    Accepts the canonical string itself, which round-trips byte for
-    byte; any other timezone-aware ISO-8601 string, including the
-    "Z"-suffixed output of `date -u +%Y-%m-%dT%H:%M:%S.%3NZ`; or an
-    aware datetime.  A value with no timezone is refused rather than
-    assumed to be UTC, because a timestamp with no zone is not
-    sortable across hosts and guessing one would be an invention.
-
     WHAT IS ACCEPTED IS WIDER THAN WHAT IS STORED, deliberately, and the
     difference is worth being precise about.  This is lenient on the way
     IN -- another spelling of the same instant is a real timestamp and
@@ -2580,19 +2191,6 @@ def canonical_real_ts(value):
     real_ts that is not byte-identical to its canonical rendering,
     because a mixed-format column parses perfectly row by row while a
     lexical sort of it silently stops being a chronological one.
-
-    None IS REFUSED.  `ingame_clock` is the only nullable field in this
-    schema, and it is nullable precisely so that an unreadable clock
-    can be reported as unread.  real_ts is the opposite kind of value:
-    it is a fact the caller holds and this module does not.  Stamping
-    "now" for a caller who passed nothing would silently record the
-    instant the ROW WAS APPENDED as though it were the instant the
-    FRAME WAS CAPTURED -- two different times, separated by the settle,
-    the screenshot, the crop and the OCR pass -- and it would do so
-    most convincingly on the rows where the caller had simply forgotten
-    to measure.  That is fabricated evidence, which HR6 forbids
-    outright.  So the timestamp must be passed in, and taking it stays
-    a deliberate caller action: utc_timestamp() called at the capture.
     """
     if value is None:
         raise ManifestError(
@@ -2631,14 +2229,7 @@ def canonical_real_ts(value):
 
 
 def _ordered_row(row):
-    """Return `row` as a dict of exactly FIELDS, in declared order.
-
-    Refuses a row that is missing a required key or carries an
-    unexpected one -- and says which, because a silent extra key is
-    how a second source of truth for timing would get in.  A mapping
-    whose insertion order differs is reordered rather than refused:
-    the schema fixes the order on disk, which this controls.
-    """
+    """Return `row` as a dict of exactly FIELDS, in declared order."""
     if not isinstance(row, dict):
         raise ManifestError(
             "a row must be a dict of the six manifest fields, got %s"
@@ -2657,17 +2248,7 @@ def _ordered_row(row):
 
 
 def build_row(frame, file, real_ts, ingame_clock, action, commentary):
-    """Validate one row and return it, without touching the disk.
-
-    Every field is checked here, so a caller can validate before it
-    commits to writing, and so append_row() has exactly one validation
-    path.
-
-    `ingame_clock` may be None; NOTHING ELSE MAY BE, and that is
-    enforced rather than merely documented.  In particular `real_ts` is
-    mandatory: see canonical_real_ts() for why a defaulted timestamp
-    would be fabricated evidence rather than a convenience.
-    """
+    """Validate one row and return it, without touching the disk."""
     index = _validated_frame(frame)
     stamped = canonical_real_ts(real_ts)
     # A NORMALISATION IS DISCLOSED, not performed quietly.  capture.sh
@@ -2726,13 +2307,7 @@ def build_row(frame, file, real_ts, ingame_clock, action, commentary):
 
 
 def encode_row(row):
-    """Return the exact line this module writes for `row`.
-
-    One self-contained JSON object, keys in the declared order,
-    non-ASCII written as itself rather than escaped -- the convention
-    the repository's own tooling follows -- and terminated by a single
-    LF.  No indentation, no wrapping array, no trailing comma.
-    """
+    """Return the exact line this module writes for `row`."""
     ordered = _ordered_row(row)
     return json.dumps(ordered, ensure_ascii=False) + "\n"
 
@@ -2740,29 +2315,18 @@ def encode_row(row):
 def _fsync(descriptor, path, frame, require_durable):
     """Force a written row to the device, or fail loudly.
 
-    A crash mid-session must not lose the row for a frame that already
-    exists on disk, which is the whole reason this call is here.  So a
-    refusal is NOT tolerated by default.  flush() has handed the bytes
-    to the operating system by this point, but "the kernel has them" is
-    not the same claim as "they survive a power loss", and reporting
-    success for the weaker claim would mean the manifest -- the
-    session's evidence, and the file the frame-count identity is
-    checked against -- could silently be missing rows for frames that
-    exist.  A row this module cannot prove it stored is therefore
-    raised as ManifestError rather than warned about and passed over.
-
-    Reduced durability remains available, but only as an explicit
-    caller decision: `require_durable=False` restores the warn-once
-    behaviour for a caller who genuinely accepts it, such as a scratch
-    manifest on a filesystem that cannot fsync at all.  The default is
-    the safe one, and the opt-in has to be typed out.
-
     THIS STEP DELIBERATELY DOES NOT ROLL THE ROW BACK, unlike the write
     itself.  By the time it runs the line is complete and valid JSON on
     disk; what is in doubt is only whether it survives a power loss.
     Truncating it away would turn an uncertainty into a certain loss --
     deleting the record of a frame that exists -- so the row stays and
     the uncertainty is reported for what it is.
+
+    Reduced durability remains available, but only as an explicit
+    caller decision: `require_durable=False` restores the warn-once
+    behaviour for a caller who genuinely accepts it, such as a scratch
+    manifest on a filesystem that cannot fsync at all.  The default is
+    the safe one, and the opt-in has to be typed out.
     """
     try:
         os.fsync(descriptor)
@@ -2788,9 +2352,6 @@ def _fsync(descriptor, path, frame, require_durable):
 def _roll_back(descriptor, committed, path, frame, cause):
     """Undo a failed append and return the error to raise.
 
-    The caller writes `raise _roll_back(...)`, so that the rollback and
-    the failure are one statement and neither can be forgotten.
-
     THIS IS WHAT KEEPS A HANDLED FAILURE FROM COSTING MORE THAN ITS OWN
     ROW, and it is the opposite of rewriting history rather than an
     exception to it.  The only bytes it can remove are the ones the
@@ -2799,25 +2360,6 @@ def _roll_back(descriptor, committed, path, frame, cause):
     to it restores the file to exactly the state every already-recorded
     row left it in.  No recorded row is altered, no row is dropped, and
     the failure is still raised.
-
-    It covers the failures this process lives to handle -- a short
-    write, ENOSPC, an EIO -- and nothing else.  A process killed
-    outright never reaches it; see _assert_row_boundary(), which is what
-    refuses the torn row it leaves behind.
-
-    Without it a write that stops half way -- ENOSPC on a long session
-    is the realistic case, because one PNG per keystroke fills a disk
-    long before a session ends -- leaves a partial line with no newline,
-    and a partial line is not JSON.  The manifest then cannot be read
-    at all: timeline.py, the render, the captions and every acceptance
-    gate that counts rows are blocked behind a file only a human hand
-    edit can repair.  An append-only evidence record exists precisely so
-    that a resource failure costs the failing row and nothing else.
-
-    A truncate that itself fails is reported alongside the original
-    cause rather than hidden behind it: the operator then knows the file
-    needs inspecting, which is strictly better than being told only
-    about the disk.
 
     THE OUTCOME IS REPORTED, NOT ASSUMED.  The restoration claim is made
     only when the truncate actually succeeded.  A message that says the
@@ -2850,24 +2392,7 @@ def _roll_back(descriptor, committed, path, frame, cause):
 
 
 def _assert_row_boundary(descriptor, committed, path, frame):
-    """Refuse to append onto a line that was never finished.
-
-    _roll_back() removes a torn row whenever this process survives to
-    run it, which covers the failure that motivated it.  It cannot cover
-    a process that is killed outright -- SIGKILL, a power loss, an OOM
-    kill -- part way through the write, and then the file ends mid-row
-    with no newline.  Appending after that would join two half-rows into
-    one line that is neither, quietly turning a recoverable tear into a
-    corrupt record that reads as a single malformed row.
-
-    So the boundary is checked before every append, at the cost of one
-    byte read: a non-empty manifest must end with the LF that terminated
-    its last complete row.  It is refused rather than repaired, because
-    the missing piece is a row about a frame that exists, and deciding
-    what it said is not this module's business -- verify_manifest()
-    reports which line is malformed, the frame it describes is still on
-    disk, and the correction is the operator's to make deliberately.
-    """
+    """Refuse to append onto a line that was never finished."""
     if committed <= 0:
         return
     try:
@@ -2892,22 +2417,7 @@ def _assert_row_boundary(descriptor, committed, path, frame):
 
 
 def _append_whole_row(descriptor, payload, committed, path, frame):
-    """Write one encoded row, entirely or not at all.
-
-    One `os.write` of the complete line, unbuffered, on a descriptor
-    opened O_APPEND and held under the exclusive lock: there is no
-    userspace buffer that could flush a fragment later, and the kernel
-    places the bytes at the end of the file whatever another writer is
-    doing.  A refusal and a short write are handled identically --
-    rolled back to `committed` -- because a row that is 90% written is
-    exactly as unreadable as one that raised.
-
-    A short write is looped rather than assumed away only after the
-    rollback question is settled: os.write may legitimately return
-    fewer bytes, so the remainder is written until it is all there, and
-    a step that makes no progress is treated as a failure rather than
-    spun on.
-    """
+    """Write one encoded row, entirely or not at all."""
     total = len(payload)
     written = 0
     while written < total:
@@ -2927,15 +2437,6 @@ def _append_whole_row(descriptor, payload, committed, path, frame):
 def _lock_exclusively(descriptor, path):
     """Take an exclusive advisory lock over the open manifest.
 
-    Two writers appending at the same instant is not hypothetical: the
-    capture loop runs unattended, and a second stage or a re-run can
-    overlap it.  O_APPEND keeps each write at the end of the file, but
-    the lock is what makes "measure the end, write, fsync, and on
-    failure truncate back" one indivisible step AS SEEN BY ANOTHER
-    PROCESS THAT ALSO TAKES IT -- so two rows cannot interleave and a
-    rollback cannot remove bytes another writer put there after this one
-    measured the end.
-
     THE LOCK IS ADVISORY, so that guarantee reaches exactly as far as
     the processes that cooperate with it.  Every writer in this pipeline
     goes through this function, which is what makes it hold here; a
@@ -2944,7 +2445,7 @@ def _lock_exclusively(descriptor, path):
     lock: verify_manifest() refuses a line it cannot parse, and
     timeline.py refuses the document rather than working around it.
 
-    THE LOCK IS MANDATORY AND THIS FAILS CLOSED.  It used to warn and
+    THE LOCK IS MANDATORY AND THIS FAILS CLOSED.  Warning and
     carry on, which was wrong for one specific and unrecoverable
     reason: the append that follows measures the end of the file and,
     on failure, truncates BACK to that offset.  Without the lock those
@@ -2956,11 +2457,17 @@ def _lock_exclusively(descriptor, path):
     can be resumed instead of a record that lost a row nobody will
     notice is gone.
 
-    The lock is released when the descriptor closes, which the caller's
-    `finally` guarantees on every path including an exception.
+    Two writers appending at the same instant is not hypothetical: the
+    capture loop runs unattended, and a second stage or a re-run can
+    overlap it.  O_APPEND keeps each write at the end of the file, but
+    the lock is what makes "measure the end, write, fsync, and on
+    failure truncate back" one indivisible step AS SEEN BY ANOTHER
+    PROCESS THAT ALSO TAKES IT -- so two rows cannot interleave and a
+    rollback cannot remove bytes another writer put there after this one
+    measured the end.
 
-    :raises ManifestError: when the lock cannot be taken.  Nothing has
-        been measured, written or truncated at that point.
+    :raises ManifestError: when the lock cannot be taken. Nothing has been
+        measured, written or truncated at that point.
     """
     try:
         fcntl.flock(descriptor, fcntl.LOCK_EX)
@@ -2982,11 +2489,6 @@ def append_row(manifest_path, frame, file, real_ts, ingame_clock,
                action, commentary, require_durable=True, root=None):
     """Validate one row and append it to the manifest.
 
-    The only writer in this module, and the only writer of this file.
-    Returns the row exactly as written, so the caller can log or
-    assert on it.  Raises ManifestError and writes nothing at all if
-    any field is wrong -- there is no partial row.
-
     A row is not reported as appended until it has been written,
     flushed AND forced to the device.  Every failure up to and including
     the fsync -- the open, the lock, the boundary check, the write, the
@@ -2994,11 +2496,6 @@ def append_row(manifest_path, frame, file, real_ts, ingame_clock,
     because a caller that is told the row was recorded will not go back
     and check.  `require_durable=False` is the one documented exception,
     and it weakens only the fsync step: see _fsync().
-
-    The CLOSE is the one step after that, and it is warned rather than
-    raised, deliberately: by then the row is on the device, so raising
-    would tell the caller the row was not recorded when it was.  It is
-    still reported once.
 
     `manifest_path` is explicit rather than defaulted so that a test,
     a dry run and the real session cannot be confused for one another;
@@ -3008,65 +2505,14 @@ def append_row(manifest_path, frame, file, real_ts, ingame_clock,
     is refused rather than appended to.  `root` relocates that approved
     tree for a test that owns a temporary directory; see
     approved_root().
-
-    What this does NOT do is police the index sequence, deliberately.
-    Checking that an index follows the last one written would mean
-    reading the whole file on every append -- quadratic over a session,
-    and a writer that behaves differently depending on what is already
-    on disk.  Instead a repeated or skipped index is recorded honestly
-    and reported loudly afterwards by verify_manifest(), which is also
-    what the acceptance gate runs.  The counter stays session.py's.
     """
     path = _validated_manifest_path(manifest_path, root)
     row = build_row(frame, file, real_ts, ingame_clock, action,
                     commentary)
     line = encode_row(row)
-    # Append mode, one line, then closed.  The file is never opened
-    # for writing any other way: not truncated, not seeked, not
-    # re-sorted, not deduplicated, not compacted, not retro-edited.
-    # If something was recorded wrongly the correction is a note in
-    # playthrough/TECHNICAL_NOTES.md, not an edit to this history.
-    # newline="\n" pins LF whatever the platform, which is what the
-    # `*.jsonl text` attribute expects of the committed file.
-    #
-    # The descriptor is opened with O_NOFOLLOW rather than by name, so
-    # a symlink planted between the validation above and this line is
-    # refused by the kernel instead of followed, and the whole append
-    # is serialised against other writers by the lock below.
-    #
-    # A HANDLED WRITE FAILURE COSTS ITS OWN ROW AND NOTHING ELSE.  The
-    # row is written by os.write directly, not through a buffered
-    # stream: a stream can flush a fragment of a line when the disk
-    # fills, and a fragment is not JSON, which makes the whole manifest
-    # unreadable and blocks every stage that counts its rows.  It is one
-    # call for the whole line whenever the kernel takes the whole line,
-    # and _append_whole_row() loops for the remainder when it does not,
-    # because os.write is allowed to return short.
-    # The end of the file is measured first, under the lock, so a write
-    # that cannot complete is truncated straight back to it -- see
-    # _append_whole_row() and _roll_back().  Nothing else in this module
-    # ever seeks or truncates, and a rollback can only ever remove bytes
-    # the failing append itself had begun to write.
-    #
-    # That is as far as the guarantee goes, and it is deliberately not
-    # called atomic: an UNHANDLED interruption -- SIGKILL, an OOM kill,
-    # the power going -- can stop the write with no chance to undo it,
-    # and the file then ends mid-row.  _assert_row_boundary() below
-    # refuses to append onto that, and verify_manifest() reports it, so
-    # the tear is caught rather than assumed away.
-    #
-    # Every step is guarded so that an OSError from any of them becomes
-    # a ManifestError: the caller already catches that for every
-    # validation failure, and a write or durability failure deserves
-    # the same visibility rather than surfacing as a different
-    # exception type from a different layer.  The ManifestError raised
-    # by _fsync() is not an OSError, so it passes through untouched.
-    # O_RDWR rather than O_WRONLY for exactly one reason: the boundary
-    # check below reads the file's last byte, and pread needs a readable
-    # descriptor.  It buys no other freedom -- O_APPEND still forces
-    # every write to the end of the file, the reads are positional and
-    # never move the write offset, and this remains the only descriptor
-    # in the module that can write at all.
+    # Append mode, one line, then closed.  The file is never opened for writing
+    # any other way: not truncated, not seeked, not re-sorted, not
+    # deduplicated, not compacted, not retro-edited.
     payload = line.encode("utf-8")
     descriptor = _open_nofollow(
         path, os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW)
@@ -3086,13 +2532,10 @@ def append_row(manifest_path, frame, file, real_ts, ingame_clock,
             descriptor, payload, committed, path, row["frame"])
         _fsync(descriptor, path, row["frame"], require_durable)
     finally:
-        # Closing releases the lock as well.  A close that fails cannot
-        # hide a row this function claimed to have stored -- the write
-        # and the fsync above both already raise, and the fsync ran
-        # first -- so it is not promoted to a failure that would
-        # contradict a row already on disk.  It is still reported once,
-        # because a descriptor the operating system would not close is a
-        # fact about the host and not something to swallow.
+        # Closing releases the lock as well.  A close that fails cannot hide a
+        # row this function claimed to have stored -- the write and the fsync
+        # above both already raise, and the fsync ran first -- so it is not
+        # promoted to a failure that would contradict a row already on disk.
         try:
             os.close(descriptor)
         except OSError as err:
@@ -3106,13 +2549,7 @@ def append_row(manifest_path, frame, file, real_ts, ingame_clock,
 
 
 def append_record(manifest_path, row, require_durable=True, root=None):
-    """Append a row supplied as a mapping of the six fields.
-
-    A convenience for a caller that already holds a dict; it shares
-    append_row()'s validation exactly -- including the path checks, the
-    lock and the durability guarantee -- so neither entry point can be
-    the lenient one.
-    """
+    """Append a row supplied as a mapping of the six fields."""
     ordered = _ordered_row(row)
     return append_row(
         manifest_path,
@@ -3128,14 +2565,7 @@ def append_record(manifest_path, row, require_durable=True, root=None):
 
 
 def staging_candidates(directory, prefix, suffix):
-    """Return the staging siblings in `directory`, sorted.  Read-only.
-
-    Names only, and only ones that genuinely carry the private prefix
-    AND the suffix, so nothing an operator or the engine put there can
-    be mistaken for one.  A directory that cannot be listed yields
-    nothing: this exists to clean up, and failing to clean up is not a
-    reason to refuse to write.
-    """
+    """Return the staging siblings in `directory`, sorted. Read-only."""
     try:
         names = os.listdir(directory)
     except OSError:
@@ -3147,33 +2577,23 @@ def staging_candidates(directory, prefix, suffix):
 
 
 def sweep_staging(directory, prefix, suffix, label):
-    """Remove staging siblings a retired rewrite left behind.
+    """Remove staging siblings left behind under the private prefix.
 
-    WHY THIS OUTLIVED THE WRITER IT SERVED.  This module can no longer
-    rewrite anything: the record is append-only and every rewrite entry
-    point was removed.  A sibling temporary under the private prefix can
-    still be sitting on disk, though, because the retired writer renamed
-    one into place and an UNHANDLED interruption -- SIGKILL, the power
-    going -- left it behind where no handled path could unlink it.  These
+    WHY THIS OUTLIVES ANY WRITER.  This module rewrites nothing: the
+    record is append-only and it has no rewrite entry point.  A sibling
+    temporary under the private prefix can still be sitting on disk,
+    because a writer that renamed one into place and then met an
+    UNHANDLED interruption -- SIGKILL, the power going -- left it where
+    no handled path could unlink it.  These
     siblings live inside playthrough/, which .gitignore re-includes
     wholesale with its terminal `!/playthrough/**` negation, so a
     survivor is an untracked file that `git add -A playthrough/` would
     commit into an evidence tree nobody authored it into.
 
-    It is therefore swept whenever a session opens, which is the moment
-    that can still heal the tree now that nothing writes one: no later
-    rewrite is ever going to run and clear it.
-
     WHAT IT WILL NOT DELETE.  Only a REGULAR file, never a symbolic link
     (which could point anywhere), never a directory, and only one owned
     by this account.  Anything else is reported and LEFT, because
     removing a file this module did not write is not reconciliation.
-
-    session.py sweeps its telemetry sidecar's staging siblings through
-    this same function, because both files sit in the re-included tree
-    and have exactly one failure mode between them.
-
-    Returns the names removed, so a caller can report them.
     """
     removed = []
     for name in staging_candidates(directory, prefix, suffix):
@@ -3228,10 +2648,10 @@ def sweep_staging(directory, prefix, suffix, label):
 # the caption track -- then repeats the wrong sentence however carefully
 # the evidence was gathered.
 #
-# The previous answer to that was a path that rewrote the manifest in
-# place.  A security review named it correctly: a mechanism that can
-# rewrite captured evidence is a defect, because it makes every later
-# artifact deniable.  It has been deleted, and this ledger replaces it.
+# Rewriting the manifest in place would answer it, and must not: a
+# mechanism that can rewrite captured evidence is a defect, because it
+# makes every later artifact deniable.  There is no such path here; this
+# ledger is the answer instead.
 #
 # WHAT AN AMENDMENT IS.  A row in a SECOND append-only file, bound to
 # the manifest line it concerns by that line's sha256.  It states the
@@ -3251,13 +2671,7 @@ def sweep_staging(directory, prefix, suffix, label):
 # ---------------------------------------------------------------------
 
 def default_amendments_path():
-    """Return the amendment ledger's path.
-
-    Honours PLAYTHROUGH_AMENDMENTS for the same reason
-    default_manifest_path() honours PLAYTHROUGH_MANIFEST -- env.sh is
-    the single definition of the artifact layout -- and the value is
-    then held to exactly the same containment rules.
-    """
+    """Return the amendment ledger's path."""
     from_env = os.environ.get("PLAYTHROUGH_AMENDMENTS")
     if from_env and from_env.strip():
         return os.path.abspath(from_env)
@@ -3305,15 +2719,7 @@ def _validated_amendments_path(value, root=None):
 
 
 def line_digest(line):
-    """Return the sha256 of one manifest LINE, newline included.
-
-    THE LINE, NOT THE PARSED ROW, and that is the whole point: the
-    binding is to the bytes on disk, so a digest cannot match a row that
-    was re-encoded, re-ordered or re-spaced.  A row is accepted here too
-    and is encoded through encode_row() first, which is the same
-    function append_row() writes with -- so the digest of a row equals
-    the digest of the line that row was written as.
-    """
+    """Return the sha256 of one manifest LINE, newline included."""
     if isinstance(line, dict):
         line = encode_row(line)
     if isinstance(line, bytes):
@@ -3428,7 +2834,7 @@ def build_amendment(number, amended_ts, frame, field, source_sha256,
     # plainly has to pass; `recorded` has to pass as well, because it is
     # a QUOTATION of a manifest row and the writer refuses markup there,
     # so a `recorded` value carrying any would be a claim about a row
-    # that cannot exist.  A review found this ledger able to introduce
+    # that cannot exist -- and without this the ledger could introduce
     # exactly the markup the row writer refuses.
     for name in ("recorded", "amended"):
         problem = raw_markup_problem(
@@ -3478,9 +2884,6 @@ def append_amendment(amendments_path, number, amended_ts, frame, field,
     reported as stored.  That is deliberate and it is the point: a
     correction is evidence too, so it is not allowed to be written by a
     lazier path than the record it corrects.
-
-    Returns the amendment exactly as written.  Raises ManifestError and
-    writes nothing at all on any refusal -- there is no partial row.
     """
     path = _validated_amendments_path(
         default_amendments_path() if amendments_path is None
@@ -3565,20 +2968,7 @@ def read_amendments(amendments_path=None, root=None):
 
 
 def amendment_problems(amendments, digests=None):
-    """Return a list of problems with the ledger.  Read-only, pure.
-
-    An empty list means every row carries the nine fields in the
-    declared order with values of the right shape, the amendment
-    numbers run 1..n without a gap or a repeat, no (frame, field) pair
-    is amended twice, and -- when `digests` is supplied, as
-    :func:`row_digests` returns it -- every row's `source_sha256`
-    matches the manifest line it names.
-
-    A repeated (frame, field) is a PROBLEM rather than a
-    last-one-wins rule on purpose: two amendments of one narration are
-    two claims about the same sentence, and choosing between them
-    automatically is how a record stops meaning anything.
-    """
+    """Return a list of problems with the ledger. Read-only, pure."""
     problems = []
     seen_numbers = {}
     seen_pairs = {}
@@ -3659,29 +3049,7 @@ def amendment_problems(amendments, digests=None):
 
 
 def resolve_rows(rows, amendments, digests=None):
-    """Apply the ledger to a copy of the rows.  Pure.
-
-    Returns ``(resolved, amended)`` -- the rows a DERIVATIVE should be
-    computed from, and the tuple of frame indices an amendment reached,
-    in ascending order.  The input rows are not modified and neither is
-    any file: this is the one function the transcript, the caption cues
-    and the timeline all pass through, so it is deliberately pure and
-    deliberately strict.
-
-    FAIL CLOSED, EVERY TIME.  An amendment is applied only when its
-    `source_sha256` matches the digest of the row as it stands and its
-    `recorded` value matches that row's current text.  Anything else --
-    a frame the rows do not carry, a digest that has moved, a
-    `recorded` value that does not match, a second amendment of the
-    same narration -- raises ManifestError.  A skip would be worse than
-    a refusal here: the derivative would come out looking correct while
-    the ledger and the record disagreed about history.
-
-    `digests` is the {frame: line digest} mapping :func:`row_digests`
-    reads off the file.  When it is omitted the digests are computed
-    from the rows through encode_row(), which is the same encoding
-    append_row() wrote them with.
-    """
+    """Apply the ledger to a copy of the rows. Pure."""
     materialised = [dict(row) for row in rows]
     by_frame = {}
     for position, row in enumerate(materialised, start=1):
@@ -3847,15 +3215,7 @@ def _validated_git_object(value, label):
 
 def build_digest_row(frame, file, sha256, byte_count, attested,
                      attested_ts, git_blob=None, git_commit=None):
-    """Validate one attestation row and return it in key order.  Pure.
-
-    A "commit" attestation MUST name the blob and the commit it was
-    sealed from: a post-hoc seal that named nothing would be an
-    assertion, and the whole point of recording the weaker claim is that
-    a reader can re-derive it.  A "capture" or "recovery" attestation
-    must name neither, because it was taken from the running pipeline and
-    a git object would be an invention.
-    """
+    """Validate one attestation row and return it in key order. Pure."""
     index = _validated_frame(frame)
     row = {
         "frame": index,
@@ -3947,13 +3307,7 @@ def append_frame_digest(digests_path, frame, file, sha256, byte_count,
 
 
 def read_frame_digests(digests_path=None, root=None):
-    """Return the ledger's rows, in the order they were written.
-
-    An absent ledger yields an empty tuple: a session captured before
-    the ledger existed legitimately has none, and the CONSUMERS are
-    where that is treated as a missing attestation rather than as
-    permission to proceed.
-    """
+    """Return the ledger's rows, in the order they were written."""
     path = _validated_digests_target(
         default_digests_path() if digests_path is None
         else digests_path, root)
@@ -4044,19 +3398,7 @@ def digest_row_problems(rows):
 def verify_frame_digests(rows, digests=None, frames_dir=None,
                          digests_path=None, root=None,
                          require_all=True):
-    """Check the frames on disk against their attestations.
-
-    `rows` are the manifest rows -- the ledger is keyed off the RECORD,
-    so an attestation for a frame no row mentions is reported and a row
-    with no attestation is reported too.  Returns a list of problems;
-    an empty list means every recorded frame exists, hashes to the
-    digest attested for it, and is the size that attestation names.
-
-    `require_all` False downgrades "this frame has no attestation" from
-    a problem to silence, for the one honest case that exists: a session
-    captured before this ledger did.  It is never the default, and the
-    consumers that must not proceed without attestation leave it True.
-    """
+    """Check the frames on disk against their attestations."""
     if digests is None:
         digests = read_frame_digests(digests_path, root)
     if frames_dir is None:
@@ -4197,20 +3539,8 @@ ANCHOR_FIELDS = (
     "sealed_by",
     # The artifact, spelled relative to the approved tree -- so
     # "build/frame_digests.jsonl", not an absolute path and not a
-    # repository-relative one.
-    #
-    # RELATIVE TO THE TREE RATHER THAN TO THE REPOSITORY, and that is a
-    # correction rather than a preference.  The first version of this
-    # used relative_to_repo(), which resolves against the REAL
-    # repository root: sealing a copy of the evidence under a temporary
-    # root therefore stored every row as
-    # "<outside the checkout>/frame_digests.jsonl" -- the directory
-    # component gone, so build/x and a top-level x would collide, and
-    # the path no longer resolvable, so verification reported fifteen
-    # spurious "not under the approved tree" findings.  Measured, not
-    # hypothetical.  Approved-root-relative is correct in production AND
-    # under a relocated root, which means a test exercises the same code
-    # path a session does, and it discloses no host location at all.
+    # repository-relative one.  RELATIVE TO THE TREE RATHER THAN TO THE
+    # REPOSITORY, and that is a correction rather than a preference.
     "path",
     "sha256",
     "bytes",
@@ -4224,17 +3554,9 @@ ANCHOR_FIELDS = (
     "chain",
 )
 
-# The evidence this anchor seals, in a fixed order so that two runs over
-# an unchanged tree produce the same chain.  Repository-relative parts
-# rather than absolute paths, so the set is meaningful in any checkout.
-#
-# IT IS THE EVIDENCE SET, NOT EVERY FILE.  The captures are covered
-# transitively through the digest ledger (see above); the tooling is
-# covered by git itself, because it is tracked source that a reviewer
-# reads as a diff.  What is here is what a session ASSERTS: what was
-# pressed, when, what it hashed to, what was corrected, what was
-# acknowledged, what the pacing was computed to be, and what was
-# published as the film and the transcripts.
+# The evidence this anchor seals, in a fixed order so that two runs over an
+# unchanged tree produce the same chain.  Repository-relative parts rather than
+# absolute paths, so the set is meaningful in any checkout.
 ANCHOR_SEALED = (
     ("manifest.jsonl",),
     ("amendments.jsonl",),
@@ -4264,17 +3586,7 @@ ANCHOR_REMEDIATION = "remediation"
 
 
 def git_blob_name(path, label="artifact"):
-    """Return git's own object name for a file's exact bytes.
-
-    Git names a blob by hashing `blob <byte count>\\0` followed by the
-    content, so this is `git hash-object <path>` computed here -- no
-    subprocess, and correct before the file has been added to anything.
-
-    The digest is sha1 because that is the object format git uses; it is
-    a NAME and not a security claim, which is what
-    `usedforsecurity=False` records, and every row carries a sha256 of
-    the same bytes beside it.
-    """
+    """Return git's own object name for a file's exact bytes."""
     resolved = _validated_path(path, "%s path" % label)
     digest = hashlib.sha1(usedforsecurity=False)
     try:
@@ -4315,14 +3627,7 @@ def git_blob_name(path, label="artifact"):
 
 
 def anchor_chain_hash(prev_chain, row):
-    """Return the chain hash for `row` following `prev_chain`.
-
-    Pure, and deliberately simple enough to reimplement: sha256 over the
-    previous chain value, a newline, and this row's fields -- every field
-    of ANCHOR_FIELDS except `chain` itself, in that order, serialised
-    with no incidental whitespace.  A reader who distrusts this module
-    can recompute it from the published rows in any language.
-    """
+    """Return the chain hash for `row` following `prev_chain`."""
     if not isinstance(prev_chain, str):
         raise ManifestError(
             "the previous chain value is text or empty, got %r"
@@ -4427,13 +3732,7 @@ def _validated_chain_value(value, label, allow_empty=False):
 
 def build_anchor_row(seq, sealed_by, path, sha256, byte_count, git_blob,
                      prev_chain, sealed_at=None):
-    """Build one sealed-artifact row, chain value included.  Pure.
-
-    `path` is stored repository-relative so the row means the same thing
-    in every checkout; everything else is validated exactly as the
-    digest ledger's fields are, because a seal that accepted a malformed
-    digest would be a seal over nothing.
-    """
+    """Build one sealed-artifact row, chain value included. Pure."""
     row = {
         "version": ANCHOR_VERSION,
         "seq": _validated_seq(seq),
@@ -4480,17 +3779,7 @@ def default_anchor_path():
 
 
 def _anchor_default(root=None):
-    """Return the anchor's default path, honouring a relocated root.
-
-    The sibling ledgers derive their default from this module's own
-    location and leave a relocated caller to pass the path explicitly.
-    That is a trap worth closing here rather than repeating: this
-    ledger's three entry points all take `root`, and a default that
-    ignored it would resolve to the REAL tree while the rest of the call
-    worked in a temporary one -- so a test, or a caller sealing a copy,
-    would append rows about somebody else's evidence into the live
-    ledger and be refused only by the containment check.
-    """
+    """Return the anchor's default path, honouring a relocated root."""
     if root is not None:
         return os.path.join(approved_root(root), *ANCHOR_REL_PARTS)
     return default_anchor_path()
@@ -4522,13 +3811,7 @@ def _validated_anchor_target(value, root=None):
 
 
 def read_anchor_rows(anchor_path=None, root=None):
-    """Return the anchor's rows, in the order they were written.
-
-    An absent ledger yields an empty tuple: a tree sealed before this
-    ledger existed legitimately has none, and the CONSUMERS decide
-    whether that is acceptable -- the gate treats an unsealed tree as a
-    failure, which is where that judgement belongs.
-    """
+    """Return the anchor's rows, in the order they were written."""
     path = _validated_anchor_target(
         _anchor_default(root) if anchor_path is None else anchor_path,
         root)
@@ -4564,13 +3847,7 @@ def anchor_head(rows):
 
 
 def anchor_chain_problems(rows):
-    """Return every way `rows` fails to be a well formed chain.
-
-    Structure, numbering, linkage and each row's own recomputed chain
-    value.  It says nothing about the artifacts -- verify_anchor does
-    that -- so a broken chain and a mutated artifact are two different
-    findings with two different remedies.
-    """
+    """Return every way `rows` fails to be a well formed chain."""
     problems = []
     previous = ""
     for position, row in enumerate(rows, start=1):
@@ -4658,16 +3935,7 @@ def sealed_artifact_paths(root=None):
 
 def seal_artifacts(sealed_by, paths=None, anchor_path=None,
                    require_durable=True, root=None):
-    """Append one chained row per artifact and return (rows, absent).
-
-    The rows are appended in `paths` order, each chained onto the last,
-    so a second seal of an unchanged tree extends the chain rather than
-    replacing it -- this ledger is append-only for the same reason every
-    other one here is: a seal that can be rewritten seals nothing.
-
-    An artifact that does not exist is NOT sealed and NOT invented; its
-    path comes back in `absent` for the caller to report.
-    """
+    """Append one chained row per artifact and return (rows, absent)."""
     target = _validated_anchor_target(
         _anchor_default(root) if anchor_path is None else anchor_path,
         root)
@@ -4752,10 +4020,6 @@ def verify_anchor(anchor_path=None, root=None, require_all=True):
       * is every artifact in ANCHOR_SEALED that exists on disk actually
         sealed, so a file cannot escape the anchor by being left out of
         it.
-
-    The NEWEST row for a path is the one that binds, because the ledger
-    is append-only: a later seal of a legitimately regenerated artifact
-    is recorded by appending, and the earlier row stays as history.
     """
     rows = read_anchor_rows(anchor_path, root)
     problems = list(anchor_chain_problems(rows))
@@ -4823,19 +4087,7 @@ def verify_anchor(anchor_path=None, root=None, require_all=True):
 
 
 def unsealed_artifacts(anchor_path=None, root=None, rows=None):
-    """Return the artifacts that exist on disk and carry no seal.
-
-    Coverage, reported apart from drift, because the two answer to
-    different phases.  Drift -- a sealed artifact whose bytes no longer
-    match its seal -- is always a finding.  Coverage is a question about
-    ORDER: the committer seals at each checkpoint, so an artifact
-    produced after the last checkpoint is legitimately unsealed until
-    the next one, and a caller measuring a tree mid-pipeline needs to
-    say so without calling it a failure.
-
-    `rows` is accepted so a caller that has already read the ledger does
-    not read it twice.
-    """
+    """Return the artifacts that exist on disk and carry no seal."""
     if rows is None:
         rows = read_anchor_rows(anchor_path, root)
     sealed = {row["path"] for row in rows
@@ -4876,12 +4128,7 @@ def _decode_line(raw, number, path):
 
 
 def read_rows(manifest_path=None, root=None):
-    """Return every row on disk, in file order.  Read-only.
-
-    Opened for reading only, and the returned dicts are copies, so no
-    caller of this module can rewrite the record through it.  Key
-    order is preserved as it appears on disk, which is what lets
-    verify_manifest() check the declared order of the file itself.
+    """Return every row on disk, in file order. Read-only.
 
     The path is held to the same approved-root, no-symlink and
     O_NOFOLLOW rules as the append path.  Reading is not harmless: a
@@ -4918,13 +4165,7 @@ def count_rows(manifest_path=None, root=None):
 
 
 def last_recorded_frame(manifest_path=None, root=None):
-    """Return the last frame index recorded, or 0 if there is none.
-
-    An observation for the resume branch, not a generator: session.py
-    owns the frame counter and this module never increments anything.
-    A manifest that does not exist yet answers 0, which is how a fresh
-    session is distinguished from a resumed one.
-    """
+    """Return the last frame index recorded, or 0 if there is none."""
     if manifest_path is None:
         manifest_path = default_manifest_path()
     path = _validated_manifest_target(manifest_path, root)
@@ -4972,45 +4213,7 @@ def _shape_problems(path):
 
 
 def row_field_problems(row, number, narration=True):
-    """Report every schema defect in ONE row.  Read-only.
-
-    PUBLIC AND AUTHORITATIVE.  This function -- not a paraphrase of it
-    -- is what decides whether a single manifest row is well formed.
-    timeline.py gates its whole computation on these rows, and a
-    second, weaker copy of these checks living there would mean the
-    pipeline had two disagreeing definitions of a valid row, with the
-    looser one deciding what gets rendered.  The schema is defined
-    here, next to the writer that enforces it, so the reader and the
-    writer cannot drift apart.
-
-    THE PAIR, AND WHY IT IS A PAIR.  This function and
-    sequence_problems() below are the two halves of the schema: one row
-    in isolation, and the 1..n identity across rows.  row_problems() is
-    the CANONICAL GATE that applies both to a whole manifest, and it is
-    what every other stage calls; these two exist separately so that a
-    caller holding one row -- the writer, on its way to appending it --
-    can check exactly what it holds without inventing its own rules.
-    Nothing outside this module should need to call them directly.
-
-    `number` is the 1-based line number, used only in the messages.
-    Nothing is modified, and a returned empty list means this row
-    satisfies the six-field schema.
-
-    `narration` decides whether the two checks on the AMENDABLE fields
-    -- the voice gate on `commentary` and the placeholder sentinels on
-    both narrations -- are applied here.  It defaults to true, so every
-    existing caller is held to the whole schema.  It is false in exactly
-    one place: timeline.py gates the RECORDED rows without it and then
-    applies the full gate to the rows manifest.resolve_rows() returns.
-    That is not a relaxation, it is where the check belongs.  A recorded
-    narration cannot be edited -- that is the whole of the amendment
-    ledger's reason for existing -- so refusing the record for one would
-    leave a session with no honest way forward, while the sentence that
-    actually reaches the transcript and the caption track is the
-    RESOLVED one, which is still refused if it carries a meta word.
-    Everything this argument suppresses is checked one step later, on
-    the text a reader will actually see.
-    """
+    """Report every schema defect in ONE row. Read-only."""
     problems = []
     if list(row) != list(FIELDS):
         return [
@@ -5042,22 +4245,9 @@ def row_field_problems(row, number, narration=True):
                 "row %d real_ts is malformed: %s" % (number, err))
         else:
             # THE STORED FORM, not merely a parsable one.  The writer
-            # normalises whatever it is handed (see canonical_real_ts),
-            # so every row THIS module wrote is already canonical and
-            # this costs a well-formed record nothing.  What it catches
-            # is a row that reached the file another way -- a hand
-            # edit, a foreign tool -- in one of the other ISO-8601
-            # spellings of the same instant: '...T06:53:55Z' without
-            # the milliseconds, a space instead of the 'T', an offset
-            # other than 'Z'.  Each of those parses perfectly and each
-            # of them destroys the one property the column is FOR: with
-            # a single form, a lexical sort of real_ts is a
-            # chronological sort, which is what makes "the timestamps
-            # never go backwards" a one-line check over the record
-            # rather than a parse of every row.  Mixed forms sort
-            # wrongly while every value in them is individually
-            # correct, so the defect is invisible in any single row and
-            # has to be caught here.
+            # normalises whatever it is handed (see canonical_real_ts), so
+            # every row THIS module wrote is already canonical and this costs a
+            # well-formed record nothing.
             if canonical != real_ts:
                 problems.append(
                     "row %d real_ts is %r, which is not the one form "
@@ -5094,13 +4284,7 @@ def row_field_problems(row, number, narration=True):
 
 
 def sequence_problems(rows):
-    """Report gaps, repeats and reorderings.  Read-only.
-
-    PUBLIC AND AUTHORITATIVE, for the same reason as row_problems():
-    the 1..n identity is what makes one keystroke, one frame and one row
-    the same statement, and it is checked here so that every stage
-    checks it the same way.
-    """
+    """Report gaps, repeats and reorderings. Read-only."""
     problems = []
     for position, row in enumerate(rows, start=1):
         if not isinstance(row, dict):
@@ -5120,44 +4304,7 @@ def sequence_problems(rows):
 
 
 def row_problems(rows, allow_index_gaps=False, narration=True):
-    """Report every schema defect in a sequence of rows.  Pure.
-
-    THE canonical in-memory gate for manifest rows: it applies
-    row_field_problems() to every row and sequence_problems() across
-    them, which are the only implementations of those rules anywhere in
-    the pipeline.  What it holds a manifest to is exactly the six
-    declared fields in
-    the declared order, an integer index inside the recorded range
-    whose `file` is the capture path this module formats from that
-    index, a real_ts in the one fixed sortable form, non-empty text
-    where text is required, and an `ingame_clock` that is either a
-    reading or JSON null.
-
-    Both consumers hold their rows to THIS function.
-    verify_manifest() applies it to the file on disk, and timeline.py
-    applies it to the rows it is about to pace a film from -- before it
-    writes a timeline AND before it attests to one already written --
-    so the same defect is reported in the same words wherever it is
-    found.  A second, laxer copy of these rules is precisely how a
-    manifest error becomes a timeline that quietly filled it in: one
-    such copy existed and accepted a row whose `file` named a
-    different capture than its `frame`, and a real_ts that was not a
-    timestamp at all.
-
-    `allow_index_gaps` suppresses only the 1..n sequence check -- the
-    single problem an operator may knowingly accept.  `narration` is
-    passed to row_field_problems(), where it is documented: with it
-    false the two checks on the amendable narrations are left to the
-    caller to apply to the RESOLVED rows, which is what timeline.py
-    does, and no other caller passes it.  Every other defect is
-    reported unconditionally, and verify_manifest() never passes the
-    flag, so `manifest.py verify` reports a gap whatever anybody else
-    chose to tolerate.
-
-    Nothing is read from disk, nothing is repaired and nothing is
-    rewritten -- the caller decides what a problem means, which for
-    this pipeline means refusing to build evidence on top of it.
-    """
+    """Report every schema defect in a sequence of rows. Pure."""
     problems = []
     for position, row in enumerate(rows, start=1):
         if not isinstance(row, dict):
@@ -5210,14 +4357,8 @@ def honesty_problems(rows, dates=None):
     honest sentence.  The first row has nothing before it and is judged
     against its own reading.
 
-    :param rows: the manifest rows, in order.
-    :param dates: optional {frame: sidebar date line}, as the telemetry
-        sidecar records it.  The manifest schema carries no date column,
-        so without this there is no channel through which a date could
-        have been observed and date statements are left unadjudicated --
-        NOT treated as unreadable, which would refuse every honest
-        sentence that names the day.  Supply it and each date statement is
-        held to the line beside it.
+    :param rows: the manifest rows, in order. :param dates: optional {frame:
+        sidebar date line}, as the telemetry sidecar records it.
     """
     problems = []
     check_dates = isinstance(dates, dict) and bool(dates)
@@ -5248,19 +4389,7 @@ def honesty_problems(rows, dates=None):
 
 def verify_manifest(manifest_path=None, frames_dir=None,
                     require_frames=False, root=None):
-    """Return a list of problems with the manifest.  Read-only.
-
-    An empty list means the file satisfies the schema, the byte shape,
-    the one-row-per-frame invariant, the voice gate and the clock-honesty
-    gate.  The schema half is row_problems(), the shared gate timeline.py
-    holds its rows to as well, and honesty_problems() holds each row's
-    stated times and dates to the readings recorded beside them; this
-    function adds the checks that need the FILE -- its byte shape, and
-    with `require_frames` the existence of the capture each row names --
-    rather than restating the row rules.  Nothing is repaired, reordered
-    or rewritten: a problem is reported so that a human can decide, which
-    for this file means an amendment in playthrough/amendments.jsonl
-    rather than an edit here.
+    """Return a list of problems with the manifest. Read-only.
 
     WHERE THE TWO NARRATION GATES ARE APPLIED, and why it is not here on
     the recorded text.  A recorded row is never edited, so the only
@@ -5314,19 +4443,7 @@ def verify_manifest(manifest_path=None, frames_dir=None,
 
 def verify_amendments(amendments_path=None, manifest_path=None,
                       root=None):
-    """Return a list of problems with the amendment ledger.  Read-only.
-
-    An empty list means the ledger is either absent -- the ordinary
-    case for a session with nothing to amend -- or that every row
-    satisfies the nine-field schema in its declared order, the
-    numbering runs 1..n, no narration is amended twice, every amended
-    value would itself be a valid field, and every `source_sha256`
-    matches the sha256 of the manifest line it names.
-
-    The digest half is the reason this is a verifier rather than a
-    schema check: it is what turns "the ledger claims to correct this
-    row" into "the ledger corrects THIS row, byte for byte".
-    """
+    """Return a list of problems with the amendment ledger. Read-only."""
     ledger = _validated_amendments_target(
         default_amendments_path() if amendments_path is None
         else amendments_path, root)
@@ -5423,14 +4540,7 @@ def _build_parser():
 
 
 def main(argv=None, root=None):
-    """Run the read-only command line and return an exit status.
-
-    `root` is call-site only, exactly as it is on every function above:
-    it relocates the approved tree for a caller that owns a temporary
-    directory, and neither the environment nor the command line can
-    reach it.  The rules a relocated run is held to are the production
-    rules, unchanged.
-    """
+    """Run the read-only command line and return an exit status."""
     args = _build_parser().parse_args(argv)
     try:
         if args.command == "count":

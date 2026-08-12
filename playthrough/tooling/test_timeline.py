@@ -3,8 +3,8 @@
 
 The timeline mathematics is the one genuinely deterministic component of
 the playthrough capture subsystem: given a sequence of sidebar clock
-readings it must always produce the same durations, transition flags,
-cue windows and SubRip timecodes.  Everything else in the pipeline
+readings it must always produce the same durations, transition flags, cue
+windows and SubRip timecodes.  Everything else in the pipeline
 photographs a running game, so this module is where the feature's
 arithmetic is held to account.
 
@@ -24,15 +24,14 @@ Four arithmetic areas, in the order the requirements fix them:
   boundary that a raw delta of exactly CEIL is NOT a transition, because
   the comparison is strictly greater;
 * THE ROLLOVER GUARD -- midnight is crossed as a positive step only WHEN
-  THE SIDEBAR DATE IS OBSERVED TO TURN WITH IT.  A reading that cannot
-  be parsed, or that moves backwards with no date evidence, is
-  reconciled against its predecessor AND FLAGGED: from the clock alone a
-  backwards step is indistinguishable from a misread digit, and assuming
-  a rollover would invent hours nobody played;
+  THE SIDEBAR DATE IS OBSERVED TO TURN WITH IT.  A reading that cannot be
+  parsed, or that moves backwards with no date evidence, is reconciled
+  against its predecessor AND FLAGGED: from the clock alone a backwards
+  step is indistinguishable from a misread digit;
 * THE CUE ARITHMETIC -- a transition's duration is charged to VIDEO time,
   advancing the shared cursor before the following cue begins.  That is
-  all that stands between the film and captions that drift further out
-  of step with every transition;
+  all that stands between the film and captions that drift further out of
+  step with every transition;
 * THE SUBRIP FORMATTER -- a comma before the milliseconds, not a full
   stop.
 
@@ -40,17 +39,15 @@ Then the two things the arithmetic alone cannot vouch for:
 
 * the VALIDATOR, branch by branch.  Every check in timeline.py carries a
   stable problem code and every test names the code it means, because
-  several invariants legitimately fail together and a test asserting
-  only "something was reported" stays green with the very check it is
-  named after deleted.  Asserting the code, plus the structural proof
-  that each code has exactly one check site, is what makes these
-  mutation kills;
+  several invariants legitimately fail together and a test asserting only
+  "something was reported" stays green with the very check it is named
+  after deleted;
 * the COMMAND LINE and the FILE CONTRACT, including the exit status of
   each path -- a run_pipeline.sh stage reads only the exit status, so a
   wrong one is a whole stage that appears to have worked -- and the
-  manifest gate, which holds generation and verification to ONE
-  canonical validator so --verify cannot degenerate into a
-  self-consistency check over a manifest describing other frames.
+  manifest gate, which holds generation and verification to ONE canonical
+  validator so --verify cannot degenerate into a self-consistency check
+  over a manifest describing other frames.
 
 Finally, two properties of the suite itself.
 TestTheSuiteCatchesABrokenAlgorithm substitutes a wrong transition
@@ -59,28 +56,25 @@ transition, and proves the canonical expectations stop holding; the
 substitution is a module rebinding undone by addCleanup, so the check is
 permanent rather than something an author must remember to undo.  The
 same class compares against a deepcopy to prove build_timeline() and
-validate_timeline() leave their inputs byte-for-byte alone: manifest
-rows are the committed record of a session, and a builder that quietly
+validate_timeline() leave their inputs byte-for-byte alone: manifest rows
+are the committed record of a session, and a builder that quietly
 repaired one would be rewriting evidence.
 
 NO REAL ARTIFACT IS EVER WRITTEN.  Nothing here touches
 playthrough/frames/, playthrough/manifest.jsonl or
-playthrough/timeline.json.  Pure functions are exercised in memory;
-every test needing files works in a temporary directory it creates,
-nominates as the approved root and removes, with ALL FOUR of
-PLAYTHROUGH_MANIFEST, PLAYTHROUGH_TIMELINE, PLAYTHROUGH_OBSERVATIONS and
-PLAYTHROUGH_DATE_AUDIT redirected into it.  Four and not three:
-redirecting only the first three leaves the date-evidence sidecar
-resolving from whatever env.sh exported, outside the nominated root and
-refused by the containment guard -- a failure that arrives only for
-whoever sourced the pipeline's environment first.  So the count is
-asserted rather than promised (TestTheSuiteIsHermetic), and the suite
-must be green both with env.sh sourced and without it.
+playthrough/timeline.json.  Pure functions are exercised in memory; every
+test needing files works in a temporary directory it creates, nominates
+as the approved root and removes, with ALL FOUR of PLAYTHROUGH_MANIFEST,
+PLAYTHROUGH_TIMELINE, PLAYTHROUGH_OBSERVATIONS and PLAYTHROUGH_DATE_AUDIT
+redirected into it.  Four and not three: redirecting only the first three
+leaves the date-evidence sidecar resolving from whatever env.sh exported,
+outside the nominated root and refused by the containment guard.  So the
+count is asserted rather than promised (TestTheSuiteIsHermetic), and the
+suite must be green both with env.sh sourced and without it.
 
 Standard library only, plus the sibling timeline module, so the
-arithmetic is auditable without provisioning a render toolchain.
-Nothing is added to tests/, which globs tests/*.cpp into the Catch2
-binary.
+arithmetic is auditable without provisioning a render toolchain.  Nothing
+is added to tests/, which globs tests/*.cpp into the Catch2 binary.
 """
 
 import ast
@@ -180,11 +174,10 @@ REFERENCE_CLOCKS = (
 #
 # EXACTLY SEVEN VALUES, one per reading, and the count is asserted
 # rather than eyeballed (see the reference-sequence tests).  An eighth
-# value sat here previously: absolutise_clocks() used to ignore a
-# surplus silently, so the headline fixture claimed a one-date-per-frame
-# cardinality it did not have, and the extra day-4 line proved nothing
-# about the crossing it appeared to evidence.  The reader now refuses a
-# longer sequence outright, and this tuple is the length it says it is.
+# value would make the headline fixture claim a one-date-per-frame
+# cardinality it does not have, and the surplus line would appear to
+# evidence a crossing while proving nothing about it.  The reader refuses
+# a longer sequence outright, so this tuple is the length it says it is.
 REFERENCE_DATES = (
     "Spring, day 3",
     "Spring, day 3",
@@ -1965,16 +1958,15 @@ class TestObservationSidecar(unittest.TestCase):
         self.assertEqual(self.load(path)[1]["date"], "Thursday, Mar 8")
 
     def test_two_readings_that_disagree_leave_the_date_unobserved(self):
-        """LAST-ROW-WINS WAS THE DEFECT, and this is the fix.
+        """LAST-ROW-WINS IS NOT A RULE FOR EVIDENCE.
 
-        This reader used to take the later row unconditionally, so a
-        contradiction still decided a day of game time on nothing better
-        than write order -- while read_date_audit(), reading the very
-        same kind of evidence, had already been hardened to require
-        unanimity.  A code review named the asymmetry: build_timeline
-        PREFERRED this record, so the unhardened one was the one that
-        decided.  There is no rule by which being written later makes one
-        of two contradictory observations the true one.
+        Taking the later row unconditionally lets a contradiction decide a
+        day of game time on nothing better than write order, and this
+        reader carries the same kind of evidence read_date_audit() holds
+        to unanimity -- so an asymmetry between them would leave the
+        unhardened one deciding, since build_timeline reads both.  There
+        is no rule by which being written later makes one of two
+        contradictory observations the true one.
         """
         path = self.sidecar(
             '{"frame": 1, "date": "Thursday, Mar 8", '
@@ -1987,8 +1979,8 @@ class TestObservationSidecar(unittest.TestCase):
         """An absence of evidence is not counter-evidence.
 
         `null` is the ordinary shape of an unreadable reading, and under
-        last-row-wins a later one silently erased a date that had been
-        read -- with no warning at all, because a null is not a conflict.
+        last-row-wins a later one erases a date that WAS read -- with no
+        warning at all, because a null is not a conflict.
         """
         path = self.sidecar(
             '{"frame": 1, "date": "Thursday, Mar 8", '
@@ -2134,16 +2126,15 @@ class TestObservationSidecar(unittest.TestCase):
         self.assertIsNone(document["frames"][0]["ingame_date"])
 
     def test_the_telemetry_no_longer_outranks_the_audit(self):
-        """NEITHER RECORD IS PREFERRED, which was the defect.
+        """NEITHER RECORD IS PREFERRED.
 
-        build_timeline() used to take the telemetry's date and consult
-        the audit only where the telemetry had none -- so the record with
-        no unanimity rule and no digest binding decided, and one stale
-        telemetry row could override unanimous, digest-bound audit
-        evidence and move a day of game time.  The two records read the
-        same photographs: agreement corroborates, and a contradiction
-        leaves the frame's date unobserved rather than settled by which
-        file it came out of.
+        Taking the telemetry's date and consulting the audit only where
+        the telemetry has none would let the record with no unanimity rule
+        and no digest binding decide, so one stale telemetry row could
+        override unanimous, digest-bound audit evidence and move a day of
+        game time.  The two records read the same photographs: agreement
+        corroborates, and a contradiction leaves the frame's date
+        unobserved rather than settled by which file it came out of.
         """
         telemetry = {
             1: {"frame": 1, "date": "Thursday, Mar 8",
@@ -2754,9 +2745,10 @@ class TestAnOrdinaryStepAfterWaking(unittest.TestCase):
     canonical fixture, because adding a row there changes every total in
     it.  So it lives here on a sequence of its own, and its constants are
     DERIVED from the reference ones rather than restated: the extra frame
-    contributes its own second, turns the previously final floored frame
-    into a full second, and adds no transition.  Each sequence's totals
-    are true only of itself, which is why the two are kept apart.
+    contributes its own second, turns the reference sequence's final
+    floored frame into a full second, and adds no transition.  Each
+    sequence's totals are true only of itself, which is why the two are
+    kept apart.
     """
 
     # The reference readings plus one more second on the clock, so the
@@ -4174,8 +4166,8 @@ class TestTimelineCliAndIo(unittest.TestCase):
     def test_a_malformed_audit_row_refuses_to_publish(self):
         """FAIL CLOSED, and leave what is already published alone.
 
-        The audit used to warn and skip a row it could not parse, which
-        is not the neutral loss it looks like: two rows carrying one date
+        Warning about a row that cannot be parsed and skipping it is
+        not the neutral loss it looks like: two rows carrying one date
         make a backwards clock a same-date reconciliation, and losing one
         of them makes the same clock an unevidenced wrap -- a different
         timeline, published while every count still tallies.  So each
@@ -4389,12 +4381,12 @@ class TestTimelineCliAndIo(unittest.TestCase):
         # fresh one, so a rewrite that changed only LAYOUT -- an editor
         # that pretty-printed the artifact, a tool that normalised line
         # endings -- is not drift, because nothing the artifact SAYS has
-        # moved.  A duration that moved by a nanosecond is.  The help
-        # text promises this distinction; this is where it is held to it,
-        # so neither half can be lost: raising on whitespace would train
-        # an operator to ignore the one check guarding the timing
-        # evidence, and passing a changed value would make the check
-        # worthless.
+        # moved.  A changed VALUE is, and the value this exercises is the
+        # commentary.  The help text promises that distinction; this is
+        # where it is held to it, so neither half can be lost: raising on
+        # whitespace would train an operator to ignore the one check
+        # guarding the timing evidence, and passing a changed value would
+        # make the check worthless.
         self.assertEqual(self.run_main("--quiet")[0], 0)
         stored = json.loads(_read_text(self.output))
         _write_lines(
@@ -4777,14 +4769,13 @@ class TestDateEvidenceSidecar(unittest.TestCase):
             {1: "Spring, day 3"})
 
     def test_two_readings_that_disagree_leave_the_date_unobserved(self):
-        """THE DEFECT THIS TEST EXISTS FOR.
+        """UNANIMITY, NOT LAST OCCURRENCE.
 
-        This used to be a last-occurrence rule: two records that
-        contradicted each other about the date were warned about and the
-        LATER value was returned anyway, so a contradiction still decided
-        a day of game time on nothing but write order.  There is no rule
-        by which being written second makes one of two contradictory
-        observations the true one.
+        Under a last-occurrence rule two records that contradict each
+        other about the date are warned about and the LATER value is
+        returned anyway, so a contradiction decides a day of game time on
+        nothing but write order.  There is no rule by which being written
+        second makes one of two contradictory observations the true one.
         """
         self.write([self.record(1, "Spring, day 3"),
                     self.record(1, "Spring, day 4")])
@@ -4801,12 +4792,12 @@ class TestDateEvidenceSidecar(unittest.TestCase):
         self.assertEqual(self.read(), {1: "Spring, day 3"})
 
     def test_a_later_null_does_not_erase_a_reading(self):
-        """THE OTHER HALF OF THE SAME DEFECT, and it was silent.
+        """THE OTHER HALF OF THE SAME RULE, and it is the silent half.
 
-        `null` is the ordinary shape of an unreadable reading, and under
-        the last-occurrence rule a later null ERASED a date that had been
-        read successfully -- with no warning at all, because a null is
-        not a conflict.  An absence of evidence is not counter-evidence.
+        `null` is the ordinary shape of an unreadable reading, and under a
+        last-occurrence rule a later null ERASES a date that WAS read
+        successfully -- with no warning at all, because a null is not a
+        conflict.  An absence of evidence is not counter-evidence.
         """
         self.write([self.record(1, "Spring, day 3"),
                     self.record(1, None)])
@@ -4855,14 +4846,14 @@ class TestDateEvidenceSidecar(unittest.TestCase):
     def test_a_malformed_line_is_fatal_not_skipped(self):
         """DROPPING A ROW CHANGES THE EVIDENCE, which is the point.
 
-        This used to be reported and skipped, on the reasoning that
-        corroborating evidence can only be lost, never made wrong.  A
-        code review showed the reasoning is false: two rows carrying one
-        date make a backwards clock a same-date reconciliation, and
-        losing one of them makes the same clock an unevidenced wrap the
-        bounded rule may believe -- a different, wrong timeline,
-        published while every count still tallies.  So a file that
-        exists is read whole or not at all.
+        Reporting a malformed row and skipping it looks safe, on the
+        reasoning that corroborating evidence can only be lost and never
+        made wrong.  It is not: two rows carrying one date make a
+        backwards clock a same-date reconciliation, and losing one of them
+        makes the same clock an unevidenced wrap the bounded rule may
+        believe -- a different, wrong timeline, published while every
+        count still tallies.  So a file that exists is read whole or not
+        at all.
         """
         with open(self.audit, "w", encoding="utf-8") as handle:
             handle.write("{not json\n")
@@ -4986,8 +4977,8 @@ class TestDateEvidenceSidecar(unittest.TestCase):
         if done.returncode == self.IMPORT_FAILED_STATUS:
             # The only legitimate skip: this interpreter cannot load the
             # OCR module at all.  The suite is required to run on a bare
-            # interpreter, so that is a real state -- and it is now
-            # stated as itself rather than standing in for everything.
+            # interpreter, so that is a real state -- and it is stated as
+            # itself rather than standing in for every other failure.
             self.skipTest(
                 "ocr_clock.py cannot be imported by %s, so its writer "
                 "cannot be exercised here: %s"
@@ -5907,8 +5898,9 @@ class TestTheCommandLineGatesTheManifest(unittest.TestCase):
         manifest_path = self.write_manifest(rows)
         document = timeline.build_timeline(rows)
         timeline_path = self.store_timeline(document)
-        # The two checks that used to be the whole of verification.
-        # Both pass here, which is precisely why they are not enough.
+        # The two checks an internal-consistency verification would
+        # make.  Both pass here, which is precisely why they are not
+        # enough.
         self.assertEqual(
             timeline.validate_timeline(document), [],
             msg=("the timeline computed from these rows is internally "
@@ -6077,13 +6069,12 @@ class TestTheCommandLineGatesTheManifest(unittest.TestCase):
 class TestTheAmendmentLedgerReachesTheDerivative(unittest.TestCase):
     """A correction is applied to a copy, attested, and provable.
 
-    THE DEFECT BEHIND THIS SUITE.  A security review found that the
-    committed record had been edited after capture to correct two
-    narrations, and that every derivative -- this timeline, both
-    transcripts, the captioned film -- had then been regenerated to agree
-    with the altered history.  The record is now restored and immutable,
-    the corrections live in playthrough/amendments.jsonl, and THIS module
-    is where they enter the derived chain.
+    WHY A LEDGER AND NOT AN EDIT.  Correcting a narration by editing the
+    committed record, then regenerating every derivative -- this timeline,
+    both transcripts, the captioned film -- to agree with it, leaves no
+    trace that the record ever said anything else.  So the record is
+    immutable, corrections live in playthrough/amendments.jsonl, and THIS
+    module is where they enter the derived chain.
 
     So the assertions are: the ledger reaches the entries; the document
     says which ledger it reached them through; the pacing is untouched by
@@ -6486,15 +6477,15 @@ class TestTheCaptureLedgerReachesTheDerivative(unittest.TestCase):
 class TestTheSuiteIsHermetic(unittest.TestCase):
     """The suite depends on nothing the environment carries.
 
-    THE DEFECT THIS EXISTS TO PREVENT, STATED PLAINLY.  Two of the
-    three classes that drive main() once nominated a temporary root but
-    left the ambient PLAYTHROUGH_* exports alone.  main() resolved its
-    telemetry and date-audit DEFAULTS from those exports, landed outside
-    the root the class had nominated, and was refused by the containment
-    guard -- six deterministic failures and a non-zero exit status for
-    anyone who sourced playthrough/tooling/env.sh first, which is
-    exactly what the pipeline's own documentation tells an operator to
-    do.  The arithmetic under test was never involved.
+    WHAT A PARTIAL REDIRECTION COSTS, STATED PLAINLY.  A class that
+    nominates a temporary root but leaves the ambient PLAYTHROUGH_*
+    exports alone lets main() resolve its telemetry and date-audit
+    DEFAULTS from those exports, land outside the nominated root, and be
+    refused by the containment guard -- deterministic failures and a
+    non-zero exit status for anyone who sourced
+    playthrough/tooling/env.sh first, which is exactly what the
+    pipeline's own documentation tells an operator to do.  The arithmetic
+    under test is never involved.
 
     A green suite in a bare shell is therefore not evidence of anything
     on its own, and a prose invariant in a docstring is not either.  So

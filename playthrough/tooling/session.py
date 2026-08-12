@@ -14,12 +14,11 @@ THE STEP IS SERIALIZED, JOURNALED AND RECOVERABLE -- not atomic.  A
 keystroke reaching an X server, a screenshot landing on disk and a row
 reaching a file are three separate events in three processes, and no
 mechanism available here makes them indivisible.  What is guaranteed is
-narrower and stated as such: only one process advances the counter, the
-intent to press is on the device before the key leaves, and an
-interruption anywhere in the sequence leaves an IN-FLIGHT state that
-BLOCKS every later key until recover() has dealt with it.  So the 1:1
-identity is not maintained by hoping nothing is interrupted; it is
-maintained by refusing to continue past an interruption.
+narrower: only one process advances the counter, the intent to press is
+on the device before the key leaves, and an interruption anywhere leaves
+an IN-FLIGHT state that BLOCKS every later key until recover() has dealt
+with it.  The 1:1 identity is maintained by refusing to continue past an
+interruption, not by hoping none happens.
 
 THE INDEX IS COMPUTED IN ONE PLACE.  It is computed here, handed to
 capture.sh, and used to build the manifest row's `file` field through
@@ -40,27 +39,25 @@ which keystroke they belong to without editing this one function:
 
 THE ROW'S `action` IS DERIVED FROM THE KEY, never supplied beside it.
 A caller passes the REASON; the identity half is computed from the same
-validated string that reaches xdotool.  The first recorded session
-carries a row reading `press 'X'` for a step that delivered `-`, which
-satisfied every schema check downstream -- so a record that can say a
-key was pressed which was not is not evidence, and the derivation is
-what makes the two unable to differ.  The validated key itself is stored
-in the telemetry sidecar, because the manifest's schema is exactly six
-fields; see OBSERVATION_FIELDS and ATTESTED_FIELDS.
+validated string that reaches xdotool.  A row reading `press 'X'` for a
+step that delivered `-` satisfies every schema check downstream, and a
+record that CAN say a key was pressed which was not is not evidence,
+so the derivation is what makes the two unable to differ.  The validated
+key itself is stored in the telemetry sidecar, because the manifest's
+schema is exactly six fields; see OBSERVATION_FIELDS and
+ATTESTED_FIELDS.
+
 
 THE ROW ALSO CARRIES AN OBSERVATION, not only an intent.  Every capture
 is compared with the one before it and the verdict is written into the
 row: `nothing on the screen changed` when the two are identical pixel
 for pixel, `nothing in the map column changed` when only a panel, a
-counter or the message log moved.  This exists because the first
-recorded session was found to contain 45 rows narrating events their own
-capture contradicts -- nine letters of a world name "typed" into a
-Yes/No question that had the screen, steps that never happened because
-the map never moved, a phone chosen that was a sewing kit.  A keystroke
-cannot be un-pressed, so the row is never REFUSED at that point; the
-marker is appended to the note the operator wrote, both are kept, and a
-warning goes to stderr so the NEXT row is written from the pixels.  See
-THE OBSERVED-EFFECT GUARD, classify_effect() and annotate_action().
+counter or the message log moved.  Without it a row can narrate an event
+its own capture contradicts.  A keystroke cannot be un-pressed, so the
+row is never REFUSED at that point; the marker is appended to the note
+the operator wrote, both are kept, and a warning goes to stderr so the
+NEXT row is written from the pixels.  See THE OBSERVED-EFFECT GUARD,
+classify_effect() and annotate_action().
 
 SHIFT IS THE ONLY MODIFIER THAT CAN BE SENT.  ctrl reaches the five
 DEBUG_DIALOGUE_* toggles the game ships already bound; alt, super and
@@ -68,27 +65,24 @@ meta reach the window manager, alt+F4 included.  See MODIFIER_KEYS for
 the evidence and PROHIBITED_CHORDS for the refusal messages.
 
 Nothing here loops over keys.  There is deliberately NO helper that
-takes a list of keystrokes: the operational directive is observe ->
-decide in character -> act -> capture -> log, and a batching
-convenience is precisely how that becomes blind key-spam.  A UI that
-needs four keystrokes is four calls, four frames, four rows and four
-transcript entries -- which is what "exactly one screenshot after
-every single key press" means.
+takes a list of keystrokes: the directive is observe -> decide in
+character -> act -> capture -> log, and a batching convenience is
+precisely how that becomes blind key-spam.  A UI that needs four
+keystrokes is four calls, four frames, four rows and four transcript
+entries -- which is what "exactly one screenshot after every single key
+press" means.
 
-WHY A FAILED STEP STOPS THE SESSION, AND WHY IT NO LONGER LOSES A
-FRAME.  A keystroke is not undoable: once xdotool has delivered it the
-engine has already acted, and no retry can put the game back.  So the
-session is marked aborted and every later step refuses -- but the
-journal means the step itself is RECOVERABLE.  The next open finds the
-outstanding entry and finishes that index: it appends the row from the
-payload the capture reported, or, when no frame exists for the key at
-all, re-authenticates the engine and captures one at the SAME index,
-recording the attempt count and `recovered: true` beside it.  This is
-the failure the first recorded session could not repair -- a delivered
-`Y` whose black capture the non-blank gate correctly refused, leaving a
-keystroke with no frame and no row -- and it is why the journal exists.
-A key REFUSED before anything is sent is the opposite case: nothing
-happened, nothing was journalled, and the session stays usable.
+WHY A FAILED STEP STOPS THE SESSION WITHOUT LOSING A FRAME.  A
+keystroke is not undoable, so the session is marked aborted and every
+later step refuses -- but the journal makes the step itself RECOVERABLE.
+The next open finds the outstanding entry and finishes that index: it
+appends the row from the payload the capture reported, or, when no frame
+exists for the key at all, re-authenticates the engine and captures one
+at the SAME index, recording the attempt count and `recovered: true`
+beside it.  The failure this repairs is a delivered key whose capture the
+non-blank gate correctly refused, leaving a keystroke with no frame and
+no row.  A key REFUSED before anything is sent is the opposite case:
+nothing happened, nothing was journalled, the session stays usable.
 
 AND WHERE RECOVERY STOPS, BECAUSE ONE STATE IS GENUINELY UNKNOWABLE.
 The journal records `sending` before the key leaves and `delivered` only
@@ -96,37 +90,35 @@ once xdotool has returned 0.  An interruption in between -- or xdotool
 itself failing, which says nothing about whether the X server acted --
 leaves `sending`, and NOTHING here resolves that: capturing a frame for
 it would invent evidence for a keystroke that may never have happened,
-and discarding it would drop one that did.  So the session HALTS and
-`session.py reconcile --outcome delivered|not-delivered` is where
-somebody who has looked at the game says which it was.  The earlier
-design wrote one phase before the send and treated it on recovery as
-delivered, which auto-committed a frame, a row and a first-person
-sentence for a key that had not been pressed.
+and discarding it would drop one that did.  Journalling a single phase
+before the send and treating it on recovery as delivered would
+auto-commit a frame, a row and a first-person sentence for a key that
+was never pressed.  So the session HALTS and `session.py reconcile
+--outcome delivered|not-delivered` is where somebody who has looked at
+the game says which it was.
 
 WHAT IS DECIDABLE BEFORE THE KEYSTROKE IS DECIDED BEFORE THE KEYSTROKE.
 Opening a session proves the manifest is the ONE record this pipeline
 writes -- the writer's own rule, applied at open through
 manifest.assert_appendable() instead of when a row is written -- and
 proves that both append targets, the manifest and the telemetry
-sidecar, will take an append.  Neither condition depends on anything
-the game does, so discovering either afterwards would spend the one
-irreversible act for nothing: a key delivered, a frame captured, and no
-row or no attestation to be written for it.
+sidecar, will take an append.  Neither depends on anything the game
+does, so discovering either afterwards would spend the one irreversible
+act for nothing.
 
 THE ATTESTATION IS PART OF THE IDENTITY, AND IT IS CHECKED.  One
 keystroke is one frame, one manifest row AND one telemetry row, so
-:meth:`Session.verify_record` compares all three: a recorded frame
-whose sidecar row is missing is reported, because the sidecar is the
-only place the immutable key and the sidebar date line were ever
-written down, and a shortfall there cannot be repaired honestly
-afterwards -- the key is not recoverable from the pixels.
+:meth:`Session.verify_record` compares all three.  The sidecar is the
+only place the immutable key and the sidebar date line were ever written
+down, and a shortfall there cannot be repaired afterwards -- the key is
+not recoverable from the pixels.
 
 THE COUNTER IS RECOVERED FROM THE MANIFEST, NEVER FROM A DIRECTORY.
 manifest.last_recorded_frame() is the append-only record of what was
-captured; counting PNGs would be a second source of truth that a
-retry could silently renumber.  The frames directory is still read --
-but only to CHECK that it agrees with the manifest, and a
-disagreement stops the session instead of being reconciled.
+captured; counting PNGs would be a second source of truth a retry could
+silently renumber.  The frames directory is read only to CHECK that it
+agrees with the manifest, and a disagreement stops the session instead
+of being reconciled.
 
 THE CLOCK MAY BE UNREADABLE, AND THAT IS RECORDED AS SUCH.
 `ingame_clock` is the honesty field: display::time_string() returns an
@@ -149,11 +141,10 @@ WINDOW TARGETING IS BY CLASS, AND ONLY BY CLASS.
 `xdotool search --name 'Cataclysm'` returns EMPTY for it even though
 `xwininfo -root -children` lists it with the title "Cataclysm: Dark
 Days Ahead - <hash>".  Scraping an id out of xwininfo with a loose
-hexadecimal pattern is actively unsafe, because the geometry substring
-xwininfo prints mis-matches such patterns.  A window id supplied by
-launch_game.sh (PLAYTHROUGH_WINDOW_ID) is accepted but RE-VERIFIED
-against that class search before every keystroke: if the window has
-gone, the game crashed or exited and the session stops.
+hexadecimal pattern is unsafe, because the geometry substring it prints
+mis-matches such patterns.  A window id supplied by launch_game.sh
+(PLAYTHROUGH_WINDOW_ID) is accepted but RE-VERIFIED against that class
+search before every keystroke.
 
 THE SAVE-RESUME PRE-FLIGHT IS MANDATORY.  :func:`probe_save_resume`
 inspects playthrough/userdir/save/*/ BEFORE anything could create a
@@ -168,16 +159,14 @@ the sidebar, and while it is there the five main-menu hotkeys that open
 a new survivor are REFUSED BEFORE send_key is reached -- because
 comparing the save tree with what it looked like a keystroke ago detects
 a second character only after the keystroke that created one has already
-landed.  The save-set comparison now also runs IMMEDIATELY after each
-key rather than before the next one, and when the sidebar first appears
-the engine's own <userdir>/config/lastworld.json must name the pinned
-world and character (src/main_menu.cpp:1080-1083), so "the existing save
-was continued" is a checked property rather than an assurance.  The one
-legitimate disappearance is the engine's own death cleanup: it is
-accepted only when the graveyard save, character log, memorial pair and
-captured post-death record all agree on the pinned survivor.  A bare
-deletion, or any incomplete imitation of that evidence, still stops the
-session.
+landed.  The save-set comparison therefore runs IMMEDIATELY after each
+key, and when the sidebar first appears the engine's own
+<userdir>/config/lastworld.json must name the pinned world and character
+(src/main_menu.cpp:1080-1083), so "the existing save was continued" is a
+checked property rather than an assurance.  The one legitimate
+disappearance is the engine's own death cleanup, accepted only when the
+graveyard save, character log, memorial pair and captured post-death
+record all agree on the pinned survivor.
 
 CHARACTER CREATION HAS EXACTLY ONE PERMITTED DOOR, AND ITS HOTKEY IS A
 TRAP.  The new-game submenu strings are quoted verbatim from
@@ -186,52 +175,50 @@ entry, and "<P|p>reset Character", "<R|r>andom Character", "Play Now!
 (<D|d>efault Scenario)" (two spaces after the "!") and "Play N<o|O>w!"
 are all forbidden.  BUT the top row of the same menu carries
 "T<u|U>torial Game" (src/main_menu.cpp:466), whose hotkeys are the SAME
-"u" and "U" -- and the top row wins.  Runtime testing caught this: the
-second capture of the first recorded session shows the submenu folded
-away and the top-row highlight sitting on [Tutorial Game] after a "u"
-was sent for Custom Character, which took three Left presses to walk
-back.  So the letter is never used for that entry -- and that is
-ENFORCED rather than advised: a colliding letter whose own action or
-commentary says it is meant for the custom sheet is REFUSED while the
-observed UI phase is `menu`, before the journal and before delivery
-(:meth:`Session._assert_menu_hotkey_permitted`).  An in-world "u" is the
-north-east step and is never touched by it, because the phase is read
-from the sidebar in the record rather than asserted.  The verified route
-is MENU_CUSTOM_CHARACTER_ROUTE: reach [New Game] along the top row with
-Left/Right, READ the capture to see which submenu row carries the
-selection bar, move with Up/Down until it is on "Custom Character",
-read again, and only then press Return.  The bar's opening position is
-not assumed: on the first capture of this record it was on "Preset
-Character", the template picker.  The scenario is "missed" / "Missed"
-(data/json/scenarios.json), which starts the survivor in a house
-inside a city.  Point-buy is a world option: CHARACTER_POINT_POOLS
-defaults to "story_teller", at which the pool tab is read-only
-(src/newcharacter.cpp:438-446, 462-467), so
+"u" and "U" -- and the top row wins: sending "u" for Custom Character
+folds the submenu away and lands the top-row highlight on
+[Tutorial Game], three Left presses from where it should be.  So the
+letter is never used for that entry, and that is ENFORCED rather than
+advised: a colliding letter whose own action or commentary says it is
+meant for the custom sheet is REFUSED while the observed UI phase is
+`menu` (:meth:`Session._assert_menu_hotkey_permitted`).  An in-world "u"
+is the north-east step and is untouched by it, because the phase is read
+from the sidebar in the record rather than asserted.
+
+The verified route is MENU_CUSTOM_CHARACTER_ROUTE: reach [New Game]
+along the top row with Left/Right, READ the capture to see which submenu
+row carries the selection bar, move with Up/Down until it is on "Custom
+Character", read again, and only then press Return.  The bar's opening
+position is not assumed: on the first capture of this record it was on
+"Preset Character", the template picker.  The scenario is "missed" /
+"Missed" (data/json/scenarios.json), which starts the survivor in a
+house inside a city.  Point-buy is a world option:
+CHARACTER_POINT_POOLS defaults to "story_teller", at which the pool tab
+is read-only (src/newcharacter.cpp:438-446, 462-467), so
 :func:`assert_point_buy_available` refuses a create run whose options
 file has not been seeded to "any" or "multi_pool".
 
 AND THE ROUTE ITSELF IS GUARDED, not just the five letters.  A resumed
 session may not reach the creator at all, and refusing only the hotkeys
-would have refused only the shortcuts: the verified route is Left/Right,
-Up/Down and Return, none of which is a new-survivor hotkey.  So while a
-resumed session is on a menu, ANY keystroke whose own action or
-commentary says it is opening the custom sheet is refused
-(:meth:`Session._assert_key_allowed_in_phase`).  The launcher is coupled
-in as well: launch_game.sh publishes the starting screen it VERIFIED as
+would refuse only the shortcuts: the route is Left/Right, Up/Down and
+Return, none of which is a new-survivor hotkey.  So while a resumed
+session is on a menu, ANY keystroke whose own action or commentary says
+it is opening the custom sheet is refused
+(:meth:`Session._assert_key_allowed_in_phase`).  launch_game.sh
+publishes the starting screen it VERIFIED as
 $PLAYTHROUGH_INITIAL_UI_STATE, and :meth:`Session._assert_launch_state`
 holds that against this module's own probe of the save tree, refusing to
-open a session at all when the two disagree.  Neither addition can
-permit anything -- both only refuse -- and every refusal here stands
-whatever the launcher says, including when it says nothing.
+open a session when the two disagree.  Neither check can permit
+anything -- both only refuse -- and every refusal here stands whatever
+the launcher says, including when it says nothing.
 
 HOW A SESSION ENDS, AND THE ONLY TWO WAYS IT MAY.  Play continues
 until the survivor sleeps or dies -- there is no in-game time cap --
 and the exit is then taken through the game's own Save & Quit path,
-immediately after waking if the ending was sleep.  This module offers
-no shortcut to that: there is no "finish" or "quit" call here, because
-every keystroke of the exit is a step like any other and therefore gets
-its own frame, its own manifest row and its own transcript entry.  The
-last frame of the film is a captured one.
+immediately after waking if the ending was sleep.  There is no "finish"
+or "quit" call here, because every keystroke of the exit is a step like
+any other and gets its own frame, row and transcript entry.  The last
+frame of the film is a captured one.
 
 ABSOLUTELY NO CHEATING.  This module sends no keystroke that could
 reach the debug menu, and it CANNOT: "debug_mode", "debug" and
@@ -240,10 +227,10 @@ reach the debug menu, and it CANNOT: "debug_mode", "debug" and
 default and unreachable by any keystroke unless somebody deliberately
 binds them.  Nothing here writes <userdir>/config/keybindings.json --
 that file is a committed artifact and therefore R12's independent,
-auditable evidence -- and :func:`assert_no_debug_bindings` READS it to
-prove no such binding exists before a session begins.  No spawning, no
-stat editing, no teleport, no god mode, no map reveal, for any reason,
-explicitly including avoiding death.
+auditable evidence -- and :func:`assert_no_debug_bindings` READS it
+before a session begins.  No spawning, no stat editing, no teleport, no
+god mode, no map reveal, for any reason, explicitly including avoiding
+death.
 
 WHAT THIS MODULE WRITES, EXHAUSTIVELY: one row per frame in
 playthrough/manifest.jsonl (through manifest.py, which locks and
@@ -279,16 +266,14 @@ import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
-# Set BEFORE the sibling imports below, which are the only imports that
-# could write into the repository working tree.  env.sh exports
-# PYTHONDONTWRITEBYTECODE=1, but this module is documented as runnable
-# on its own, and a standalone `python3 playthrough/tooling/session.py`
-# without that environment would compile the siblings to
-# playthrough/tooling/__pycache__/, which .gitignore's terminal
-# `!/playthrough/**` negation then makes COMMITTABLE.  A stray .pyc in
-# a committed evidence tree is an artifact nobody authored.  The flag
-# must be set before the import it protects, because the interpreter
-# consults it at compile time.
+# Set BEFORE the sibling imports below, which are the only imports that could
+# write into the repository working tree.  env.sh exports
+# PYTHONDONTWRITEBYTECODE=1, but this module is documented as runnable on its
+# own, and a standalone `python3 playthrough/tooling/session.py` without that
+# environment would compile the siblings to playthrough/tooling/__pycache__/,
+# which .gitignore's terminal `!/playthrough/**` negation then makes
+# COMMITTABLE.  A stray .pyc in a committed evidence tree is an artifact nobody
+# authored.
 sys.dont_write_bytecode = True
 
 try:
@@ -447,18 +432,18 @@ CAPTURE_EXITS = {
 #
 # The manifest is the evidence; the sidecar corroborates it.  Both are
 # append-only, and NEITHER IS EVER REWRITTEN BY ANY CODE PATH IN THIS
-# MODULE: the rewriters that used to sit here -- one for the sidecar,
-# one called through into manifest.py -- were deleted after a security
-# review found that a mechanism able to rewrite captured evidence makes
-# every artifact derived from it deniable, and that rewriting two files
-# in sequence leaves a window in which a crash splits the record.
+# MODULE: there is no rewriter for the sidecar and none called through
+# into manifest.py, because a mechanism able to rewrite captured evidence
+# makes every artifact derived from it deniable, and because rewriting
+# two files in sequence leaves a window in which a crash splits the
+# record.
 #
 # A correction is therefore an AMENDMENT: one row appended to
 # playthrough/amendments.jsonl, keyed to the sha256 of the manifest line
 # it concerns, applied to a derivative by manifest.resolve_rows() and to
 # the record by nothing at all.  Because every correction lands in ONE
-# artifact through ONE locked durable append, there is no longer any
-# multi-file transaction to get wrong.  The human-readable account of
+# artifact through ONE locked durable append, there is no multi-file
+# transaction to get wrong.  The human-readable account of
 # what was amended and why belongs, as it always did, in
 # playthrough/TECHNICAL_NOTES.md.
 # ---------------------------------------------------------------------
@@ -466,52 +451,21 @@ CAPTURE_EXITS = {
 ENV_OBSERVATIONS = "PLAYTHROUGH_OBSERVATIONS"
 OBSERVATIONS_REL_PARTS = ("build", "observations.jsonl")
 
-# The staging prefix for the sidecar, kept only so that leftovers can
-# still be swept, on the same terms manifest.STAGING_PREFIX states for
-# the record.  NOTHING WRITES ONE ANY MORE: this module could once
-# rewrite the sidecar so that an attestation could be corrected in place
-# alongside its manifest row, and code review found the pair of
-# rewrites to be the defect rather than the fix -- captured evidence is
-# not edited after the keystroke that produced it, and two independent
-# renames could not be the all-or-nothing publication they claimed to
-# be.  Both were removed; the sidecar is append-only.
-#
-# A sibling left by the retired writer, or by an interruption of it,
-# would still be an untracked file inside the tree .gitignore
-# re-includes wholesale, so sweep_observation_staging() still runs when
-# a session opens.  The prefix matches the deterministic name that
-# writer used and the unique names earlier versions produced, so one
-# sweep clears every generation of them.
+# The staging prefix for the sidecar, kept only so that leftovers can still be
+# swept, on the same terms manifest.STAGING_PREFIX states for the record.
+# NOTHING WRITES ONE ANY MORE: this module could once rewrite the sidecar so
+# that an attestation could be corrected in place alongside its manifest row,
+# and code review found the pair of rewrites to be the defect rather than the
+# fix -- captured evidence is not edited after the keystroke that produced it,
+# and two independent renames could not be the all-or-nothing publication they
+# claimed to be.
 OBSERVATIONS_STAGING_PREFIX = ".observations-"
 OBSERVATIONS_STAGING_SUFFIX = ".jsonl"
 OBSERVATIONS_STAGING_OF = "the telemetry sidecar"
 
-# The sidecar's schema, as capture.sh reports it: each field beside the
-# payload key that carries it.  Insertion order is the order the row is
-# written in, and `frame` comes first because the file is keyed by it.
-#
-# It exists SEPARATELY from the manifest because the manifest schema is
-# exactly six fields and the sidebar DATE line
-# (display::date_string, src/display.cpp:193-205) is not one of them --
-# yet timeline.py needs it: without a date, a clock that reads 08:00:00
-# and then 07:59:00 cannot be told apart from a genuine crossing of
-# midnight, and an action spanning a whole day is undercounted by
-# exactly 24 hours because the time of day came back the same.
-#
-# THE SIDECAR ALSO CARRIES THE IMMUTABLE KEY, for the same reason: the
-# manifest's six fields are fixed and none of them is the keystroke as a
-# machine value.  `key` is the exact string handed to `xdotool key`,
-# written by the one function that sends it, and `action` is the text
-# derived from it -- so the record does not merely assert which key was
-# pressed, it stores it in a form a reviewer can compare against the
-# manifest row's prose without trusting either.  See ATTESTED_FIELDS.
-# AND timeline.py RESTATES THIS SCHEMA AND VALIDATES EVERY ROW AGAINST
-# IT.  It cannot import this module -- doing so would make Pillow and
-# pytesseract a hard dependency of recomputing a timeline -- so
-# timeline.OBSERVATION_FIELD_TYPES is the reader's copy of the contract
-# and test_timeline.py round-trips a sidecar this writer produced to
-# hold the two together.  A column added here without a type there is
-# reported by the reader as unknown rather than silently half-read.
+# The sidecar's schema, as capture.sh reports it: each field beside the payload
+# key that carries it.  Insertion order is the order the row is written in, and
+# `frame` comes first because the file is keyed by it.
 OBSERVATION_FIELDS = (
     ("frame", "FRAME_INDEX"),
     ("file", "FRAME_FILE"),
@@ -559,17 +513,12 @@ ATTESTED_FIELDS = ("key", "action", "capture_attempts", "recovered")
 SAVE_MASTER_NAME = "master.gsav"
 WORLD_OPTIONS_NAME = "worldoptions.json"
 
-# Per-character files are written by save_player_data()
-# (src/game_io.cpp) as `playerfile + SAVE_EXTENSION`, and with
-# WORLD_COMPRESSION2 -- which DEFAULTS TO TRUE -- as that plus
-# zzip_suffix = ".zzip" (src/worldfactory.h:25).  The engine names them
-# `#<base64-of-character-name>`, so the "#" prefix is what separates a
-# character file from any other .sav-suffixed file a world may hold.
-#
-# BOTH FORMS MUST BE COUNTED.  Counting only "*.sav" reports zero
-# characters for a perfectly real compressed save, and because the
-# resume decision turns on that count it would resolve to "create" and
-# overwrite the very save that must be continued.
+# Per-character files are written by save_player_data() (src/game_io.cpp) as
+# `playerfile + SAVE_EXTENSION`, and with WORLD_COMPRESSION2 -- which DEFAULTS
+# TO TRUE -- as that plus zzip_suffix = ".zzip" (src/worldfactory.h:25).  The
+# engine names them `#<base64-of-character-name>`, so the "#" prefix is what
+# separates a character file from any other .sav-suffixed file a world may
+# hold.
 CHARACTER_PREFIX = "#"
 SAVE_EXTENSION = ".sav"
 ZZIP_SUFFIX = ".zzip"
@@ -615,12 +564,10 @@ ENV_SESSION_MODE = seed_options.ENV_SESSION_MODE
 # including when it says nothing.
 ENV_INITIAL_UI_STATE = "PLAYTHROUGH_INITIAL_UI_STATE"
 
-# The launcher's vocabulary, quoted from launch_game.sh (:3225, :3247,
-# :3643).  An empty value means the launcher did not establish a starting
-# screen -- a build, headless or calibration phase, or a session driven
-# without it -- and is legitimate.  Anything OUTSIDE this vocabulary is a
-# refusal rather than a shrug: a value this module cannot reason about is
-# not a value it may act on.
+# The launcher's vocabulary, quoted from launch_game.sh (:3225, :3247, :3643).
+# An empty value means the launcher did not establish a starting screen -- a
+# build, headless or calibration phase, or a session driven without it -- and
+# is legitimate.
 LAUNCH_STATE_UNDECLARED = ""
 LAUNCH_STATE_LOAD_REQUIRED = "main-menu-load-required"
 LAUNCH_STATE_CREATE_PERMITTED = "main-menu-create-permitted"
@@ -652,14 +599,14 @@ MENU_CUSTOM_CHARACTER = "C<u|U>stom Character"
 # the tutorial (src/main_menu.cpp:466) and the top row wins.  See
 # MENU_HOTKEY_COLLISION.
 MENU_CUSTOM_CHARACTER_HOTKEYS = ("u", "U")
-# ...and unusable is now enforced, not merely documented: see
+# ...and unusability is ENFORCED, not merely documented: see
 # _assert_menu_hotkey_permitted, which refuses either letter while the
 # observed UI phase is `menu` and the caller's own words say the key is
 # meant for that entry.
 
 MENU_TUTORIAL_ENTRY = "T<u|U>torial Game"
 
-# THE COLLISION, and why no letter may be used to open the custom sheet.
+# THE COLLISION, and why no letter opens the custom sheet.
 # "u"/"U" belong to the top row's tutorial entry as well as to the
 # submenu's Custom Character, and the observed winner is the top row:
 # the submenu folds away and the highlight lands on [Tutorial Game].
@@ -712,14 +659,13 @@ MENU_NEW_SURVIVOR_HOTKEYS = (
 #
 # WHY THIS EXISTS.  Refusing the five new-survivor letters refuses five
 # doors, and refusing prose that SAYS it is opening the custom sheet
-# refuses an honest caller.  Neither refuses the ROUTE: a code review
-# demonstrated that ordinary, truthful-looking wording -- "move
-# selection", "activate selected item" -- walks the verified
-# MENU_CUSTOM_CHARACTER_ROUTE (Left/Right, Up/Down, Return) straight into
-# the creator with the letter guard never firing and the prose guard
-# never matching, and that the save pin only notices afterwards, once a
-# second survivor's save already exists and the prohibited route has been
-# taken AND photographed.
+# refuses an honest caller.  Neither refuses the ROUTE: ordinary,
+# truthful-looking wording -- "move selection", "activate selected item"
+# -- walks the verified MENU_CUSTOM_CHARACTER_ROUTE (Left/Right,
+# Up/Down, Return) straight into the creator with the letter guard never
+# firing and the prose guard never matching, and the save pin only
+# notices afterwards, once a second survivor's save already exists and
+# the prohibited route has been taken AND photographed.
 #
 # So the route is enforced from the SCREEN instead of from the caller's
 # words.  ocr_clock.read_column_by_glyphs() decodes a band of the capture
@@ -798,27 +744,11 @@ MENU_WITHDRAWAL_KEYS = (
     "Left", "Right", "KP_Left", "KP_Right", "Escape",
 )
 
-# The two UI phases this module distinguishes, and the ONLY evidence it
-# accepts for the second.  `menu` is any screen the engine shows before a
-# survivor is in the world; `in-world` begins when a captured frame
-# carries a sidebar reading -- an exact clock, a coarse time phrase or
-# the date line -- because the sidebar is drawn for a loaded character
-# and for nothing else.  The phase is therefore OBSERVED from the pixels
-# that were photographed, never asserted by the driver.
-#
-# AND IT IS RECOVERED FROM THE RECORD, not remembered.  `step` is one
-# process per keystroke, so the phase a later step is refused or
-# permitted by cannot live in memory: it is read back out of the
-# telemetry sidecar's own reading columns -- SIDEBAR_READING_FIELDS
-# below -- which is the stored form of exactly the payload
-# _settle_ui_phase() classifies live.  A QA pass found the earlier
-# recovery asking <userdir>/config/lastworld.json instead, which is the
-# engine's statement about the PREVIOUS session's survivor and therefore
-# already names the pinned character in any resumed session before this
-# one has photographed anything; the refusal that is supposed to make
-# "continue the existing save" impossible to violate consequently lapsed
-# from the second frame onward.  File state cannot testify to what was
-# photographed, and nothing but the photograph is accepted here.
+# The two UI phases this module distinguishes, and the ONLY evidence it accepts
+# for the second.  `menu` is any screen the engine shows before a survivor is
+# in the world; `in-world` begins when a captured frame carries a sidebar
+# reading -- an exact clock, a coarse time phrase or the date line -- because
+# the sidebar is drawn for a loaded character and for nothing else.
 UI_PHASE_MENU = "menu"
 UI_PHASE_IN_WORLD = "in-world"
 
@@ -1065,14 +995,7 @@ SINGLE_CHARACTER_KEYS = frozenset(
 # ---------------------------------------------------------------------
 
 class SessionError(Exception):
-    """A step could not be completed, or was refused before it began.
-
-    Raised in place of continuing.  A session that stops is recoverable
-    -- the manifest, the frames and the save are all intact and the
-    next process resumes from them -- whereas a session that carries on
-    past a failure produces a record whose counts no longer mean what
-    they say.
-    """
+    """A step could not be completed, or was refused before it began."""
 
 
 class KeyRejected(SessionError):
@@ -1102,17 +1025,11 @@ class CaptureError(SessionError):
 
 
 class RecordError(SessionError):
-    """The manifest or its sidecar could not be believed or appended.
-
-    Also raised when the frames directory and the manifest disagree,
-    which is the one condition that must never be reconciled silently:
-    the count identity between them is the whole proof of one capture
-    per keystroke.
-    """
+    """The manifest or its sidecar could not be believed or appended."""
 
 
 class CheatGuard(SessionError):
-    """A debug or cheat capability was found to be reachable.
+    """A debug or cheat capability is reachable by a keystroke.
 
     The session refuses to start rather than play on and produce a
     record whose integrity cannot be checked afterwards.
@@ -1120,42 +1037,15 @@ class CheatGuard(SessionError):
 
 
 class CapacityError(SessionError):
-    """There is not enough room to record the next frame safely.
-
-    Raised BEFORE the keystroke is sent, which is the whole point: a
-    disk that fills between the key and the capture produces a
-    truncated frame or none at all for a keystroke the game has
-    already acted on, and neither can be undone.  Refusing first
-    leaves the session exactly where it was, so the operator frees
-    space and presses the same key.
-    """
+    """There is not enough room to record the next frame safely."""
 
 
 class ObservationRequired(SessionError):
-    """The capture before this one has not been read and classified.
-
-    Raised BEFORE the keystroke is sent.  "Observe, decide in character,
-    act" is a hard rule of this pipeline, and a rule enforced only by
-    the operator's good intentions was measurably not enforced at all:
-    frames 91-106 of the retired session were keyed into an unchanged
-    modal because nobody read the picture between the keys.  So the
-    reading is now a PRECONDITION of the next key, recorded durably
-    before that key is delivered, and this is the refusal when it is
-    missing.  Nothing was sent; supply the reading and press again.
-    """
+    """The capture before this one has not been read and classified."""
 
 
 class GuardHalt(SessionError):
-    """The capture contradicts what the step declared it would show.
-
-    Raised AFTER the key was delivered and the frame and row were
-    recorded -- deliberately in that order, because the keystroke and
-    the photograph really happened and the record must say so.  What
-    stops is everything AFTER them: the session refuses to deliver
-    another key until an operator has read the capture and said what it
-    shows (`session.py ack`).  This is the enforcing half of the
-    observed-effect guard, which used to be advisory.
-    """
+    """The capture contradicts what the step declared it would show."""
 
 
 # Keys of the advisories already emitted in this process, so that a
@@ -1164,14 +1054,7 @@ _WARNED = set()
 
 
 def _warn(message: str) -> None:
-    """Report a non-fatal problem on stderr and carry on.
-
-    The prefix matches playthrough_warn() in
-    playthrough/tooling/env.sh, so one grep finds every advisory the
-    pipeline raised whichever stage raised it.  stderr, always:
-    engineering observations stay out of the in-character record and
-    out of any machine payload.
-    """
+    """Report a non-fatal problem on stderr and carry on."""
     sys.stderr.write("playthrough: WARNING: %s\n" % message)
     sys.stderr.flush()
 
@@ -1273,14 +1156,7 @@ def default_frames_dir(root: Optional[str] = None) -> str:
 
 
 def default_observations_path(root: Optional[str] = None) -> str:
-    """Return the capture telemetry sidecar this session appends to.
-
-    env.sh's PLAYTHROUGH_OBSERVATIONS
-    (playthrough/build/observations.jsonl).  capture.sh reports the
-    destination on its payload and this module writes it, so the row
-    and the manifest row for the same frame have one writer between
-    them.
-    """
+    """Return the capture telemetry sidecar this session appends to."""
     fallback = os.path.join(
         manifest.approved_root(root), *OBSERVATIONS_REL_PARTS)
     return _from_env_or(
@@ -1288,13 +1164,7 @@ def default_observations_path(root: Optional[str] = None) -> str:
 
 
 def default_amendments_path(root: Optional[str] = None) -> str:
-    """Return the amendment ledger this session may append to.
-
-    manifest.py owns the ledger's name and its containment rules, in the
-    same way it owns the manifest's; this wrapper exists so that a
-    relocated tree -- a test's own artifact directory -- resolves to the
-    ledger inside THAT tree rather than to the committed one.
-    """
+    """Return the amendment ledger this session may append to."""
     return os.path.join(manifest.approved_root(root),
                         manifest.AMENDMENTS_NAME)
 
@@ -1311,15 +1181,7 @@ def default_digests_path(root: Optional[str] = None) -> str:
 
 
 def default_acknowledgments_path(root: Optional[str] = None) -> str:
-    """Return the observe-before-the-next-key ledger for this tree.
-
-    It lives beside the telemetry sidecar, in playthrough/build/, because
-    it is the same kind of thing: a per-frame record about the CAPTURE
-    rather than a row of the in-character account.  It is an artifact of
-    the session and is committed with the rest, so the discipline the
-    hard rule asks for is auditable after the fact instead of resting on
-    the executing operator's word.
-    """
+    """Return the observe-before-the-next-key ledger for this tree."""
     return os.path.join(manifest.approved_root(root), "build",
                         ACKNOWLEDGMENTS_NAME)
 
@@ -1333,11 +1195,11 @@ def manifest_target(candidate: Optional[str] = None,
     does, so containment alone accepts build/observations.jsonl, a
     frame, timeline.json or the movie as a "manifest".  The rule that
     the record lives at exactly <approved root>/manifest.jsonl belongs
-    to manifest.py, and it used to be reached only when a row was
-    written: by then a keystroke had been delivered and a frame
-    captured for it, and a misconfiguration that is decidable from the
-    path ALONE had already cost the one act this pipeline cannot take
-    back.  So the writer's rule is applied HERE, at open, through
+    to manifest.py, and reaching it only when a row is written would be
+    too late: by then a keystroke has been delivered and a frame
+    captured for it, so a misconfiguration decidable from the path ALONE
+    would already have cost the one act this pipeline cannot take back.
+    The writer's rule is therefore applied HERE, at open, through
     manifest.assert_appendable() -- one implementation of it, applied
     earlier -- and $PLAYTHROUGH_MANIFEST goes through it too, because
     the environment is exactly where such a value comes from.
@@ -1362,19 +1224,10 @@ def manifest_target(candidate: Optional[str] = None,
 
 def assert_append_target(target: str, label: str,
                          create_parent: bool = False) -> str:
-    """Prove an append target will take an append.  Writes NOTHING.
+    """Prove an append target will take an append. Writes NOTHING.
 
-    A step appends to two files -- the manifest, which is the record,
-    and the telemetry sidecar, which carries the immutable key and the
-    sidebar DATE line -- and both appends happen AFTER the keystroke.
-    An unappendable target therefore used to be discovered at the worst
-    possible moment: the key delivered, the frame captured, and for the
-    sidecar the manifest row already stored, leaving the attestation
-    permanently missing for that frame.  This is the pre-flight that
-    moves that discovery to before the transaction, the same way the
-    capturer and the external tools are pre-flighted.
-
-    WHAT IS PROVED, exactly:
+    Two cases, and each is answered by asking the kernel rather than by
+    inspecting a mode bit:
 
     * an EXISTING target is opened for appending with O_NOFOLLOW and
       closed again without a byte being written, which is the same
@@ -1393,13 +1246,8 @@ def assert_append_target(target: str, label: str,
     step journal exists.  It removes the whole class of failures that
     was already true at open, which is the class an operator can fix.
 
-    `create_parent` mirrors append_observation(), which creates the
-    sidecar's directory itself; the manifest's directory is never
-    created here, because manifest.py deliberately refuses to create it
-    (a mistyped path would grow a second record elsewhere in the tree).
-
-    :returns: `target`, so a caller can chain the call.
-    :raises RecordError: naming the target, the label and the cause.
+    :returns: `target`, so a caller can chain the call. :raises RecordError:
+        naming the target, the label and the cause.
     """
     directory = os.path.dirname(target)
     if create_parent:
@@ -1448,13 +1296,7 @@ def assert_append_target(target: str, label: str,
 
 
 def _executable(path: object) -> str:
-    """Return `path` as a runnable absolute command, or raise.
-
-    Used for the capturer.  A path that is not there, or is there and
-    cannot be executed, is named as such before a keystroke is sent
-    rather than after -- the keystroke is the thing that cannot be
-    taken back.
-    """
+    """Return `path` as a runnable absolute command, or raise."""
     if not isinstance(path, str) or not path.strip():
         raise ToolMissing(
             "a command path must be a non-empty string, got %r" % path)
@@ -1481,18 +1323,7 @@ def capture_script_path() -> str:
 
 
 def userdir_path(root: Optional[str] = None) -> str:
-    """Return the engine-managed userdir inside the approved tree.
-
-    The launcher passes `--userdir ./playthrough/userdir/`, which is
-    normalised but NOT absolutised (src/path_info.cpp:105), so the tree
-    lands here whenever the game is started from the repository root --
-    which it always is.
-
-    Derived from the APPROVED ROOT rather than from this module's own
-    directory, so that a test which owns a temporary artifact tree gets
-    that tree's userdir instead of the committed one.  With `root` unset
-    the two are the same directory.
-    """
+    """Return the engine-managed userdir inside the approved tree."""
     return _confined(
         os.path.join(manifest.approved_root(root), USERDIR_NAME),
         "the userdir", root)
@@ -1523,13 +1354,7 @@ def save_dir_path(root: Optional[str] = None) -> str:
 
 
 def keybindings_path(root: Optional[str] = None) -> str:
-    """Return <userdir>/config/keybindings.json.  Read-only, always.
-
-    user_keybindings() = config_dir + "keybindings.json"
-    (src/path_info.cpp:400-402).  The file may not exist -- the engine
-    writes it only once a binding has been touched -- and its absence
-    is the strongest possible evidence for R12 rather than a problem.
-    """
+    """Return <userdir>/config/keybindings.json. Read-only, always."""
     fallback = os.path.join(config_dir_path(root), KEYBINDINGS_NAME)
     return _from_env_or(
         ENV_KEYBINDINGS, fallback, "the keybindings file", root)
@@ -1550,19 +1375,14 @@ def decoded_character_name(save_name: object) -> Optional[str]:
 
     The engine names a character file `#` + base64 of the save id
     (src/catacharset.cpp:266-303, called from src/game_io.cpp), and
-    lastworld.json records the DECODED name -- so comparing the two needs
-    this one decode.  Two details of the engine's encoder matter and are
-    the reason this is not a plain b64decode:
+    lastworld.json records the DECODED name -- so comparing the two
+    needs this one decode.  Two details of the engine's encoder matter
+    and are the reason this is not a plain b64decode:
 
-      * its alphabet's 63rd character is '-' rather than '/'
-        (src/catacharset.cpp:215), hence `altchars`;
-      * the '#' is a marker and not part of the payload
-        (src/catacharset.cpp:269-272).
-
-    Returns None for anything that does not decode to valid UTF-8.  An
-    undecodable name is reported as unknown, never guessed at: it is used
-    to CHECK which survivor was loaded, and a wrong answer there would
-    approve continuing the wrong one.
+    * its alphabet's 63rd character is '-' rather than '/'
+      (src/catacharset.cpp:215), hence `altchars`;
+    * the '#' is a marker and not part of the payload
+      (src/catacharset.cpp:269-272).
     """
     if not isinstance(save_name, str) or not save_name:
         return None
@@ -1585,15 +1405,7 @@ def decoded_character_name(save_name: object) -> Optional[str]:
 
 
 def encoded_character_stem(character_name: object) -> Optional[str]:
-    """Return the engine's `#<base64-name>` save stem, or None.
-
-    This is the inverse of :func:`decoded_character_name`, using the
-    engine's `+`/`-` alphabet rather than Python's default `+`/`/`
-    alphabet.  Death cleanup moves the existing character files into
-    <userdir>/graveyard/, so the stem is the immutable identity that
-    binds the live save this session pinned to the graveyard generation
-    the engine produced after death.
-    """
+    """Return the engine's `#<base64-name>` save stem, or None."""
     if not isinstance(character_name, str) or not character_name:
         return None
     encoded = base64.b64encode(
@@ -1658,34 +1470,10 @@ SESSION_DIR_PREFIX = "session-"
 STEP_LOCK_NAME = "step.lock"
 JOURNAL_NAME = "step.json"
 
-# THE PHASE INDEX: the third piece of scratch state, and the one that
-# keeps a step's cost independent of how long the session has run.
-#
-# `step` is one process per keystroke, so the UI phase has to be
-# recovered from the telemetry sidecar on every invocation
-# (_recorded_sidebar_frame).  Reading the WHOLE sidecar to answer one
-# question -- "which is the earliest recorded frame whose capture showed
-# a sidebar?" -- costs O(rows) per step and therefore O(rows^2) over a
-# session the requirements deliberately leave uncapped: a QA pass
-# measured 87,571 cumulative row parses and 45.63 MiB of reads over the
-# 419 frames already recorded, and nothing bounds either number.
-#
-# So the answer is CACHED here, next to the lock and the journal, with a
-# byte cursor saying how much of the sidecar it was computed from.  A
-# later step validates the cache in constant time and then reads only
-# the bytes appended since -- one row, for one keystroke.
-#
-# THE SIDECAR REMAINS AUTHORITATIVE, which is the whole reason the
-# record cites the row it rests on: the cached frame is accepted only
-# when that row's exact bytes are still there and still say what the
-# cache claims (PHASE_INDEX_VERSION and _load_phase_index).  A cache
-# that cannot be validated is DISCARDED and rebuilt by reading the file,
-# never trusted and never repaired -- the same posture every other
-# derived value in this pipeline is held to.
-#
-# It lives outside the working tree for the reason stated above: this is
-# machinery, not evidence, and it is rebuildable from the sidecar at any
-# time, so losing it costs one full read and nothing else.
+# THE PHASE INDEX: the third piece of scratch state, and the one that keeps a
+# step's cost independent of how long the session has run.  `step` is one
+# process per keystroke, so the UI phase has to be recovered from the telemetry
+# sidecar on every invocation (_recorded_sidebar_frame).
 PHASE_INDEX_NAME = "phase.json"
 
 # Bumped whenever the record's meaning changes.  An index written by an
@@ -1698,27 +1486,26 @@ PHASE_INDEX_VERSION = 1
 DEFAULT_LOCK_TIMEOUT = 120
 ENV_LOCK_TIMEOUT = "PLAYTHROUGH_SESSION_LOCK_TIMEOUT"
 
-# How long a step waits for THE CHECKOUT'S mutation lock, which is a
-# different question from the one above.  The step lock is contended
-# only by another step -- seconds of work -- while the mutation lock
-# is contended by the gate and the checkpoint, which legitimately
-# read every frame or commit a whole session and take minutes doing
-# it.  A step that refused after two minutes of a running checkpoint
-# would be reporting a stuck pipeline that was working perfectly.
+# How long a step waits for THE CHECKOUT'S mutation lock, which is a different
+# question from the one above.  The step lock is contended only by another step
+# -- seconds of work -- while the mutation lock is contended by the gate and
+# the checkpoint, which legitimately read every frame or commit a whole session
+# and take minutes doing it.
 DEFAULT_MUTATION_TIMEOUT = 900
 ENV_MUTATION_TIMEOUT = "PLAYTHROUGH_MUTATION_LOCK_TIMEOUT"
 
 # THE JOURNAL'S THREE PHASES, AND WHY THERE ARE THREE.
 #
-# There used to be two, `intent` and `captured`, and `intent` was
-# written BEFORE xdotool ran.  Recovery then treated every `intent` for
-# the next index as a delivered keystroke: it photographed the screen at
-# that index and appended a row carrying the journalled key, action and
-# commentary.  So an interruption in the window between the journal write
-# and the key actually leaving -- a kill, an OOM, a lost X connection --
-# produced a frame, a manifest row and a first-person sentence for a
-# keystroke THAT NEVER HAPPENED, automatically, with `recovered: true`
-# as the only trace.  That is fabricated evidence, which is the one thing
+# Two would not be enough.  With only `intent` and `captured`, where
+# `intent` is written BEFORE xdotool runs, recovery has to treat every
+# `intent` for the next index as a delivered keystroke: it photographs the
+# screen at that index and appends a row carrying the journalled key,
+# action and commentary.  An interruption in the window between the
+# journal write and the key actually leaving -- a kill, an OOM, a lost X
+# connection -- would then produce a frame, a manifest row and a
+# first-person sentence for a keystroke THAT NEVER HAPPENED,
+# automatically, with `recovered: true` as the only trace.  That is
+# fabricated evidence, which is the one thing
 # this record may not contain.
 #
 # The phases now say what is actually known:
@@ -1769,23 +1556,7 @@ def _digest_of(text: str) -> str:
 
 
 def _secure_dir(path: str, label: str) -> str:
-    """Create `path` mode 0700, refusing a link or a foreign owner.
-
-    The same rule env.sh's playthrough_secure_dir applies, restated here
-    because this module is documented as runnable with nothing sourced.
-    A directory another account can write to is a directory another
-    account can plant a lock or a journal in.
-
-    "MODE 0700" MEANS THE PERMISSION BITS, in both halves of that
-    contract.  A directory created inside a set-group-ID parent inherits
-    setgid -- /tmp is 2777 on some hosts -- and GNU chmod preserves that
-    bit on a directory, so `stat` reads 2700 for a directory that is
-    exactly as private as 0700.  The test below is therefore against the
-    group and other bits alone, and env.sh compares only the permission
-    digits for the same reason.  Neither side should be "tightened" to
-    the whole mode string: that made a host with a setgid temporary
-    directory able to run this module and not the shell contract.
-    """
+    """Create `path` mode 0700, refusing a link or a foreign owner."""
     try:
         os.makedirs(path, mode=0o700, exist_ok=True)
     except OSError as err:
@@ -1875,13 +1646,6 @@ class StepLock:
     session ends up with two keystrokes behind one frame and one row --
     an unrecoverable break in the one-frame-per-keystroke relation that
     no later count would reveal, because the counts still match.
-
-    The lock is an advisory flock over a file in the per-checkout
-    scratch directory.  It is held from BEFORE the counter is recovered
-    until AFTER the manifest row and its telemetry row are on the
-    device, which is the whole transaction, and it is released by the
-    kernel if the holder dies -- so a crashed session does not wedge
-    the next one; the journal is what makes that next one recoverable.
     """
 
     def __init__(self, path: str, timeout: int) -> None:
@@ -1974,13 +1738,7 @@ class StepLock:
                 % (self._path, err))
 
     def assert_held(self) -> None:
-        """Refuse to act outside the transaction.  Cheap, and checked.
-
-        Called at the points that must never run unserialised -- the
-        counter recovery, the key, the append -- so that a future edit
-        which moved one of them out of the critical section would fail
-        immediately instead of racing rarely.
-        """
+        """Refuse to act outside the transaction. Cheap, and checked."""
         if self._descriptor is None:
             raise SessionError(
                 "the step lock %s is not held, so the frame counter "
@@ -2029,12 +1787,6 @@ def _write_durably(path: str, text: str,
     previous record or the whole new one; both the file and its
     directory are fsynced, because a rename is not durable until the
     directory entry is.
-
-    `label` names the file in the failure message.  Every caller writes
-    scratch state next to the step lock, so the temporary sibling is
-    outside the working tree and cannot become a committable artifact --
-    which is the concern that governs anything staged inside
-    playthrough/ (see manifest.sweep_staging).
     """
     directory = os.path.dirname(path)
     temporary = "%s.%d.tmp" % (path, os.getpid())
@@ -2045,13 +1797,11 @@ def _write_durably(path: str, text: str,
             0o600)
         try:
             # os.write IS ALLOWED TO WRITE LESS THAN IT WAS GIVEN, and it
-            # reports how much by returning it.  Ignoring that return is
-            # not a theoretical bug here: a short write leaves a journal
-            # that PARSES -- JSON truncated mid-object does not, but a
-            # truncated *record* that happens to close its braces does --
-            # and read_journal would then describe a keystroke with the
-            # wrong frame or the wrong key.  So the write is a loop that
-            # ends only when every byte is on the descriptor.
+            # reports how much by returning it.  Ignoring that return is not a
+            # theoretical bug here: a short write leaves a journal that PARSES
+            # -- JSON truncated mid-object does not, but a truncated *record*
+            # that happens to close its braces does -- and read_journal would
+            # then describe a keystroke with the wrong frame or the wrong key.
             payload = text.encode("utf-8")
             offset = 0
             while offset < len(payload):
@@ -2092,13 +1842,7 @@ def write_journal(path: str, record: Mapping[str, object]) -> None:
 
 
 def read_journal(path: str) -> Optional[Dict[str, object]]:
-    """Return the outstanding step record, or None.
-
-    A journal that cannot be parsed is a FAULT rather than an absence:
-    it says a step was in flight and says nothing usable about which,
-    so guessing would be exactly the fabrication this file exists to
-    prevent.
-    """
+    """Return the outstanding step record, or None."""
     try:
         with open(path, "r", encoding="utf-8") as handle:
             text = handle.read()
@@ -2138,10 +1882,11 @@ def clear_journal(path: str) -> None:
             "could not clear the step journal %s: %s.  It would be "
             "replayed by the next session against a step that is "
             "already recorded" % (path, err)) from err
-    # THE UNLINK IS NOT DURABLE UNTIL THE DIRECTORY ENTRY IS, and both of
-    # these failures used to be swallowed -- the open with a bare
-    # `return`, the fsync with a bare `pass`.  What that hid is the one
-    # thing worth reporting: the file is gone from this kernel's view and
+    # THE UNLINK IS NOT DURABLE UNTIL THE DIRECTORY ENTRY IS, so neither
+    # of these failures may be swallowed -- not the open with a bare
+    # `return`, not the fsync with a bare `pass`.  Doing so would hide the
+    # one thing worth reporting: the file is gone from this kernel's view
+    # and
     # may come BACK after a crash, and the next session would then replay
     # a journal describing a step that is already completely recorded.
     # Settlement does handle that case correctly, so the risk is not
@@ -2176,14 +1921,7 @@ def clear_journal(path: str) -> None:
 # ---------------------------------------------------------------------
 
 def _required_text(value: object, label: str) -> str:
-    """Return `value` as required, non-empty, single-line text.
-
-    `action` and `commentary` are both mandatory: a row that says what
-    was pressed but not why, or why but not what, is not the record this
-    pipeline promises.  manifest.py refuses an empty field too; this
-    refuses it before the keystroke is sent, so a caller who forgot one
-    has not already changed the game state.
-    """
+    """Return `value` as required, non-empty, single-line text."""
     if not isinstance(value, str):
         raise SessionError(
             "%s must be text, got %s" % (label, type(value).__name__))
@@ -2200,13 +1938,7 @@ def _required_text(value: object, label: str) -> str:
 
 
 def _indices_through(last: int) -> Tuple[int, ...]:
-    """Return the capture indices 1..`last`, inclusive.
-
-    Built by counting rather than by arithmetic on an index, so the
-    only place in this module where an index is advanced remains
-    :meth:`Session.step`.  `last` <= 0 yields nothing, which is the
-    fresh-session case.
-    """
+    """Return the capture indices 1..`last`, inclusive."""
     if last <= 0:
         return ()
     counter = itertools.count(manifest.MIN_FRAME_INDEX)
@@ -2214,14 +1946,7 @@ def _indices_through(last: int) -> Tuple[int, ...]:
 
 
 def _summarised(indices: Sequence[int], limit: int = 10) -> str:
-    """Render indices for a diagnostic, bounded but never rounded.
-
-    A shortfall of three frames should name all three; a shortfall of
-    three hundred should not print three hundred numbers into a
-    terminal.  So the first `limit` are named and the remainder is
-    COUNTED rather than dropped, because "and 290 more" still tells the
-    reader the true size of what is missing.
-    """
+    """Render indices for a diagnostic, bounded but never rounded."""
     shown = ", ".join(str(index) for index in indices[:limit])
     if len(indices) > limit:
         return "%s and %d more" % (shown, len(indices) - limit)
@@ -2236,10 +1961,6 @@ def validated_frame(frame: object) -> int:
     agree on what an index is: from 1, and never wide enough to break
     the five-digit field that keeps a lexical sort of the frames
     identical to a numeric one.
-
-    This VALIDATES an index.  It never generates, defaults or
-    increments one -- that happens in exactly one place, and the place
-    is :meth:`Session.step`.
     """
     if isinstance(frame, bool) or not isinstance(frame, int):
         raise RecordError(
@@ -2260,17 +1981,6 @@ def validated_frame(frame: object) -> int:
 def validate_key(key: object) -> str:
     """Return `key` unchanged if it is exactly one keystroke, or raise.
 
-    THE gate between a caller's intent and an external command.  The
-    value is checked against a closed vocabulary rather than escaped,
-    so nothing outside NAMED_KEYSYMS, SINGLE_CHARACTER_KEYS and
-    MODIFIER_KEYS can reach xdotool at all.
-
-    One keystroke means one: a string of characters, a space-separated
-    list of keysyms and anything xdotool would `type` rather than
-    `key` are all refused, because each would send several keystrokes
-    behind one screenshot and break the one-frame-per-key relation
-    irrecoverably.
-
     SHIFT IS THE ONLY MODIFIER ACCEPTED.  ctrl, alt, super and meta are
     refused outright: the game's only ctrl bindings are the five
     DEBUG_DIALOGUE_* toggles it ships already bound (plus text-field
@@ -2279,9 +1989,9 @@ def validate_key(key: object) -> str:
     to the process -- alt+F4 among them.  See the commentary above
     MODIFIER_KEYS for the evidence.
 
-    :raises KeyRejected: with what was wrong and how to spell it.  This
-        happens BEFORE the game is touched, so a rejected key costs
-        nothing but the call.
+    :raises KeyRejected: with what was wrong and how to spell it. This happens
+        BEFORE the game is touched, so a rejected key costs nothing but the
+        call.
     """
     if not isinstance(key, str):
         raise KeyRejected(
@@ -2366,18 +2076,7 @@ def validate_key(key: object) -> str:
 
 
 def describe_key(key: str) -> str:
-    """Return a plain description of one validated keystroke.
-
-    THE MANIFEST'S `action` FIELD IS DERIVED FROM THIS AND NOWHERE
-    ELSE.  It used to be free text a caller supplied alongside the key,
-    which meant the two could disagree -- and did: one row of the first
-    recorded session says `press 'X'` for a step that delivered `-`.
-    The row satisfied every schema check, so nothing downstream could
-    tell, and a record that can say a key was pressed which was not is
-    not audit evidence at all.  Now the identity half of `action` is
-    computed from the same validated string that reaches xdotool, so
-    the two cannot differ.
-    """
+    """Return a plain description of one validated keystroke."""
     return "press '%s'" % validate_key(key)
 
 
@@ -2390,15 +2089,10 @@ ACTION_SEPARATOR = " -- "
 def build_action(key: str, note: object = None) -> str:
     """Return the manifest `action` text for one validated keystroke.
 
-    `note` is the intent half -- "step one tile south, off the counter
-    aisle" -- and it is APPENDED to the derived identity rather than
-    replacing it, so every row names the key that was actually sent
-    whatever else it says.
-
-    :raises KeyRejected: for a key that is not one keystroke.
-    :raises RecordError: for a note that is not text, or that carries
-        the separator or a line break (either would make the derived
-        prefix ambiguous to :func:`assert_action_derived`).
+    :raises KeyRejected: for a key that is not one keystroke. :raises
+        RecordError: for a note that is not text, or that carries the separator
+        or a line break (either would make the derived prefix ambiguous to
+        :func:`assert_action_derived`).
     """
     derived = describe_key(key)
     if note is None:
@@ -2424,12 +2118,6 @@ def build_action(key: str, note: object = None) -> str:
 
 def assert_action_derived(key: str, action: object) -> str:
     """Return `action` if its identity is `key`'s, or raise.
-
-    The gate that makes the manifest's `action` field evidence: it must
-    be exactly :func:`describe_key`'s output, or that output followed by
-    the separator and a note.  Anything else -- a different key named, a
-    key named without the quotes, prose with no key in it -- is refused
-    before the keystroke is sent.
 
     :raises RecordError: naming both texts, so the mismatch is obvious.
     """
@@ -2495,9 +2183,6 @@ def resolve_display() -> str:
     derivation from CLONE_INDEX, so a caller who exported nothing but
     an index still lands on that clone's own server rather than on
     another one's.
-
-    xdotool takes no --display option, so the resolved value is placed
-    into the child environment explicitly.
     """
     for variable in (ENV_PLAYTHROUGH_DISPLAY, ENV_DISPLAY):
         value = os.environ.get(variable)
@@ -2528,14 +2213,7 @@ def _verified(name: str) -> str:
 
 
 def _child_environment() -> Dict[str, str]:
-    """Return the environment an external stage is run with.
-
-    The parent environment plus the resolved DISPLAY.  Nothing is
-    removed: capture.sh sources env.sh and needs the whole headless
-    contract, including XAUTHORITY and XDG_RUNTIME_DIR, and stripping
-    it here would leave that stage unable to open the very display this
-    one just resolved.
-    """
+    """Return the environment an external stage is run with."""
     child = dict(os.environ)
     child[ENV_DISPLAY] = resolve_display()
     return child
@@ -2544,15 +2222,7 @@ def _child_environment() -> Dict[str, str]:
 def _run(command: Sequence[str], timeout: int, what: str,
          env: Optional[Mapping[str, str]] = None,
          cwd: Optional[str] = None) -> subprocess.CompletedProcess:
-    """Run one external command as an argument LIST and return it.
-
-    No shell, no string interpolation and no eval anywhere: the
-    keystroke below is caller-supplied, so the only thing that ever
-    reaches a process is a validated token in its own argv slot.
-    `check=False` because several callers read a non-zero status as an
-    ordinary answer -- an empty class search, for one -- and the ones
-    that do not raise their own diagnostic instead.
-    """
+    """Run one external command as an argument LIST and return it."""
     LOG.debug("%s: %s", what, " ".join(command))
     try:
         return subprocess.run(
@@ -2584,14 +2254,7 @@ def _diagnostic(completed: subprocess.CompletedProcess) -> str:
 
 
 def _timeout(variable: str, fallback: int) -> int:
-    """Return a whole number of seconds from the environment.
-
-    A value that is SET but unreadable is refused rather than defaulted,
-    because defaulting it silently hides an operator's mistake behind a
-    working run.  Zero is refused too: it would mean no limit at all,
-    and an unbounded wait on an X server that has stopped answering is
-    how a session hangs instead of failing.
-    """
+    """Return a whole number of seconds from the environment."""
     raw = os.environ.get(variable)
     if raw is None:
         return fallback
@@ -2653,15 +2316,8 @@ def free_bytes(path: str) -> int:
 def capture_reserve(previous_bytes: Optional[int] = None) -> int:
     """Return the bytes that must be free before the next keystroke.
 
-    The size of the previous capture is the calibration -- the frames of
-    one session are all the same geometry and broadly the same
-    complexity, so the last one is a better predictor than any constant
-    -- multiplied by a lookahead so there is room to notice and act, and
-    floored so an unusually small frame cannot produce a reserve smaller
-    than the sidecars and the save the engine rewrites.
-
-    :param previous_bytes: the size of the last capture, or None when
-        there is not one yet.
+    :param previous_bytes: the size of the last capture, or None when there is
+        not one yet.
     """
     override = _reserve_override()
     if override is not None:
@@ -2707,14 +2363,7 @@ def window_class() -> str:
 
 
 def validate_window_id(value: object) -> int:
-    """Return `value` as a positive decimal X window id, or raise.
-
-    Decimal, because that is what `xdotool search` prints and what
-    `xdotool key --window` expects.  A hexadecimal-looking string is
-    refused outright rather than converted: accepting one would mean
-    somebody scraped it out of xwininfo, which is the unsafe path this
-    module exists to avoid.
-    """
+    """Return `value` as a positive decimal X window id, or raise."""
     if isinstance(value, bool):
         raise WindowError(
             "a window id is a decimal integer, not a boolean")
@@ -2776,25 +2425,13 @@ def window_ids(timeout: Optional[int] = None) -> Tuple[int, ...]:
 
 def window_is_alive(window_id: object,
                     timeout: Optional[int] = None) -> bool:
-    """True when `window_id` is still a window of the game's class.
-
-    The re-verification every keystroke goes through.  A window that
-    has gone means the engine crashed or exited between one step and
-    the next, which is a fact about the session and not something to
-    key blindly past.
-    """
+    """True when `window_id` is still a window of the game's class."""
     return validate_window_id(window_id) in window_ids(timeout)
 
 
 def find_window(prefer: object = None,
                 timeout: Optional[int] = None) -> int:
     """Return the one window id this session keys.
-
-    `prefer` is a hint -- launch_game.sh emits PLAYTHROUGH_WINDOW_ID on
-    its machine payload -- and it is RE-VERIFIED against the class
-    search rather than trusted: a stale id from a previous run would
-    otherwise deliver every keystroke into nothing, or worse into
-    another window that reused the number.
 
     THIS IS A LIVENESS CHECK, NOT AN IDENTITY CHECK.  The class is a
     name any process can claim, so nothing decides which window to key
@@ -2803,14 +2440,9 @@ def find_window(prefer: object = None,
     confirming that an already-authenticated id is still on the display
     before a keystroke or a focus call is aimed at it.
 
-    More than one match is therefore refused rather than resolved by
-    taking the newest, which was a guess: two engines on one display
-    means two sessions competing for one screen, and every capture
-    photographs the root window.
-
-    :raises WindowError: when no window of the class exists, when a
-        preferred id is not among those that do, or when several match
-        and none was named.
+    :raises WindowError: when no window of the class exists, when a preferred
+        id is not among those that do, or when several match and none was
+        named.
     """
     candidates = window_ids(timeout)
     if not candidates:
@@ -2868,8 +2500,8 @@ def find_window(prefer: object = None,
 #
 # and exactly ONE window of the class must pass, because two engines on
 # one display means two sessions competing for one screen and every
-# capture photographs the root window.  Multiplicity used to be a
-# warning; it is now fatal.
+# capture photographs the root window.  Multiplicity is FATAL, not a
+# warning.
 # ---------------------------------------------------------------------
 
 XPROP = "xprop"
@@ -2966,13 +2598,7 @@ def _proc_fields(pid: int, name: str) -> Tuple[str, ...]:
 
 
 def _userdir_argument(argv: Sequence[str], cwd: str) -> str:
-    """Return the --userdir the engine was started with, canonical.
-
-    `--userdir <path>` and `--userdir=<path>` are both accepted, because
-    both reach PATH_INFO::init_user_dir the same way.  The value is
-    resolved against the process's OWN working directory, since
-    src/path_info.cpp:105 normalises it without absolutising it.
-    """
+    """Return the --userdir the engine was started with, canonical."""
     for position, argument in enumerate(argv):
         if argument == USERDIR_FLAG:
             if position + 1 >= len(argv):
@@ -2993,13 +2619,7 @@ def _userdir_argument(argv: Sequence[str], cwd: str) -> str:
 
 
 def _proc_display(pid: int) -> str:
-    """Return the DISPLAY the process was started with, or ''.
-
-    An unreadable environ is reported as unknown rather than as a
-    failure: /proc/<pid>/environ is readable for this user's own
-    processes, which the engine is, but a hardened kernel may refuse it
-    and the other three checks are the load-bearing ones.
-    """
+    """Return the DISPLAY the process was started with, or ''."""
     try:
         for entry in _proc_fields(pid, "environ"):
             if entry.startswith(ENV_DISPLAY + "="):
@@ -3072,15 +2692,8 @@ def authenticated_window(prefer: object = None,
                          root: Optional[str] = None) -> WindowIdentity:
     """Return the ONE window of the class that passes authentication.
 
-    Every candidate is authenticated, not just the preferred one, so
-    that a second engine on the display is DETECTED rather than merely
-    outranked.  More than one survivor is fatal: two engines on one
-    display means two sessions competing for one screen, and the
-    captures photograph the root window, so the record could not say
-    which was in the picture.
-
-    :raises WindowError: when nothing passes, when the preferred id does
-        not, or when more than one does.
+    :raises WindowError: when nothing passes, when the preferred id does not,
+        or when more than one does.
     """
     if timeout is None:
         timeout = _timeout(ENV_TOOL_TIMEOUT, DEFAULT_TOOL_TIMEOUT)
@@ -3139,13 +2752,7 @@ def authenticated_window(prefer: object = None,
 
 def focus_window(window_id: object,
                  timeout: Optional[int] = None) -> int:
-    """Focus the game window, and confirm it exists first.
-
-    Focus is taken before every keystroke rather than once per session:
-    the window manager is a separate process and focus can move for
-    reasons this module never sees, and a keystroke delivered to an
-    unfocused window is a keystroke the engine may never read.
-    """
+    """Focus the game window, and confirm it exists first."""
     if timeout is None:
         timeout = _timeout(ENV_TOOL_TIMEOUT, DEFAULT_TOOL_TIMEOUT)
     identifier = find_window(window_id, timeout)
@@ -3166,17 +2773,8 @@ def send_key(window_id: object, key: str,
              timeout: Optional[int] = None) -> str:
     """Send EXACTLY ONE keystroke to the game window.
 
-    One key, one call, one argv slot.  There is no variant of this
-    function that takes several: `xdotool key` will happily accept a
-    list of keysyms and `xdotool type` a whole string, and either would
-    put more than one keystroke behind a single screenshot, which is
-    the one thing this pipeline cannot recover from afterwards.
-
-    The key is validated first, so a rejected value never reaches the
-    process and the game is left untouched.
-
-    :returns: the key as sent, so a caller records what happened rather
-        than what it meant to happen.
+    :returns: the key as sent, so a caller records what happened rather than
+        what it meant to happen.
     :raises KeyRejected: for anything that is not one keystroke.
     :raises WindowError: when the keystroke could not be delivered.
     """
@@ -3184,30 +2782,8 @@ def send_key(window_id: object, key: str,
     if timeout is None:
         timeout = _timeout(ENV_TOOL_TIMEOUT, DEFAULT_TOOL_TIMEOUT)
     identifier = validate_window_id(window_id)
-    # --clearmodifiers IS LOAD-BEARING, NOT TIDINESS.
-    #
-    # A key like 'Y' is not one X keystroke: xdotool implements it as
-    # shift down, y, shift up.  If that trailing shift-up is lost -- and
-    # it is, through `key --window`, which delivers synthetic events the
-    # server never reconciles against real key state -- the modifier
-    # stays DOWN for the rest of the session, and every plain key after
-    # it arrives as Shift+key.  The game ignores those, xdotool still
-    # exits 0, and this function still reports success.
-    #
-    # Measured: after one 'Y' confirmed a world, every subsequent Up,
-    # Down, Return and Tab was silently discarded.  The engine was alive
-    # and idle the whole time (main thread in hrtimer_nanosleep, 4 open X
-    # connections, focus and active window both correct) and the screen
-    # digest did not move for ninety seconds.  Releasing the stuck
-    # modifiers and re-sending with --clearmodifiers moved it on the
-    # first key.
-    #
-    # This is the worst failure shape this pipeline has: a keystroke
-    # reported as delivered that the game never acted on, and a frame
-    # captured against it.  The row would claim an action that did not
-    # happen.  --clearmodifiers clears whatever is held before sending
-    # and still applies the modifiers the key itself asks for, so
-    # 'shift+Tab' and 'Y' keep working.
+    # --clearmodifiers IS LOAD-BEARING, NOT TIDINESS.  A key like 'Y' is not
+    # one X keystroke: xdotool implements it as shift down, y, shift up.
     completed = _run(
         [_verified(XDOTOOL), "key", "--clearmodifiers",
          "--window", str(identifier), validated],
@@ -3263,48 +2839,24 @@ class WorldSave:
     def resumable(self) -> bool:
         """True when this world holds a character who can still be played.
 
-        master.gsav proves a WORLD exists, not that anybody lives in
-        it: the engine writes the world as soon as it is created, so a
-        run interrupted during character creation leaves a world with
-        no character at all.  Loading that opens an empty character
-        list, which is a dead end, so it is not resumable.
-
         A CHARACTER SAVE IS NOT ENOUGH, AND SAVE SHAPE CANNOT SETTLE IT.
-        This used to be `bool(self.characters)` alone, and a review found
-        what that admits.  CDDA writes the character file during play and
-        moves it to the graveyard in ``cleanup_at_end()``, which runs
-        AFTER the death screen -- so a process that ends inside the death
-        screen leaves a fully live-shaped save on disk for a survivor the
-        record shows dying.  Measured on this checkout's own tree: the
-        committed save reads as a living character (torso hp_cur 18 of
-        83) because it was written before the killing blow, while the
-        manifest records that survivor beginning their last words and
-        neither graveyard/ nor memorial/ exists.  Nothing in the save
-        distinguishes that from an ordinary mid-session snapshot, so no
-        amount of reading it more carefully could have caught this; the
-        evidence has to come from the append-only record instead.
-
-        Resuming it would load a dead survivor back into play, which is
-        not a continuation of the recorded session but a contradiction of
-        it -- and it would do so silently, since the loaded character
-        looks perfectly ordinary.  So a recorded death disqualifies the
-        world while a live character save is still sitting in it,
-        whichever way cleanup went: if cleanup never ran the save is a
-        pre-death snapshot, and if it ran and a live save is somehow
-        still present the tree is inconsistent.  Both are refusals.
+        `bool(self.characters)` alone admits a dead survivor: CDDA writes
+        the character file during play and moves it to the graveyard in
+        ``cleanup_at_end()``, which runs AFTER the death screen -- so a
+        process that ends inside the death screen leaves a fully
+        live-shaped save on disk for a survivor the record shows dying.
+        Such a save reads as a living character, because it was written
+        before the killing blow, while the manifest records that survivor
+        beginning their last words and neither graveyard/ nor memorial/
+        exists.  Nothing IN the save distinguishes that from an ordinary
+        mid-session snapshot, so the evidence has to come from the
+        append-only record instead.
         """
         return bool(self.characters) and self.death_recorded_at is None
 
     @property
     def death_pending(self) -> bool:
-        """True for a recorded death whose cleanup never completed.
-
-        The specific state a signalled process leaves: the record shows
-        the death, the engine's own products do not exist, and the live
-        save was never moved.  Separated from :attr:`resumable` because
-        the two answer different questions -- that one decides whether to
-        load, this one names the fault so the refusal can say what to do.
-        """
+        """True for a recorded death whose cleanup never completed."""
         return (self.death_recorded_at is not None and
                 not self.cleanup_complete)
 
@@ -3336,13 +2888,7 @@ class SaveProbe:
 
     @property
     def character_forms(self) -> Tuple[str, ...]:
-        """Which canonical character-file forms are in use, sorted.
-
-        Reported rather than inferred from the seeded
-        WORLD_COMPRESSION2 option, because this probe runs BEFORE any
-        seeding on a resumed run and the world may not have been
-        created under this pipeline's seed at all.
-        """
+        """Which canonical character-file forms are in use, sorted."""
         forms = set()
         for one in self.worlds:
             forms.update(one.forms)
@@ -3381,15 +2927,7 @@ class SaveProbe:
 
 @dataclass(frozen=True)
 class DeathCleanupEvidence:
-    """Engine-authored evidence that the pinned survivor really died.
-
-    A vanished live save is not enough: manual deletion has exactly that
-    shape.  The exception is admitted only when four independent
-    artifacts agree -- the graveyard save and log, the JSON and text
-    memorials, and the append-only manifest's last-words/post-death
-    sequence.  The paths are returned so the checkpoint layer can hold
-    these exact files against git after publication.
-    """
+    """Engine-authored evidence that the pinned survivor really died."""
 
     world: str
     character: str
@@ -3415,13 +2953,6 @@ def _character_saves(world_dir: str) -> Tuple[Tuple[str, ...],
     real save.  Because the resume decision turns on that count, doing
     so would resolve to "create" and overwrite the very save that must
     be continued.
-
-    A world holding both forms of the SAME character counts one
-    character: the ".zzip" suffix is stripped and each distinct base
-    name is counted once.
-
-    The listing here is EVIDENCE, never an index: nothing in this
-    module derives a frame number from a directory.
 
     EVERY DESCENDANT IS lstat-ed AND A LINK IS REFUSED.  os.path.isfile
     follows symbolic links, so a link planted at
@@ -3504,13 +3035,7 @@ def _real_directory(path: str) -> bool:
 
 
 def _real_regular_file(path: str, label: str) -> bool:
-    """True when `path` is a regular file and not reached by a link.
-
-    lstat rather than os.path.isfile, and False rather than an
-    exception, because an ABSENT file is an ordinary answer here -- a
-    directory with no master.gsav simply is not a world.  A link is not
-    an ordinary answer and is reported.
-    """
+    """True when `path` is a regular file and not reached by a link."""
     try:
         info = os.lstat(path)
     except FileNotFoundError:
@@ -3710,23 +3235,14 @@ def observed_death_frame(manifest_path: Optional[str] = None,
                          root: Optional[str] = None) -> Optional[int]:
     """Return the frame at which the record shows a death beginning.
 
-    A PURE OBSERVATION, and deliberately the opposite shape to
-    :func:`assert_death_cleanup_evidence`.  That function PROVES a
-    vanished save was a legitimate engine death and raises on anything
-    less; this one only reports what the append-only record says, because
-    the resume probe has to ask the question about a tree that may be
-    broken and must not be stopped by an exception in the middle of
-    building its answer.
-
     AN ABSENT RECORD ANSWERS None; AN UNREADABLE ONE RAISES.  Those two
-    are not the same fact and a review found them conflated here: both
-    returned "the record shows no death", so a tree whose record
-    authority was CORRUPT read exactly like a first run, and a
-    live-shaped save that predated a death could be offered for resuming
-    on the strength of a manifest nobody could parse.  Resuming such a
-    save is the one thing this pipeline must never do -- it would be
-    reloading past a death, which the plan forbids by name (AAP
-    §0.2.1) -- so the two answers are now distinct:
+    are not the same fact, and conflating them -- both answering "the
+    record shows no death" -- would make a tree whose record authority is
+    CORRUPT read exactly like a first run, so a live-shaped save that
+    predated a death could be offered for resuming on the strength of a
+    manifest nobody could parse.  Resuming such a save is the one thing
+    this pipeline must never do, because it is reloading past a death, so
+    the two answers are distinct:
 
     * a manifest that is genuinely ABSENT (a first run: no file at the
       path at all) answers None, which leaves resumability to be decided
@@ -3744,9 +3260,9 @@ def observed_death_frame(manifest_path: Optional[str] = None,
     fails closed on a stale amendment, which strengthens this
     observation rather than relaxing it.
 
-    :returns: the frame of the first last-words action, or None when the
-        record is genuinely absent.
-    :raises RecordError: when a record that exists cannot be trusted.
+    :returns: the frame of the first last-words action, or None when the record
+        is genuinely absent. :raises RecordError: when a record that exists
+        cannot be trusted.
     """
     # THE PATH IS RESOLVED AGAINST `root` BEFORE THE READ, and it has to
     # be, because neither of the obvious ways works.  manifest.read_rows
@@ -3810,15 +3326,7 @@ def observed_death_frame(manifest_path: Optional[str] = None,
 
 
 def _death_cleanup_present(root: Optional[str] = None) -> bool:
-    """True when both engine death-cleanup directories exist.
-
-    ``cleanup_at_end()`` writes the graveyard generation and the memorial
-    pair; a process signalled inside the death screen writes neither.
-    This is a presence test rather than the full four-artifact proof --
-    that is :func:`assert_death_cleanup_evidence`'s job -- because the
-    probe needs to distinguish "cleanup ran" from "cleanup never ran",
-    not to validate a cleanup that did.
-    """
+    """True when both engine death-cleanup directories exist."""
     userdir = userdir_path(root)
     return all(
         _real_directory(os.path.join(userdir, name))
@@ -3902,15 +3410,7 @@ def assert_death_cleanup_evidence(
         world: str, character: str, expected_stem: Optional[str] = None,
         manifest_path: Optional[str] = None,
         root: Optional[str] = None) -> DeathCleanupEvidence:
-    """Prove a vanished live save is the engine's legitimate death path.
-
-    CDDA moves the character files into a timestamped graveyard
-    generation, writes JSON and text memorials, then may reset the world
-    according to WORLD_END.  That is observably different from a manual
-    deletion only when ALL of those products agree with the survivor
-    lastworld.json says was loaded and the append-only record shows the
-    death UI.  This function is that fail-closed distinction.
-    """
+    """Prove a vanished live save is the engine's legitimate death path."""
     if not isinstance(world, str) or not world.strip():
         raise CheatGuard(
             "death cleanup has no pinned world to attribute it to")
@@ -4006,10 +3506,6 @@ def probe_save_resume(save_dir: Optional[str] = None,
                       refuse_recorded_death: bool = True) -> SaveProbe:
     """Decide whether this session creates a character or resumes one.
 
-    Read-only, and it runs BEFORE anything could create a character --
-    that ordering is the whole point, because the hard rule is that an
-    existing save is continued rather than replaced.
-
     AMBIGUITY IS REFUSED, NOT GUESSED.  With more than one resumable
     world this raises and asks for $PLAYTHROUGH_RESUME_WORLD: directory
     order is locale- and filesystem-dependent, so taking the first
@@ -4018,29 +3514,19 @@ def probe_save_resume(save_dir: Optional[str] = None,
     instead, because which survivor to load happens inside the game's
     own character list, where the operator can read the names.
 
-    :param save_dir: an explicit save directory; seed_options'
-        confined <userdir>/save by default.
-    :param root: the artifact tree to probe under, for a test with its
-        own; defaults to the pipeline's playthrough/ directory.  A
-        CALL-SITE argument only -- no environment variable can move it.
-    :param requested_world: the world to continue;
-        $PLAYTHROUGH_RESUME_WORLD by default.
-    :param refuse_recorded_death: whether a live save belonging to a
-        survivor the record shows dying is a refusal.  True for the
-        PRE-FLIGHT, which is the decision this function exists to make.
-        False for the one internal caller that wants the world SCAN and
-        not the decision -- :meth:`Session._save_fingerprint`, which runs
-        on every step of a live session and therefore passes through this
-        exact state legitimately: the last-words keystroke is recorded
-        while the live save is still on disk, because the engine only
-        moves it in ``cleanup_at_end()`` after the death screen.  Raising
-        there would make a death ending impossible to record, which is a
-        permitted ending, so the distinction is a parameter rather than a
-        rule.  It defaults to refusing so that a new caller inherits the
-        strict reading and has to ask for the loose one.
-    :raises SessionError: on an unreadable tree, on an ambiguity that
-        must be resolved by a human rather than by this module, or on a
-        recorded death whose live save is still present.
+    :param save_dir: an explicit save directory; seed_options' confined
+        <userdir>/save by default.
+    :param root: the artifact tree to probe under, for a test with its own;
+        defaults to the pipeline's playthrough/ directory. A CALL-SITE argument
+        only -- no environment variable can move it.
+    :param requested_world: the world to continue; $PLAYTHROUGH_RESUME_WORLD by
+        default.
+    :param refuse_recorded_death: whether a live save belonging to a survivor
+        the record shows dying is a refusal. True for the PRE-FLIGHT, which is
+        the decision this function exists to make.
+    :raises SessionError: on an unreadable tree, on an ambiguity that must be
+        resolved by a human rather than by this module, or on a recorded death
+        whose live save is still present.
     """
     if save_dir is None:
         save_dir = save_dir_path(root)
@@ -4268,39 +3754,14 @@ def probe_save_resume(save_dir: Optional[str] = None,
 # ---------------------------------------------------------------------
 
 def is_debug_action(identifier: object) -> bool:
-    """True when `identifier` names a debug action of any kind.
-
-    A PATTERN, not a list, and deliberately so.  The three authoritative
-    actions are named in DEBUG_ACTION_IDS and the five dialogue toggles
-    in DEBUG_DIALOGUE_ACTION_IDS, but the audit must not be limited to
-    the ids that happened to exist when it was written: the engine's
-    keybinding table grows, and an action added later whose id says
-    "debug" is exactly the thing this check is for.  Matching on the
-    substring makes the audit COMPLETE over the file it reads rather
-    than complete over a list somebody has to remember to extend.
-    """
+    """True when `identifier` names a debug action of any kind."""
     if not isinstance(identifier, str):
         return False
     return DEBUG_ID_MARKER in identifier.lower()
 
 
 def _bound_debug_actions(entries: object, path: str) -> List[str]:
-    """Return every debug action that carries a binding.
-
-    The engine writes the user keybindings file as a JSON array of
-    objects with "id", "version", "category" and -- only when it is
-    non-empty -- "bindings" (src/input.cpp:381-402).  An object for a
-    debug action with no "bindings" member is therefore the ordinary,
-    correct state and is not a finding; one WITH a non-empty bindings
-    array means somebody deliberately made a debug action reachable.
-
-    EVERY debug action is audited, not only the three that ship unbound.
-    The five DEBUG_DIALOGUE_* toggles ship BOUND to ctrl chords, so an
-    entry for one of them in the USER file is a deliberate override of
-    something already reachable -- and this module refuses to send any
-    ctrl chord for precisely that reason, so a binding here would be a
-    contradiction worth stopping for.
-    """
+    """Return every debug action that carries a binding."""
     if not isinstance(entries, list):
         raise CheatGuard(
             "%s is not a JSON array of keybinding objects, so whether "
@@ -4324,22 +3785,7 @@ def _bound_debug_actions(entries: object, path: str) -> List[str]:
 
 def assert_no_debug_bindings(path: Optional[str] = None,
                              root: Optional[str] = None) -> str:
-    """Prove no debug action is reachable by a keystroke.  Read-only.
-
-    "debug_mode" ("Toggle debug mode"), "debug" ("Debug menu") and
-    "debug_hour_timer" are declared in data/raw/keybindings.json
-    WITHOUT a `bindings` array (L3398-3409, L3466-3471), so they are
-    unbound by default and unreachable by any keystroke unless somebody
-    deliberately binds one.  A binding could only live in the user
-    override at <userdir>/config/keybindings.json
-    (src/path_info.cpp:400-402), and that file is COMMITTED -- which is
-    what turns "no cheating" from a claim into a property a stranger
-    can check.
-
-    EVERY debug action is audited, matched by id (see
-    :func:`is_debug_action`), not just those three -- the five
-    DEBUG_DIALOGUE_* toggles ship already bound, and an action the
-    engine adds later is covered without this list being updated.
+    """Prove no debug action is reachable by a keystroke. Read-only.
 
     THIS RUNS BEFORE EVERY KEYSTROKE, not only when somebody asks for
     the `audit` subcommand.  An optional integrity check is one that a
@@ -4348,15 +3794,9 @@ def assert_no_debug_bindings(path: Optional[str] = None,
     against the file's identity and mtime, so the cost is one lstat per
     key and a changed file is re-read rather than trusted.
 
-    An ABSENT file passes, and passes for a good reason: the engine
-    writes it only once a binding has been touched at all, so its
-    absence is the strongest evidence available that none was.
-
-    This module never writes that file, here or anywhere.
-
-    :returns: a sentence describing what was found, for the record.
-    :raises CheatGuard: when a debug action carries a binding, or when
-        the file exists and cannot be believed.
+    :returns: a sentence describing what was found, for the record. :raises
+        CheatGuard: when a debug action carries a binding, or when the file
+        exists and cannot be believed.
     """
     target = keybindings_path(root) if path is None else _confined(
         path, "the keybindings file", root)
@@ -4393,35 +3833,11 @@ def assert_no_debug_bindings(path: Optional[str] = None,
 
 def assert_point_buy_available(options_json: Optional[str] = None,
                                repo: Optional[str] = None) -> str:
-    """Prove the character creator's points pool is live.  Read-only.
+    """Prove the character creator's points pool is live. Read-only.
 
-    CHARACTER_POINT_POOLS is a world_default option whose shipped value
-    is "story_teller", and at that value
-    pool_selection_modes_for_option() offers only FREEFORM
-    (src/newcharacter.cpp:438-446) with pool_selection_is_fixed() true
-    and the pool tab informational and read-only
-    (src/newcharacter.cpp:462-467).  Creating a character then produces
-    frames showing a read-only pool tab, and the point-buy requirement
-    is not satisfied -- silently, because everything else about the run
-    looks right.
-
-    seed_options.py seeds "any"; this refuses a create run against an
-    options file that has not been seeded, so the failure happens
-    before the survivor exists rather than after the session is over.
-
-    Only meaningful on the create branch: a resumed character was
-    already built, and its pool choice is history.
-
-    `repo` is a REPOSITORY root, not the artifact root the rest of this
-    module's `root` arguments take: the options file belongs to
-    seed_options.py, so its confinement is that module's -- it holds
-    every target to <repo>/playthrough/userdir and refuses anything
-    outside it.  Naming the parameter differently is deliberate, so the
-    two kinds of root cannot be passed to one another by accident.
-
-    :returns: a sentence naming the value found, for the record.
-    :raises SessionError: when the option is missing or not a point-buy
-        value, or when the options file cannot be believed.
+    :returns: a sentence naming the value found, for the record. :raises
+        SessionError: when the option is missing or not a point-buy value, or
+        when the options file cannot be believed.
     """
     if options_json is None:
         options_json = seed_options.options_json_path(repo)
@@ -4471,13 +3887,7 @@ def assert_point_buy_available(options_json: Optional[str] = None,
 # ---------------------------------------------------------------------
 
 def parse_payload(text: str) -> Dict[str, str]:
-    """Return capture.sh's KEY=value payload as a mapping.
-
-    Strict on purpose.  A line that is not KEY=value, a key that is not
-    upper snake case and a key that appears twice are all contract
-    failures rather than noise to skip: the alternative is reading one
-    of two values for a field and not knowing which.
-    """
+    """Return capture.sh's KEY=value payload as a mapping."""
     payload: Dict[str, str] = {}
     for number, line in enumerate(text.split("\n"), start=1):
         if not line.strip():
@@ -4511,20 +3921,7 @@ def parse_payload(text: str) -> Dict[str, str]:
 
 
 def clock_from_payload(payload: Mapping[str, str]) -> Optional[str]:
-    """Return the sidebar reading for this frame, or None.
-
-    THE HONESTY FIELD, and the whole of its rule in four lines.  An
-    exact clock when the survivor has a watch; otherwise the coarse
-    phrase the sidebar showed instead of one, verbatim -- that is a
-    real observation, not a failure (src/display.cpp:207-218); and
-    None when neither could be read.
-
-    None is never a stand-in for a value.  Nothing is interpolated,
-    nothing is carried forward from the previous frame, and nothing is
-    converted between the two kinds of reading.  Reconciling an
-    unreadable or non-monotonic reading is timeline.py's job, downstream
-    and visibly flagged.
-    """
+    """Return the sidebar reading for this frame, or None."""
     clock = payload.get("CLOCK", "").strip()
     if clock:
         return clock
@@ -4537,15 +3934,13 @@ def clock_from_payload(payload: Mapping[str, str]) -> Optional[str]:
 # ---------------------------------------------------------------------
 # THE OBSERVED-EFFECT GUARD.
 #
-# A row used to be written entirely from the keystroke that was
-# INTENDED, and an intent is not an observation.  A "(Case Sensitive)"
-# question or an open modal box eats the key, the picture does not move,
-# and a row written from the intent still says the world name was typed
-# or that the survivor stepped north.  Runtime testing of the first
-# recorded session found 29 such rows, and the sweep that followed found
-# 16 more -- every one of them the same mistake, and every one of them a
-# fabrication inside an artifact whose whole purpose is to be truthful.
-# playthrough/TECHNICAL_NOTES.md carries the register.
+# A row written entirely from the keystroke that was INTENDED is a row
+# written from an intent, and an intent is not an observation.  A
+# "(Case Sensitive)" question or an open modal box eats the key, the
+# picture does not move, and the row still says the world name was typed
+# or that the survivor stepped north -- a fabrication inside an artifact
+# whose whole purpose is to be truthful.  playthrough/TECHNICAL_NOTES.md
+# carries the register of the instances this guard was built against.
 #
 # So the row now carries an OBSERVATION beside the intent.  After the
 # capture, and before the row is appended, the new frame is compared
@@ -4610,13 +4005,11 @@ DIFFERENCE_PRECISION = "16"
 COUNT_RE = re.compile(r"\A\d+\Z")
 BOX_RE = re.compile(r"\A\d+x\d+[-+]\d+[-+]\d+\Z")
 
-# An advisory floor, used ONLY to decide whether to warn a second time
-# and never to write anything into a row.  Measured from this session's
-# own captures: a step that actually moved the survivor changed 38,895,
-# 49,590 and 55,801 px of the map column, while a change confined to a
-# panel drawn over the map changed 6,480, 14,709 and 14,732 px.  A claim
-# of movement under this floor is worth a second look, and the number is
-# deliberately between the two populations rather than tight to either.
+# An advisory floor, used ONLY to decide whether to warn a second time and
+# never to write anything into a row.  Measured from this session's own
+# captures: a step that actually moved the survivor changed 38,895, 49,590 and
+# 55,801 px of the map column, while a change confined to a panel drawn over
+# the map changed 6,480, 14,709 and 14,732 px.
 MOVEMENT_ADVISORY_PIXELS = 20000
 
 EFFECT_FIRST = "first"
@@ -4645,13 +4038,11 @@ EFFECT_MARKERS = {
 # THE ENFORCING HALF OF THE GUARD: A DECLARATION, AN ACKNOWLEDGMENT AND
 # TWO HALTS.
 #
-# Everything above this point MEASURES and REPORTS.  A review found that
-# insufficient, with evidence: the retired session's frames 91-106 show
-# two whole key sequences -- a filter that had already been cleared, and
-# a page change -- delivered into an UNCHANGED abandon-creation modal,
-# and the guard's warnings were on stderr the entire time.  A control
+# Everything above this point MEASURES and REPORTS, and measuring is not
+# enough: whole key sequences can be delivered into an UNCHANGED modal
+# while the guard's warnings sit on stderr the entire time.  A control
 # that only speaks is a report; the hard rule "never blind-spam keys"
-# needs one that refuses.  Three mechanisms now do:
+# needs one that refuses.  Three mechanisms do:
 #
 #   1. EVERY STEP DECLARES WHAT ITS CAPTURE WILL SHOW.  `--expect
 #      changed` is the default because a keystroke that moves nothing on
@@ -4686,19 +4077,9 @@ EXPECT_UNCHANGED = "unchanged"
 EXPECT_EITHER = "either"
 EXPECTATIONS = (EXPECT_CHANGED, EXPECT_UNCHANGED, EXPECT_EITHER)
 
-# What each declaration accepts.  EFFECT_FIRST is accepted by all three:
-# the first capture of a session has nothing to be compared against, so
-# it can contradict nothing.
-#
-# EFFECT_UNKNOWN IS REFUSED BY THE TWO PREDICTIONS AND ACCEPTED BY THE
-# ADMISSION, and the asymmetry is the whole design.  A step that
-# PREDICTED an outcome and then could not have that prediction checked
-# has not been checked -- treating the absence of an observation as a
-# satisfied one is precisely the failure this block exists to end.  A
-# step that declared EXPECT_EITHER predicted nothing, so there is
-# nothing to contradict; it is still bound by the acknowledgment
-# requirement below, which is what makes the operator read that capture
-# before the next key regardless.
+# What each declaration accepts.  EFFECT_FIRST is accepted by all three: the
+# first capture of a session has nothing to be compared against, so it can
+# contradict nothing.
 EXPECT_ACCEPTS = {
     EXPECT_CHANGED: (EFFECT_CHANGED, EFFECT_OUTSIDE_MAP, EFFECT_FIRST),
     EXPECT_UNCHANGED: (EFFECT_UNCHANGED, EFFECT_FIRST),
@@ -4706,13 +4087,9 @@ EXPECT_ACCEPTS = {
                     EFFECT_UNCHANGED, EFFECT_FIRST, EFFECT_UNKNOWN),
 }
 
-# The engine's own query_yn prompts, quoted from the source rather than
-# from memory, each with the token an operator declares it by.  These are
-# the boxes that eat a key aimed at the screen behind them.
-#
-# The match is on a SUBSTRING of the central band's OCR, so the trailing
-# "(Case Sensitive)" the engine appends when a prompt wants a capital
-# (src/output.cpp:873,894) does not have to be modelled separately.
+# The engine's own query_yn prompts, quoted from the source rather than from
+# memory, each with the token an operator declares it by.  These are the boxes
+# that eat a key aimed at the screen behind them.
 MODAL_PROMPTS = (
     ("return-to-main-menu", "Return to main menu?",
      "src/newcharacter.cpp:3864,3868 -- leaving character creation"),
@@ -4776,14 +4153,7 @@ MOVEMENT_CLAIM_RE = re.compile(
 
 @dataclass(frozen=True)
 class ObservedEffect:
-    """What comparing two captures actually measured.
-
-    `verdict` is one of :data:`EFFECTS` and is the only part that
-    reaches the row's prose.  The counts and the box are measurements,
-    recorded in the telemetry sidecar so that the verdict can be
-    audited per frame afterwards without re-measuring, and they are
-    None whenever the measurement was not made.
-    """
+    """What comparing two captures actually measured."""
 
     verdict: str
     screen_pixels: Optional[int] = None
@@ -4793,32 +4163,7 @@ class ObservedEffect:
 
 def _difference_command(previous: str, current: str,
                         regions: Sequence[Optional[str]]) -> List[str]:
-    """Build the ImageMagick graph that measures one pair of captures.
-
-    ONE DECODE, however many regions are wanted.  The two captures are
-    read once, difference-composed once and thresholded once; each
-    measurement after that is a `-format`/`-write` on the image already
-    in hand.  Written as a builder because measuring one region and
-    measuring the whole screen plus a region are the SAME graph with a
-    stage more or less, and two hand-written command lists would drift
-    apart -- which is exactly how the two of them could stop agreeing
-    about what they measured.
-
-    `regions` is the crops to measure, in order; None means "the image as
-    it stands".  Each crop is applied to the image the previous stage
-    left, which for the (None, map-column) pair this module uses means
-    the crop is relative to the whole frame.  `+repage` follows every
-    crop so `%O` is relative to the cropped region rather than to a
-    canvas carrying an offset.
-
-    The output is one count per region and then ONE bounding box, the
-    last region's.  `-trim` crops the image to the box it reports, so a
-    box can only ever be taken after the last count -- which is why it is
-    the last region's and not every region's.
-
-    Thresholding is pointwise, so doing it before the crops gives exactly
-    the pixels cropping first would have given.
-    """
+    """Build the ImageMagick graph that measures one pair of captures."""
     if not regions:
         raise CaptureError(
             "a difference measurement needs at least one region")
@@ -4844,13 +4189,9 @@ def _difference_values(previous: str, current: str,
                        timeout: Optional[int]) -> List[str]:
     """Run the graph and return one count per region, then the box.
 
-    Every count is checked, not merely the first: a graph that printed
-    fewer numbers than it was asked for has not measured what the caller
-    is about to record.
-
-    :raises CaptureError: when the tool fails or prints something that is
-        not a count.  The measurement is evidence, so a value that cannot
-        be trusted is refused rather than returned.
+    :raises CaptureError: when the tool fails or prints something that is not a
+        count. The measurement is evidence, so a value that cannot be trusted
+        is refused rather than returned.
     """
     if timeout is None:
         timeout = _timeout(ENV_TOOL_TIMEOUT, DEFAULT_TOOL_TIMEOUT)
@@ -4874,13 +4215,7 @@ def _difference_values(previous: str, current: str,
 
 
 def _box_or_none(pixels: int, token: str) -> Optional[str]:
-    """Return a bounding box, or None when there is honestly no box.
-
-    ImageMagick has no box for an image with nothing in it and says so
-    on stderr -- expected here rather than a fault -- and it prints a
-    degenerate `1x1-1-1` in that case, so a box is only reported
-    alongside a non-zero count.
-    """
+    """Return a bounding box, or None when there is honestly no box."""
     return token if pixels and BOX_RE.match(token) else None
 
 
@@ -4890,23 +4225,14 @@ def measure_difference(previous: str, current: str,
                        ) -> Tuple[int, Optional[str]]:
     """Return how many pixels differ between two captures, and where.
 
-    `geometry` is an ImageMagick crop -- "1568x1080+0+0" -- and when it
-    is given only that region is compared, which is how the map column
-    is measured independently of the sidebar beside it.  `+repage`
-    follows the crop so the measurement describes the cropped pixels
-    rather than a canvas carrying an offset.
-
-    The box is the difference's own bounding box in the compared
-    region's coordinates, or None when nothing differs.
-
     ONE REGION PER CALL.  :func:`measure_difference_pair` measures the
     whole screen and a region TOGETHER, in one decode, which is what
     :func:`classify_effect` uses; this remains the way to ask about a
     single region, and both go through :func:`_difference_command` so
     neither can drift from the other.
 
-    :raises CaptureError: when the tool fails or prints something that
-        is not a count.
+    :raises CaptureError: when the tool fails or prints something that is not a
+        count.
     """
     lines = _difference_values(previous, current, (geometry,), timeout)
     pixels = int(lines[0], 10)
@@ -4918,23 +4244,6 @@ def measure_difference_pair(previous: str, current: str, geometry: str,
                             timeout: Optional[int] = None,
                             ) -> Tuple[int, int, Optional[str]]:
     """Measure the whole screen AND `geometry`'s region in ONE decode.
-
-    Returns (whole-screen pixels, region pixels, region box).
-
-    WHY THIS EXISTS.  Classifying one keystroke's effect needs two
-    numbers -- did anything change, and did anything change in the map
-    column -- and taking them with two `convert` invocations decoded the
-    same two 1920x1080 PNGs twice, which a performance QA pass measured
-    at about 828 processes over the 419 frames already recorded.  Both
-    numbers come off one decode here, and BOTH are still measured: the
-    region count and its box are exactly the values the two-call path
-    produced, which the suite asserts against real captures rather than
-    assuming.
-
-    The whole screen's own bounding box is deliberately not returned.
-    `-trim` crops the image to the box it reports, so taking it before
-    the region crop would measure the wrong pixels -- and no caller has
-    ever used it: :func:`classify_effect` discarded it.
 
     :raises CaptureError: exactly where :func:`measure_difference` does.
     """
@@ -4948,19 +4257,7 @@ def measure_difference_pair(previous: str, current: str, geometry: str,
 
 def map_column_geometry(rect: object, width: int, height: int,
                         ) -> Optional[str]:
-    """Return the crop covering the map column beside the sidebar.
-
-    The sidebar is a column at one edge of the window -- right by
-    default (src/options.cpp:2132-2136) -- so the map column is
-    everything on the other side of it.  `rect` is the sidebar crop
-    sidebar_geometry.py computes at runtime, passed through
-    ocr_clock.resolve_rect(), and the full frame is `width` x `height`.
-
-    Returns None when the two cannot be reconciled -- a sidebar wider
-    than the frame, or one that covers it entirely -- because a crop
-    guessed from inconsistent numbers would compare the wrong pixels
-    and report the wrong verdict.
-    """
+    """Return the crop covering the map column beside the sidebar."""
     try:
         left = int(getattr(rect, "x"))
         span = int(getattr(rect, "width"))
@@ -4982,30 +4279,7 @@ def map_column_geometry(rect: object, width: int, height: int,
 def classify_effect(previous: Optional[str], current: str,
                     map_geometry: Optional[str] = None,
                     timeout: Optional[int] = None) -> ObservedEffect:
-    """Say what one keystroke visibly did, by comparing two captures.
-
-    `previous` is the capture the operator was looking at when the key
-    was chosen and `current` the one the key produced; a `previous` of
-    None -- the first frame of the record -- is EFFECT_FIRST, because
-    there is nothing to compare it against and a verdict would be
-    invented.  `map_geometry` is :func:`map_column_geometry`'s crop;
-    without it the map column cannot be isolated, so a frame that moved
-    is EFFECT_CHANGED rather than a finer verdict nothing measured.
-
-    Never raises: a measurement that cannot be made is EFFECT_UNKNOWN
-    and says so on stderr.  This runs AFTER the keystroke, where an
-    exception would abandon a frame that is already on disk.
-
-    ONE `convert` PER PAIR.  Both numbers come off a single decode of the
-    two captures (:func:`measure_difference_pair`); taking them
-    separately decoded the same two 1920x1080 PNGs twice, for about 828
-    processes over the 419 frames already recorded.  The DEGRADATION is
-    unchanged, and that is what the fallback below is for: when the
-    combined measurement fails, the whole screen alone is measured on its
-    own -- one extra process, and only on the failure path -- so a crop
-    that cannot be reconciled with these captures still yields the
-    screen's verdict instead of losing it along with the region's.
-    """
+    """Say what one keystroke visibly did, by comparing two captures."""
     if previous is None:
         return ObservedEffect(EFFECT_FIRST)
     if map_geometry is not None:
@@ -5047,15 +4321,7 @@ def classify_effect(previous: Optional[str], current: str,
 def _effect_without_map(previous: str, current: str, map_geometry: str,
                         cause: SessionError,
                         timeout: Optional[int]) -> ObservedEffect:
-    """Fall back to the whole screen when the region cannot be measured.
-
-    Which of the two the combined graph choked on is not guessed from its
-    stderr -- it is established by asking the simpler question: if the
-    whole screen alone measures, the CROP was the problem and the row
-    records that the screen changed; if it does not, the CAPTURES are the
-    problem and the row records no observation at all.  Both warnings are
-    the ones the two-call path emitted for the same two situations.
-    """
+    """Fall back to the whole screen when the region cannot be measured."""
     try:
         screen_pixels, _screen_box = measure_difference(
             previous, current, timeout=timeout)
@@ -5078,29 +4344,13 @@ def _effect_without_map(previous: str, current: str, map_geometry: str,
 
 
 def verdict_of(effect: object) -> str:
-    """Return the verdict from an :class:`ObservedEffect` or a string.
-
-    The guard's callers hold whichever is convenient, and every one of
-    them wants the same answer, so the coercion lives here instead of
-    at each site.  An unrecognised value yields EFFECT_UNKNOWN, which
-    annotates nothing -- the safe direction, because a marker is a claim
-    about the pixels.
-    """
+    """Return the verdict from an :class:`ObservedEffect` or a string."""
     verdict = getattr(effect, "verdict", effect)
     return verdict if verdict in EFFECTS else EFFECT_UNKNOWN
 
 
 def annotate_action(action: str, effect: object) -> str:
-    """Return `action` with this frame's observed-effect marker.
-
-    Appended to the note, or made the note when there is none, and
-    added at most once: a row recovered from the journal already
-    carries the marker its first attempt earned, and a second copy
-    would say the same thing twice.  EFFECT_CHANGED, EFFECT_FIRST and
-    EFFECT_UNKNOWN add nothing -- the first because the ordinary case
-    needs no annotation, the other two because neither is an
-    observation of what the keystroke did.
-    """
+    """Return `action` with this frame's observed-effect marker."""
     marker = EFFECT_MARKERS.get(verdict_of(effect))
     if marker is None:
         return action
@@ -5131,29 +4381,7 @@ def observation_row(frame: int,
                     capture_attempts: int = 1,
                     recovered: bool = False,
                     effect: object = None) -> Dict[str, object]:
-    """Build this frame's telemetry row.  Pure -- nothing is written.
-
-    capture.sh REPORTS the row and names its destination; this module
-    appends it, because it already owns the frame counter and the
-    manifest row for the same frame and one logical record should have
-    one writer.  Exposed separately from the append so a caller can
-    inspect exactly what would be recorded.
-
-    The frame index is the caller's, taken from this module's counter
-    and cross-checked against the payload's own FRAME_INDEX by
-    :func:`assert_payload_matches`, so the sidecar and the manifest
-    cannot key the same capture differently.
-
-    `effect` is :func:`classify_effect`'s result for this capture -- an
-    :class:`ObservedEffect` or a bare verdict -- and it is recorded here
-    as well as in the row's action text, so the observation can be
-    audited per frame without re-reading the prose.  Its measurements
-    are recorded beside it when it carries them, because a verdict whose
-    numbers are on record can be re-checked and one whose numbers are
-    not has to be taken on trust.  An unrecognised verdict is refused
-    rather than stored: a verdict is evidence and a spelling nothing
-    understands is not one.
-    """
+    """Build this frame's telemetry row. Pure -- nothing is written."""
     row: Dict[str, object] = {}
     for name, payload_key in OBSERVATION_FIELDS:
         value = payload.get(payload_key, "")
@@ -5203,15 +4431,6 @@ def append_observation(path: str, row: Mapping[str, object],
     offset the file had, and the row is not reported as recorded until
     it has been forced to the device.
 
-    That is narrower than all-or-nothing, and deliberately stated as
-    such: an UNHANDLED interruption -- SIGKILL, or the power going --
-    can still leave a torn line, which is why the readers refuse one
-    rather than assuming it cannot happen.
-
-    A half-written line is not JSON, and timeline.py refuses a sidecar
-    it cannot parse outright rather than falling back to the clock
-    alone -- so a fragment here would stop the render, not degrade it.
-
     :raises RecordError: on any failure along that path.
     """
     return _append_jsonl_row(
@@ -5223,17 +4442,6 @@ def _append_jsonl_row(target: str, row: Mapping[str, object],
                       what: str, row_label: str,
                       require_durable: bool = True) -> Dict[str, object]:
     """Append one JSON line to `target` under the record's discipline.
-
-    ONE IMPLEMENTATION, TWO LEDGERS.  The telemetry sidecar and the
-    acknowledgment ledger are the same kind of artifact -- an
-    append-only, one-line-per-frame JSONL file beside the record -- and
-    the discipline that makes either of them trustworthy is identical.
-    Writing it twice would let the two drift, and the weaker copy would
-    be the one nobody noticed.
-
-    `target` is already confined by the caller, because the label a
-    containment refusal should name belongs to the caller's ledger and
-    not to this shared body.
 
     :raises RecordError: on any failure along the path.
     """
@@ -5295,10 +4503,6 @@ def _append_jsonl_row(target: str, row: Mapping[str, object],
 def validate_observed(text: object) -> str:
     """Return the operator's reading of a capture, or refuse it.
 
-    The acknowledgment ledger exists to hold what somebody SAW, so an
-    empty or perfunctory value is refused rather than recorded: a ledger
-    full of "ok" would satisfy the mechanism and defeat its purpose.
-
     :raises ObservationRequired: when there is nothing usable to record.
     """
     if text is None or not str(text).strip():
@@ -5319,28 +4523,14 @@ def validate_observed(text: object) -> str:
 
 
 def modal_band(width: int, height: int) -> "sidebar_geometry.Rect":
-    """Return the region of a capture a query box is drawn in.
-
-    query_yn centres its box, so the band is a horizontal slice through
-    the middle of the frame at the fractions declared above.  Computed
-    from the capture's own size rather than hard-coded, for the same
-    reason the sidebar crop is: a different terminal geometry must not
-    silently read the wrong pixels.
-    """
+    """Return the region of a capture a query box is drawn in."""
     top = int(height * MODAL_BAND_TOP)
     bottom = int(height * MODAL_BAND_BOTTOM)
     return sidebar_geometry.Rect(width, max(1, bottom - top), 0, top)
 
 
 def read_modal_text(path: str) -> str:
-    """Return the OCR of `path`'s central band.  NEVER raises.
-
-    An unreadable band answers "" -- which the caller treats as "no
-    modal was detected", and which is why the declaration-versus-effect
-    halt exists beside this one rather than depending on it: an OCR pass
-    that fails is the absence of evidence, and this function is not
-    permitted to end a session on it.  The failure is logged.
-    """
+    """Return the OCR of `path`'s central band. NEVER raises."""
     try:
         width, height = ocr_clock.png_size(path)
         rect = modal_band(width, height)
@@ -5363,13 +4553,7 @@ def read_modal_text(path: str) -> str:
 
 
 def detect_modals(text: object) -> Tuple[str, ...]:
-    """Return the tokens of every declared prompt present in `text`.
-
-    Substring matching on the OCR of the central band.  The comparison
-    is case-insensitive and whitespace-collapsed, because tesseract
-    reads a proportional-looking cell grid and the engine's own strings
-    carry double spaces the reader does not always preserve.
-    """
+    """Return the tokens of every declared prompt present in `text`."""
     if not isinstance(text, str) or not text.strip():
         return ()
     flat = " ".join(text.split()).lower()
@@ -5405,20 +4589,19 @@ def validate_modal_token(token: object) -> str:
 # ---------------------------------------------------------------------
 # A SECOND READING OF THE SAME FRAME MUST SAY SO
 #
-# A review found this ledger with 307 rows covering 306 frames: frame 298
-# appears twice -- the second row an honest, plainly-worded correction of
-# the first -- and frame 307, the last capture of the session, has no
-# acknowledgment at all.  Neither was reported by anything, and the
-# reason is one line of code: acknowledged_frames() built a dict keyed by
-# frame index, so `seen[index] = digest` SILENTLY DISCARDED the earlier
-# reading.  A dictionary conversion that overwrites is not a record of
-# two readings; it is a record of whichever came last, presented as
+# An append-only ledger can carry two rows for one frame -- the second an
+# honest correction of the first -- and a reader that folds it into a dict
+# keyed by frame index makes both invisible: `seen[index] = digest`
+# SILENTLY DISCARDS the earlier reading, and a missing acknowledgment for
+# the last capture goes unreported with it.  A dictionary conversion that
+# overwrites is not a record of two readings; it is a record of whichever
+# came last, presented as
 # though it were the only one.
 #
 # THE RULE, and it is chosen so that an append-only ledger can still be
 # reconciled honestly: for a frame with more than one row, the LAST row
 # must declare, in `supersedes`, the `acknowledged_at` of EVERY earlier
-# row for that frame.  So
+# row for that frame.  So three cases follow:
 #
 #   * a first reading carries supersedes: [] and nothing changes;
 #   * a correction must name what it corrects, or the ledger is refused;
@@ -5494,16 +4677,7 @@ def acknowledgment_row(frame: int, observed: str, verdict: object,
                        expectation: Optional[str] = None,
                        supersedes: object = ()
                        ) -> Dict[str, object]:
-    """Build one acknowledgment row.  Pure -- nothing is written.
-
-    It binds the operator's reading to the FRAME'S OWN sha256, so an
-    acknowledgment cannot later be read as being about a different
-    capture: the digest is the same one the capture attestation ledger
-    holds for that index.
-
-    `supersedes` names the earlier readings of this frame that this one
-    replaces; see the note above for why a second reading has to say so.
-    """
+    """Build one acknowledgment row. Pure -- nothing is written."""
     row: Dict[str, object] = {
         "version": ACK_VERSION,
         "frame": validated_frame(frame),
@@ -5552,13 +4726,7 @@ def append_acknowledgment(path: str, row: Mapping[str, object],
 def read_acknowledgments(path: Optional[str] = None,
                          root: Optional[str] = None
                          ) -> Tuple[Dict[str, object], ...]:
-    """Return every acknowledgment on disk, in file order.  Read-only.
-
-    An absent ledger is an empty tuple -- a session that has taken no
-    step has acknowledged nothing -- but a ledger that EXISTS and cannot
-    be parsed raises, for the same reason the record does: the question
-    "was the previous capture read" then has no trustworthy answer, and
-    the caller must not proceed as though the answer were yes.
+    """Return every acknowledgment on disk, in file order. Read-only.
 
     :raises RecordError: when a ledger that exists cannot be read.
     """
@@ -5591,18 +4759,13 @@ def acknowledgment_problems(
         rows: Sequence[Mapping[str, object]]) -> List[str]:
     """Return every way the acknowledgment ledger is not well formed.
 
-    Two properties, and both were unchecked when a review looked:
-
-      * EVERY ROW NAMES A FRAME.  A row whose index is not an integer
-        cannot be about a capture at all.
-      * A SECOND READING OF A FRAME ACCOUNTS FOR THE FIRST.  For a frame
-        with k > 1 rows, the last row's `supersedes` must name exactly
-        the `acknowledged_at` of the k-1 rows before it.  Anything else
-        is two readings of one frame with no stated relationship, which
-        is what silently discarding one used to look like.
-
-    Read-only, and it returns findings rather than raising, so a caller
-    can report all of them at once -- the gate does exactly that.
+    * EVERY ROW NAMES A FRAME.  A row whose index is not an integer
+      cannot be about a capture at all.
+    * A SECOND READING OF A FRAME ACCOUNTS FOR THE FIRST.  For a frame
+      with k > 1 rows, the last row's `supersedes` must name exactly
+      the `acknowledged_at` of the k-1 rows before it.  Anything else
+      is two readings of one frame with no stated relationship, which
+      is what silently discarding one looks like.
     """
     problems: List[str] = []
     order: List[int] = []
@@ -5654,13 +4817,7 @@ def acknowledgment_problems(
 def effective_acknowledgments(
         rows: Sequence[Mapping[str, object]]
 ) -> Dict[int, Mapping[str, object]]:
-    """Return {frame: the reading that stands} for each frame.
-
-    The LAST row for a frame, which is the current reading by the rule
-    above -- and only ever consulted once acknowledgment_problems has
-    found nothing, so "the last row" and "the row that accounts for the
-    others" are the same row.
-    """
+    """Return {frame: the reading that stands} for each frame."""
     current: Dict[int, Mapping[str, object]] = {}
     for row in rows:
         index = row.get("frame")
@@ -5673,15 +4830,11 @@ def acknowledged_frames(path: Optional[str] = None,
                         root: Optional[str] = None) -> Dict[int, str]:
     """Return {frame: digest} for every acknowledged capture.
 
-    The digest travels with the index so a caller can prove the reading
-    was about the bytes that are on disk now, rather than about a frame
-    of the same number in an earlier, discarded attempt.
-
-    IT REFUSES AN UNRECONCILED LEDGER rather than collapsing it.  This
-    function used to be the place a duplicate reading disappeared: it
-    assigned into a dict keyed by frame, so a second row for frame 298
-    replaced the first without a word.  Now an unaccounted duplicate is a
-    RecordError, for the same reason an unparsable ledger is one -- the
+    IT REFUSES AN UNRECONCILED LEDGER rather than collapsing it.
+    Assigning into a dict keyed by frame is how a duplicate reading
+    disappears: the second row for a frame replaces the first without a
+    word.  An unaccounted duplicate is therefore a RecordError, for the
+    same reason an unparsable ledger is one -- the
     question "was the previous capture read, and by which reading" has no
     trustworthy answer, and a session must not proceed as though it had.
 
@@ -5721,17 +4874,9 @@ def _reading_or_none(row: Mapping[str, object],
 def _observation_recorded(path: str, frame: int) -> bool:
     """True when the telemetry sidecar already holds `frame`'s row.
 
-    Read-only, and deliberately tolerant of everything except an answer
-    it cannot give.  A sidecar that does not exist holds no rows; a line
-    that will not parse is skipped, because this asks ONE question --
-    "is this index recorded?" -- and a malformed neighbour is neither a
-    yes nor a no for the index being asked about.  verify_manifest() and
-    timeline.py are where a malformed sidecar is reported; here it must
-    not turn a missing row into a present one.
-
     :raises RecordError: when the file exists and cannot be read at all,
-        because then the question genuinely has no answer and the caller
-        is about to discard the journal that could rebuild it.
+        because then the question genuinely has no answer and the caller is
+        about to discard the journal that could rebuild it.
     """
     try:
         with open(path, "r", encoding="utf-8") as handle:
@@ -5757,18 +4902,7 @@ def _observation_recorded(path: str, frame: int) -> bool:
 
 
 def sweep_observation_staging(path: str) -> Tuple[str, ...]:
-    """Remove staging siblings a retired sidecar rewrite left.
-
-    The sidecar's half of manifest.sweep_staging(), which does the work
-    -- one implementation of the rule, because both files sit inside the
-    tree .gitignore re-includes with its terminal `!/playthrough/**`
-    negation and a leftover in either is a file `git add -A playthrough/`
-    would commit.  See that function for what is and is not removed.
-
-    Called when a session opens, which is now the only moment that can
-    heal the tree: the writer that produced these siblings has been
-    removed, so no later rewrite is ever going to clear one.
-    """
+    """Remove staging siblings left under the sidecar's private prefix."""
     return manifest.sweep_staging(
         os.path.dirname(path) or os.curdir,
         OBSERVATIONS_STAGING_PREFIX, OBSERVATIONS_STAGING_SUFFIX,
@@ -5790,14 +4924,8 @@ def read_observations(path: Optional[str] = None,
     integrity check needs, which is why this returns the rows as they
     were written instead.
 
-    An ABSENT file is an empty result, not an error: a session that has
-    recorded nothing has nothing to attest.  A file that exists but
-    cannot be read, or that holds a line which is not a JSON object,
-    RAISES -- a sidecar that cannot be believed is not the same thing
-    as no sidecar, and the difference must not be silently flattened.
-
-    :raises RecordError: on an unreadable file, a torn or non-JSON
-        line, or a line holding something other than an object.
+    :raises RecordError: on an unreadable file, a torn or non-JSON line, or a
+        line holding something other than an object.
     """
     target = _confined(
         default_observations_path(root) if path is None else path,
@@ -5839,36 +4967,13 @@ def read_observations(path: Optional[str] = None,
 
 
 def row_shows_sidebar(row: Mapping[str, object]) -> bool:
-    """True when this telemetry row's capture carried a sidebar reading.
-
-    ONE definition of the release condition, asked of the stored row.
-    :meth:`Session._settle_ui_phase` classifies capture.sh's payload as
-    each frame arrives and append_observation() copies exactly those
-    three columns into the row (SIDEBAR_READING_FIELDS), so the question
-    asked live and the question asked of the record are the same
-    question -- and both the full scan and the cached index below ask it
-    through this function rather than restating it.
-    """
+    """True when this telemetry row's capture carried a sidebar reading."""
     return any(_reading_or_none(row, name) is not None
                for name in SIDEBAR_READING_FIELDS)
 
 
 def sidebar_frame_of(row: Mapping[str, object]) -> Optional[int]:
-    """Return this row's index when it is evidence of a sidebar.
-
-    None for a row that is not: an index that is missing, not a whole
-    number, a bool (which `int` would otherwise accept), below
-    MIN_FRAME_INDEX, or a row with no reading in any of
-    SIDEBAR_READING_FIELDS.  Every one of those is NO EVIDENCE rather
-    than an error, which is the direction
-    :meth:`Session._recorded_sidebar_frame` documents.
-
-    The record's OWN last index is deliberately not a parameter here:
-    the cached index summarises the whole sidecar and the limit belongs
-    to the session asking, which applies it to the one answer rather
-    than to every row -- see :meth:`Session._recorded_sidebar_frame` for
-    why that is the same value.
-    """
+    """Return this row's index when it is evidence of a sidebar."""
     index = row.get("frame")
     if isinstance(index, bool) or not isinstance(index, int):
         return None
@@ -5879,22 +4984,7 @@ def sidebar_frame_of(row: Mapping[str, object]) -> Optional[int]:
 
 @dataclass(frozen=True)
 class PhaseIndex:
-    """Where the sidebar first appeared, and how much file said so.
-
-    `frame` is the EARLIEST recorded index whose capture carried a
-    sidebar reading across the first `cursor` bytes of the sidecar, or
-    None when none of them did.  `offset`, `length` and `digest` cite the
-    exact bytes of the row that frame was read from, which is what lets a
-    later process re-check the cached answer against the sidecar itself
-    rather than believing it (:func:`_validated_phase_index`).
-
-    `cursor` is always a line boundary; the sidecar is append-only, so a
-    later process reads only the bytes beyond it and folds them into
-    `frame`.  `rows` counts the complete rows those bytes held and is
-    provenance for a reader rather than an input to any decision: it is
-    what tells somebody inspecting the cache how much of the record it
-    claims to summarise.
-    """
+    """Where the sidebar first appeared, and how much file said so."""
 
     cursor: int = 0
     rows: int = 0
@@ -5919,14 +5009,7 @@ class PhaseIndex:
 
 def _phase_index_from(record: Mapping[str, object],
                       sidecar: str) -> Optional[PhaseIndex]:
-    """Rebuild a :class:`PhaseIndex` from a record, or reject it.
-
-    Pure, and deliberately unforgiving: every field is checked for type
-    and range, the version must be this one and the sidecar must be the
-    file the caller is asking about.  Anything else returns None, which
-    makes the caller read the sidecar from the beginning -- the answer is
-    always recoverable, so a doubtful cache is never repaired.
-    """
+    """Rebuild a :class:`PhaseIndex` from a record, or reject it."""
     if record.get("version") != PHASE_INDEX_VERSION:
         return None
     if record.get("sidecar") != sidecar:
@@ -5964,14 +5047,7 @@ def _phase_index_from(record: Mapping[str, object],
 
 
 def read_phase_index(path: str, sidecar: str) -> Optional[PhaseIndex]:
-    """Return the cached phase index at `path`, or None.
-
-    Absent, unreadable, unparseable and self-contradicting are all the
-    same answer here -- None, meaning "no usable cache" -- because this
-    file is a derived optimisation and the sidecar it summarises is
-    always still there to be read.  An unreadable cache must therefore
-    never be able to stop a step; that is the one thing this must not do.
-    """
+    """Return the cached phase index at `path`, or None."""
     try:
         with open(path, "r", encoding="utf-8") as handle:
             text = handle.read()
@@ -5997,14 +5073,7 @@ def read_phase_index(path: str, sidecar: str) -> Optional[PhaseIndex]:
 
 def write_phase_index(path: str, sidecar: str,
                       index: PhaseIndex) -> None:
-    """Store `index` durably, and never let failing to stop a step.
-
-    A cache that cannot be written costs the next process a full read of
-    the sidecar and nothing else, so the failure is reported once and
-    swallowed.  Everything this pipeline treats as evidence is written
-    the other way about -- loudly, and refused if it cannot be made
-    durable.
-    """
+    """Store `index` durably, and never let failing to stop a step."""
     text = json.dumps(
         index.as_record(sidecar), ensure_ascii=False, sort_keys=True)
     try:
@@ -6020,13 +5089,6 @@ def write_phase_index(path: str, sidecar: str,
 def _phase_index_lines(descriptor: int, cursor: int,
                        path: str) -> Tuple[List[Tuple[int, bytes]], int]:
     """Return (offset, line) for every complete line beyond `cursor`.
-
-    The second value is the offset the cursor may advance to: the end of
-    the last line that ended in a newline.  A trailing FRAGMENT -- the
-    signature of an append the power cut short -- is returned for the
-    caller to parse, because :func:`read_observations` would parse it
-    too and must reach the same verdict, but the cursor stops in front of
-    it so that no future process treats those bytes as consumed.
 
     :raises RecordError: when the sidecar cannot be read from `cursor`.
     """
@@ -6058,12 +5120,10 @@ def _phase_index_row(line: bytes, offset: int,
                      path: str) -> Optional[Dict[str, object]]:
     """Decode one sidecar line, holding it to read_observations' rules.
 
-    None for a blank line, which that reader skips as well.
-
-    :raises RecordError: for a line that is not a JSON object, in the
-        same words and for the same reason -- a sidecar that cannot be
-        believed is not the same thing as no sidecar, and the difference
-        must not be flattened by the faster path either.
+    :raises RecordError: for a line that is not a JSON object, in the same
+        words and for the same reason -- a sidecar that cannot be believed is
+        not the same thing as no sidecar, and the difference must not be
+        flattened by the faster path either.
     """
     try:
         text = line.decode("utf-8").strip()
@@ -6089,20 +5149,13 @@ def _phase_index_row(line: bytes, offset: int,
 
 
 def _line_digest(line: bytes) -> str:
-    """Return the stable short digest of one sidecar line's bytes.
-
-    Both the citation and its later re-check go through here, so they
-    cannot disagree about how the bytes are digested.  This is a
-    provenance check rather than a security control -- the cited row must
-    ALSO parse and still name the same frame with a reading -- so
-    :func:`_digest_of`'s truncated hex is ample.
-    """
+    """Return the stable short digest of one sidecar line's bytes."""
     return _digest_of(line.decode("utf-8", "replace"))
 
 
 def _validated_phase_index(descriptor: int, path: str,
                            index: PhaseIndex) -> Optional[PhaseIndex]:
-    """Re-check a cached index against the sidecar.  Constant time.
+    """Re-check a cached index against the sidecar. Constant time.
 
     THE SIDECAR IS THE AUTHORITY AND THIS IS WHERE THAT IS ENFORCED.
     Three things are checked, and each is a way the cache could be stale
@@ -6116,11 +5169,6 @@ def _validated_phase_index(descriptor: int, path: str,
     * the cited row must still be exactly where the cache says, byte for
       byte (its digest), and must still say what the cache claims: the
       index it names, carrying a sidebar reading.
-
-    Returns the index when all of that holds, and None when any of it
-    does not -- whereupon the caller reads the whole file and builds a
-    new one.  Nothing is repaired in place, because a cache that
-    disagrees with the record has no claim to be corrected.
     """
     try:
         size = os.fstat(descriptor).st_size
@@ -6157,13 +5205,7 @@ def _validated_phase_index(descriptor: int, path: str,
 
 def _folded_phase_index(index: PhaseIndex, offset: int, line: bytes,
                         row: Mapping[str, object]) -> PhaseIndex:
-    """Fold one row into `index`, keeping the EARLIEST sidebar frame.
-
-    The earliest rather than the latest, because the transition is
-    one-way -- see :meth:`Session._recorded_sidebar_frame` -- and taking
-    the minimum makes the fold order-independent: the same answer comes
-    out whether the file was read in one pass or in a hundred tails.
-    """
+    """Fold one row into `index`, keeping the EARLIEST sidebar frame."""
     found = sidebar_frame_of(row)
     if found is None:
         return index
@@ -6178,15 +5220,7 @@ def refresh_phase_index(observations: Optional[str] = None,
                         root: Optional[str] = None,
                         cached: Optional[PhaseIndex] = None,
                         ) -> PhaseIndex:
-    """Return the phase index for the sidecar, reading as little as it
-    can.
-
-    The remedy for the quadratic phase recovery a performance QA pass
-    found, in one function: a valid cache is extended by the bytes
-    appended since it was written, and only an absent or unvalidated one
-    costs a read of the entire file.  For the one-process-per-keystroke
-    flow that is one row per step instead of the whole record, which is
-    what turns O(rows^2) over a session into O(rows).
+    """Return the phase index for the sidecar, reading as little as it can.
 
     The path is held to the same approved-root, no-symlink rules as
     :func:`read_observations`, and for its reason: reading is not
@@ -6196,9 +5230,9 @@ def refresh_phase_index(observations: Optional[str] = None,
     already holds it does not read it twice, and the refreshed index is
     stored again only when it actually changed.
 
-    :raises RecordError: exactly where :func:`read_observations` does --
-        an unreadable sidecar, or a line that is not a JSON object.  The
-        faster path is not the more forgiving one.
+    :raises RecordError: exactly where :func:`read_observations` does -- an
+        unreadable sidecar, or a line that is not a JSON object. The faster
+        path is not the more forgiving one.
     """
     target = _confined(
         default_observations_path(root) if observations is None
@@ -6282,18 +5316,11 @@ def _truncate_back(descriptor: int, offset: int, path: str) -> None:
 
 def assert_payload_matches(frame: int, payload: Mapping[str, str],
                            frames_dir: str) -> str:
-    """Confirm the capture is the one this step asked for.  Read-only.
+    """Confirm the capture is the one this step asked for. Read-only.
 
-    The boundary check between the index this module owns and the frame
-    that actually reached the disk.  Everything the manifest row will
-    say about the capture comes from the payload, so a payload
-    describing a DIFFERENT frame -- a stale index, a diagnostic capture
-    that was withdrawn, a filename built from another format -- must
-    stop the step before a row is appended, not be reconciled.
-
-    :returns: the absolute path of the verified PNG.
-    :raises CaptureError: when the payload and the index disagree, or
-        when the frame the payload names is not on disk.
+    :returns: the absolute path of the verified PNG. :raises CaptureError: when
+        the payload and the index disagree, or when the frame the payload names
+        is not on disk.
     """
     index = validated_frame(frame)
     mode = payload.get(CAPTURE_MODE_KEY, "")
@@ -6390,18 +5417,7 @@ def assert_payload_matches(frame: int, payload: Mapping[str, str],
 
 @dataclass(frozen=True)
 class EffectAnnotation:
-    """One frame's retrospective observed-effect measurement.
-
-    What the pixels said, what the row said, and what an AMENDMENT would
-    therefore state -- reported per frame so that the measurement is
-    something an operator reads, and, when it is recorded, recorded in
-    the amendment ledger beside the record rather than in it.
-
-    `amended` is True when this measurement was appended to
-    playthrough/amendments.jsonl by this pass.  The recorded row is not
-    touched on any path: `action` is what the manifest says and goes on
-    saying, and `extended` is what a derivative should use instead.
-    """
+    """One frame's retrospective observed-effect measurement."""
 
     frame: int
     verdict: str
@@ -6479,24 +5495,6 @@ class Session:
     different matter and is handled differently: it leaves the journal
     in flight, every later key is refused, and recover() is what
     resolves it.
-
-    A session is deliberately cheap to open, because the honest way to
-    drive this is one process per step: each `session.py step` recovers
-    the counter from the append-only record and re-verifies that the
-    record and the frames directory still agree before it presses
-    anything.  Holding one long-lived instance works identically.
-
-    Usage -- observe, decide in character, act, capture, log:
-
-        session = Session()
-        result = session.step(
-            "Left", note="walk the top row toward New Game",
-            commentary="Not the tutorial. Back along the row.")
-        # READ result.path -- which submenu row carries the bar? -- and
-        # only then choose the next key.  Never "u" for Custom
-        # Character: those hotkeys belong to the top row's tutorial
-        # entry too, and the top row wins.  MENU_CUSTOM_CHARACTER_ROUTE
-        # is the sequence that was verified against the captures.
     """
 
     def __init__(self, manifest_path: Optional[str] = None,
@@ -6514,61 +5512,38 @@ class Session:
                  settle_journal: bool = True) -> None:
         """Open a session against an existing or an empty record.
 
-        Opening proves the manifest is one this pipeline may write and
-        that BOTH append targets will take an append, then takes the
-        step lock, settles any journal a previous run left behind,
-        verifies the record, and pins the create-versus-resume decision
-        -- in that order, all of it before a keystroke is possible.  A
-        session that could not do all of it does not open.
-
-        The two checks that come first are there because of their
-        ORDERING rather than their difficulty: the manifest's name and
-        the appendability of the two targets are both decidable while
-        the game is untouched, and discovering either after the
-        keystroke costs an irreversible act for nothing.  See
-        manifest_target() and assert_append_target().
-
-        :param manifest_path: the record to append to; the pipeline's
-            own manifest by default.
-        :param frames_dir: the capture directory to cross-check the
-            record against.
+        :param manifest_path: the record to append to; the pipeline's own
+            manifest by default.
+        :param frames_dir: the capture directory to cross-check the record
+            against.
         :param observations_path: the telemetry sidecar to append.
-        :param window_id: a hint from launch_game.sh; re-authenticated
-            against the process behind it before every keystroke, never
-            trusted.  $PLAYTHROUGH_WINDOW_ID is read when this is None.
-        :param tool_timeout: the ceiling on each xdotool call, in
-            seconds; defaults to $PLAYTHROUGH_TOOL_TIMEOUT.  A window
-            search or a keystroke that does not return within it is a
-            failure rather than a wait, because an unattended loop that
-            blocks forever records nothing and reports nothing.
-        :param capture_timeout: the ceiling on the whole capture.sh
-            invocation, in seconds; defaults to
-            $PLAYTHROUGH_CAPTURE_TIMEOUT.  It covers the settle, the
-            grab, the luminance measurement and the OCR read together,
-            so it is necessarily the longer of the two.
-        :param capture_script: the capturer; the one beside this module
-            by default.
-        :param require_durable: False weakens only the fsync step, for
-            a scratch run whose record is not evidence.
-        :param root: a test's own artifact tree.  A CALL-SITE argument
-            only -- no environment variable reaches it.
-        :param lock_timeout: how long to wait for another process's
-            step; $PLAYTHROUGH_SESSION_LOCK_TIMEOUT by default.
-        :param requested_world: which world to continue when more than
-            one is resumable; $PLAYTHROUGH_RESUME_WORLD by default.
-        :param settle_journal: False opens WITHOUT completing an
-            outstanding step, which is what `reconcile` needs and the
-            only thing it is for.  An ambiguous journal makes an ordinary
-            open raise, so a session that is being opened in order to
-            RESOLVE that journal cannot settle it first.  Every other
-            caller leaves this True: skipping recovery is how a step
-            would be lost.
-        :raises SessionError: when the step lock cannot be taken, or the
-            pinned mode contradicts $PLAYTHROUGH_SESSION_MODE.
-        :raises RecordError: when the manifest is not the one record
-            this pipeline writes, when either append target cannot be
-            appended to, or when the manifest and the frames directory
-            do not agree, which must never be reconciled silently.
+        :param window_id: a hint from launch_game.sh; re-authenticated against
+            the process behind it before every keystroke, never trusted.
+            $PLAYTHROUGH_WINDOW_ID is read when this is None.
+        :param tool_timeout: the ceiling on each xdotool call, in seconds;
+            defaults to $PLAYTHROUGH_TOOL_TIMEOUT.
+        :param capture_timeout: the ceiling on the whole capture.sh invocation,
+            in seconds; defaults to $PLAYTHROUGH_CAPTURE_TIMEOUT. It covers the
+            settle, the grab, the luminance measurement and the OCR read
+            together, so it is necessarily the longer of the two.
+        :param capture_script: the capturer; the one beside this module by
+            default.
+        :param require_durable: False weakens only the fsync step, for a
+            scratch run whose record is not evidence.
+        :param root: a test's own artifact tree. A CALL-SITE argument only --
+            no environment variable reaches it.
+        :param lock_timeout: how long to wait for another process's step;
+            $PLAYTHROUGH_SESSION_LOCK_TIMEOUT by default.
+        :param requested_world: which world to continue when more than one is
+            resumable; $PLAYTHROUGH_RESUME_WORLD by default.
+        :param settle_journal: False opens WITHOUT completing an outstanding
+            step, which is what `reconcile` needs and the only thing it is for.
+        :raises SessionError: when the step lock cannot be taken, or the pinned
+            mode contradicts $PLAYTHROUGH_SESSION_MODE.
+        :raises RecordError: when the manifest is not the one record this
+            pipeline writes, when either append target cannot be appended to,
+            or when the manifest and the frames directory do not agree, which
+            must never be reconciled silently.
         """
         self._root = root
         # Held to the WRITER's rule about where a record may live, not
@@ -6691,16 +5666,15 @@ class Session:
             self._mutation.release()
             raise
         try:
-            # STALE STAGING FILES ARE CLEARED FIRST, under the lock.  The
-            # retired rewrite of either evidence file wrote a sibling and
-            # renamed it, and an unhandled interruption -- SIGKILL, the
-            # power going -- left that sibling inside the tree
-            # .gitignore re-includes wholesale, where `git add -A
-            # playthrough/` would commit it into an evidence tree nobody
-            # authored it into.  Sweeping HERE is now the ONLY thing that
-            # can heal the tree: those writers were removed, so no later
-            # rewrite is coming to clear one, while a session opens for
-            # every step, every status and every annotate.
+            # STALE STAGING FILES ARE CLEARED FIRST, under the lock.  A
+            # sibling written and renamed by any writer of an evidence
+            # file can survive an unhandled interruption -- SIGKILL, the
+            # power going -- inside the tree .gitignore re-includes
+            # wholesale, where `git add -A playthrough/` would commit it
+            # into an evidence tree nobody authored it into.  Sweeping
+            # HERE is the ONLY thing that can heal that: no rewrite is
+            # coming to clear one, while a session opens for every step,
+            # every status and every annotate.
             manifest.sweep_staging(
                 os.path.dirname(self._manifest) or os.curdir,
                 manifest.STAGING_PREFIX, manifest.STAGING_SUFFIX,
@@ -6722,18 +5696,11 @@ class Session:
             self._fingerprint = {
                 world.name: world.characters
                 for world in self._pin.worlds}
-            # THE UI PHASE, observed rather than declared.  A create run
-            # is at the menu until its survivor exists too, but only a
-            # RESUME run has anything refused while it is there -- see
-            # MENU_NEW_SURVIVOR_HOTKEYS for why the refusal has to be
-            # scoped to the screen rather than to the letter.  The phase
-            # is recovered from what this record PHOTOGRAPHED, because
-            # one process per keystroke means it cannot be remembered
-            # and no file the engine wrote can stand in for a capture.
-            # The recovery reads the sidecar INCREMENTALLY, through the
-            # validated cache beside the journal (PHASE_INDEX_NAME), so
-            # opening a session costs the rows added since the last open
-            # rather than the whole record.
+            # THE UI PHASE, observed rather than declared.  A create run is at
+            # the menu until its survivor exists too, but only a RESUME run has
+            # anything refused while it is there -- see
+            # MENU_NEW_SURVIVOR_HOTKEYS for why the refusal has to be scoped to
+            # the screen rather than to the letter.
             self._sidebar_frame: Optional[int] = None
             self._ui_phase = self._observed_ui_phase()
             # What each capture was READ to be showing, by index.  The
@@ -6747,21 +5714,7 @@ class Session:
     # -- the transaction --------------------------------------------
 
     def close(self) -> None:
-        """Release the step lock.  Idempotent.
-
-        A session holds the right to advance the counter for as long as
-        it is open, which is why the intended shape is one process per
-        step: `session.py step` opens, presses one key, records it and
-        closes.  A long-lived instance works identically and holds the
-        lock for its whole life, which is the correct exclusion for a
-        capture loop.
-
-        The checkout's mutation lock goes with it, and in that
-        order: the step lock is the inner one, so it is dropped
-        first.  A hold that was INHERITED from a stage which
-        started this one is not released -- see
-        manifest.MutationLock.release.
-        """
+        """Release the step lock. Idempotent."""
         self._lock.release()
         self._mutation.release()
 
@@ -6814,13 +5767,7 @@ class Session:
 
     @property
     def aborted(self) -> Optional[str]:
-        """Why the session stopped, or None while it is usable.
-
-        A keystroke is not undoable, so a failure after one has been
-        delivered leaves the game somewhere this module can no longer
-        account for.  The session is closed rather than continued, and
-        this says what happened.
-        """
+        """Why the session stopped, or None while it is usable."""
         return self._aborted
 
     def _abort(self, reason: str) -> None:
@@ -6842,14 +5789,7 @@ class Session:
     # -- the record -------------------------------------------------
 
     def _frames_on_disk(self) -> Tuple[str, ...]:
-        """Return the capture filenames present, sorted.  VALIDATION.
-
-        Read ONLY to check that the frames directory agrees with the
-        manifest.  It is never the source of an index: counting files
-        would be a second source of truth, and a capture that failed
-        and was withdrawn -- or one written twice -- could silently
-        renumber every frame after it.
-        """
+        """Return the capture filenames present, sorted. VALIDATION."""
         if not os.path.isdir(self._frames):
             return ()
         try:
@@ -6866,19 +5806,14 @@ class Session:
 
         THE MANIFEST IS THE AUTHORITY.  manifest.last_recorded_frame()
         reads the append-only record; the frames directory is then
-        checked against it and a disagreement STOPS the session.
+        checked against it and a disagreement STOPS the session.  Three
+        disagreements are possible and each is fatal, because each one
+        means the count identity verify_artifacts.sh asserts is already
+        broken:
 
-        Three disagreements are possible and each is fatal, because
-        each one means the count identity verify_artifacts.sh asserts is
-        already broken:
-
-          * frames on disk with no manifest at all;
-          * a different number of PNGs than rows;
-          * a PNG whose row is missing, or a row whose PNG is missing.
-
-        None of them is repaired here.  A record that has been silently
-        renumbered is worse than a session that stops, because the
-        renumbering is invisible afterwards.
+        * frames on disk with no manifest at all;
+        * a different number of PNGs than rows;
+        * a PNG whose row is missing, or a row whose PNG is missing.
         """
         on_disk = self._frames_on_disk()
         if not os.path.isfile(self._manifest):
@@ -6951,15 +5886,11 @@ class Session:
         outside the working tree, written by a process that is no longer
         running, and what it drives is a capture and an append to the
         append-only record -- so a field this module does not check is a
-        field that can steer evidence.  Six of them used to be written
-        and never read back: the version, the phase, the manifest, the
-        frames directory, the display and the attempt count.  A journal
-        from a DIFFERENT checkout or a different X display would have
-        been completed against this one's record.
-
-        Every failure here raises rather than discarding: the record
-        describes a keystroke that may have been delivered, and a
-        keystroke cannot be taken back.
+        field that can steer evidence.  Six are easy to write and never
+        read back -- the version, the phase, the manifest, the frames
+        directory, the display and the attempt count -- and leaving any of
+        them unchecked would let a journal from a DIFFERENT checkout or a
+        different X display be completed against this one's record.
         """
         version = record.get("version")
         if version != JOURNAL_VERSION:
@@ -7059,9 +5990,8 @@ class Session:
         delivered can leave a sound record is if the fact of sending it
         was made durable and the step is finished afterwards.  This is
         that finish, and it runs under the step lock before anything else
-        reads the record.
-
-        Five states, each with exactly one honest answer:
+        reads the record.  Five states, each with exactly one honest
+        answer:
 
         * no journal -- nothing was in flight;
         * a journal for an index the manifest already holds -- the row
@@ -7090,13 +6020,6 @@ class Session:
           the key may have reached the game or it may not, and this
           module cannot tell.  Only somebody who can look at the game
           can, and `session.py reconcile` is where they say so.
-
-        An interruption between capture.sh committing the PNG and this
-        module recording that it had leaves `delivered` with the frame
-        already on disk.  The frame is real, so it is kept and its clock
-        is re-read from the pixels by ocr_clock.py -- the same authority
-        that read it the first time -- rather than being invented or
-        thrown away.
         """
         self._lock.assert_held()
         record = read_journal(self._journal)
@@ -7182,13 +6105,12 @@ class Session:
                     "clock re-read from the capture itself" % frame)
         else:
             # THE ENGINE IS RE-AUTHENTICATED BEFORE THE SHUTTER OPENS.
-            # This used to photograph the root window straight away, on
-            # the strength of a window id from a process that is no
-            # longer running -- so a recovery run could photograph
-            # whatever now occupies that display and file it as the
-            # frame this keystroke produced.  The window is found again,
-            # checked against the engine process behind it and focused,
-            # exactly as an ordinary step does it.
+            # Photographing the root window straight away, on the
+            # strength of a window id recorded by a process that has
+            # since died, would file whatever now occupies that display
+            # as the frame this keystroke produced.  So the window is
+            # found again, checked against the engine process behind it
+            # and focused, exactly as an ordinary step does it.
             self._prepare_window_for(frame, validated_key, recovery=True)
             payload = self._capture_frame(frame)
             assert_payload_matches(frame, payload, self._frames)
@@ -7209,45 +6131,17 @@ class Session:
                                  ) -> str:
         """Make a recorded frame's telemetry whole, then say what it did.
 
-        A journal for an index the manifest already holds means the row
-        landed; it does NOT mean the sidecar row beside it did, and it
-        does not mean the capture DIGEST beside that did either.  The
-        three are separate appends -- manifest row, telemetry row,
-        attestation -- and _commit() clears the journal only after all
-        three, so an interruption anywhere between them leaves exactly
-        this state, and clearing the journal here without looking used to
-        lose whichever records had not landed yet.  What is lost is not
-        decorative: the sidecar carries the sidebar DATE line, which is
-        how timeline.py tells a crossing of midnight from a clock that
-        read backwards, and the `key` attestation that makes the row
-        auditable; the ledger carries the sha256 every later stage --
-        the timing, the transitions, the render and the commit -- checks
-        a frame's bytes against before it uses them.
-
-        THE SECOND GAP WAS THE ONE THIS METHOD USED TO MISS ENTIRELY.  It
-        repaired the telemetry row and returned, and the caller then
-        cleared the journal -- so an interruption between the telemetry
-        append and the attestation left a recorded frame with NO digest
-        and nothing that would ever notice, until timeline publication
-        failed much later with the frame reported unattested.  Worse, the
-        "already recorded" case returned before looking at the ledger at
-        all, so the commonest shape of that interruption was the one
-        guaranteed to be missed.  A code review found it.  Both gaps are
-        settled here now, in the order _commit() writes them, and the
-        journal is discarded only once all three records cover the frame.
-
-        The sidecar is repaired from the journal's own payload where
-        there is one, or measured from the committed frame where there is
-        not.  The attestation is re-hashed from the frame on disk and
-        recorded `capture` when the journal carried capture.sh's own
-        publication digest and the file still hashes to it -- that claim
-        WAS taken at publication -- and `recovery` when the digest could
-        only be measured now, which is the honest strength of a claim
-        about what the bytes ARE rather than about what was captured.
-        Either way every value comes from the capture that really
-        happened.  If any of it cannot be repaired, the journal is NOT
-        cleared: an unrepaired gap that nothing records is worse than a
-        session that stops while the evidence is still on disk.
+        THERE ARE TWO GAPS, AND THE SECOND IS EASY TO MISS.  Repairing
+        the telemetry row and returning lets the caller clear the journal
+        -- so an interruption between the telemetry append and the
+        ATTESTATION leaves a recorded frame with no digest and nothing
+        that would ever notice, until timeline publication fails much
+        later with the frame reported unattested.  The "already recorded"
+        case is the commonest shape of that interruption, so returning
+        early from it without looking at the ledger misses exactly the
+        case that matters.  Both gaps are settled here, in the order
+        _commit() writes them, and the journal is discarded only once all
+        three records cover the frame.
         """
         # THE JOURNAL'S OWN DIGEST, READ BEFORE ANYTHING REWRITES IT.
         # _verified_recovery_payload() below returns a payload whose
@@ -7320,18 +6214,12 @@ class Session:
 
     def _settle_capture_attestation(self, frame: int,
                                     published: str) -> str:
-        """Make a recorded frame's capture digest whole.  Returns a note.
+        """Make a recorded frame's capture digest whole. Returns a note.
 
-        The third record of the transaction, settled by the recovery path
-        exactly as _attest_capture() settles it for a live step -- which
-        is the point: an interruption between the telemetry append and
-        the attestation used to leave a frame recorded and unattested for
-        good, and every later stage verifies bytes against this ledger.
-
-        `published` is the digest capture.sh reported when it renamed the
-        PNG into place, taken off the raw journal payload, or "" when the
-        journal carried none.  It decides the STRENGTH of the claim and
-        nothing else:
+        `published` is the digest capture.sh reported when it renamed
+        the PNG into place, taken off the raw journal payload, or "" when
+        the journal carried none.  It decides the STRENGTH of the claim
+        and nothing else:
 
         * already attested -- the file is re-hashed and held to the
           ledger.  Nothing is appended; a second row would say the same
@@ -7344,9 +6232,9 @@ class Session:
           `recovery`, and the note says so.  It establishes what the
           bytes ARE, not that they are the bytes the keystroke produced.
 
-        :raises RecordError: on an unreadable ledger, an unhashable or
-            missing frame, a digest mismatch, or a failed append.  Every
-            one of them leaves the journal in place deliberately.
+        :raises RecordError: on an unreadable ledger, an unhashable or missing
+            frame, a digest mismatch, or a failed append. Every one of them
+            leaves the journal in place deliberately.
         """
         path = os.path.join(self._frames,
                             manifest.FRAME_NAME_FORMAT % frame)
@@ -7416,10 +6304,6 @@ class Session:
             payload: Dict[str, str]) -> Dict[str, str]:
         """Hold a recovered payload's frame to an attested digest.
 
-        Returns the payload, with FRAME_SHA256 set to the digest that was
-        verified.  Three cases, and each is stated in the row rather than
-        smoothed over:
-
         * THE JOURNAL CARRIES THE CAPTURER'S OWN DIGEST -- the strongest
           case, because it was taken at publication.  The file must hash
           to it.
@@ -7430,9 +6314,9 @@ class Session:
           is the honest strength of the claim: it establishes what the
           bytes ARE, not that they are what was captured.
 
-        :raises RecordError: on a mismatch, leaving the journal in place
-            so the operator can look at the frame rather than having a
-            row written about it.
+        :raises RecordError: on a mismatch, leaving the journal in place so the
+            operator can look at the frame rather than having a row written
+            about it.
         """
         index = manifest._validated_frame(frame)
         path = os.path.join(self._frames,
@@ -7486,24 +6370,7 @@ class Session:
 
     def _payload_from_frame(self, index: int,
                             path: str) -> Dict[str, str]:
-        """Rebuild a payload by MEASURING an already-captured frame.
-
-        Only ever used for a frame that is on disk with no row: the
-        capture happened, so the pixels are real -- and THAT is the
-        assumption a security review objected to, because nothing checked
-        it.  So the payload this builds is passed through
-        :meth:`_verified_recovery_payload` before it is returned: the
-        bytes are hashed and held to whatever attestation exists for the
-        index, and `real_ts` still comes from the file's modification
-        time, which is now recorded as a `recovery` attestation rather
-        than as the capture instant it is not.  Every other field here is
-        measured from the file or reported as unavailable -- the clock
-        through ocr_clock.py, which is the same
-        authority that reads it during a normal step, and `real_ts` from
-        the capture's own modification time.  Nothing is guessed: a clock
-        that will not read comes back empty, which is the honest value
-        and the one timeline.py reconciles.
-        """
+        """Rebuild a payload by MEASURING an already-captured frame."""
         import datetime
         try:
             moment = datetime.datetime.fromtimestamp(
@@ -7546,13 +6413,12 @@ class Session:
                   % (index, path, err))
             return self._verified_recovery_payload(index, payload)
         # THE CANONICAL STATUS VOCABULARY, which capture.sh defines as
-        # read | unreadable | fault | skipped.  This used to emit "exact"
-        # and "coarse" -- words from ocr_clock.py's own classification --
-        # so a recovered frame's telemetry row carried a status no other
-        # row in the sidecar used and no consumer knew.  The DISTINCTION
-        # those two words carried is not lost: an exact reading lands in
-        # CLOCK, a coarse phrase lands in TIME_PHRASE, and that is
-        # exactly how an ordinary capture reports the same difference.
+        # read | unreadable | fault | skipped.  ocr_clock.py's own
+        # classification words -- "exact" and "coarse" -- must not reach
+        # here: a status no other row in the sidecar uses is one no
+        # consumer knows.  The DISTINCTION they carry is kept anyway, in
+        # the columns an ordinary capture uses for it: an exact reading
+        # lands in CLOCK, a coarse phrase in TIME_PHRASE.
         if reading.clock:
             payload["CLOCK"] = reading.clock
             payload["CLOCK_STATUS"] = "read"
@@ -7567,7 +6433,7 @@ class Session:
         return self._verified_recovery_payload(index, payload)
 
     def _sidecar_problems(self, last: int) -> List[str]:
-        """Report a sidecar that does not cover the record.  Read-only.
+        """Report a sidecar that does not cover the record. Read-only.
 
         THE THIRD LEG OF THE IDENTITY.  One keystroke is one frame, one
         manifest row AND one attestation, and until this existed only
@@ -7580,24 +6446,8 @@ class Session:
         An integrity check that cannot see the gap it is meant to catch
         is worse than no check, so the gap is reported here.
 
-        It is REPORTED rather than repaired.  The missing attestation
-        cannot be reconstructed honestly: `real_ts` and the clock could
-        be re-measured from the capture, but the KEY could not -- the
-        one place it was ever written down is the row that did not land
-        -- and a backfilled row with a guessed key would be exactly the
-        fabrication HR6 forbids.  A note in
-        playthrough/TECHNICAL_NOTES.md is the remedy for a shortfall,
-        the same way it is for every other correction to a captured
-        record.
-
-        A REPEATED index is deliberately NOT a problem.  The sidecar is
-        append-only and timeline.py reads it with a last-row-wins rule
-        precisely so that a re-captured frame means what it obviously
-        means; treating a second row for one frame as a defect here
-        would contradict the reader that consumes it.
-
-        :param last: the last index the manifest holds; 0 for a record
-            with no rows at all, which is the fresh-session case.
+        :param last: the last index the manifest holds; 0 for a record with no
+            rows at all, which is the fresh-session case.
         """
         problems: List[str] = []
         try:
@@ -7641,7 +6491,7 @@ class Session:
         return problems
 
     def _digest_problems(self, last: int) -> List[str]:
-        """Report a ledger that does not cover the record.  Read-only.
+        """Report a ledger that does not cover the record. Read-only.
 
         THE FOURTH LEG OF THE SAME IDENTITY, and the one nothing used to
         compare.  One keystroke is one frame, one manifest row, one
@@ -7655,20 +6505,8 @@ class Session:
         publication refused the frame as unattested, long after the
         evidence that could have completed it had gone.
 
-        It is REPORTED rather than repaired.  Recovery repairs the gap
-        while the step journal is still there to say what was in flight
-        (:meth:`_settle_capture_attestation`); once that journal is gone
-        the honest strength of any digest measured here is `recovery`,
-        and silently writing one would present a claim about what the
-        bytes are as a claim about what was captured.
-
-        A REPEATED index is deliberately not a problem: the ledger is
-        append-only and a retry inside one step attests the same index
-        twice, which is what `manifest.attested_digests` reads with a
-        last-row-wins rule.
-
-        :param last: the last index the manifest holds; 0 for a record
-            with no rows at all.
+        :param last: the last index the manifest holds; 0 for a record with no
+            rows at all.
         """
         problems: List[str] = []
         try:
@@ -7706,17 +6544,7 @@ class Session:
         return problems
 
     def verify_record(self) -> Tuple[str, ...]:
-        """Re-check the record against the frames.  Read-only.
-
-        Exposed so a caller can assert the invariant between steps
-        without opening a new session.  An empty result means the
-        manifest satisfies its schema, every row's capture is on disk,
-        no capture is unaccounted for, every recorded frame has its
-        telemetry attestation AND every recorded frame has its capture
-        digest -- see :meth:`_sidecar_problems` and
-        :meth:`_digest_problems` for why those comparisons belong in the
-        same answer as the first two.
-        """
+        """Re-check the record against the frames. Read-only."""
         if not os.path.isfile(self._manifest):
             problems = []
             on_disk = self._frames_on_disk()
@@ -7754,28 +6582,24 @@ class Session:
         WHY THIS ONLY EVER REPORTS.  The live observed-effect guard
         compares each capture with the one before it and appends
         `; nothing on the screen changed` to the action of a row whose
-        capture is identical to its predecessor -- so that a row says
-        what was intended AND what was observed.  It was written after a
-        QA pass found rows narrating an effect their own capture
-        contradicts, which means the frames taken BEFORE it exists have
-        no such marker even where the pixels call for one.  This pass is
-        how that residue is closed: with the same measurement, on the
-        same evidence, rather than by hand.
+        capture is identical to its predecessor, so that a row says what
+        was intended AND what was observed.  A frame captured while no
+        such guard was running carries no marker even where the pixels
+        call for one, and this pass is how that residue is closed: with
+        the same measurement, on the same evidence, rather than by hand.
 
-        AND IT DOES NOT TOUCH THE RECORD.  An earlier version of this
-        method rewrote the manifest row and its telemetry attestation in
-        place, one after the other.  A security review named both halves
-        of why that was wrong: a mechanism able to rewrite captured
-        evidence makes every artifact derived from it deniable, and two
-        sequential rewrites of two files leave a window in which a crash
-        splits the record.  Both are gone.  What `amend` does now is
-        append ONE row to playthrough/amendments.jsonl -- one artifact,
-        one locked durable append, nothing to split -- stating the
-        recorded action, the amended action, the measurement that
-        established it and why the recorded text could not stand on its
-        own.  manifest.resolve_rows() then applies it to the transcript
-        and the caption cues, and only where the amendment's digest
-        still matches the row it names.
+        AND IT DOES NOT TOUCH THE RECORD.  Rewriting the manifest row and
+        its telemetry attestation in place, one after the other, is wrong
+        in two ways: a mechanism able to rewrite captured evidence makes
+        every artifact derived from it deniable, and two sequential
+        rewrites of two files leave a window in which a crash splits the
+        record.  So `amend` appends ONE row to
+        playthrough/amendments.jsonl -- one artifact, one locked durable
+        append, nothing to split -- stating the recorded action, the
+        amended action, the measurement that established it and why the
+        recorded text could not stand on its own.  manifest.resolve_rows()
+        then applies it to the transcript and the caption cues, and only
+        where the amendment's digest still matches the row it names.
 
         WHAT IT WILL AND WILL NOT MEASURE.  The verdict comes from
         :func:`classify_effect` with NO map geometry, so the only marker
@@ -7788,16 +6612,12 @@ class Session:
         amended here -- never the commentary, the clock, the timestamp
         or the frame.
 
-        Read-only unless `amend` is true, so the measurement can be
-        inspected before anything is recorded.
-
-        :param frames: the indices to measure; every recorded frame from
-            the second onward when None.  The first frame has no
-            predecessor and is therefore EFFECT_FIRST, which measures
-            nothing.
-        :raises RecordError: for an index this record does not hold, or
-            when an amendment cannot be appended; the record and the
-            ledger are then left exactly as they stand.
+        :param frames: the indices to measure; every recorded frame from the
+            second onward when None. The first frame has no predecessor and is
+            therefore EFFECT_FIRST, which measures nothing.
+        :raises RecordError: for an index this record does not hold, or when an
+            amendment cannot be appended; the record and the ledger are then
+            left exactly as they stand.
         """
         if self._frame < manifest.MIN_FRAME_INDEX:
             return ()
@@ -7910,13 +6730,8 @@ class Session:
         process can claim and a second real engine claims it honestly,
         so a keystroke is never sent on the strength of the name alone.
 
-        The hint -- launch_game.sh's PLAYTHROUGH_WINDOW_ID, or the id
-        authenticated for the last step -- is checked against the
-        authenticated window rather than trusted, so a stale id is
-        reported instead of keyed.
-
-        :raises WindowError: when no window authenticates, when more than
-            one does, or when the remembered one is no longer the one.
+        :raises WindowError: when no window authenticates, when more than one
+            does, or when the remembered one is no longer the one.
         """
         hint = self._window if self._window is not None else (
             self._window_hint)
@@ -7929,14 +6744,7 @@ class Session:
     # -- the integrity pre-flights, on every step -------------------
 
     def audit_bindings(self) -> str:
-        """Prove no debug action is bound.  Cheap enough for every step.
-
-        The result is cached against the keybindings file's identity --
-        device, inode, size and modification time -- so a step costs one
-        lstat while a file that CHANGED mid-session is read again.  An
-        integrity check that only ran when somebody asked for it is
-        evidence of nothing, which is why this is not optional.
-        """
+        """Prove no debug action is bound. Cheap enough for every step."""
         path = keybindings_path(self._root)
         try:
             info = os.lstat(path)
@@ -7960,27 +6768,6 @@ class Session:
                      requested_world: Optional[str]) -> SaveProbe:
         """Pin create-versus-resume, and refuse a contradiction.
 
-        MANDATORY, not optional: the hard rule is that an existing save
-        is CONTINUED rather than replaced, and a rule nothing checks is a
-        rule a driver can walk straight past.  The probe runs before the
-        first keystroke, its answer is kept for the life of the session,
-        and :meth:`_assert_save_pin` holds every later step against it.
-
-        $PLAYTHROUGH_SESSION_MODE is honoured as an OPERATOR DECLARATION
-        and must agree with what the save tree actually shows.  A
-        disagreement is refused rather than resolved: a declared
-        'resume' against an empty tree is precisely the mistake that
-        creates a second survivor where one was to be continued.
-
-        ONE disagreement is legitimate and is recorded rather than
-        refused: a declared 'create' whose record already holds rows and
-        whose tree now shows a save.  That is what a create run LOOKS
-        like once the survivor exists -- the save is written during
-        character creation, part-way through the very session that
-        declared 'create' -- and refusing it would stop a correct run at
-        its own halfway point.  An empty record makes it a refusal
-        again, because then the save was somebody else's.
-
         THE RECORDED-DEATH REFUSAL IS SCOPED THE SAME WAY, and for the
         same reason.  :func:`probe_save_resume` refuses a live save
         belonging to a survivor the record shows dying, because loading
@@ -8000,6 +6787,12 @@ class Session:
         own, the save pin below still holds the world and survivor
         steady, and `session.py probe` keeps the strict reading for the
         operator-facing "should this tree be loaded" decision.
+
+        $PLAYTHROUGH_SESSION_MODE is honoured as an OPERATOR DECLARATION
+        and must agree with what the save tree actually shows.  A
+        disagreement is refused rather than resolved: a declared
+        'resume' against an empty tree is precisely the mistake that
+        creates a second survivor where one was to be continued.
         """
         probe = probe_save_resume(
             None, requested_world, self._root,
@@ -8042,10 +6835,6 @@ class Session:
         independent readings of the same question -- the launcher's
         diagnostic capture of the screen, and this module's own probe of
         the save tree -- are required to AGREE before a key is sent.
-
-        It can only refuse.  Nothing below is relaxed by any value this
-        returns, including the one that says the launcher established
-        nothing: the observed-phase refusals stand on their own evidence.
         """
         declared = os.environ.get(ENV_INITIAL_UI_STATE, "").strip()
         if declared == LAUNCH_STATE_UNDECLARED:
@@ -8118,20 +6907,7 @@ class Session:
         return declared
 
     def _save_fingerprint(self) -> Dict[str, Tuple[str, ...]]:
-        """Return each world's character set.  The pin's comparand.
-
-        THE WORLD SCAN, NOT THE CREATE-VERSUS-RESUME DECISION, which is
-        why the death refusal is switched off for this one call.  This
-        runs on every step, and a session recording a legitimate death
-        passes through precisely the state that refusal describes: the
-        last-words keystroke is captured while the live save is still on
-        disk, because the engine only moves it in ``cleanup_at_end()``
-        after the death screen finishes.  Refusing here would make death
-        -- a permitted ending -- impossible to record, and it would do so
-        several hundred keystrokes into a session.  The pre-flight keeps
-        the strict reading, which is where it belongs: it decides whether
-        to LOAD such a tree, and this only counts what is in it.
-        """
+        """Return each world's character set. The pin's comparand."""
         probe = probe_save_resume(
             self._pin.save_dir, self._pin.world, self._root,
             refuse_recorded_death=False)
@@ -8141,35 +6917,19 @@ class Session:
 
     @property
     def ui_phase(self) -> str:
-        """Which screen the engine is believed to be on: menu|in-world.
-
-        OBSERVED, from the sidebar reading a captured frame of THIS
-        record carries -- never declared by the driver, and never
-        inferred from a file the engine wrote about an earlier session.
-        See UI_PHASE_MENU for what counts as evidence and
-        :meth:`_recorded_sidebar_frame` for where it is read back from.
-        """
+        """Which screen the engine is believed to be on: menu|in-world."""
         return self._ui_phase
 
     @property
     def launch_state(self) -> str:
-        """The launcher's verified starting screen, or "" if undeclared.
-
-        Reported rather than merely checked, because the whole point of
-        reading it (:meth:`_assert_launch_state`) is that the launcher,
-        this module and the operator work from one state instead of
-        three.
-        """
+        """The launcher's verified starting screen, or "" if undeclared."""
         return self._launch_state
 
     @property
     def sidebar_frame(self) -> Optional[int]:
-        """The frame whose photographed sidebar put this session in the
-        world, or None while the record has not shown one.
-
-        Exposed so `status` can report the evidence the phase rests on
-        rather than only the conclusion: a guard whose release condition
-        cannot be inspected is a guard nobody can check.
+        """The frame whose photographed sidebar put this session in the world,
+        or
+        None while the record has not shown one.
         """
         return self._sidebar_frame
 
@@ -8178,14 +6938,7 @@ class Session:
         return read_lastworld(None, self._root)
 
     def _pinned_character_is_loaded(self) -> bool:
-        """True when lastworld.json names THE survivor this run continues.
-
-        Both halves are checked, because either alone would pass the
-        wrong thing: the world, so that loading a different world's
-        survivor is caught, and the character, decoded from the save
-        filenames the probe found in that world, so that loading a
-        SECOND survivor inside the right world is caught as well.
-        """
+        """True when lastworld.json names THE survivor this run continues."""
         loaded = self._loaded_survivor()
         if loaded is None:
             return False
@@ -8211,20 +6964,6 @@ class Session:
         release condition read back here and the release condition
         applied live are one condition, expressed once.
 
-        WHY lastworld.json IS NOT CONSULTED.  It is written by the engine
-        when a character is loaded or saved, which means a resumed
-        session finds it already naming the pinned world and character
-        before this session has taken a single frame.  Deriving the phase
-        from it released the refusal at frame 1 of every resumed session
-        -- exactly where the guard has to hold -- and no reading of that
-        file can say what any capture of this session showed.
-
-        The earliest such frame is returned rather than the latest,
-        because the transition is one-way: the sidebar is not drawn while
-        look mode's examine panel covers the column, nor on the menus a
-        relaunch mid-session passes through, and a survivor already in
-        the world does not leave it because a panel was opened.
-
         TOLERANT IN ONE DIRECTION ONLY.  An absent sidecar, a torn or
         unreadable one, a row keyed to a frame this record does not hold
         and a row with no reading are each NO EVIDENCE, which leaves the
@@ -8233,15 +6972,6 @@ class Session:
         keystroke that cannot be taken back.  The shortfall itself is not
         swallowed: :meth:`_sidecar_problems` reports a sidecar the record
         needs and does not have, and `status` prints it.
-
-        READ INCREMENTALLY, because one process per keystroke used to
-        mean one full parse of the whole sidecar per keystroke -- O(rows)
-        each time and O(rows^2) over a session the requirements leave
-        deliberately uncapped, measured at 87,571 row parses and 45.63
-        MiB across the 419 frames already recorded.
-        :func:`refresh_phase_index` answers the same question from a
-        validated cache plus the bytes appended since it was written, so
-        a step reads the one row it added rather than the whole file.
 
         THE ANSWER IS UNCHANGED, not merely similar.  The cache holds the
         earliest sidebar frame over the WHOLE sidecar and the limit is
@@ -8288,12 +7018,6 @@ class Session:
     def _classify_screen(self, frame: int) -> str:
         """Read the capture for `frame` and say which screen it shows.
 
-        The reading is done with the engine's own font by
-        ocr_clock.read_column_by_glyphs(), so a match is a decode of the
-        photographed cells rather than a fuzzy OCR guess.  Four answers,
-        and the distinction between the last two is what keeps the guard
-        honest:
-
         * SCREEN_NEW_GAME_SUBMENU -- two or more of the submenu's own
           entry strings are on the screen.  The new-character door is
           open.
@@ -8306,11 +7030,6 @@ class Session:
           Pillow or numpy, a frame that is not a rendered game screen.
           NO EVIDENCE, which is a different fact from "a screen that is
           not the main menu", and the caller treats it differently.
-
-        Never raises: a classifier that could stop a session by failing
-        to read a file would be a worse hazard than the one it guards
-        against, and every failure mode here means the same thing --
-        nothing was established.
         """
         path = os.path.join(self._frames,
                             manifest.FRAME_NAME_FORMAT % frame)
@@ -8350,13 +7069,7 @@ class Session:
         return SCREEN_OTHER
 
     def _observed_screen(self, frame: int) -> str:
-        """Return :meth:`_classify_screen` for `frame`, read once.
-
-        Cached per index because one step asks at most about one frame
-        and a session may ask about the same one repeatedly; the record
-        is append-only, so a frame's answer cannot change underneath a
-        session that is holding the step lock.
-        """
+        """Return :meth:`_classify_screen` for `frame`, read once."""
         if frame not in self._screens:
             self._screens[frame] = self._classify_screen(frame)
         return self._screens[frame]
@@ -8368,8 +7081,8 @@ class Session:
         The state-based half of "an existing save is continued, never
         replaced", and the half that does not depend on the caller
         describing its own intent truthfully.  It runs only while a
-        session that must not create a survivor is at a menu, and only on
-        the strength of what the last capture actually shows:
+        session that must not create a survivor is at a menu, and only
+        on the strength of what the last capture actually shows:
 
         * the new-game submenu is on screen -- the confirming keys and
           the keys that move deeper into it are refused.  Left/Right walk
@@ -8463,18 +7176,7 @@ class Session:
         return ", ".join(names) or "the survivor already recorded"
 
     def _must_not_create_survivor(self) -> bool:
-        """True when this session may not open a new-character door.
-
-        Two states, and the second is why this is not simply
-        `self._pin.resume`: a create run whose survivor already EXISTS is
-        in exactly the same position as a resumed one -- the run records
-        one survivor, that survivor is on disk, and a second would be a
-        replacement.  The committed record's own mid-session relaunch is
-        the case that made this concrete: the phase is latched to
-        `in-world` from the first sidebar frame, so a relaunch that
-        returns the engine to the menu is not covered by the phase, and
-        the screen guard is what covers it.
-        """
+        """True when this session may not open a new-character door."""
         if self._pin.resume:
             return True
         return any(self._fingerprint.values())
@@ -8492,10 +7194,6 @@ class Session:
         this run records it or not.  So in a resumed session the keys that
         open the creator are refused here, before send_key is reached, for
         as long as the engine is still on a menu.
-
-        The hard rule is that an existing save is CONTINUED rather than
-        replaced, and the refusal is what makes that a property of this
-        module instead of an instruction in a docstring.
 
         AND THE HOTKEYS ARE NOT THE ONLY WAY IN.  Refusing five letters
         refuses five doors; it does not refuse the ROUTE.  The verified
@@ -8560,21 +7258,7 @@ class Session:
 
     def _settle_ui_phase(self, index: int,
                          payload: Mapping[str, str]) -> None:
-        """Advance the UI phase from what the frame just taken shows.
-
-        Called AFTER the row is committed, on the evidence of the capture
-        itself: a sidebar reading means a survivor is in the world.  In a
-        resumed session the transition is also the moment the engine's own
-        lastworld.json has to name the pinned survivor -- if the sidebar
-        has appeared and it does not, something other than the pinned
-        character was loaded, and this session records exactly one
-        survivor.
-
-        The row this frame's reading went into is what a LATER process
-        recovers the phase from (:meth:`_recorded_sidebar_frame`), so the
-        transition made here and the transition read back there rest on
-        the same capture rather than on two different sources.
-        """
+        """Advance the UI phase from what the frame just taken shows."""
         if self._ui_phase == UI_PHASE_IN_WORLD:
             return
         readings = (payload.get("CLOCK"), payload.get("TIME_PHRASE"),
@@ -8610,16 +7294,7 @@ class Session:
             disappeared: Sequence[str],
             lost: Mapping[str, Tuple[str, ...]],
             appeared: Sequence[str]) -> Optional[DeathCleanupEvidence]:
-        """Return evidence for the one legitimate save disappearance.
-
-        The candidate transition itself is deliberately narrow: exactly
-        the survivor lastworld.json says was loaded vanished, no other
-        world or character vanished, and no new survivor appeared on the
-        same key.  Only then are the graveyard, memorial and manifest
-        artifacts read.  A candidate with incomplete evidence raises;
-        a transition that is plainly something else returns None for the
-        ordinary save-pin refusal below.
-        """
+        """Return evidence for the one legitimate save disappearance."""
         if appeared:
             return None
         loaded = self._loaded_survivor()
@@ -8674,12 +7349,6 @@ class Session:
           created, which this run does not record;
         * in CREATE mode the one survivor may appear (0 -> 1) and no
           more, and only in one world.
-
-        The exception is engine-authored DEATH cleanup.  CDDA moves the
-        character files to graveyard/, writes the memorials and may reset
-        the world; that transition is accepted only when those artifacts
-        and the captured post-death rows all match the loaded survivor.
-        A bare deletion still stops the session.
         """
         before = self._fingerprint
         after = self._save_fingerprint()
@@ -8748,10 +7417,10 @@ class Session:
         """Find, authenticate and focus the engine.  Returns its id.
 
         SHARED BY THE ORDINARY STEP AND BY RECOVERY, which is the point:
-        recovery used to photograph the root window without doing any of
-        this, on the strength of a window id recorded by a process that
-        had since died.  A screen is only evidence of what a keystroke
-        did if the engine that received the keystroke is the thing on it,
+        a recovery that photographed the root window without doing any of
+        this would be trusting a window id recorded by a process that has
+        since died.  A screen is only evidence of what a keystroke did if
+        the engine that received the keystroke is the thing on it,
         so the same three checks run either way -- the window is found by
         class, the process behind it is checked against this checkout's
         binary and userdir, and it is focused.
@@ -8783,13 +7452,7 @@ class Session:
                 % (index, key, err)) from err
 
     def _previous_capture_bytes(self, index: int) -> Optional[int]:
-        """Return the size of the capture before this one, or None.
-
-        ONE stat OF ONE FILE.  The directory is never listed: a listing
-        here would be O(captures) on every keystroke, which is the shape
-        of per-key cost this module already carries too much of, and the
-        only frame this needs is the one whose name it can derive.
-        """
+        """Return the size of the capture before this one, or None."""
         if index <= 1:
             return None
         path = os.path.join(self._frames, manifest.frame_file(index - 1))
@@ -8807,19 +7470,12 @@ class Session:
         lives on.  There is nothing here proportional to the length of
         the session.
 
-        A disk that fills between the keystroke and the capture is the
-        one failure mode that cannot be repaired afterwards -- the key
-        has been acted on, the frame is truncated or absent, and a
-        keystroke without its frame breaks the identity the record rests
-        on.  So this is a refusal that leaves the session exactly where
-        it was: free space and press the same key again.
-
         A MEASUREMENT THAT CANNOT BE TAKEN IS A REFUSAL, NOT A WARNING.
-        This used to warn once and send the key anyway, on the reasoning
-        that an unreadable statvfs is a fact about the host rather than
-        evidence that the disk is full.  A review rejected that
-        reasoning and it was right to: the key is IRREVERSIBLE -- it
-        changes the game's state, and no later stage can un-press it --
+        Warning once and sending the key anyway would rest on the
+        reasoning that an unreadable statvfs is a fact about the host
+        rather than evidence that the disk is full.  That reasoning does
+        not hold here: the key is IRREVERSIBLE -- it changes the game's
+        state, and no later stage can un-press it --
         while the check exists precisely because a delivered key whose
         frame cannot be written breaks the identity the whole record
         rests on.  Sending it on an unproved assumption trades a
@@ -8871,24 +7527,9 @@ class Session:
     def _capture_frame(self, index: int) -> Dict[str, str]:
         """Run the capturer for exactly one index and parse its report.
 
-        The index is HANDED IN through FRAME_INDEX, capture.sh's only
-        input, so neither half of the step derives it twice.  The
-        capturer owns the settle, the root-window photograph
-        (`import -window root`: the root is 1920x1080 while the engine
-        paints 1920x1072 at +0+4, so photographing the root needs no
-        rescaling and leaves the 8x16 glyphs the clock read depends on
-        crisp), the non-blank luminance gate and the clock read.
-
         `exit 0` from that script means exactly one NEW frame exists AND
         its whole payload was delivered; any other status means no frame
         was added, and this raises rather than appending a row.
-
-        The working directory is the repository root, as it is for every
-        stage: --userdir is normalised but not absolutised
-        (src/path_info.cpp:105) and the asset roots are
-        working-directory relative (src/path_info.cpp:127-137), so the
-        root is the only place under which this checkout's own data/ and
-        gfx/ resolve AND the artifacts land inside the working tree.
         """
         environment = _child_environment()
         environment[CAPTURE_ENV_INDEX] = str(index)
@@ -8939,19 +7580,7 @@ class Session:
 
     def _resolve_map_geometry(self, payload: Mapping[str, str],
                               ) -> Optional[str]:
-        """Return the map column's crop, resolving it once per session.
-
-        The sidebar's own rectangle comes from configuration through
-        ocr_clock.resolve_rect(), which is the same runtime computation
-        the clock read uses, and the frame's extent comes from the
-        capture's own FRAME_GEOMETRY rather than from a constant -- so a
-        different sidebar preset or a different display moves this crop
-        with it instead of silently comparing the wrong pixels.
-
-        None means the column could not be resolved, and
-        :func:`classify_effect` then reports EFFECT_CHANGED for any
-        frame that moved rather than a finer verdict it did not measure.
-        """
+        """Return the map column's crop, resolving it once per session."""
         if self._map_geometry_resolved:
             return self._map_geometry
         self._map_geometry_resolved = True
@@ -8987,16 +7616,7 @@ class Session:
 
     def _observe_effect(self, index: int,
                         payload: Mapping[str, str]) -> ObservedEffect:
-        """Compare this capture with the one before it.  Never raises.
-
-        The observation half of the row, and the reason a swallowed
-        keystroke can no longer be written up as though it had landed.
-        The predecessor is the capture at `index - 1`; when there is
-        none -- the first frame of the very first session -- the verdict
-        is EFFECT_FIRST, and when the file is missing it is
-        EFFECT_UNKNOWN with a warning, because a resumed session whose
-        earlier frames were never captured has nothing to compare.
-        """
+        """Compare this capture with the one before it. Never raises."""
         if index <= 1:
             return ObservedEffect(EFFECT_FIRST)
         previous = os.path.join(
@@ -9020,15 +7640,7 @@ class Session:
 
     def _report_effect(self, index: int, effect: ObservedEffect,
                        action: str, commentary: str) -> None:
-        """Warn about a verdict the row's own prose may contradict.
-
-        Advisory by construction: the marker is already in the action
-        text by the time this runs, and this only makes sure the
-        operator READS it before choosing the next keystroke.  A claim
-        of movement the measurement does not support is said twice, and
-        more loudly, because that is the exact defect this guard was
-        added for.
-        """
+        """Warn about a verdict the row's own prose may contradict."""
         claims_movement = (movement_claim(action) or
                            movement_claim(commentary))
         marker = EFFECT_MARKERS.get(effect.verdict)
@@ -9065,14 +7677,7 @@ class Session:
         return self._modals
 
     def _frame_digest_of(self, index: int) -> str:
-        """Return the attested sha256 of a captured frame, or ''.
-
-        Read from the capture attestation ledger rather than recomputed,
-        so an acknowledgment is bound to the same digest the capture was
-        published under.  A frame with no attestation answers '' and the
-        acknowledgment records that absence honestly instead of a digest
-        taken from bytes nobody attested.
-        """
+        """Return the attested sha256 of a captured frame, or ''."""
         attested = self._attested_digest(index)
         if not isinstance(attested, dict):
             return ""
@@ -9088,26 +7693,8 @@ class Session:
                     ) -> Dict[str, object]:
         """Record that a capture was read, and what it showed.
 
-        The one way past a :class:`GuardHalt`, and the way every step
-        after the first satisfies its precondition.  The capture must
-        EXIST -- an acknowledgment of a frame that was never taken would
-        be a reading of nothing -- and the reading itself must say
-        something (:func:`validate_observed`).
-
-        The frame's own observed verdict and any query box detected on it
-        are recorded beside the reading, so the ledger shows what the
-        machine measured next to what the operator said, and a
-        disagreement between them is visible afterwards.
-
-        `supersedes` names the earlier readings of this frame that
-        this one replaces.  A SECOND reading of a frame must name the
-        first: the ledger is append-only, so a correction is an
-        appended row rather than an edit, and without the declaration
-        the file would hold two answers to one question with nothing
-        to say which stands.
-
-        :raises RecordError: when the capture does not exist.
-        :raises ObservationRequired: when there is no usable reading.
+        :raises RecordError: when the capture does not exist. :raises
+            ObservationRequired: when there is no usable reading.
         """
         index = validated_frame(frame)
         path = os.path.join(self._frames,
@@ -9150,14 +7737,7 @@ class Session:
         return False
 
     def _observation_verdict(self, index: int) -> str:
-        """Return the effect verdict the sidecar recorded for a frame.
-
-        Read back rather than re-measured: the verdict in the ledger is
-        the one the step wrote at capture time, and re-comparing the
-        images here could answer differently if anything had touched
-        them since -- which is precisely the sort of drift a ledger
-        exists to make impossible.
-        """
+        """Return the effect verdict the sidecar recorded for a frame."""
         try:
             for row in read_observations(self._observations,
                                          root=self._root):
@@ -9178,15 +7758,8 @@ class Session:
         the call: supply it and press again.  This is the structural form
         of "observe -> decide in character -> act", and it is here rather
         than in a driver because a rule a driver can forget is a rule
-        that was measurably forgotten -- frames 91-106 of the retired
-        session were keyed into a modal nobody had looked at.
-
-        The FIRST step of a session has no predecessor and needs no
-        reading.  Every other step either carries one (`observed`) or
-        finds one already in the ledger for that exact frame, and a
-        reading recorded against a DIFFERENT digest for the same index
-        does not count: that would be a reading of a capture that is no
-        longer the one on disk.
+        that gets forgotten: a run of frames keyed into a modal nobody
+        looked at is exactly what its absence produces.
         """
         previous = index - 1
         if previous < 1:
@@ -9246,13 +7819,7 @@ class Session:
 
     def _effect_halt(self, index: int, expect: str,
                      effect: object) -> Optional[str]:
-        """Why this capture contradicts its declaration, or None.
-
-        EFFECT_UNKNOWN contradicts EVERY declaration.  An unmeasurable
-        pair is the absence of an observation, and the whole purpose of
-        this guard is that an absent observation must not read like a
-        satisfied one.
-        """
+        """Why this capture contradicts its declaration, or None."""
         verdict = verdict_of(effect)
         if verdict in EXPECT_ACCEPTS.get(expect, ()):
             return None
@@ -9275,15 +7842,7 @@ class Session:
 
     def _modal_halt(self, index: int, expect_modal: Optional[str],
                     modals: Sequence[str]) -> Optional[str]:
-        """Why this capture's query box is wrong, or None.
-
-        BOTH DIRECTIONS MATTER.  An UNDECLARED box means the operator's
-        model of the screen is wrong and the next key would go into the
-        box instead of the screen behind it -- the exact shape of the
-        retired session's worst passage.  A DECLARED box that is absent
-        means the model is wrong the other way, and a session that
-        proceeds on it is answering a prompt nobody is asking.
-        """
+        """Why this capture's query box is wrong, or None."""
         present = tuple(modals)
         if expect_modal is None:
             if not present:
@@ -9315,13 +7874,7 @@ class Session:
     def _halt_reason(self, index: int, expect: str, effect: object,
                      expect_modal: Optional[str],
                      modals: Sequence[str]) -> Optional[str]:
-        """The first reason this capture stops the session, or None.
-
-        The modal reading is consulted first because when both would
-        fire they are usually the same event seen from two sides -- a
-        swallowed key and an open box -- and the box is the more
-        actionable half.
-        """
+        """The first reason this capture stops the session, or None."""
         return (self._modal_halt(index, expect_modal, modals) or
                 self._effect_halt(index, expect, effect))
 
@@ -9332,15 +7885,6 @@ class Session:
                 declared_modal: Optional[str] = None
                 ) -> Dict[str, object]:
         """Append the row and its attestation, then clear the journal.
-
-        The tail of the transaction, shared by an ordinary step and by
-        recovery so the two cannot record a frame differently.  The
-        manifest row goes first because it is THE record; the counter
-        advances only once that row is on the device; the sidecar
-        attestation -- which carries the immutable key -- follows; and the
-        journal is cleared last, so an interruption anywhere in here
-        leaves a state the next open can finish rather than one it has to
-        interpret.
 
         THE OBSERVED-EFFECT GUARD RUNS HERE, before the row is written
         and in the one place both an ordinary step and a recovered one
@@ -9455,16 +7999,6 @@ class Session:
         the digest where every later stage looks for it -- the timing,
         the transitions, the render and the commit each verify a frame's
         bytes against this ledger before using them.
-
-        The attestation says HOW it was established: `capture` for an
-        ordinary step, `recovery` for a frame whose payload was rebuilt
-        by measuring an already-captured file.  A weaker claim recorded
-        as the strong one would be worse than no claim at all.
-
-        A failure here stops the session, for the same reason a missing
-        telemetry row does: the frame and its row are on the device, and
-        an unattested frame is exactly the state this ledger exists to
-        prevent.
         """
         digest = str(payload.get("FRAME_SHA256", "")).strip()
         path = os.path.join(self._frames,
@@ -9501,97 +8035,87 @@ class Session:
              expect: str = EXPECT_CHANGED,
              observed: Optional[str] = None,
              expect_modal: Optional[str] = None) -> StepResult:
-        """Send ONE keystroke and record ONE frame.  The whole step.
+        """Send ONE keystroke and record ONE frame. The whole step.
 
         THIS IS THE ONLY PLACE THE FRAME COUNTER MOVES, and it moves
         once per call, under the step lock, with the intent to send made
         durable BEFORE the key leaves.  In order:
 
-          1. validate the key against the closed vocabulary, which
-             refuses every chord that could reach a debug action or end
-             the engine outside the game's own Save & Quit;
-          2. derive this row's `action` from that validated key, so the
-             record cannot name a key other than the one sent;
-          3. prove no debug action is bound, that the save tree still
-             matches the pinned create-versus-resume decision, and that
-             there is room on the disk to record this frame;
-          4. authenticate the game window against the process behind it;
-          5. write the pre-send journal and force it to the device;
-          6. send EXACTLY ONE keystroke;
-          7. let capture.sh settle, photograph the root window and read
-             the sidebar clock -- one frame, at this step's index;
-          8. record the capture's payload in the journal, durably;
-          9. append EXACTLY ONE manifest row, advance the counter,
-             append the attestation, and clear the journal.
+        1. validate the key against the closed vocabulary, which
+           refuses every chord that could reach a debug action or end
+           the engine outside the game's own Save & Quit;
+        2. derive this row's `action` from that validated key, so the
+           record cannot name a key other than the one sent;
+        3. prove no debug action is bound and that the save tree still
+           matches the pinned create-versus-resume decision, both read
+           from the working tree as it stands now;
+        4. prove there is room on the disk to record this frame, that
+           the previous capture was read, and that this key is allowed
+           in the phase the record observed -- then authenticate the
+           game window against the process behind it;
+        5. write the pre-send journal and force it to the device;
+        6. send EXACTLY ONE keystroke;
+        7. let capture.sh settle, photograph the root window and read
+           the sidebar clock -- one frame, at this step's index;
+        8. record the capture's payload in the journal, durably;
+        9. append EXACTLY ONE manifest row, advance the counter,
+           append the attestation, and clear the journal.
 
-        Steps 5 and 8 are what make this recoverable.  A failure at any
-        point after 6 leaves a journal entry the next session finishes at
-        the SAME index -- so a keystroke can no longer end up delivered
-        with no frame and no row, which is the one failure the first
-        recorded session could not repair.
+        THE FAILURES DIVIDE AT THE KEYSTROKE, because that is the one
+        event in the step that cannot be taken back.  KeyRejected,
+        CheatGuard, CapacityError and a WindowError about resolving the
+        window are all raised BEFORE anything is sent, so the session
+        stays usable and the step is simply retried once the condition is
+        fixed.  Everything after the send CLOSES the session, because
+        continuing would record later frames against a game state this
+        module can no longer account for -- but the journal is on the
+        device, so the step itself is recoverable.
 
-        One key per call, always.  There is no argument that takes
-        several, and adding one would destroy the one-frame-per-key
-        relation in a way nothing downstream could repair.
-
-        :param key: one keystroke, as a keysym name or a single
-            printable character; validated against a closed vocabulary.
-        :param action: the full row text.  Optional, and CHECKED rather
-            than trusted: it must be :func:`describe_key`'s output for
-            this key, optionally followed by " -- " and the reason.  Pass
-            `note` instead and let this derive it.
-        :param commentary: the survivor's own first-person reason, in
-            the voice playthrough/dossier.md establishes.  Engineering
-            and meta observations belong in
-            playthrough/TECHNICAL_NOTES.md, never here.
-        :param note: the reason half of `action`, appended to the
-            derived identity.  Mutually exclusive with `action`.
-        :param expect: what this capture will show -- EXPECT_CHANGED
-            (the default), EXPECT_UNCHANGED for a key that legitimately
-            moves nothing on screen, or EXPECT_EITHER when the screen's
-            response genuinely cannot be predicted.  A capture that
-            contradicts the declaration halts the session AFTER
-            recording the frame and its row.
-        :param observed: the operator's own reading of the PREVIOUS
-            capture.  Required for every step after the first unless
-            that frame is already in the acknowledgment ledger, and
-            recorded there -- durably -- before this key is delivered.
-        :param expect_modal: the token of an engine query box this step
-            is deliberately answering (see :data:`MODAL_PROMPTS`).  An
-            undeclared box on the capture halts the session, and so does
-            a declared one that is not there.
-        :returns: a :class:`StepResult` carrying the frame path and the
-            clock reading, so the caller reads what happened before
-            choosing the next keystroke.
-        The failures divide at the keystroke, because that is the one
-        event in the step that cannot be taken back.
-
-        BEFORE ANYTHING IS SENT -- the session stays usable and the step
-        can simply be retried once the condition is fixed:
-
-        :raises KeyRejected: for a value that is not one keystroke, or
-            one this module refuses to send.
-        :raises CheatGuard: when a debug action is bound or the save
-            tree moved.
-        :raises CapacityError: when there is not room to record this
-            frame.  Nothing was sent, so the step is retried once space
-            has been freed.
+        :param key: one keystroke, as a keysym name or a single printable
+            character; validated against a closed vocabulary.
+        :param action: the full row text. Optional, and CHECKED rather than
+            trusted: it must be :func:`describe_key`'s output for this key,
+            optionally followed by " -- " and the reason.
+        :param commentary: the survivor's own first-person reason, in the voice
+            playthrough/dossier.md establishes. Engineering and meta
+            observations belong in playthrough/TECHNICAL_NOTES.md, never here.
+        :param note: the reason half of `action`, appended to the derived
+            identity. Mutually exclusive with `action`.
+        :param expect: what this capture will show -- EXPECT_CHANGED (the
+            default), EXPECT_UNCHANGED for a key that legitimately moves
+            nothing on screen, or EXPECT_EITHER when the screen's response
+            genuinely cannot be predicted.
+        :param observed: the operator's own reading of the PREVIOUS capture.
+            Required for every step after the first unless that frame is
+            already in the acknowledgment ledger, and recorded there -- durably
+            -- before this key is delivered.
+        :param expect_modal: the token of an engine query box this step is
+            deliberately answering (see :data:`MODAL_PROMPTS`). An undeclared
+            box on the capture halts the session, and so does a declared one
+            that is not there.
+        :returns: a :class:`StepResult` carrying the frame path and the clock
+            reading, so the caller reads what happened before choosing the
+            next keystroke.
+        :raises KeyRejected: for a value that is not one keystroke, or one this
+            module refuses to send.
+        :raises CheatGuard: when a debug action is bound or the save tree
+            moved.
+        :raises CapacityError: when there is not room to record this frame.
+            Nothing was sent, so the step is retried once space has been freed.
         :raises WindowError: when the window could not be resolved,
-            authenticated or focused.  Nothing was sent and nothing was
+            authenticated or focused. Nothing was sent and nothing was
             journalled.
-
-        AFTER THE KEY HAS BEEN DELIVERED -- the session is CLOSED,
-        because continuing would record later frames against a game
-        state this module can no longer account for.  The journal is on
-        the device, so the step itself is recoverable:
-
-        :raises WindowError: when sending the key itself failed.  This
-            one is indistinguishable from a delivered key by
-            construction -- xdotool's failure says nothing about
-            whether the X server acted -- so it is treated as
-            delivered.
-        :raises CaptureError: when the frame was not captured after the
-            key was pressed.
+        :raises WindowError: when sending the key itself failed.  This one is
+            AMBIGUOUS by construction -- xdotool's failure says nothing about
+            whether the X server acted -- so it is treated as NEITHER
+            delivered nor undelivered: the journal is left at `sending`, the
+            outcome is reported as UNKNOWN, the session is closed, and the
+            next one halts on that entry rather than guessing.  Deciding it
+            landed would invent a frame and deciding it did not would drop a
+            real one, so establishing what happened is a person's job: run
+            `session.py reconcile` once the game has been looked at.
+        :raises CaptureError: when the frame was not captured after the key was
+            pressed.
         :raises RecordError: when the row could not be appended.
         """
         self._assert_usable()
@@ -9623,9 +8147,10 @@ class Session:
         self._assert_menu_hotkey_permitted(validated, text, voice)
 
         # THE INTEGRITY PRE-FLIGHTS, on every step and before anything
-        # irreversible.  All three are cheap, all three read committed
-        # artifacts, and all three would be worthless if a driver could
-        # skip them.
+        # irreversible.  Both read the WORKING TREE as it stands now -- the
+        # keybindings file the engine would obey and the save tree this session
+        # pinned at start -- because that is where a violation would appear,
+        # not in what has already been committed.
         self.audit_bindings()
         self._assert_save_pin()
 
@@ -9752,11 +8277,11 @@ class Session:
                            declared_modal=declared_modal)
 
         # THE POST-KEY INTEGRITY CHECKS, on the same step rather than the
-        # next one.  The save-set comparison used to run only BEFORE a
-        # key, which meant a keystroke that created a second survivor was
-        # detected one whole step late -- after another key had been sent
-        # into a game state this module had already lost track of.  Both
-        # run here, with the row already committed, because the keystroke
+        # next one.  A save-set comparison taken only BEFORE a key detects
+        # a keystroke that created a second survivor one whole step late
+        # -- after another key has been sent into a game state this module
+        # had already lost track of.  Both run here, with the row already
+        # committed, because the keystroke
         # and the frame really happened and the record says so; what stops
         # is everything after them.
         try:
@@ -9810,14 +8335,7 @@ class Session:
 
     def _assert_menu_hotkey_permitted(self, key: str, action: str,
                                       commentary: str) -> None:
-        """REFUSE a letter sent to open Custom Character.  Never send it.
-
-        The exact mistake runtime testing found in the first recorded
-        session: "u" was sent to open the custom sheet, and because the
-        top row of the same menu declares "T<u|U>torial Game" with those
-        very letters (src/main_menu.cpp:466) the top row took it -- the
-        submenu folded away and the highlight came to rest on a
-        FORBIDDEN entry, which then needed three Left presses to undo.
+        """REFUSE a letter sent to open Custom Character. Never send it.
 
         THIS USED TO BE AN ADVISORY, AND A SECURITY REVIEW WAS RIGHT
         ABOUT IT.  The reasoning behind the warning was sound as far as it
@@ -9826,24 +8344,19 @@ class Session:
         it was wrong: the code proved, from the engine's own declarations,
         that this keystroke lands on a forbidden entry, printed that
         proof, and then delivered the key anyway.  A control that
-        establishes the violation and permits it is not a control.
+        establishes the violation and permits it is not a control.  So
+        it is a refusal, and the three conditions that make the refusal
+        both correct and safe are ALL required:
 
-        So it is a refusal now, and the three conditions that make the
-        refusal both correct and safe are ALL required:
-
-          * the key is one of the two colliding letters;
-          * the caller's own action or commentary says it is meant for
-            the custom sheet -- which is exactly the case that was
-            wrong, and nothing else;
-          * the observed UI phase is `menu`.  The phase is read from
-            PHOTOGRAPHED evidence (a sidebar reading in the record), not
-            asserted, so an in-world "u" -- the north-east step -- is
-            never touched by this, whatever the commentary happens to
-            say.
-
-        Raised BEFORE the journal is written and BEFORE the key is
-        delivered, so nothing happened and the session stays usable: the
-        caller takes the verified route instead.
+        * the key is one of the two colliding letters;
+        * the caller's own action or commentary says it is meant for
+          the custom sheet -- which is exactly the case that was
+          wrong, and nothing else;
+        * the observed UI phase is `menu`.  The phase is read from
+          PHOTOGRAPHED evidence (a sidebar reading in the record), not
+          asserted, so an in-world "u" -- the north-east step -- is
+          never touched by this, whatever the commentary happens to
+          say.
         """
         if key.split(CHORD_SEPARATOR)[-1] not in MENU_HOTKEY_COLLISION:
             return
@@ -9868,7 +8381,7 @@ class Session:
                "; ".join(MENU_CUSTOM_CHARACTER_ROUTE), key))
 
     def reconcile(self, outcome: str) -> Tuple[str, ...]:
-        """Resolve an ambiguous `sending` journal.  Returns what it did.
+        """Resolve an ambiguous `sending` journal. Returns what it did.
 
         THE OPERATOR'S ANSWER TO THE ONE QUESTION THIS MODULE CANNOT
         ANSWER ITSELF.  A run that ended between the pre-send journal and
@@ -9886,13 +8399,8 @@ class Session:
           discarded, no frame is captured and no row is written, so the
           index stays free for the next `step`.
 
-        This is deliberately NOT usable to resolve anything else: a
-        journal in any other phase is left exactly as it is, because
-        recovery already has an honest answer for it and an operator
-        override would be a way past that answer.
-
-        :raises RecordError: when there is nothing ambiguous to resolve,
-            or when the declared outcome is not one of the two.
+        :raises RecordError: when there is nothing ambiguous to resolve, or
+            when the declared outcome is not one of the two.
         """
         if outcome not in RECONCILE_OUTCOMES:
             raise RecordError(
@@ -9945,22 +8453,7 @@ class Session:
         return notes
 
     def _assert_voice(self, commentary: str) -> None:
-        """Refuse a commentary that is not the survivor's own voice.
-
-        A REFUSAL, BEFORE THE KEY IS SENT.  It used to be a warning, one
-        per word per process, and the row was appended regardless -- so a
-        stderr line during a four-hundred-row session was all that stood
-        between an engineering observation and the committed transcript,
-        which becomes a caption on the film.  The requirement is that
-        meta and "gamey" remarks stay out of the in-character record and
-        go to playthrough/TECHNICAL_NOTES.md instead, and nothing that
-        can be walked past satisfies it.
-
-        manifest.py owns the vocabulary and the message, so the gate here
-        and the gate at publication cannot differ in strength.  Nothing
-        is sent and nothing is journalled, so the step is simply retried
-        with the sentence rewritten.
-        """
+        """Refuse a commentary that is not the survivor's own voice."""
         problem = manifest.meta_vocabulary_problem(
             commentary, "commentary")
         if problem is not None:
@@ -9984,11 +8477,6 @@ class Session:
           reason R7 asks for.  Those are corrected in the amendment
           ledger because the record is append-only; this is what stops
           the next one being recorded in the first place.
-
-        manifest.py owns both rules, so this gate and the gate at
-        publication cannot differ in strength.  Nothing is sent and
-        nothing is journalled, so the step is retried with the sentence
-        written out.
         """
         for problem in (manifest.raw_markup_problem(action, "the action"),
                         manifest.raw_markup_problem(commentary,
@@ -10008,17 +8496,6 @@ class Session:
         first requirement is that nothing in it is fabricated, and
         invisible to every structural check because the row is internally
         consistent and the arithmetic is exact.
-
-        The comparison is against the LAST READING THIS SESSION
-        OBSERVED, which is what the driver had in front of them when the
-        sentence was written and therefore the honest comparand: the
-        commentary explains why this key is about to be pressed, so it
-        belongs to the state before it.  manifest.py owns the parser and
-        the tolerances (three minutes for an exact statement, a quarter
-        of an hour for a hedged one); this only supplies the reading and
-        refuses.
-
-        Nothing is sent, so a refusal costs the call and nothing else.
         """
         clock, date_text = self._last_reading()
         problems = manifest.clock_honesty_problems(
@@ -10030,16 +8507,7 @@ class Session:
                 % ("the next keystroke", "  ".join(problems)))
 
     def _last_reading(self) -> Tuple[Optional[str], Optional[str]]:
-        """Return the last observed (clock, date), from the record.
-
-        Taken from the telemetry sidecar, which carries both columns, and
-        read from disk rather than remembered -- because the intended
-        shape of a session is ONE PROCESS PER STEP, so the previous
-        frame's reading was observed by a process that has already
-        exited.  A session that has just recovered a step gets the
-        recovered frame's reading, which is correct: that is the last
-        thing anybody could have looked at.
-        """
+        """Return the last observed (clock, date), from the record."""
         if self._observation:
             return (_reading_or_none(self._observation, "ingame_clock"),
                     _reading_or_none(self._observation, "date"))
@@ -10413,21 +8881,6 @@ def _emit(key: str, value: object) -> None:
     it from a fact -- which is how a save tree could assert its own trust
     state.
 
-    Emptiness is permitted, because it is meaningful here: an absent
-    world is `PLAYTHROUGH_SAVE_WORLD=`.  The stricter grammar that also
-    requires a value belongs where the name is derived, not on the
-    channel.
-
-    launch_game.sh's `emit` refuses exactly the same two properties; the
-    two halves of one channel have to agree, and test_session.py asserts
-    the ceiling does.
-
-    The length ceiling is skipped for the keys in
-    `_COMPOSED_INVENTORY_KEYS`, which carry inventories this module
-    composes from its own constants rather than tokens chosen elsewhere.
-    The control-character refusal is NOT skipped for anything: that is
-    the one that stops a line being forged.
-
     :raises RecordError: naming the key and showing the offending bytes.
     """
     if value is None:
@@ -10661,20 +9114,12 @@ def _command_journal(args: argparse.Namespace) -> int:
     completed before the record is verified.  But it makes `status`
     useless to an acceptance gate: the gate would REPAIR the very thing
     it came to judge, and a delivered keystroke that never became a frame
-    would be resolved by the act of asking about it.  A review found
-    exactly that gap on the other side of the same invariant -- a
-    terminal keystroke was delivered, its capture was rejected, and the
-    frame/row/line identity still read 305 == 305 == 305 because all
-    three of those counts are written only AFTER a capture succeeds.  The
-    outstanding journal was the only durable evidence that a 306th key
-    had left, and nothing was looking at it.
-
-    So this takes no lock, opens no session, recovers nothing and writes
-    nothing: it derives the journal's path exactly as a session would and
-    reads it.  A journal that exists but cannot be parsed still raises,
-    because `read_journal` treats that as a fault rather than an absence
-    -- an unreadable record of a keystroke that may have been delivered
-    is the one thing that must not read as "no keystroke".
+    would be resolved by the act of asking about it.  The gap on the other
+    side of the same invariant is just as real: a terminal keystroke
+    delivered whose capture was rejected leaves the frame/row/line identity
+    perfectly consistent, because all three of those counts are written
+    only AFTER a capture succeeds.  The outstanding journal is then the only
+    durable evidence that the key left at all.
     """
     path = journal_path(getattr(args, "root", None))
     record = read_journal(path)
@@ -10694,15 +9139,7 @@ def _command_journal(args: argparse.Namespace) -> int:
 
 
 def _command_annotate(args: argparse.Namespace) -> int:
-    """Measure recorded captures for the observed-effect marker.
-
-    The step lock is held for the whole pass.  Nothing is rewritten --
-    the pass reads the record and, with --amend, appends to the
-    amendment ledger -- but the measurement compares each capture with
-    the one before it, and a concurrent `step` adding a capture and a
-    row underneath that comparison would make the reading a statement
-    about a record that no longer exists.
-    """
+    """Measure recorded captures for the observed-effect marker."""
     with _open_session(args) as session:
         results = session.annotate_recorded_effects(
             frames=args.frames, amend=args.amend)
@@ -10777,15 +9214,7 @@ def _status_for(error: SessionError) -> int:
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    """Run one command.  Returns the process exit status.
-
-    Every failure is reported on stderr with the cause named, and the
-    status distinguishes a refused keystroke from a lost window, a
-    failed capture, an unbelievable record, a cheat guard tripping and a
-    disk with no room left for the next frame, so a driver can tell "you
-    asked for the wrong thing" apart from "free some space and press it
-    again" apart from "the session is over".
-    """
+    """Run one command. Returns the process exit status."""
     parser = build_parser()
     args = parser.parse_args(argv)
     _configure_logging(args.verbose)

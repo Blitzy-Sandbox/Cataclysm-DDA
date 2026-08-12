@@ -11,112 +11,81 @@ parsed out of the SRT and the SRT is never parsed out of the Markdown,
 because either would put a second source of truth back in.
 
 NO TIMING ARITHMETIC HAPPENS HERE
-cue_start and cue_end are READ from the timeline.  timeline.py walked
-the video cursor once and charged each transition's seconds to it
-BEFORE the following cue began, so the cue windows already include
-transition time.  A caption generator that walked the frame durations
-itself would emit cues that are right at the start of the film and
-further out of step after every transition -- monotonic, plausible,
-and wrong, which is the worst shape a defect can take.  So there is
-no cursor in this module, nothing is accumulated, and the cue that
-follows a transition starts a transition's worth of seconds after the
-previous cue ends rather than where the frame durations alone would
-put it.  format_srt_timecode is IMPORTED from timeline.py
-rather than written a second time: one formatter, one implementation,
-one set of tests (test_timeline.py holds it to 3661.5 s ->
-01:01:01,500).
-
-`duration` and `transition_after` are read too, but only as evidence to
-check the cues against -- a window that does not last its frame's
-duration, an unexplained gap between windows, or a flagged frame with
-no gap after it are all reported rather than rendered.  The expected
-gap comes from the document's own `transition` field, so no transition
-constant is written down here either.
+cue_start and cue_end are READ from the timeline, whose cursor already
+charged each transition's seconds BEFORE the following cue began.  A
+caption generator that walked the frame durations itself would emit cues
+that are right at the start of the film and further out of step after
+every transition -- monotonic, plausible, and wrong, which is the worst
+shape a defect can take.  So there is no cursor here, nothing is
+accumulated, and format_srt_timecode is IMPORTED from timeline.py rather
+than written a second time.  `duration`, `transition_after` and the
+document's own `transition` field are read only as evidence to check the
+cues against, so no transition constant is written down here either.
 
 THE SUBRIP CONTRACT, which downstream code asserts literally
 One cue per frame -- the cue count, the frame count and the Markdown
 entry count are three numbers that must agree, and verify_artifacts.sh
 compares them.  Sequence numbers from 1, contiguous.  Timecodes as
-HH:MM:SS,mmm with a COMMA: this is SubRip, not WebVTT, and the arrow
-is " --> " with one space each side.  Cue text of at most two lines of
+HH:MM:SS,mmm with a COMMA: this is SubRip, not WebVTT, and the arrow is
+" --> " with one space each side.  Cue text of at most two lines of
 about forty-two columns, wrapped at word boundaries and never through
-the middle of a word.  Plain text: no override codes, no positioning,
-no markup, because the track is muxed as mov_text and must stay a
-clean, selectable English caption stream rather than anything burned
-into the picture.  UTF-8 with LF endings and NO byte-order mark -- a
-BOM would sit in front of the first cue's sequence number and stop it
-matching.
+the middle of a word.  Plain text: no override codes, no positioning, no
+markup, because the track is muxed as mov_text and must stay a clean,
+selectable English caption stream rather than anything burned into the
+picture.  UTF-8 with LF endings and NO byte-order mark -- a BOM would
+sit in front of the first cue's sequence number and stop it matching.
 
-ONE MEASURED FACT ABOUT COUNTING THE CUES AFTERWARDS, so nobody loses
-time to it: MP4 timed text has to cover the container contiguously, so
-the muxer PADS THE GAPS this transcript leaves for the transitions with
-empty two-byte samples of its own.  Measured on the reference sequence,
-a container muxed from seven cues carries NINE subtitle packets -- the
-two extra ones occupying exactly 16.250-17.250 s and 27.250-28.250 s,
-which are the two transitions.  So the cue count is `grep -c " --> "`
-on this file, or the count of cues extracted back out of the container
-(seven, deviating from the timeline by 0.000000 s), and it is NOT the
-number of subtitle packets ffprobe reports.
+COUNT THE CUES IN THIS FILE, NOT THE PACKETS IN THE CONTAINER.  MP4
+timed text has to cover the container contiguously, so the muxer pads
+the gaps this transcript leaves for the transitions with empty two-byte
+samples of its own, and a container therefore carries one subtitle
+packet per transition MORE than there are cues.  The cue count is
+`grep -c " --> "` on this file, or the count of cues extracted back out
+of the container; it is not the number of subtitle packets ffprobe
+reports.
 
 THE MARKDOWN CONTRACT, which is checked just as literally
 Every entry begins at column one with **HH:MM:SS,mmm** followed by the
-survivor's own sentence.  EXACTLY ONE timestamp-shaped string per
-entry and none anywhere else, so the header carries no example
-timestamp and no entry carries a cue range.  The pattern that counts
-them accepts a full stop as well as a comma, so neither form may
-appear outside an entry stamp.  And every word THIS module contributes
--- the header, and nothing else -- has to survive the out-of-character
-vocabulary gate that keeps engineering language out of the survivor's
-voice; assert_in_character() holds the module to that before a byte is
-written, so the gate cannot be tripped by an edit to a string constant
-here.
+survivor's own sentence.  EXACTLY ONE timestamp-shaped string per entry
+and none anywhere else, so the header carries no example timestamp and
+no entry carries a cue range.  The pattern that counts them accepts a
+full stop as well as a comma, so neither form may appear outside an
+entry stamp.  And every word THIS module contributes -- the header, and
+nothing else -- has to survive the out-of-character vocabulary gate that
+keeps engineering language out of the survivor's voice;
+assert_in_character() holds the module to that before a byte is written,
+so the gate cannot be tripped by an edit to a string constant here.
 
 THE SURVIVOR'S VOICE IS COPIED, NEVER EDITED
-`commentary` is the in-character record.  It is written to the
-Markdown verbatim -- not summarised, not rephrased, not annotated, and
-never wrapped in engineering language.  The caption is the same
-sentence wrapped at word boundaries to the cue geometry, which is a
+`commentary` is the in-character record.  It goes to the Markdown
+verbatim -- not summarised, not rephrased, not annotated, and never
+wrapped in engineering language.  The caption is the same sentence
+wrapped at word boundaries to the cue geometry, which is a
 presentational constraint of the caption format and the only
-transformation this module performs.  Where a sentence genuinely will
-not fit in CUE_MAX_LINES lines the transcript is REFUSED rather than
-abridged: nothing here is shortened, elided or truncated, and the
-remedy is a shorter sentence in the source commentary.
+transformation this module performs.
 
 THE STAMPS ARE VIDEO TIME, AND ONLY VIDEO TIME
-Neither artifact carries an in-game clock reading.  That is deliberate
-rather than an omission: a reading the capture could not resolve is
-carried forward from its neighbour and flagged `reconciled` in the
-timeline, and printing it here would present a borrowed number in the
-same confident form as a read one, with the flag left behind in a file
-nobody reads beside it.  So the audit trail stays where it was
-recorded, the transcript says only where the film has got to, and no
-frame's cue is invented, merged or dropped because its clock was
-unreadable -- it still gets exactly one cue, at the floor if that is
-what its window came to.
+Neither artifact carries an in-game clock reading, deliberately rather
+than by omission: a reading the capture could not resolve is carried
+forward from its neighbour and flagged `reconciled` in the timeline, and
+printing it here would present a borrowed number in the same confident
+form as a read one, with the flag left behind in a file nobody reads
+beside it.  So the audit trail stays where it was recorded, the
+transcript says only where the film has got to, and no frame's cue is
+invented, merged or dropped because its clock was unreadable -- it still
+gets exactly one cue, at the floor if that is what its window came to.
 
-Out-of-character wording inside a commentary is REFUSED, using
-manifest.py's own vocabulary and message so the gate cannot be
-stricter at write time than at publication time.  A commentary
-carrying a timestamp-shaped string or " --> " is refused too, because
-either would add a match to a downstream count while looking fine
-locally.  So is a commentary that will not wrap into CUE_MAX_LINES
-lines of the cue geometry: the caption is never shortened to fit, and
-the remedy for all three is a shorter or cleaner sentence in the
-source commentary, amended there and regenerated through the chain.
-
-WHAT IS REFUSED OUTRIGHT
-An empty frames array, a frame index that is not the position it sits
-in, a cue that does not end after it starts, a cue that starts before
-its predecessor ended, a first cue that does not start at zero, a
-final cue that does not end where the timeline's own total says the
-film ends, an empty commentary, and a cue that needs more than
-CUE_MAX_LINES lines.  Nothing is repaired and nothing
-is invented: one captured frame makes exactly one cue and one entry,
-so a missing sentence is a hole in the record and is reported as one.
-For the document form the sibling's own validate_timeline() is run as
+NOTHING IS REPAIRED AND NOTHING IS INVENTED
+One captured frame makes exactly one cue and one entry, so a missing
+sentence is a hole in the record and is reported as one; the remedy is
+always a shorter or cleaner sentence amended in the source commentary
+and regenerated through the chain.  entry_problems() states every
+structural refusal, voice_problems() the out-of-character one and
+caption_length_problems() the geometry, each beside the code that makes
+it.  For the document form the sibling's own validate_timeline() runs as
 well, so the invariant sum(durations) + sum(transitions) == total ==
-final cue end is checked here too rather than assumed from the fact
-that it was checked when the file was written.
+final cue end is checked here rather than assumed from having been
+checked at write time.
 
 USE
     . playthrough/tooling/env.sh
@@ -125,13 +94,13 @@ USE
     "$PLAYTHROUGH_PYTHON" -B "$MS" --dry-run
     "$PLAYTHROUGH_PYTHON" -B "$MS" --timeline PATH
 
-    env.sh exports PLAYTHROUGH_PYTHON, the pinned CPython 3.12 this
-    tooling is installed against, and -B keeps a re-included
-    __pycache__ out of the tree -- this module imports a sibling, so an
-    interpreter left free to write bytecode would leave one.
-
     import make_srt
     srt, markdown, cues = make_srt.build_transcripts(document)
+
+env.sh exports PLAYTHROUGH_PYTHON, the pinned CPython 3.12 this tooling
+is installed against, and -B keeps a re-included __pycache__ out of the
+tree -- this module imports a sibling, so an interpreter left free to
+write bytecode would leave one.
 
 Both files are validated, then built entirely in memory, then written.
 Each INDIVIDUAL write is atomic -- a private temporary file in the
@@ -139,8 +108,8 @@ destination directory, fsynced, then os.replace()d over the artifact --
 so a reader sees the whole old file or the whole new one.  The PAIR is
 not: two replacements are two events, so the pair is JOURNALED and
 RECOVERABLE instead.  An interruption between the two replacements can
-leave mismatched generations on disk, and the journal is what makes
-that state detectable and finishable rather than permanent -- see
+leave mismatched generations on disk, and the journal is what makes that
+state detectable and finishable rather than permanent -- see
 publish_transcripts().  Every path is held inside the playthrough/ tree
 derived from this module's own location, so neither artifact can be
 redirected out of the record.
@@ -169,16 +138,14 @@ import unicodedata
 from typing import (Any, Dict, List, NamedTuple, Optional, Sequence,
                     Tuple)
 
-# Set BEFORE the sibling import below, which is the only import here
-# that can write into the repository working tree.  env.sh exports
-# PYTHONDONTWRITEBYTECODE=1, but this module is documented as runnable
-# on its own, and a standalone `python3 playthrough/tooling/make_srt.py`
-# without that environment would compile the sibling to
-# playthrough/tooling/__pycache__/ -- which .gitignore's terminal
-# `!/playthrough/**` negation then makes COMMITTABLE.  A stray .pyc in
-# a committed evidence tree is an artifact nobody authored.  The flag
-# has to precede the import it protects, because the interpreter
-# consults it at compile time; every documented command also passes -B.
+# Set BEFORE the sibling import below, which is the only import here that can
+# write into the repository working tree.  env.sh exports
+# PYTHONDONTWRITEBYTECODE=1, but this module is documented as runnable on its
+# own, and a standalone `python3 playthrough/tooling/make_srt.py` without that
+# environment would compile the sibling to playthrough/tooling/__pycache__/ --
+# which .gitignore's terminal `!/playthrough/**` negation then makes
+# COMMITTABLE.  A stray .pyc in a committed evidence tree is an artifact nobody
+# authored.
 sys.dont_write_bytecode = True
 
 try:
@@ -224,67 +191,33 @@ CUE_LINE_WIDTH = 42
 # A CUT OR AN ADVISORY.  The caption contract is at most two lines of
 # about forty-two columns; a cue is displayed for as little as the 0.25 s
 # floor, and six lines in a quarter of a second is not a transcript
-# anybody reads.  Two defects have to be avoided at once here, and only
-# one gate avoids both:
+# anybody reads.  Two defects have to be avoided at once, and only a
+# refusal avoids both:
 #
-#   * SHORTENING THE CAPTION IS NOT THE ANSWER.  This module once capped
-#     a cue at two lines and marked the cut with a bracketed elision:
-#     168 of the 395 cues in the first re-recorded session ended in
-#     "[...]", and many lost the survivor's actual reason for acting.
-#     The requirement is that the timestamped transcript IS the embedded
-#     caption track, so a track carrying two fifths of it abridged is not
-#     that transcript, however honestly the abridgement was marked.
-#   * AN ADVISORY IS NOT THE ANSWER EITHER.  Removing the cap and merely
-#     REPORTING a long cue is what the review found in the shipped
-#     artifact: 88 of 419 cues over two lines, one of them six lines
-#     inside a 250 ms window, with a stderr note nobody had to act on.
-#     A warning beside a written file is not a contract.
+#   * CUTTING THE CAPTION is not the answer.  The requirement is that the
+#     timestamped transcript IS the embedded caption track, so a track
+#     carrying an abridgement of it is not that transcript, however
+#     honestly the elision is marked -- and what an elision costs is
+#     usually the survivor's actual reason for acting.
+#   * AN ADVISORY is not the answer either.  A stderr note beside a
+#     written file is not a contract: the artifact is published, over
+#     length, and nobody has to act on the note.
 #
-# So the geometry is enforced as a PUBLICATION-BLOCKING REFUSAL that
-# names every offending entry, its frame and its line count, and nothing
-# is ever shortened: the remedy is a shorter sentence in the source
-# commentary -- amended at playthrough/manifest.jsonl with the amendment
-# recorded in playthrough/TECHNICAL_NOTES.md, and every derived artifact
-# regenerated in one pass -- never a cut in the caption.
+# So the geometry is a PUBLICATION-BLOCKING REFUSAL naming every
+# offending entry, its frame and its line count, and nothing is ever
+# shortened: the remedy is a shorter sentence in the source commentary --
+# amended at playthrough/manifest.jsonl with the amendment recorded in
+# playthrough/TECHNICAL_NOTES.md, and every derived artifact regenerated
+# in one pass -- never a cut in the caption.
 CUE_MAX_LINES = 2
 
 # The Markdown's only generated lines: a title carrying the survivor's
-# name, then the sanctioned sentence about what the stamps measure.
-#
-# THE NAME IS READ FROM playthrough/dossier.md AND IS NEVER SPELLED
-# HERE -- not in this constant, not in a comment, not as an example.
-# It used to be a literal, under a comment claiming the title was
-# "deliberately the same opening playthrough/dossier.md uses" -- and a
-# runtime QA pass found that claim false in the shipped tree: the record
-# had been re-captured with a different survivor, the dossier opened
-# with that name, and the transcript still opened with the retired one.
-# Every other layer of the record agreed with the dossier (the
-# manifest's own sentences, the caption cues, the save file's base64
-# name, the achievements file, lastworld.json); this one file, generated
-# by this one constant, was the single dissenting voice, and the comment
-# above it made the defect look intentional to a reviewer.  So
-# test_make_srt.py greps this source for the shipped survivor's name and
-# fails if it finds it: a name written here is a name that can go stale.
-#
-# A literal cannot be right for a record that can be re-captured, so the
-# heading is DERIVED from the dossier's own first heading by
-# markdown_header() and the derivation FAILS CLOSED: no dossier, no
-# heading in it, or a heading that cannot pass the gates below means no
-# transcript is written at all.  One survivor, one name, one place it is
-# written down.
-#
-# Every word this module generates is held to BOTH gates before a byte
-# is written -- including the derived title, because the name now comes
-# from a file rather than from this source.  It must carry no
-# timestamp-shaped string, since the gate counts every one of those and
-# requires exactly one per entry (a stamp here would be counted as an
-# entry that does not exist), and no out-of-character word: not just
-# none of the concepts assert_in_character() refuses, but none of the
-# bare substrings the blunter documented grep looks for either, which is
-# why the title says what he did rather than naming anything about how
-# the record was made.  And it is not embellished beyond the title, the
-# name and the one line, because every word added here is another word
-# that has to keep passing both gates forever.
+# name, then the sanctioned sentence about what the stamps measure.  THE
+# NAME IS READ FROM playthrough/dossier.md AND IS NEVER SPELLED HERE --
+# not in this constant, not in a comment, not as an example.  A literal
+# here is a second answer to who the survivor is, and a re-recorded
+# session changes the dossier's answer without changing this one, so the
+# transcript would open with a name nobody played.
 MARKDOWN_TITLE_SUFFIX = " \u2014 what I did, and why"
 MARKDOWN_TIMESTAMP_LINE = "Timestamps are cumulative video time."
 
@@ -304,26 +237,8 @@ DOSSIER_HEADING_RE = re.compile(r"^#[ \t]+(\S[^\n]*?)[ \t]*$",
 # publishing it.
 MAX_SURVIVOR_NAME = 120
 
-# The punctuation a person's name may contain, beside letters and the
-# marks that accent them.
-#
-# A CONSERVATIVE GRAMMAR RATHER THAN AN ESCAPE.  A security review found
-# the dossier's first heading written into playthrough/transcript.md
-# unescaped, so a heading reading `# <img src=x onerror=...>` reached the
-# Markdown verbatim and executes in any permissive renderer.  Escaping it
-# was the other option and is the wrong one here: the escaped form still
-# publishes the payload, as a title reading `&lt;img src=x onerror=...&gt;`,
-# which is neither a name nor a refusal.  This artifact is evidence about
-# a person, so a heading that is not a name is a mistake to report rather
-# than a string to sanitise.
-#
-# Refusing everything else excludes the whole HTML and Markdown
-# metacharacter set as a consequence rather than as a list to maintain:
-# no `<`, `>`, `&`, `"`, backtick, `[`, `]`, `(`, `)`, `*`, `_`, `!`, `|`,
-# `#`, `\` or `/` can appear, so neither a tag, an entity, a link, an
-# image nor an emphasis run can be spelled.  Letters in any script are
-# accepted -- refusing a name for being non-English would be parochial,
-# not safe.
+# The punctuation a person's name may contain, beside letters and the marks
+# that accent them.  A CONSERVATIVE GRAMMAR RATHER THAN AN ESCAPE.
 SURVIVOR_NAME_PUNCTUATION = frozenset(" '\u2019-\u2010\u2011.,")
 
 # The SubRip cue separator, spelled once.  It is also what the
@@ -353,16 +268,12 @@ TIMECODE_LINE_RE = re.compile(
     r" --> [0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3}$")
 
 # THE OUT-OF-CHARACTER VOCABULARY LIVES IN manifest.py, and is imported
-# rather than restated.  It used to be a second list here, and the two
-# had already drifted: this one named "duration" and "imagemagick" while
-# the other named "option", and NEITHER named the game, the engine, a
-# source file, pathfinding, a move counter or cheating -- all six of
-# which reached the committed record.  Two lists mean two answers to one
-# question, and the question decides whether a sentence is publishable.
-#
-# It is held against every word THIS module generates (see
-# assert_in_character) and, since the review, against the survivor's own
-# as a REFUSAL rather than an advisory (see voice_problems).
+# rather than restated.  Two lists mean two answers to one question, and
+# the question decides whether a sentence is publishable -- so a word
+# either list omits reaches the committed record.  It is held against
+# every word THIS module generates (see assert_in_character) and against
+# the survivor's own as a REFUSAL rather than an advisory (see
+# voice_problems).
 
 # Styling and positioning codes.  mov_text is a minimal format and the
 # track has to be a clean selectable caption stream, so an override
@@ -431,16 +342,13 @@ class TranscriptError(Exception):
 class Cue(NamedTuple):
     """One captured frame's cue, in both of its rendered forms.
 
-    `start` and `end` are the timecodes as they appear in the file --
-    formatted once, from the timeline's own cue_start and cue_end, and
-    shared by both outputs.  That is what makes the Nth stamp in the
-    Markdown the same characters as the Nth cue's start in the SubRip
-    file rather than a second formatting of the same number.
+    `start` and `end` are the timecodes as they appear in the file -- formatted
+    once, from the timeline's own cue_start and cue_end, and shared by both
+    outputs.
 
-    `lines` is the caption, wrapped to the cue geometry; `commentary`
-    is the survivor's sentence exactly as the timeline carries it, for
-    the Markdown.  Immutable because a cue is a record of a frame that
-    was captured.
+    `lines` is the caption, wrapped to the cue geometry; `commentary` is the
+    survivor's sentence exactly as the timeline carries it, for the Markdown.
+    Immutable because a cue is a record of a frame that was captured.
     """
 
     index: int
@@ -454,13 +362,10 @@ class Cue(NamedTuple):
 class Summary(NamedTuple):
     """The evidence a run prints instead of asserting success.
 
-    Three counts that must agree -- one entry, one cue and one stamp
-    per captured frame -- beside the two numbers whose equality is the
-    timeline invariant's last term: where the final cue ends and what
-    the timeline says the film totals.  `total_declared` records
-    whether that second number came from the timeline itself or was
-    simply read back off the last cue, so a run never reports an
-    agreement it had nothing to compare against.
+    Three counts that must agree -- one entry, one cue and one stamp per
+    captured frame -- beside the two numbers whose equality is the timeline
+    invariant's last term: where the final cue ends and what the timeline says
+    the film totals.
     """
 
     entry_count: int
@@ -492,20 +397,18 @@ class Summary(NamedTuple):
 def timeline_entries(document: Any) -> List[Dict[str, Any]]:
     """Return the frames array of a timeline document.
 
-    A BARE ARRAY IS REFUSED.  It used to be accepted on the reasoning
-    that a caller holding the entries already is legitimate -- but
-    validate_timeline() begins by requiring an OBJECT and returns
-    immediately for anything else, so an array skipped every
-    document-level invariant there is: the totals the entries are checked
-    against, the constants the clamp was applied under, the declared
-    final cue end that the last cue has to close on, and the manifest
-    attestation naming the evidence any of it came from.
+    A BARE ARRAY IS REFUSED, however legitimate a caller holding the entries
+    already may be: validate_timeline() begins by requiring an OBJECT and
+    returns immediately for anything else, so an array skips every
+    document-level invariant there is -- the totals the entries are checked
+    against, the constants the clamp was applied under, the declared final cue
+    end the last cue has to close on, and the manifest attestation naming the
+    evidence any of it came from.
 
-    That mattered more here than anywhere: this module writes the CUE
-    TIMINGS, and a caption track computed from unvalidated numbers stays
-    perfectly self-consistent while drifting away from the film
-    render_movie.py encodes from the same document.  The two would look
-    consistent and disagree.
+    That mattered more here than anywhere: this module writes the CUE TIMINGS,
+    and a caption track computed from unvalidated numbers stays perfectly
+    self-consistent while drifting away from the film render_movie.py encodes
+    from the same document.
     """
     if not isinstance(document, dict):
         raise TranscriptError(
@@ -531,12 +434,9 @@ def timeline_entries(document: Any) -> List[Dict[str, Any]]:
 def transition_gap(document: Any) -> Optional[float]:
     """Return the video seconds a transition is charged, if declared.
 
-    Read from the document's own `transition` field rather than written
-    down here, so this module carries no transition constant of its own
-    and cannot disagree with the one the cues were walked under.  None
-    means the input did not declare it -- the bare-array form -- and
-    the gap after a flagged frame is then only required to be positive
-    rather than to be an exact length.
+    Read from the document's own `transition` field rather than written down
+    here, so this module carries no transition constant of its own and cannot
+    disagree with the one the cues were walked under.
     """
     if not isinstance(document, dict):
         return None
@@ -550,12 +450,8 @@ def declared_total(
     """Return the film's total and whether the timeline declared it.
 
     The timeline carries `total` -- the cue cursor's final value -- and
-    `final_cue_end`, computed by different routes so that comparing
-    them checks something.  Either is an INDEPENDENT statement of where
-    the film ends and is what the last cue is held against.  A bare
-    array declares neither, and the total is then the last cue's end
-    with nothing to compare it to; the flag says so rather than letting
-    a run report an agreement it never tested.
+    `final_cue_end`, computed by different routes so that comparing them checks
+    something.
     """
     if isinstance(document, dict):
         for key in ("total", "final_cue_end"):
@@ -588,11 +484,8 @@ def _finite_number(value: Any) -> Optional[float]:
 def frame_index(entry: Dict[str, Any], position: int) -> int:
     """Return an entry's frame index, or its position if it has none.
 
-    session.py owns the counter and every real entry carries it; an
-    entry that does not is numbered by where it sits, which is what an
-    index means.  This mirrors timeline.py's own rule so that a
-    transcript and a timeline never number the same capture
-    differently.
+    session.py owns the counter and every real entry carries it; an entry that
+    does not is numbered by where it sits, which is what an index means.
     """
     value = entry.get("frame")
     if isinstance(value, bool) or not isinstance(value, int):
@@ -613,12 +506,8 @@ def meta_gate_words(text: Any) -> List[str]:
 def assert_in_character(text: str, label: str) -> None:
     """Refuse text THIS module generates if it carries meta language.
 
-    Held against the header and against nothing else, because the
-    header is the only sentence this module contributes to the
-    in-character record.  It exists so that an edit to a string
-    constant here can never be what trips the gate: the failure
-    arrives at the moment of generation, naming the word, instead of
-    arriving later as an unexplained hit in a grep over the artifact.
+    Held against the header and against nothing else, because the header is the
+    only sentence this module contributes to the in-character record.
     """
     hits = meta_gate_words(text)
     if hits:
@@ -651,18 +540,16 @@ def entry_problems(
 ) -> List[str]:
     """Return every reason `entries` cannot become a transcript.
 
-    An empty list means one cue per entry can be written honestly: the
-    indices run 1..n, every window opens before it closes, the windows
-    run forward without overlapping, the first opens the film at zero,
-    each lasts exactly as long as its frame is on screen, a gap between
-    two windows is present when and only when a transition was charged
-    for it, and every entry carries a sentence in the survivor's voice
-    that a caption can be made from.
+    An empty list means one cue per entry can be written honestly: the indices
+    run 1..n, every window opens before it closes, the windows run forward
+    without overlapping, the first opens the film at zero, each lasts exactly
+    as long as its frame is on screen, a gap between two windows is present
+    when and only when a transition was charged for it, and every entry carries
+    a sentence in the survivor's voice that a caption can be made from.
 
     `gap` is the video seconds a transition is charged, from
-    :func:`transition_gap`.  When it is known the gap after a flagged
-    frame must be exactly that long; when it is not, it must merely be
-    positive.
+    :func:`transition_gap`.  When it is known the gap after a flagged frame
+    must be exactly that long; when it is not, it must merely be positive.
     """
     if not isinstance(entries, list):
         return ["the frames are a %s, not an array"
@@ -740,12 +627,9 @@ def _window_problems(
 ) -> List[str]:
     """Report a cue window that cannot be shown as it stands.
 
-    A boundary that is not a finite number, a window that closes before
-    it opens, and -- where the entry declares its on-screen seconds -- a
-    window that does not last exactly as long as the picture it belongs
-    to.  That last one is the check that catches a cue rewritten by
-    hand: the caption would be shown for a different length of time
-    than the frame it describes.
+    A boundary that is not a finite number, a window that closes before it
+    opens, and -- where the entry declares its on-screen seconds -- a window
+    that does not last exactly as long as the picture it belongs to.
     """
     problems: List[str] = []
     if start is None:
@@ -840,15 +724,9 @@ def _commentary_problems(
 ) -> List[str]:
     """Report a sentence that cannot honestly become a cue.
 
-    An absent or blank one is a hole in the record, not something to
-    fill in: one keystroke made one capture, and the reason for it is
-    either written down or it is not.  A line break or a control
-    character would split one cue into two blocks.  A timestamp-shaped
-    string or a cue arrow would each add a match to a count the
-    artifacts are checked by, so both are refused here where the
-    message can name the entry, rather than surfacing later as an
-    arithmetic mismatch in a gate.  Styling and positioning codes are
-    refused because the track is a plain selectable caption stream.
+    An absent or blank one is a hole in the record, not something to fill in:
+    one keystroke made one capture, and the reason for it is either written
+    down or it is not.
     """
     value = entry.get("commentary")
     if value is None:
@@ -908,16 +786,12 @@ def document_problems(
 ) -> List[str]:
     """Return the document-level reasons a transcript is not honest.
 
-    Two checks the entries alone cannot make.  The first is the
-    sibling's OWN validator, run here rather than trusted from the fact
-    that it ran when the file was written: it holds the document to the
-    clamp bounds, the strictly-greater transition rule and the
-    invariant sum(durations) + sum(transitions) == total == final cue
-    end, so a hand-edited timeline is caught before its numbers become
-    a caption track.  The second is the one the caption file is
-    ultimately judged by -- the last cue must close exactly where the
-    timeline says the film ends, because that single equality is what
-    keeps the container and the subtitle stream the same length.
+    Two checks the entries alone cannot make.  The first is the sibling's OWN
+    validator, run here rather than trusted from the fact that it ran when the
+    file was written: it holds the document to the clamp bounds, the
+    strictly-greater transition rule and the invariant sum(durations) +
+    sum(transitions) == total == final cue end, so a hand-edited timeline is
+    caught before its numbers become a caption track.
 
     A bare array declares neither a document nor a total, so only the
     entry-level checks apply to it and this returns nothing.
@@ -953,26 +827,18 @@ def wrap_cue_text(
 ) -> List[str]:
     """Return `text` wrapped to `width`, WHOLE.  Nothing is dropped.
 
-    Wrapped at word boundaries only: neither long words nor hyphens are
-    broken through, so a caption never shows half a word.  A single word
-    longer than the width therefore overruns it rather than being cut,
-    which is the right trade for a format whose width is a readability
-    convention and not a hard limit.
+    Wrapped at word boundaries only: neither long words nor hyphens are broken
+    through, so a caption never shows half a word.
 
-    THE SENTENCE IS NEVER SHORTENED HERE.  This used to cap the result at
-    two lines and mark the cut with a bracketed elision, which left two
-    fifths of the first re-recorded session's captions carrying less than
-    the survivor said -- and the requirement is that the timestamped
-    transcript IS the caption track.  So this function returns whatever
-    lines the sentence needs, the words are the survivor's own, in order,
-    and every one of them is in the result.
+    THE SENTENCE IS NEVER SHORTENED HERE.  Capping the result at two lines
+    and marking the cut with a bracketed elision would leave captions
+    carrying less than the survivor said, and the requirement is that the
+    timestamped transcript IS the caption track.
 
-    The geometry is still a contract, and it is held one level up: a
-    sentence that needs more than CUE_MAX_LINES lines is REFUSED by
-    :func:`caption_length_problems`, which names the entry, its frame and
-    its line count so the source commentary can be written shorter.  A
-    refusal upstream and no truncation downstream is the only combination
-    that satisfies both halves of the requirement.
+    The geometry is still a contract, and it is held one level up: a sentence
+    that needs more than CUE_MAX_LINES lines is REFUSED by
+    :func:`caption_length_problems`, which names the entry, its frame and its
+    line count so the source commentary can be written shorter.
     """
     if not isinstance(text, str):
         raise TranscriptError(
@@ -1006,10 +872,9 @@ def wrap_cue_text(
 def _timecode(value: Any, position: int, key: str) -> str:
     """Return one cue boundary as a SubRip timecode.
 
-    The formatter is timeline.py's, so the captions, the film and the
-    tests share one implementation of the timecode; its complaint is
-    re-raised as this module's error so a caller has one exception type
-    to catch.
+    The formatter is timeline.py's, so the captions, the film and the tests
+    share one implementation of the timecode; its complaint is re-raised as
+    this module's error so a caller has one exception type to catch.
     """
     try:
         return format_srt_timecode(value)
@@ -1022,10 +887,9 @@ def _timecode(value: Any, position: int, key: str) -> str:
 def build_cues(entries: Any, gap: Optional[float] = None) -> List[Cue]:
     """Return one cue per entry, in order.  Nothing is dropped.
 
-    The entries are held to :func:`entry_problems` first and refused
-    whole rather than in part: a transcript missing one frame's cue
-    would still look like a transcript, so there is no partial
-    success here.
+    The entries are held to :func:`entry_problems` first and refused whole
+    rather than in part: a transcript missing one frame's cue would still look
+    like a transcript, so there is no partial success here.
     """
     problems = entry_problems(entries, gap)
     if problems:
@@ -1050,24 +914,18 @@ def build_cues(entries: Any, gap: Optional[float] = None) -> List[Cue]:
 def render_srt(cues: Sequence[Cue]) -> str:
     """Return the exact text playthrough/transcript.srt holds.
 
-    SubRip, to the letter: a sequence number from 1, a timecode line
-    measured against TIMECODE_LINE_RE before it is accepted, one or two
-    lines of plain text, a blank line between cues, and a single
-    trailing newline after the last cue's text with no empty block
-    behind it.  UTF-8 without a byte-order mark, which
-    :func:`write_text` guarantees -- a mark would sit in front of cue
-    one's sequence number and stop it being read as one.
+    SubRip, to the letter: a sequence number from 1, a timecode line measured
+    against TIMECODE_LINE_RE before it is accepted, one or two lines of plain
+    text, a blank line between cues, and a single trailing newline after the
+    last cue's text with no empty block behind it.
 
-    THE LINE COUNT IS REFUSED HERE, NOT REPAIRED HERE, and the
-    distinction is the whole of the caption contract.  A cue of more
-    than CUE_MAX_LINES lines raises, so no code path -- not
-    :func:`build_transcripts`, not a caller assembling cues itself --
-    can put an unreadable caption into the file; and nothing in this
-    function shortens, elides or truncates a sentence to make it fit,
-    because capping a cue and marking the cut left 168 of 395 captions
-    carrying less than the survivor said.  The remedy for a refusal is
-    a shorter sentence in the source commentary, regenerated through the
-    whole chain in one pass.
+    THE LINE COUNT IS REFUSED HERE, NOT REPAIRED HERE, and the distinction is
+    the whole of the caption contract.  A cue of more than CUE_MAX_LINES lines
+    raises, so no code path -- not :func:`build_transcripts`, not a caller
+    assembling cues itself -- can put an unreadable caption into the file; and
+    nothing in this function shortens, elides or truncates a sentence to make
+    it fit, because capping a cue and marking the cut left 168 of 395 captions
+    carrying less than the survivor said.
     """
     if not cues:
         raise TranscriptError(
@@ -1110,10 +968,8 @@ def render_srt(cues: Sequence[Cue]) -> str:
 def markdown_counts(text: str) -> Tuple[int, int]:
     """Return a Markdown body's entry count and timestamp count.
 
-    Measured with the same two patterns the artifact is checked by, so
-    what this module reports is what a reader grepping the file will
-    find.  The two numbers must be equal -- one stamp per entry and
-    none anywhere else -- and both must equal the frame count.
+    Measured with the same two patterns the artifact is checked by, so what
+    this module reports is what a reader grepping the file will find.
     """
     return (len(MARKDOWN_ENTRY_RE.findall(text)),
             len(TIMESTAMP_RE.findall(text)))
@@ -1123,25 +979,14 @@ def render_markdown(cues: Sequence[Cue],
                     header: Optional[str] = None) -> str:
     """Return the exact text playthrough/transcript.md holds.
 
-    One line per captured frame, uniform: the cue's start in bold at
-    column one, a space, and the survivor's sentence exactly as it was
-    written.  Nothing else is added -- no headings between entries, no
-    bullets, no table, no images, no links, and no machine-readable
-    block at the end, because playthrough/timeline.json is the machine
-    artifact and this is the human one.
+    One line per captured frame, uniform: the cue's start in bold at column
+    one, a space, and the survivor's sentence exactly as it was written.
 
-    The only sentence this module contributes is the header, and it is
-    held to the out-of-character gate and to the timestamp count before
-    it is used.  The rendered body is then MEASURED rather than
-    trusted: exactly one timestamp-shaped string per entry, and an
-    entry for every cue.
+    The only sentence this module contributes is the header, and it is held to
+    the out-of-character gate and to the timestamp count before it is used.
 
     `header` is the two generated lines, which name the survivor of THIS
-    record.  It is derived from playthrough/dossier.md by
-    :func:`markdown_header` when the caller does not supply it, so the
-    person a reader meets in the title is the person the dossier
-    introduces -- never a name spelled in this source.  A supplied
-    header is held to exactly the same gates as a derived one.
+    record.
     """
     if not cues:
         raise TranscriptError(
@@ -1178,20 +1023,17 @@ def build_transcripts(
 ) -> Tuple[str, str, List[Cue]]:
     """Return the SubRip text, the Markdown text and the cues.
 
-    The whole of this module's work, in the order it has to happen:
-    take the frames from ONE document, hold the document and its frames
-    to every check, derive the cues ONCE, and render both bodies from
-    those same cues.  Neither output is derived from the other and the
-    input is read once, so the human record and the machine cues cannot
-    disagree about a single number.
+    The whole of this module's work, in the order it has to happen: take the
+    frames from ONE document, hold the document and its frames to every check,
+    derive the cues ONCE, and render both bodies from those same cues.
 
-    Returns the cues as well because the caller prints the evidence: it
-    is the same list both bodies were rendered from, not a second walk
-    over the timeline.
+    Returns the cues as well because the caller prints the evidence: it is the
+    same list both bodies were rendered from, not a second walk over the
+    timeline.
 
-    `header` is the Markdown's two generated lines; when it is None the
-    title is derived from playthrough/dossier.md, so the survivor named
-    in the transcript is the survivor the dossier introduces.
+    `header` is the Markdown's two generated lines; when it is None the title
+    is derived from playthrough/dossier.md, so the survivor named in the
+    transcript is the survivor the dossier introduces.
     """
     entries = timeline_entries(document)
     problems = document_problems(document, entries)
@@ -1259,12 +1101,9 @@ def summary_line(summary: Summary, destination: str) -> str:
 def summary_problems(summary: Summary) -> List[str]:
     """Return the reasons a run's own evidence does not add up.
 
-    The three counts have to be one number -- one captured frame, one
-    cue, one entry -- and the last cue has to close where the timeline
-    says the film ends.  Checked after both bodies exist, from what was
-    actually rendered, because that is the point at which a mismatch
-    still costs nothing and after which it becomes a caption track that
-    drifts.
+    The three counts have to be one number -- one captured frame, one cue, one
+    entry -- and the last cue has to close where the timeline says the film
+    ends.
     """
     problems = []
     if not summary.counts_agree:
@@ -1284,32 +1123,21 @@ def summary_problems(summary: Summary) -> List[str]:
 def voice_problems(cues: Sequence[Cue]) -> List[str]:
     """Refuse out-of-character wording in the survivor's own words.
 
-    A PUBLICATION-BLOCKING GATE, and it used to be an advisory that
-    printed a line and wrote the file anyway.  Two things were wrong with
-    that.  The vocabulary was short -- it named neither the game, nor the
-    engine, nor a source file, nor pathfinding, nor a move counter, nor
-    cheating, and every one of those reached the committed transcript --
-    and a warning is not a gate: the requirement that engineering and
-    "gamey" remarks stay out of the in-character record cannot be
-    satisfied by a stderr line beside a written file.
+    A PUBLICATION-BLOCKING GATE, not an advisory: a line on stderr beside a
+    written file leaves the out-of-character sentence in the published
+    caption track.
 
-    The vocabulary and the message come from manifest.py, which is the
-    module that also refuses the sentence at write time.  One
-    implementation, so the two cannot disagree.
+    The vocabulary and the message come from manifest.py, which is the module
+    that also refuses the sentence at write time.  One implementation, so the
+    two cannot disagree.
 
-    WHAT A HIT MEANS, stated exactly, because the wrong answer was
-    written here once.  It used to say the session had to be RE-RECORDED,
-    on the grounds that the sentence was already in an append-only
-    record.  That is not the remedy and cannot be: `commentary` is
-    AUTHORED prose, not an observation, and the observations -- the frame,
-    its file, its capture time, its clock reading and the keystroke that
-    produced it -- are what the append-only rule protects.  So the
-    sentence is corrected AT SOURCE in playthrough/manifest.jsonl, with
-    the amendment and the unchanged observational digest recorded in
-    playthrough/TECHNICAL_NOTES.md, and every derived artifact is
-    regenerated in one pass.  What is never done is editing this file's
-    output by hand, which would put the caption track out of step with
-    the record it is supposed to be.
+    WHAT A HIT MEANS, stated exactly, because the append-only rule invites the
+    wrong answer.  It does NOT mean the session must be re-recorded:
+    `commentary` is AUTHORED prose, and it is the observations the
+    append-only rule protects.  The sentence is corrected AT SOURCE in
+    playthrough/manifest.jsonl, with the amendment recorded in
+    playthrough/TECHNICAL_NOTES.md, and every derived artifact regenerated in
+    one pass.
     """
     problems = []
     for cue in cues:
@@ -1329,26 +1157,23 @@ def honesty_problems(cues: Sequence[Cue],
                      entries: Sequence[Dict[str, Any]]) -> List[str]:
     """Refuse a stated time or date the captured frames contradict.
 
-    THE PUBLICATION HALF OF THE GATE THE FALSE FRAME-308 STATEMENT WALKED
-    PAST: its commentary reads "It is ten past eight in the morning on the
-    twenty-eighth of May" against timing fields of 08:05:36 and
-    "Thursday, May 20", and every structural check passed over it because
-    the row is internally consistent.
+    THE PUBLICATION HALF OF THE GATE THE FALSE FRAME-308 STATEMENT WALKED PAST:
+    its commentary reads "It is ten past eight in the morning on the
+    twenty-eighth of May" against timing fields of 08:05:36 and "Thursday, May
+    20", and every structural check passed over it because the row is
+    internally consistent.
 
-    EACH ENTRY IS JUDGED AGAINST THE READING ITS AUTHOR HAD IN FRONT OF
-    THEM -- the PREVIOUS entry's clock and date -- AND against its own,
-    accepting agreement with either.  The commentary is the reason the
-    survivor pressed that key, so it belongs to the moment before it, and
-    judging "five past eight, so I am going to lie down" against the clock
-    a nine-hour sleep produced would refuse an honest sentence; equally,
-    the frame this cue is DISPLAYED OVER carries its own reading, and a
-    sentence that agrees with what the viewer can see is not a
-    fabrication.  Both readings were observed and both are committed, so
-    either is honest evidence.  The first entry has nothing before it and
-    is judged against its own reading alone.
+    EACH ENTRY IS JUDGED AGAINST THE READING ITS AUTHOR HAD IN FRONT OF THEM --
+    the PREVIOUS entry's clock and date -- AND against its own, accepting
+    agreement with either.  The commentary is the reason the survivor pressed
+    that key, so it belongs to the moment before it, and judging "five past
+    eight, so I am going to lie down" against the clock a nine-hour sleep
+    produced would refuse an honest sentence; equally, the frame this cue is
+    DISPLAYED OVER carries its own reading, and a sentence that agrees with
+    what the viewer can see is not a fabrication.
 
-    manifest.py owns the parser and the tolerances, for the same reason
-    the voice gate does.
+    manifest.py owns the parser and the tolerances, for the same reason the
+    voice gate does.
     """
     problems = []
     previous_clock = None
@@ -1382,19 +1207,17 @@ def overlong_entries(cues: Sequence[Cue]) -> List[int]:
 def caption_length_problems(cues: Sequence[Cue]) -> List[str]:
     """Refuse a caption that does not fit the cue geometry.
 
-    A PUBLICATION-BLOCKING GATE, and it used to be an advisory that
-    printed one summary line and wrote the files anyway.  That is how 88
-    of 419 shipped cues came to carry three, four, five and six lines,
-    one of them inside a 250 ms window: the contract says at most
+    A PUBLICATION-BLOCKING GATE, not an advisory.  The contract is at most
     CUE_MAX_LINES lines of about CUE_LINE_WIDTH columns, and a contract
-    reported on stderr is not enforced.
+    reported on stderr is not enforced: the files are written, cues carrying
+    three, four, five and six lines go out with them -- one of them inside a
+    250 ms window -- and nobody has to act on the summary line.
 
-    ONE PROBLEM PER OFFENDING CUE, naming the entry, the frame it
-    describes and how many lines it needs, because the operator has to
-    rewrite that sentence and a bounded sample would hide most of the
-    work.  Nothing is shortened to satisfy this: the remedy is a shorter
-    sentence in the source commentary, amended at
-    playthrough/manifest.jsonl and regenerated through every derived
+    ONE PROBLEM PER OFFENDING CUE, naming the entry, the frame it describes and
+    how many lines it needs, because the operator has to rewrite that sentence
+    and a bounded sample would hide most of the work.  Nothing is shortened to
+    satisfy this: the remedy is a shorter sentence in the source commentary,
+    amended at playthrough/manifest.jsonl and regenerated through every derived
     artifact in one pass.
     """
     problems = []
@@ -1413,13 +1236,14 @@ def caption_length_problems(cues: Sequence[Cue]) -> List[str]:
 
 
 # ---------------------------------------------------------------------
-# Filesystem.  Both artifacts must land inside the playthrough/ tree
-# derived from THIS MODULE'S own location: they are the record of a
-# captured session, and a caption file written somewhere else would be
-# muxed into the film as though it were the record.  Nothing here uses
-# a shell, an eval or a path it has not validated, so the new tooling
-# adds no alert to the repository's CodeQL gate, and there is no
-# network surface of any kind.
+# Filesystem
+#
+# Both artifacts must land inside the playthrough/ tree derived from
+# THIS MODULE'S own location: they are the record of a captured session,
+# and a caption file written somewhere else would be muxed into the film
+# as though it were the record.  Nothing here uses a shell, an eval or a
+# path it has not validated, so the new tooling adds no alert to the
+# repository's CodeQL gate, and there is no network surface of any kind.
 # ---------------------------------------------------------------------
 
 
@@ -1442,10 +1266,9 @@ def _module_dir() -> str:
 def _playthrough_dir() -> str:
     """Return the absolute playthrough/ directory.
 
-    Derived from this module's own location rather than from the
-    working directory, exactly as timeline.py and manifest.py derive
-    it, so a helper is correct even when it is invoked from somewhere
-    else.
+    Derived from this module's own location rather than from the working
+    directory, exactly as timeline.py and manifest.py derive it, so a helper is
+    correct even when it is invoked from somewhere else.
     """
     return os.path.dirname(_module_dir())
 
@@ -1476,11 +1299,9 @@ def default_markdown_path() -> str:
 def default_dossier_path(root: Optional[str] = None) -> str:
     """Return the dossier this module reads the survivor's name from.
 
-    `root` is a call site's argument and nothing else, exactly as it is
-    on validated_output_path(): it relocates the approved tree for a
-    test that owns a temporary directory, and no environment variable
-    reaches it.  Without one the layout is env.sh's PLAYTHROUGH_DOSSIER,
-    falling back to the module's own playthrough/dossier.md.
+    `root` is a call site's argument and nothing else, exactly as it is on
+    validated_output_path(): it relocates the approved tree for a test that
+    owns a temporary directory, and no environment variable reaches it.
     """
     if root is None:
         return _default_path(ENV_DOSSIER, DOSSIER_NAME)
@@ -1495,22 +1316,17 @@ def read_survivor_name(dossier_path: Optional[str] = None,
                        root: Optional[str] = None) -> str:
     """Return the survivor's name as the dossier's first heading gives it.
 
-    THE ONE PLACE THE NAME IS ESTABLISHED.  playthrough/dossier.md is
-    the survivor's own account of themselves, written before the first
-    keystroke, and its first level-one heading is that name -- so it is
-    the name every other layer of the record agrees with, and the name
-    this module's title has to carry.  Reading it here rather than
-    spelling it in a constant is what makes "one survivor, one name"
-    true of a record that can be re-captured.
+    THE ONE PLACE THE NAME IS ESTABLISHED.  playthrough/dossier.md is the
+    survivor's own account of themselves, written before the first keystroke,
+    and its first level-one heading is that name -- so it is the name every
+    other layer of the record agrees with, and the name this module's title has
+    to carry.
 
-    FAILS CLOSED, IN EVERY DIRECTION.  A missing dossier, a dossier that
-    is not a regular file, one this module cannot read, one with no
-    level-one heading, or a heading long enough to be a paragraph rather
-    than a name each raise TranscriptError instead of yielding a
-    fallback: a transcript titled with a guess is exactly the defect
-    this derivation exists to make impossible.  The dossier is READ and
-    never written, and it is held to the same containment and
-    no-symlink rules as this stage's own destinations.
+    FAILS CLOSED, IN EVERY DIRECTION.  A missing dossier, a dossier that is not
+    a regular file, one this module cannot read, one with no level-one heading,
+    or a heading long enough to be a paragraph rather than a name each raise
+    TranscriptError instead of yielding a fallback: a transcript titled with a
+    guess is exactly the defect this derivation exists to make impossible.
     """
     path = (default_dossier_path(root) if dossier_path is None
             else dossier_path)
@@ -1577,29 +1393,22 @@ def read_survivor_name(dossier_path: Optional[str] = None,
 def assert_no_raw_markup(text: str, label: str) -> None:
     """Refuse text that could be rendered as HTML rather than read.
 
-    The header is written into a Markdown document, and Markdown passes
-    raw HTML straight through to the renderer.  read_survivor_name's
-    grammar already makes a derived header safe by construction, but a
-    header can also be SUPPLIED, and that path derives nothing -- so the
-    two are held to the same standard here.
+    The header is written into a Markdown document, and Markdown passes raw
+    HTML straight through to the renderer.
 
-    Deliberately narrow: an angle bracket, an ampersand, or an
-    `onsomething=` attribute.  It is not a general HTML sanitiser and does
-    not try to be -- the header is two generated lines, and anything in it
-    resembling a tag means something has gone wrong upstream rather than
-    that a document needs cleaning.
+    Deliberately narrow: an angle bracket, an ampersand, or an `onsomething=`
+    attribute.
 
-    THE RULE ITSELF LIVES IN manifest.py, and is imported rather than
-    restated, for the reason given beside the vocabulary gate at the top
-    of this file: two lists mean two answers to one question, and this
-    question decides whether a string is publishable.  A review found
-    exactly that drift -- this gate held the HEADING to the wide rule
-    while the body was held only to STYLE_RE, which does not name `img`
-    -- so the writer (build_row, build_amendment), this gate and
-    _commentary_problems now all reach the same verdict through the same
-    function.
+    THE RULE ITSELF LIVES IN manifest.py, and is imported rather than restated,
+    for the reason given beside the vocabulary gate at the top of this file:
+    two rules mean two answers to one question, and this question decides
+    whether a string is publishable.  Holding the heading to the wide rule
+    while the body is held to a narrower pattern -- STYLE_RE, which does not
+    name `img` -- is that drift in miniature, so the writer (build_row,
+    build_amendment), this gate and _commentary_problems all reach one verdict
+    through one function.
 
-    :raises TranscriptError: naming what was found.
+    :raises TranscriptError: naming what it found.
     """
     problem = manifest.raw_markup_problem(text, label)
     if problem is not None:
@@ -1611,19 +1420,13 @@ def assert_survivor_name_grammar(name: str, source: str) -> None:
 
     Letters and the combining marks that accent them, plus the small
     punctuation set a person's name uses -- space, apostrophe (straight or
-    typographic), hyphen, period, comma.  Everything else is refused,
-    naming the character and its codepoint.
+    typographic), hyphen, period, comma.
 
-    This is what keeps raw markup out of playthrough/transcript.md.  The
-    name is written into a Markdown heading, and a heading reading
-    `<img src=x onerror=...>` executes in a permissive renderer -- so the
-    grammar, not an escape, is the control: see
-    SURVIVOR_NAME_PUNCTUATION for why publishing an escaped payload would
-    be the wrong answer for an evidence artifact.
-
-    Digits are refused as well.  Nothing needs them -- a regnal suffix is
-    spelled in letters -- and excluding them closes numeric character
-    references without a second rule.
+    This is what keeps raw markup out of playthrough/transcript.md.  The name
+    is written into a Markdown heading, and a heading reading `<img src=x
+    onerror=...>` executes in a permissive renderer -- so the grammar, not an
+    escape, is the control: see SURVIVOR_NAME_PUNCTUATION for why publishing an
+    escaped payload would be the wrong answer for an evidence artifact.
 
     :raises TranscriptError: naming the first character that fails.
     """
@@ -1652,13 +1455,10 @@ def markdown_header(dossier_path: Optional[str] = None,
                     root: Optional[str] = None) -> str:
     """Return the transcript's two generated lines.
 
-    The title names the survivor playthrough/dossier.md introduces, so a
-    reader arriving at either artifact meets the same person under the
-    same heading -- a property that is now derived rather than asserted.
-    Both lines are held to the out-of-character gate and to the
-    no-timestamp rule here, at the moment they are built, so a dossier
-    heading carrying an engineering word or a timestamp-shaped string is
-    refused with the word named instead of reaching the artifact.
+    The title names the survivor playthrough/dossier.md introduces, so a reader
+    arriving at either artifact meets the same person under the same heading.
+    The name is DERIVED from the dossier rather than asserted here, so the
+    two cannot name different survivors.
     """
     name = read_survivor_name(dossier_path, root)
     header = "# %s%s\n\n%s" % (name, MARKDOWN_TITLE_SUFFIX,
@@ -1708,18 +1508,15 @@ def validated_output_path(
 ) -> str:
     """Return an absolute path this module may write, or raise.
 
-    Shape first -- a non-empty string or os.PathLike with no NUL byte,
-    naming a file rather than a directory -- then canonical containment
-    inside the approved root, then no symbolic link on the path or on
-    any component below that root, then no existing non-regular file
-    where the artifact goes.  A FIFO, a device node, /etc/anything and
-    a path outside playthrough/ are all refused here rather than
-    opened.
+    Shape first -- a non-empty string or os.PathLike with no NUL byte, naming a
+    file rather than a directory -- then canonical containment inside the
+    approved root, then no symbolic link on the path or on any component below
+    that root, then no existing non-regular file where the artifact goes.
 
-    `root` is a call site's argument and nothing else: no environment
-    variable reaches it.  It exists so that a test can hold these
-    rules against a temporary directory it owns instead of writing
-    into the committed record of a session.
+    `root` is a call site's argument and nothing else: no environment variable
+    reaches it.  It exists so that a test can hold these rules against a
+    temporary directory it owns instead of writing into the committed record of
+    a session.
     """
     if value is None:
         raise TranscriptError("%s is required" % label)
@@ -1762,31 +1559,20 @@ def _assert_canonical_destination(
 ) -> None:
     """Refuse anything but this stage's two exact destinations.
 
-    CONTAINMENT IS NOT ENOUGH, and this is the gap it leaves.  Every
-    artifact of this pipeline lives under playthrough/, so a rule that
-    only says "inside the approved root" still accepts
-    playthrough/manifest.jsonl, playthrough/timeline.json,
-    playthrough/dossier.md, playthrough/cata-play.mp4 and anything under
-    playthrough/userdir/.  A --srt or --markdown -- or a
-    $PLAYTHROUGH_SRT -- naming one of those would write a caption file
-    over the session's own evidence: the manifest every count derives
-    from, the timeline both this module and render_movie.py read as the
-    single source of truth, the survivor's dossier, or the engine's save.
-    The write reports success, and the loss surfaces much later as an
-    unrelated stage failing to parse something.
+    CONTAINMENT IS NOT ENOUGH, and this is the gap it leaves.  Every artifact
+    of this pipeline lives under playthrough/, so a rule that only says "inside
+    the approved root" still accepts playthrough/manifest.jsonl,
+    playthrough/timeline.json, playthrough/dossier.md,
+    playthrough/cata-play.mp4 and anything under playthrough/userdir/.
 
     Note that a Markdown destination is the sharpest case of all, because
-    playthrough/ holds four other .md files -- dossier.md,
-    TECHNICAL_NOTES.md and README.md among them -- so a suffix check
-    alone would happily overwrite the survivor's own backstory.
+    playthrough/ holds four other .md files -- dossier.md, TECHNICAL_NOTES.md
+    and README.md among them -- so a suffix check alone would happily overwrite
+    the survivor's own backstory.
 
-    So the destinations are ENUMERATED rather than merely bounded, from
-    the same SRT_NAME and MARKDOWN_NAME constants the defaults are built
-    from, so the two cannot drift apart.  $PLAYTHROUGH_SRT and
-    $PLAYTHROUGH_MARKDOWN consequently no longer relocate these
-    artifacts: they are committed evidence with one place to live, and
-    env.sh exports them so every stage AGREES where that is -- not so it
-    can be moved.
+    So the destinations are ENUMERATED rather than merely bounded, from the
+    same SRT_NAME and MARKDOWN_NAME constants the defaults are built from, so
+    the two cannot drift apart.
     """
     permitted = {
         os.path.realpath(os.path.join(approved, SRT_NAME)): SRT_NAME,
@@ -1808,11 +1594,8 @@ def _assert_canonical_destination(
 def _sync_directory(parent: str) -> None:
     """Force a rename in `parent` to the device, tolerating refusal.
 
-    os.replace() is atomic with respect to a reader, but the directory
-    entry it creates is not durable until the directory itself is
-    synced.  A filesystem that refuses to sync a directory is reported
-    rather than allowed to end the run: the data itself is already
-    fsynced.
+    os.replace() is atomic with respect to a reader, but the directory entry it
+    creates is not durable until the directory itself is synced.
     """
     try:
         descriptor = os.open(parent, os.O_RDONLY | os.O_DIRECTORY)
@@ -1832,21 +1615,15 @@ def _sync_directory(parent: str) -> None:
 def write_text(path: str, text: str) -> str:
     """Write `text` to `path` atomically.  Returns the path written.
 
-    UTF-8 with newline="\\n", so the file has LF endings whatever the
-    platform and never a byte-order mark: a mark would sit in front of
-    the first cue's sequence number and stop it being read as one.
+    UTF-8 with newline="\n", so the file has LF endings whatever the platform
+    and never a byte-order mark: a mark would sit in front of the first cue's
+    sequence number and stop it being read as one.
 
-    THE REPLACEMENT IS ATOMIC.  Opening the destination "w" truncates
-    it first, so an interruption between the truncation and the last
-    byte -- a full disk, a signal, a crash -- would destroy a
-    transcript that was complete and leave half of one in its place,
-    which is worse than a stale one because the stale one is at least
-    internally consistent.  So the text goes to a temporary file in the
-    SAME directory, is flushed and fsynced so the bytes are durable,
-    and is then moved into place with os.replace(), which either fully
-    succeeds or leaves the previous file untouched.  A failed attempt
-    removes its temporary file rather than leaving litter beside the
-    artifact.
+    THE REPLACEMENT IS ATOMIC.  Opening the destination "w" truncates it first,
+    so an interruption between the truncation and the last byte -- a full disk,
+    a signal, a crash -- would destroy a transcript that was complete and leave
+    half of one in its place, which is worse than a stale one because the stale
+    one is at least internally consistent.
     """
     parent = os.path.dirname(path)
     if not os.path.isdir(parent):
@@ -1887,19 +1664,11 @@ def write_transcripts(
 ) -> Tuple[str, str]:
     """Write both artifacts as ONE RECOVERABLE generation.
 
-    Returns the two paths.
-
-    THE PAIR IS PUBLISHED TOGETHER OR NOT AT ALL, and where that cannot
-    be guaranteed it is at least RECOVERABLE.  Both texts are complete
-    before this is called, both paths are validated before either file is
-    opened, and each individual write is atomic -- but two atomic renames
-    are not one atomic pair.  The SRT lands first, so between the two
-    os.replace() calls the caption file describes this timeline while the
-    Markdown transcript still describes the previous one; and a process
-    killed between them used to leave that mismatch on disk permanently,
-    with each file internally valid and nothing recording that they
-    disagreed.  The module's own docstring claimed a journal made this
-    "detectable and finishable".  There was no journal.  There is now.
+    THE PAIR IS PUBLISHED TOGETHER OR NOT AT ALL, and where that cannot be
+    guaranteed it is at least RECOVERABLE.  Both texts are complete before this
+    is called, both paths are validated before either file is opened, and each
+    individual write is atomic -- but two atomic renames are not one atomic
+    pair.
 
     Four things close it, in this order:
 
@@ -1924,9 +1693,9 @@ def write_transcripts(
         timeline.
 
     Both records are published before the journal is cleared, and every
-    published digest is re-read and checked first.  A publication that
-    cannot be verified leaves the journal in place.
-    """  # noqa: D401
+    published digest is re-read and checked first.  A publication that cannot
+    be verified leaves the journal in place.
+    """
     srt_target = validated_output_path(
         default_srt_path() if srt_path is None else srt_path,
         "the caption path", root)
@@ -2031,13 +1800,9 @@ def write_generation_manifest(srt_target: str, srt_text: str,
                               root: Optional[str] = None) -> str:
     """Write playthrough/build/transcript.json.  Returns the path.
 
-    THE PROVENANCE THE MUX READS.  It names the timeline these transcripts
-    were computed from -- by that document's own digest, not by its path,
-    which any two runs share -- and the digest of each file this run
-    published.  embed_captions.sh holds the caption file it is about to
-    mux against this, and holds this against the movie's own manifest, so
-    a caption track from one session cannot be muxed into a film from
-    another.  Deterministic: no timestamp, no host, no absolute path.
+    THE PROVENANCE THE MUX READS.  It names the timeline these transcripts were
+    computed from -- by that document's own digest, not by its path, which any
+    two runs share -- and the digest of each file this run published.
     """
     target = generation_manifest_path(root)
     parent = os.path.dirname(target)
@@ -2164,12 +1929,10 @@ def build_parser() -> argparse.ArgumentParser:
 def relative_to_repo(path: str) -> str:
     """Express a path relative to the checkout, for reporting.
 
-    The summary is a machine-readable line that lands in run logs and in
-    the report, and an absolute path there discloses the filesystem
-    layout of the host -- the home directory, the operator's name, the
-    build root -- to every reader of an artifact that says nothing about
-    them otherwise.  Repository-relative is exactly the information the
-    reader needs and none of the information they do not.
+    The summary is a machine-readable line that lands in run logs and in the
+    report, and an absolute path there discloses the filesystem layout of the
+    host -- the home directory, the operator's name, the build root -- to every
+    reader of an artifact that says nothing about them otherwise.
     """
     try:
         checkout = os.path.dirname(approved_root())
@@ -2196,18 +1959,12 @@ def main(
 ) -> int:
     """Run the command line and return an exit status.
 
-    Zero only when both artifacts were built, every check passed, and
-    -- unless --dry-run was given -- both were written.  A run_pipeline
-    stage reads nothing but this status, so an exit status that is
-    wrong is a whole stage that appears to have worked.
+    Zero only when both artifacts were built, every check passed, and -- unless
+    --dry-run was given -- both were written.
 
-    `root` is a call site's argument and nothing else: argparse never
-    produces it, no environment variable reaches it, and the shell
-    entry point below never passes one.  It exists so that a test can
-    hold the REAL command line against a temporary directory it owns,
-    instead of either testing a paraphrase of it or writing into the
-    committed artifact tree, which is the captured evidence of a
-    session and is not a test fixture.
+    `root` is a call site's argument and nothing else: argparse never produces
+    it, no environment variable reaches it, and the shell entry point below
+    never passes one.
     """
     args = build_parser().parse_args(argv)
     try:

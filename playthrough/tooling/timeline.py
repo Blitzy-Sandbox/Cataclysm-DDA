@@ -4,15 +4,14 @@
 This module owns every number the film is paced by and is the ONLY place
 those numbers are computed.  playthrough/timeline.json is the single
 source of truth: make_transitions.py, render_movie.py and make_srt.py
-all read it rather than deriving durations of their own, which is what
-makes cue drift arithmetically impossible rather than merely unlikely.
+read it rather than deriving durations of their own, which is what makes
+cue drift arithmetically impossible rather than merely unlikely.
 
 THE MODEL
     duration[i] = min(max(clock[i + 1] - clock[i], 0.25), 10.0)
 
-The in-game clock is READ and DIFFERENCED.  Turns are not modelled,
-moves are not modelled, and no conversion constant appears anywhere in
-this file: differencing the sidebar clock is precisely how the
+The in-game clock is READ and DIFFERENCED.  Turns are not modelled and
+no conversion constant appears anywhere in this file, which is how the
 turns-to-seconds ambiguity is sidestepped rather than encoded.  The
 0.25 s floor and the 10.0 s ceiling are the only two deviations from a
 literal one-second-of-video-per-second-of-game-time mapping.
@@ -26,10 +25,9 @@ the movie.
 TRANSITIONS ARE CHARGED TO VIDEO TIME, NOT GAME TIME
 A raw delta above the ceiling sets transition_after, and the cue cursor
 advances by TRANSITION seconds after that frame's window and before the
-next frame's window opens -- so the cue following a transition starts
-that much later than the preceding window closed, and every cue after it
-carries the same offset.  A raw delta of exactly 10.0 s is NOT a
-transition: the comparison is strictly greater.
+next one opens, so every cue after a transition carries the same offset.
+A raw delta of exactly 10.0 s is NOT a transition: the comparison is
+strictly greater.
 
 THE INVARIANT, asserted by validate_timeline() and carried in the
 artifact so a reader can check it without running anything:
@@ -39,47 +37,39 @@ artifact so a reader can check it without running anything:
 WHY THE CLOCK PARSE IS RELIABLE
 to_string_time_of_day (src/calendar.cpp:638-663) has three branches:
 "military" gives "%02d%02d.%02d", "24h" gives "%02d:%02d:%02d", and the
-12h default gives a variable-width AM/PM form.  Only the 24h branch is
-fixed-width AND colon-delimited, which is why seed_options.py sets
-24_HOUR=24h -- the shipped default is "12h"
-(src/options.cpp:1868-1877).  "military" is fixed width too but
-colon-free (0815.32), so CLOCK_RE rejects it just as firmly as the 12h
-form.  Anything that does not match CLOCK_RE is refused, never guessed
-at.
+shipped 12h default (src/options.cpp:1868-1877) gives a variable-width
+AM/PM form.  Only the 24h branch is fixed-width AND colon-delimited,
+which is why seed_options.py sets 24_HOUR=24h; CLOCK_RE rejects the
+colon-free military form as firmly as the 12h one, and anything it does
+not match is refused rather than guessed at.
 
 NEVER FABRICATE -- AND LEAVE AN AUDIT TRAIL
 display::time_string (src/display.cpp:207-218) returns an exact clock
-only when the survivor has a watch; otherwise one of the coarse phrases
-from display::time_approx (src/display.cpp:159-186), or "???" when the
-sky is not visible.  A reading that is absent, coarse, unknown, in
-another format or moving backwards is RECONCILED against the last
-trusted reading and FLAGGED -- never smoothed, interpolated or
-invented.  Every such frame carries reconciled=true and a
-reconciled_reason, so a reader can SEE which clocks were reconciled
-instead of having to trust that none were.  The manifest keeps the
-reading verbatim; this module keeps the audit trail.
+only when the survivor has a watch; otherwise a coarse phrase from
+display::time_approx (src/display.cpp:159-186), or "???" when the sky is
+not visible.  A reading that is absent, coarse, unknown, in another
+format or moving backwards is RECONCILED against the last trusted
+reading and FLAGGED -- never smoothed, interpolated or invented -- and
+carries reconciled=true with a reconciled_reason, so a reader can SEE
+which clocks were reconciled instead of trusting that none were.  The
+manifest keeps the reading verbatim; this module keeps the audit trail.
 
 THE DAY COMES FROM THE DATE LINE, THE TIME OF DAY FROM THE CLOCK
-A clock alone cannot answer two questions this module has to answer.
-Given 08:00:00 followed by 07:59:00 it cannot tell a crossing of
-midnight from a misread going backwards -- both are consistent with
-the pixels -- and given 08:00:00 followed by 08:00:00 it cannot tell a
-frame that consumed no time from one that consumed a full day, because
-the time of day came back the same.  Inferring a day counter from the
-clock alone therefore invents a day in the first case and loses one in
-the second.
+A clock alone is ambiguous in both directions: 08:00:00 followed by
+07:59:00 is a crossing of midnight or a misread, and 08:00:00 followed
+by 08:00:00 is a frame that consumed no time or one that consumed a
+whole day.  Inferring the day from the clock therefore invents one in
+the first case and loses one in the second.  So the sidebar DATE line is
+the authority for the DAY while the clock stays the authority for the
+time of day, which is the engine's own division (display::date_string,
+src/display.cpp:194-205).  That evidence is not a manifest field -- the
+schema is exactly six fields, and a seventh would be the second source
+of truth this pipeline exists to avoid -- so it arrives in two sidecars
+bound to each frame's digest: capture telemetry at
+playthrough/build/observations.jsonl and ocr_clock.py's per-frame audit
+at playthrough/build/frame_dates.jsonl.
 
-So the sidebar DATE line is read as well.  capture.sh reports it per
-frame and session.py records it in
-playthrough/build/observations.jsonl -- the telemetry sidecar, NOT the
-manifest, whose schema is exactly six fields and does not change -- and
-this module uses it as the authority for the DAY while
-the clock remains the authority for the time of day.  That is the
-engine's own division: display::date_string (src/display.cpp:194-205)
-renders the day and display::time_string (src/display.cpp:207-218)
-renders the time within it.
-
-Concretely, with date evidence in hand:
+With date evidence in hand:
   * the clock going backwards while the date is unchanged is REFUSED
     as a misread, not inflated into a phantom day;
   * the clock going backwards while the date advanced is a confirmed
@@ -87,9 +77,15 @@ Concretely, with date evidence in hand:
   * the clock NOT going backwards while the date advanced has the
     missing whole days ADDED, so a night's sleep of exactly 24 hours
     is 86400 seconds and not 0.
-Without date evidence the older clock-only rule at MAX_WRAP_ADVANCE
-still applies, but every decision made that way is recorded as
-UNVERIFIED in the artifact rather than presented as established, and
+
+No arithmetic bound overrules captured evidence, because none is
+defensible against it: one sleep keystroke asks the engine for up to a
+full day -- try_sleep_dur is 24_hours (src/handle_action.cpp:1464),
+narrowed to 3-9 h only when an alarm is set -- so an evidenced crossing
+implying 23 h 59 m is ordinary play.  A frame with NO date evidence is
+UNKNOWN, never "unchanged", and falls to the bounded clock-only rule: a
+wrap within MAX_WRAP_ADVANCE is believed, anything larger is reconciled,
+and the decision is recorded as UNVERIFIED rather than as established.
 --require-date turns the absence of evidence into a hard failure for a
 run that must not accept one.
 
@@ -101,51 +97,15 @@ USE
     "$PLAYTHROUGH_PYTHON" -B "$TL" --verify
     "$PLAYTHROUGH_PYTHON" -B "$TL" --require-date
 
-    env.sh exports PLAYTHROUGH_PYTHON, the pinned CPython 3.12 this
-    tooling is installed against, and -B matters here specifically:
-    this module imports a sibling, so an interpreter left free to write
-    bytecode would leave a playthrough/tooling/__pycache__ that
-    .gitignore's terminal !/playthrough/** negation makes committable.
-
     import timeline
     doc = timeline.build_timeline(rows)
     cue = timeline.format_srt_timecode(doc["frames"][0]["cue_start"])
-THE DAY COUNTER RUNS ON CAPTURED EVIDENCE, NOT ON INFERENCE
-A clock that goes backwards is either a crossing of midnight or a
-misread digit, and FROM THE CLOCK ALONE THE TWO ARE
-INDISTINGUISHABLE: 08:00:00 followed by 06:00:00 is a 22-hour day if
-you assume a rollover and a bad reading if you do not, and assuming the
-rollover invents 22 hours of game time that nobody played -- which then
-paces 22 hours of film and captions to match, undetectably, because the
-artifact would be internally consistent.
 
-So WHERE A DATE WAS CAPTURED the day advances only when the sidebar's
-own date line (display::date_string, src/display.cpp:193-205) is
-observed to have CHANGED across the pair.  That evidence is not a
-manifest field -- the six-field schema is fixed, and a seventh would
-create the second source of truth this pipeline exists to avoid -- so it
-comes from the per-frame audit sidecar ocr_clock.py writes as it reads
-each frame, playthrough/build/frame_dates.jsonl.  A captured date is
-then the ONLY authority for the day counter and no arithmetic test
-overrules it, because no bound on the implied advance is defensible
-against real evidence.  A single sleep
-keystroke asks the engine for up to a full day -- try_sleep_dur is
-24_hours (src/handle_action.cpp:1464), narrowed to 3-9 h only when the
-survivor sets an alarm -- so an evidenced crossing of midnight implying
-23 h 59 m is ordinary play, not a misread.  A rollover's implied advance
-is under a day by construction, which is exactly the range one keystroke
-can produce.  A frame with NO date evidence is UNKNOWN, never
-"unchanged": a missing record means nothing was observed, and treating
-that as proof the day did not turn would be the same invention in the
-other direction.  Such a frame falls to the bounded clock-only rule
-above -- a wrap within MAX_WRAP_ADVANCE is believed, anything larger is
-reconciled -- and the decision it produces is recorded as unverified,
-never as confirmed.
-
-USE
-    "$PLAYTHROUGH_PYTHON" -B playthrough/tooling/timeline.py
-    "$PLAYTHROUGH_PYTHON" -B playthrough/tooling/timeline.py --stdout
-    "$PLAYTHROUGH_PYTHON" -B playthrough/tooling/timeline.py --verify
+env.sh exports PLAYTHROUGH_PYTHON, the pinned CPython 3.12 this tooling
+is installed against.  -B matters here specifically: this module imports
+a sibling, so an interpreter free to write bytecode would leave a
+playthrough/tooling/__pycache__ that .gitignore's terminal
+!/playthrough/** negation makes committable.
 
 The mathematics is exposed as pure functions -- parse, absolutise,
 delta, clamp, flag, cue walk, formatter -- separately from every
@@ -154,28 +114,24 @@ touching the disk.  format_srt_timecode lives here rather than in
 make_srt.py so there is exactly one implementation of the timecode.
 
 --verify ATTESTS, IT DOES NOT MERELY SELF-CHECK
-Both command line paths read their rows through one gate --
-manifest.row_problems(), the same canonical row validation a write
-passes -- so the manifest is held to it BEFORE the stored artifact is
-compared against a fresh computation from it.  Without that, a
-timeline built from a manifest whose rows are malformed matches itself
-byte for byte and would be reported as proof: the defect sits on both
-sides of the comparison, so the comparison cannot see it.  The
-byte-identity check answers "was this file computed from this
-manifest"; the gate answers "is this manifest a record of a session at
-all".  --verify has to answer both to mean anything.
+Both command line paths read their rows through manifest.row_problems(),
+the same canonical validation a write passes, so the manifest is held to
+it BEFORE the stored artifact is compared against a fresh computation
+from it.  Otherwise a timeline built from malformed rows matches itself
+byte for byte and that match would be reported as proof: the defect sits
+on both sides of the comparison, so the comparison cannot see it.  The
+byte-identity check answers "was this file computed from this manifest";
+the gate answers "is this manifest a record of a session at all".
 
-Where the timeline may live is not negotiable, and how it lands is
-not either.  Every path this module opens -- for reading as well as
-for writing -- must resolve inside the playthrough/ directory derived
-from this module's OWN location, with no symlinked component, and the
-read is opened with O_NOFOLLOW; PLAYTHROUGH_TIMELINE and a -o argument
-are honoured within that tree and refused outside it.  The write is
-atomic: a private temporary file in the same directory is fsynced and
-then os.replace()d over the artifact, so a reader sees the whole old
-document or the whole new one, never half of one.  Both matter for the
-same reason -- render_movie.py and make_srt.py consume THIS file and
-must agree, so a redirected or truncated timeline would silently
+Every path this module opens -- for reading as well as for writing --
+must resolve inside the playthrough/ directory derived from this
+module's OWN location, with no symlinked component, and the read is
+opened with O_NOFOLLOW; PLAYTHROUGH_TIMELINE and a -o argument are
+honoured within that tree and refused outside it.  The write is atomic,
+a fsynced private temporary os.replace()d over the artifact, so a reader
+sees the whole old document or the whole new one.  Both matter for the
+same reason: render_movie.py and make_srt.py consume THIS file and must
+agree, so a redirected or truncated timeline would silently
 desynchronise the movie from its captions.
 
 Standard library only, plus the sibling manifest module: nothing here
@@ -200,16 +156,14 @@ from dataclasses import dataclass
 from typing import (Any, Dict, Iterable, Iterator, List, Mapping,
                     NamedTuple, Optional, Sequence, Set, Tuple)
 
-# Set BEFORE the sibling import below, which is the only import here
-# that can write into the repository working tree.  env.sh exports
-# PYTHONDONTWRITEBYTECODE=1, but this module is documented as runnable
-# on its own, and a standalone `python3 playthrough/tooling/timeline.py`
-# without that environment would compile the sibling to
-# playthrough/tooling/__pycache__/ -- which .gitignore's terminal
-# `!/playthrough/**` negation then makes COMMITTABLE.  A stray .pyc in a
-# committed evidence tree is an artifact nobody authored.  The flag must
-# precede the import it protects, because the interpreter consults it at
-# compile time; every documented command also passes -B.
+# Set BEFORE the sibling import below, which is the only import here that can
+# write into the repository working tree.  env.sh exports
+# PYTHONDONTWRITEBYTECODE=1, but this module is documented as runnable on its
+# own, and a standalone `python3 playthrough/tooling/timeline.py` without that
+# environment would compile the sibling to playthrough/tooling/__pycache__/ --
+# which .gitignore's terminal `!/playthrough/**` negation then makes
+# COMMITTABLE.  A stray .pyc in a committed evidence tree is an artifact nobody
+# authored.
 sys.dont_write_bytecode = True
 
 try:
@@ -249,31 +203,12 @@ SECONDS_PER_DAY = SECONDS_PER_HOUR * HOURS_PER_DAY
 # guess about which part of it was the clock.
 CLOCK_RE = re.compile(r"^[0-9]{2}:[0-9]{2}:[0-9]{2}$")
 
-# There is deliberately NO plausibility bound on the advance an
-# evidenced rollover implies, and the absence is the fix for a defect
-# rather than an omission.
-#
-# The original rule was arithmetic alone: any backwards clock whose
+# There is deliberately NO plausibility bound on the advance an evidenced
+# rollover implies, and the absence is the fix for a defect rather than an
+# omission.  The original rule was arithmetic alone: any backwards clock whose
 # implied advance came in under 23 hours was accepted as a crossing of
-# midnight, so 08:00:00 -> 06:00:00 (implying 22 hours) passed
-# unreconciled and invented most of a day.  Date evidence replaced that
-# rule -- see THE DAY COUNTER RUNS ON EVIDENCE in the module docstring
-# -- but the 23-hour bound was kept on as a second opinion, justified by
-# the claim that no single keystroke could advance the clock that far.
-# That claim is false: `time_duration try_sleep_dur = 24_hours`
-# (src/handle_action.cpp:1464) means one sleep keystroke asks for a full
-# day, narrowed to 3-9 h only when the survivor sets an alarm.  So the
-# bound could reject a real, date-evidenced night's sleep and
-# reconcile away time that was genuinely played, which is the same
-# category of lie in the other direction.
-#
-# Nor is any looser bound worth writing: a wrap computes
-# SECONDS_PER_DAY - previous + current with current < previous, so its
-# implied advance is already strictly under one day -- precisely the
-# range one keystroke can produce.  A bound at a day would never fire.
-# The day counter therefore rests on the captured date line alone, and
-# RECONCILED_BACKWARDS survives as the defensive guard against a
-# negative delta reaching the artifact (see absolutise_clocks).
+# midnight, so 08:00:00 -> 06:00:00 (implying 22 hours) passed unreconciled and
+# invented most of a day.
 
 # ---------------------------------------------------------------------
 # THE SIDEBAR DATE LINE
@@ -304,35 +239,18 @@ CLOCK_RE = re.compile(r"^[0-9]{2}:[0-9]{2}:[0-9]{2}$")
 DAYS_PER_YEAR = 364
 DAYS_PER_MONTH_GROUP = 91
 
-# How many whole days ONE keystroke may be believed to have advanced
-# the calendar.  It is a plausibility bound on the DATE reading, the
-# exact counterpart of MAX_WRAP_ADVANCE on the clock reading, and it is
-# emphatically NOT a game-time conversion factor -- this module has
-# none.
-#
-# It exists because a date line is OCR output like any other, and a
-# single misread character turns evidence into a large lie in either
-# direction: "Jan" read as "Jun" jumps five months forward, and a day
-# number misread downward looks like a year wrap once the modulo has
-# had it.  Neither is distinguishable from the truth by arithmetic, so
-# a step beyond this bound is refused and flagged rather than believed.
-#
-# A week is as permissive as the bound can be while still catching that
-# class.  Nothing legitimate is lost below it: the session is one
-# continuous sitting that ends in sleep or death, its longest single
-# action is a night's sleep or a long craft, and a genuine crossing of
-# the new year advances the calendar by a day or two.
+# How many whole days ONE keystroke may be believed to have advanced the
+# calendar.  It is a plausibility bound on the DATE reading, the exact
+# counterpart of MAX_WRAP_ADVANCE on the clock reading, and it is emphatically
+# NOT a game-time conversion factor -- this module has none.
 MAX_DATE_ADVANCE_DAYS = 7
 
-# The most a crossing of midnight may imply when NOTHING evidences it.
-# One hour: a genuine crossing observed between two adjacent keystrokes
-# lands within minutes of midnight, so an hour is generous for the real
-# case while refusing the phantom one -- an unevidenced 08:00:00 ->
-# 06:00:00 would otherwise become twenty-two hours of game time that
-# nobody observed, and the film would be paced to match.  With date
-# evidence this bound does not apply at all: the date is then the
-# authority, and one sleep keystroke can legitimately ask the engine for
-# a whole day.
+# The most a crossing of midnight may imply when NOTHING evidences it.  One
+# hour: a genuine crossing observed between two adjacent keystrokes lands
+# within minutes of midnight, so an hour is generous for the real case while
+# refusing the phantom one -- an unevidenced 08:00:00 -> 06:00:00 would
+# otherwise become twenty-two hours of game time that nobody observed, and the
+# film would be paced to match.
 MAX_WRAP_ADVANCE = 3600
 MONTHS_PER_GROUP = 3
 LONG_MONTH_DAYS = 31
@@ -542,15 +460,10 @@ ENTRY_FIELDS = (
     "cue_end",
     "action",
     "commentary",
-    # Whether an AMENDMENT supplied this entry's narration.  The record
-    # is append-only and is never edited, so a correction to a row's
-    # action or commentary lives in playthrough/amendments.jsonl and is
-    # applied by manifest.resolve_rows() when a derivative is computed.
-    # A reader of this artifact can therefore see, per frame, whether
-    # the text above came straight off the manifest line or through a
-    # digest-bound amendment -- which is the difference between "the
-    # record says this" and "the record says something the ledger
-    # corrects", and it must not be invisible.
+    # Whether an AMENDMENT supplied this entry's narration.  The record is
+    # append-only and is never edited, so a correction to a row's action or
+    # commentary lives in playthrough/amendments.jsonl and is applied by
+    # manifest.resolve_rows() when a derivative is computed.
     "amended",
 )
 
@@ -656,10 +569,9 @@ DIGEST_BLOCK = 65536
 class TimelineError(Exception):
     """The manifest cannot be turned into an honest timeline.
 
-    Raised in place of writing a timeline that would be wrong, because
-    a wrong timeline is worse than no timeline: it would pace the film
-    and the captions from the same bad numbers and look consistent
-    while doing it.
+    Raised in place of writing a timeline that would be wrong, because a wrong
+    timeline is worse than no timeline: it would pace the film and the captions
+    from the same bad numbers and look consistent while doing it.
     """
 
 
@@ -667,24 +579,14 @@ class TimelineError(Exception):
 class ClockReading:
     """One frame's clock, absolutised and audited.
 
-    `seconds` is the absolutised reading -- day * 86400 plus the time
-    of day -- and is monotonically non-decreasing across a session by
-    construction.  `reconciled` is true when `seconds` was carried
-    from a neighbour rather than read from this frame, in which case
-    `reason` says why; `text` is the reading exactly as the manifest
-    recorded it, and `kind` is manifest.classify_ingame_clock()'s
-    description of it.
+    `seconds` is the absolutised reading -- day * 86400 plus the time of day --
+    and is monotonically non-decreasing across a session by construction.
 
-    `date` is the sidebar date line for this frame, exactly as
-    capture.sh recorded it in the telemetry sidecar, `date_kind`
-    describes it, and `date_agreement` says how the day decision for
-    this frame stands against that evidence -- confirmed, corrected,
-    unverified, conflict, or none when the session carried no date
-    evidence at all.  Carrying all three means a reader can see which
-    days were established and which were inferred, instead of having
-    to trust that they all were.
-
-    Frozen because a reading is evidence.
+    `date` is the sidebar date line for this frame, exactly as capture.sh
+    recorded it in the telemetry sidecar, `date_kind` describes it, and
+    `date_agreement` says how the day decision for this frame stands against
+    that evidence -- confirmed, corrected, unverified, conflict, or none when
+    the session carried no date evidence at all.
     """
 
     seconds: int
@@ -737,11 +639,8 @@ def _warn_once(key: str, message: str) -> None:
 def round_seconds(value: float) -> float:
     """Return `value` at the artifact's millisecond resolution.
 
-    Every duration and cue time in playthrough/timeline.json goes
-    through here, so the file cannot carry a number finer than a
-    subtitle cue can express.  A negative zero is normalised to zero,
-    because "-0.0" in a committed JSON file is noise that would show up
-    in a diff.
+    Every duration and cue time in playthrough/timeline.json goes through here,
+    so the file cannot carry a number finer than a subtitle cue can express.
     """
     if not isinstance(value, (int, float)) or isinstance(value, bool):
         raise TimelineError(
@@ -761,17 +660,15 @@ def round_seconds(value: float) -> float:
 def parse_time_of_day(value: Any) -> Optional[int]:
     """Return seconds since midnight for a contracted reading.
 
-    Accepts only the fixed-width 24h form the session is configured to
-    render (src/calendar.cpp:649) and returns None for everything else
-    -- an absent reading, a coarse phrase, "???", a military or 12h
-    clock, OCR debris, or a syntactically valid reading whose fields
-    are out of range such as "24:00:00" or "08:75:00".  Returning None
-    is how this module refuses to guess: the caller reconciles and
-    flags, it never invents.
+    Accepts only the fixed-width 24h form the session is configured to render
+    (src/calendar.cpp:649) and returns None for everything else -- an absent
+    reading, a coarse phrase, "???", a military or 12h clock, OCR debris, or a
+    syntactically valid reading whose fields are out of range such as
+    "24:00:00" or "08:75:00".
 
-    Surrounding whitespace is ignored, which is a transcription
-    detail rather than a reading, and matches how
-    manifest.classify_ingame_clock() describes the same value.
+    Surrounding whitespace is ignored, which is a transcription detail rather
+    than a reading, and matches how manifest.classify_ingame_clock() describes
+    the same value.
     """
     if not isinstance(value, str):
         return None
@@ -798,12 +695,9 @@ parse_clock = parse_time_of_day
 def clock_kind(value: Any) -> str:
     """Describe a reading using the manifest's own classification.
 
-    Delegated rather than reimplemented so that the eleven coarse
-    phrases from display::time_approx (src/display.cpp:159-186) are
-    listed in exactly one file.  A value the classifier refuses -- a
-    number, a list -- is reported as unrecognised here rather than
-    raising, because this module's job is to survive a bad manifest
-    loudly, not to stop on it.
+    Delegated rather than reimplemented so that the eleven coarse phrases from
+    display::time_approx (src/display.cpp:159-186) are listed in exactly one
+    file.
     """
     try:
         return manifest.classify_ingame_clock(value)
@@ -825,18 +719,15 @@ def reason_for_reading(value: Any) -> Optional[str]:
 def month_ordinal(month: str, day_of_month: int) -> Optional[int]:
     """Return the zero-based day of the year for a month-form date.
 
-    The inverse of ``month_and_day`` (src/calendar.cpp), which is a
-    pure function: the twelve months fall into four groups of three
-    covering 91 days each, and within a group the first month has 31
-    days and the other two have 30.  So the group contributes
-    ``group * 91`` and the position within it contributes 0, 31 or 61
-    plus the day.
+    The inverse of ``month_and_day`` (src/calendar.cpp), which is a pure
+    function: the twelve months fall into four groups of three covering 91 days
+    each, and within a group the first month has 31 days and the other two have
+    30.
 
-    Returns None for the engine's ``Cataclysm`` placeholder month,
-    which names no position in the year, and for a day outside the
-    month it claims -- both are readings that cannot be turned into an
-    ordinal, and inventing one would be exactly the fabrication this
-    module refuses.
+    Returns None for the engine's ``Cataclysm`` placeholder month, which names
+    no position in the year, and for a day outside the month it claims -- both
+    are readings that cannot be turned into an ordinal, and inventing one would
+    be exactly the fabrication this module refuses.
     """
     if month not in MONTH_NAMES:
         return None
@@ -862,13 +753,8 @@ def month_ordinal(month: str, day_of_month: int) -> Optional[int]:
 class DateReading:
     """One frame's sidebar date line, parsed but never repaired.
 
-    `text` is the reading exactly as capture.sh recorded it.  `kind`
-    is one of DATE_MONTH, DATE_SEASON, DATE_ABSENT or
-    DATE_UNRECOGNISED.  `ordinal` is the zero-based day of the year
-    when the month form made one derivable; `season` and
-    `day_of_season` carry the season form; `weekday` is the weekday
-    name when one was read, used only to cross-check a day count
-    modulo seven.  Frozen because a reading is evidence.
+    `text` is the reading exactly as capture.sh recorded it.  `kind` is one of
+    DATE_MONTH, DATE_SEASON, DATE_ABSENT or DATE_UNRECOGNISED.
     """
 
     text: Optional[str]
@@ -888,9 +774,7 @@ def parse_date_line(value: Any) -> DateReading:
     """Parse one sidebar date line into a :class:`DateReading`.
 
     Accepts exactly the two forms display::date_string can render
-    (src/display.cpp:194-205) and nothing else.  Anything absent is
-    DATE_ABSENT and anything else is DATE_UNRECOGNISED -- neither is
-    repaired, and neither is allowed to influence a day count.
+    (src/display.cpp:194-205) and nothing else.
     """
     if value is None:
         return DateReading(text=None, kind=DATE_ABSENT)
@@ -982,11 +866,8 @@ def weekday_disagreement(
 ) -> Optional[str]:
     """Report a weekday that contradicts a day count, or None.
 
-    Weekdays advance one per day (src/calendar.cpp day_of_week), so a
-    day count and a weekday step must agree modulo seven.  When they
-    do not, one of the two lines was misread; that is worth saying out
-    loud, and it is deliberately NOT used to override the day count,
-    because a weekday alone cannot say by how much it is wrong.
+    Weekdays advance one per day (src/calendar.cpp day_of_week), so a day count
+    and a weekday step must agree modulo seven.
     """
     if previous.weekday is None or current.weekday is None:
         return None
@@ -1008,14 +889,11 @@ def weekday_disagreement(
 def normalise_date(value: Any) -> Optional[str]:
     """Return a date line reduced to a comparable form, or None.
 
-    Only ever used to answer "is this the same date as that one", never
-    to work out WHICH date it is: the engine renders two different forms
-    (`<Weekday>, <Month> <day>` and `<Season>, day N`, chosen by
-    SHOW_MONTHS, src/display.cpp:193-205) and parsing either into a
-    calendar would be inventing structure this module does not need.
-    Case and internal whitespace are flattened so that an OCR pass which
-    read "Spring,  day 3" and one which read "Spring, day 3" are not
-    mistaken for two different days.
+    Only ever used to answer "is this the same date as that one", never to work
+    out WHICH date it is: the engine renders two different forms (`<Weekday>,
+    <Month> <day>` and `<Season>, day N`, chosen by SHOW_MONTHS,
+    src/display.cpp:193-205) and parsing either into a calendar would be
+    inventing structure this module does not need.
     """
     if not isinstance(value, str):
         return None
@@ -1029,12 +907,9 @@ def _date_verdict(
 ) -> Optional[bool]:
     """Did the day turn between these two frames?
 
-    True when both dates were observed and they differ, False when both
-    were observed and they agree, and None when either is missing --
-    which is UNKNOWN, not "unchanged".  Keeping the third answer
-    distinct is the whole point: a frame with no record proves nothing,
-    and collapsing it into False would silently claim the day did not
-    turn on exactly the frames where nobody looked.
+    True when both dates were observed and they differ, False when both were
+    observed and they agree, and None when either is missing -- which is
+    UNKNOWN, not "unchanged".
     """
     here = normalise_date(date_here)
     previous = normalise_date(date_previous)
@@ -1090,15 +965,11 @@ def _next_absolute(
         return day * SECONDS_PER_DAY + time_of_day, day, True, None
     anchor = 0 if previous_absolute is None else previous_absolute
     if turned is None:
-        # No date either way.  A wrap is BELIEVED only when what it
-        # implies is small enough to be a crossing rather than a
-        # phantom: 23:59:58 -> 00:00:04 implies six seconds and is
-        # overwhelmingly a real crossing, while 08:00:00 -> 06:00:00
-        # implies twenty-two hours of game time from one keystroke, and
-        # nothing here can tell that from a misread digit.  The bound is
-        # what separates the two; above it the reading is reconciled and
-        # flagged rather than inflated into a day that may never have
-        # passed.
+        # No date either way.  A wrap is BELIEVED only when what it implies is
+        # small enough to be a crossing rather than a phantom: 23:59:58 ->
+        # 00:00:04 implies six seconds and is overwhelmingly a real crossing,
+        # while 08:00:00 -> 06:00:00 implies twenty-two hours of game time from
+        # one keystroke, and nothing here can tell that from a misread digit.
         implied = SECONDS_PER_DAY - previous_time_of_day + time_of_day
         if implied > MAX_WRAP_ADVANCE:
             return anchor, day, False, RECONCILED_NO_DATE_EVIDENCE
@@ -1116,14 +987,8 @@ def absolutise_clocks(
 ) -> List[ClockReading]:
     """Absolutise a session's readings, monotonic forward only.
 
-    Walks the readings once, carrying a day counter, so that
-    23:59:58 -> 00:00:04 yields a POSITIVE six-second step rather than
-    a negative one.  A reading that cannot be parsed, or that would
-    move time backwards without being explicable as a crossing of
-    midnight, is reconciled against the last trusted reading and
-    flagged; the day counter and the trusted time of day stay anchored
-    to that last good reading, so a single misread frame cannot corrupt
-    the delta of the frame after it.
+    Walks the readings once, carrying a day counter, so that 23:59:58 ->
+    00:00:04 yields a POSITIVE six-second step rather than a negative one.
 
     THE DAY COUNTER PREFERS EVIDENCE OVER INFERENCE.  When `dates`
     supplies the sidebar date line for the frames -- capture.sh reports
@@ -1141,49 +1006,26 @@ def absolutise_clocks(
       missing whole days ADDED, so an action spanning 24 hours is
       86400 seconds rather than the 0 the time of day implies.
 
-    `dates` is a sequence of date lines parallel to `readings`, each
-    the verbatim reading for that frame or None where none was
-    observed; ocr_clock.py records them per frame and
-    date_lines_for_rows() lines them up.  A sequence SHORTER than
-    `readings` reads as None for the frames it does not reach -- a
-    session whose date evidence stops partway is a real case.  A LONGER
-    one is REFUSED with TimelineError rather than truncated: a surplus
-    means the evidence was lined up against some other frame list, so
-    the entries that do get used may belong to different frames
-    entirely, and the timeline built from them would look perfectly
-    plausible.
+    `dates` is a sequence of date lines parallel to `readings`, each the
+    verbatim reading for that frame or None where none was observed;
+    ocr_clock.py records them per frame and date_lines_for_rows() lines them
+    up.
 
-    WHERE NO USABLE DATE EVIDENCE EXISTS for a pair of frames the
-    clock-only rule applies, and that rule is BOUNDED rather than
-    absolute: a wrap is believed only where what it implies is small
-    enough to be a crossing rather than a phantom day.  23:59:58 ->
-    00:00:04 implies six seconds and is believed; 08:00:00 -> 06:00:00
-    implies twenty-two hours of game time from a single keystroke,
-    which nothing here can tell apart from a misread digit, so it is
-    reconciled against the last trusted reading and flagged instead.
-    MAX_WRAP_ADVANCE is that bound.  Believed or reconciled, the
-    decision is recorded as UNVERIFIED wherever date evidence was
-    supplied but none was usable for that pair, and as NONE where the
-    caller passed no dates at all, so the artifact distinguishes a day
-    that was established from one that was merely inferred, and both
-    from a run that had no date evidence to consult -- and a bound is a
-    weaker instrument than the date, since
-    a genuinely long sleep across midnight falls the wrong side of it,
-    which is why the capture reads the date for every frame and why the
-    evidenced path above never consults it.
+    WHERE NO USABLE DATE EVIDENCE EXISTS for a pair of frames the clock-only
+    rule applies, and that rule is BOUNDED rather than absolute: a wrap is
+    believed only where what it implies is small enough to be a crossing rather
+    than a phantom day.  23:59:58 -> 00:00:04 implies six seconds and is
+    believed; 08:00:00 -> 06:00:00 implies twenty-two hours of game time from a
+    single keystroke, which nothing here can tell apart from a misread digit,
+    so it is reconciled against the last trusted reading and flagged instead.
 
-    Readings before the first trusted one -- the language prompt, the
-    main menu, character creation, all of which are captured before a
-    world exists and therefore have no clock at all -- are anchored
-    FORWARD to the first trusted reading rather than to zero.  They
-    then differ by nothing and land on the floor, which is what the
-    requirements ask for: menu frames are kept at 0.25 s, not inflated
-    into a phantom advance by the first real reading of the session.
-    Every one of them is still flagged reconciled, so the anchoring is
-    visible in the artifact rather than implied.
+    Readings before the first trusted one -- the language prompt, the main
+    menu, character creation, all of which are captured before a world exists
+    and therefore have no clock at all -- are anchored FORWARD to the first
+    trusted reading rather than to zero.
 
-    The returned list is always the same length as `readings`.  No
-    entry is dropped, merged or reordered.
+    The returned list is always the same length as `readings`.  No entry
+    is dropped, merged or reordered.
     """
     values = list(readings)
     date_values = list(dates) if dates is not None else []
@@ -1263,25 +1105,15 @@ def _absolutise_one(
 ) -> Tuple[int, int, bool, str, Optional[str], Optional[str]]:
     """Absolutise one parsed clock against the session and the date.
 
-    Returns ``(absolute, day, trusted, agreement, reason, note)``.
-    The date decides the DAY; the clock decides the time within it.
-    Every branch that departs from what the clock alone would have
-    concluded says so, either in the returned agreement or in the note
-    the caller warns with.
+    Returns ``(absolute, day, trusted, agreement, reason, note)``. The date
+    decides the DAY; the clock decides the time within it.
     """
-    # The clock-only answer, from the one function that owns that rule.
-    # It never advances the day without observed date evidence, so its
-    # reason -- clock-rollover-unevidenced when nothing could say
-    # whether the day turned, clock-backwards-same-date when the date
-    # said it did not -- is carried through verbatim rather than being
-    # flattened into a generic "not monotonic".
-    #
-    # `turned` is the coarse verdict -- did the observed date line
-    # change across this pair, yes, no, or nobody looked -- so the
-    # baseline is already date-informed even where the two readings
-    # cannot be turned into a day COUNT (an unrecognised form, or two
-    # season-form lines from different seasons).  The exact count, when
-    # one is derivable, is applied by the branches below.
+    # The clock-only answer, from the one function that owns that rule.  It
+    # never advances the day without observed date evidence, so its reason --
+    # clock-rollover-unevidenced when nothing could say whether the day turned,
+    # clock-backwards-same-date when the date said it did not -- is carried
+    # through verbatim rather than being flattened into a generic "not
+    # monotonic".
     (clock_only, clock_only_day, clock_only_trusted,
      clock_only_reason) = _next_absolute(
         time_of_day, day, previous_time_of_day, previous_absolute,
@@ -1344,9 +1176,9 @@ def _absolutise_one(
                    MAX_DATE_ADVANCE_DAYS))
 
     if days == 0 and time_of_day < previous_time_of_day:
-        # THE DEFECT THIS EXISTS FOR.  A clock-only reading would have
-        # called this a crossing of midnight and manufactured a day.
-        # The date says the day did not change, so it is a misread.
+        # A clock-only reading would call this a crossing of midnight
+        # and manufacture a day.  The date says the day did not change,
+        # so it is a misread.
         anchor = 0 if previous_absolute is None else previous_absolute
         return (anchor, day, False, AGREE_CONFLICT,
                 RECONCILED_SAME_DAY,
@@ -1398,16 +1230,9 @@ def _anchor_leading_readings(
 ) -> List[ClockReading]:
     """Anchor a leading run of unreadable clocks to the first reading.
 
-    Menu and character-creation frames precede the first clock the
-    session can show, so leaving them at zero would charge the whole
-    of the first real reading to the last menu frame as a phantom
-    advance.  Pulling them forward to the first trusted value gives
-    them a zero delta and the 0.25 s floor instead, which is the
-    documented treatment for frames that consume no game time.  They
-    keep their reconciled flag and their reason, so nothing is
-    concealed; and if no reading in the whole session was ever
-    trusted, there is nothing to anchor to and the list is returned
-    untouched.
+    Menu and character-creation frames precede the first clock the session can
+    show, so leaving them at zero would charge the whole of the first real
+    reading to the last menu frame as a phantom advance.
     """
     first_trusted = None
     for index, reading in enumerate(readings):
@@ -1447,8 +1272,8 @@ def _anchor_leading_readings(
 # READ WITH THE STANDARD LIBRARY, NOT BY IMPORTING ocr_clock: that
 # module imports Pillow and pytesseract at module scope, and importing
 # it here would make the OCR stack a hard dependency of computing a
-# timeline -- so a checkout could no longer recompute or audit the
-# artifact without the capture toolchain installed.  The field names
+# timeline, so a checkout could not recompute or audit the artifact
+# without the capture toolchain installed.  The field names
 # below are therefore the contract between the two modules, and
 # test_timeline.py asserts the round trip against a sidecar that
 # ocr_clock.py's own writer produced, so the two cannot drift apart
@@ -1457,13 +1282,11 @@ def _anchor_leading_readings(
 
 AUDIT_FRAME_FIELD = "frame"
 AUDIT_DATE_FIELD = "date"
-# The capture digest an audit row is BOUND to, when it carries one.  A
-# row written by a capture that took place after the attestation ledger
-# existed names the sha256 of the frame it read, which is what makes the
-# corroboration a statement about THOSE pixels rather than about
-# whatever file now occupies that index.  Rows written before the ledger
-# existed have no such field, and are accepted as unbound and counted as
-# such -- never silently treated as though they had been checked.
+# The capture digest an audit row is BOUND to, when it carries one.  A row
+# written by a capture that took place after the attestation ledger existed
+# names the sha256 of the frame it read, which is what makes the corroboration
+# a statement about THOSE pixels rather than about whatever file now occupies
+# that index.
 AUDIT_SHA256_FIELD = "frame_sha256"
 ENV_DATE_AUDIT = "PLAYTHROUGH_DATE_AUDIT"
 
@@ -1471,13 +1294,9 @@ ENV_DATE_AUDIT = "PLAYTHROUGH_DATE_AUDIT"
 def default_date_audit_path(root: Optional[str] = None) -> str:
     """Absolute path of the date-evidence sidecar.
 
-    A nominated `root` outranks $PLAYTHROUGH_DATE_AUDIT because the
-    nomination is the containment boundary this path is then held to, so
-    an ambient export pointing outside it could only be refused.  With no
-    nomination the export wins (env.sh is the single definition of the
-    artifact layout); with neither, the path comes from this file's own
-    location.  read_date_audit() takes an explicit path, which outranks
-    every default here.
+    A nominated `root` outranks $PLAYTHROUGH_DATE_AUDIT because the nomination
+    is the containment boundary this path is then held to, so an ambient export
+    pointing outside it could only be refused.
     """
     if root is not None:
         return os.path.join(approved_root(root), "frame_dates.jsonl")
@@ -1495,21 +1314,15 @@ def read_date_audit(
 ) -> Dict[int, Optional[str]]:
     """Return {frame index: date line} from the sidecar.  Read-only.
 
-    An ABSENT sidecar yields an empty mapping rather than an error: a
-    session captured before the audit existed, or one whose clock reads
-    all came from the inline last-resort reader, legitimately has none.
-    Every frame's date is then UNKNOWN, a backwards clock is believed
-    only within the MAX_WRAP_ADVANCE bound and reconciled beyond it,
-    and nothing is invented -- which is the correct outcome, not a
-    silent downgrade.
+    An ABSENT sidecar yields an empty mapping rather than an error: a session
+    captured before the audit existed, or one whose clock reads all came from
+    the inline last-resort reader, legitimately has none.
 
-    UNANIMITY OR UNOBSERVED.  This used to take the LAST record for an
-    index, and a security review named both consequences.  Two records
-    that disagreed about the date were warned about and the later value
-    was returned anyway, so a contradiction still decided a day.  And a
-    later record whose date was ``null`` -- the ordinary shape of an
-    unreadable reading -- ERASED a date that had been read successfully,
-    silently, with no warning at all, because null is not a conflict.
+    UNANIMITY OR UNOBSERVED.  Taking the LAST record for an index lets a
+    contradiction decide a day: two records that disagree are warned
+    about and the later value is returned anyway, and a later `null` --
+    the ordinary shape of an unreadable reading -- erases a date that was
+    read successfully, silently, because a null is not a conflict.
 
     So every record for a frame is collected and the frame's date is:
 
@@ -1523,41 +1336,27 @@ def read_date_audit(
         the true one;
       * unobserved when nothing was read, which it already was.
 
-    A ``null`` reading is an ABSENCE of evidence and not counter-evidence
-    to a reading that succeeded, so it neither erases nor contradicts
-    one.  Every disagreement is reported by frame.
+    A ``null`` reading is an ABSENCE of evidence and not counter-evidence to a
+    reading that succeeded, so it neither erases nor contradicts one.  Every
+    disagreement is reported by frame.
 
-    BOUND TO THE PIXELS, WHEN THE ROW SAYS WHICH.  `digests` maps a frame
-    index to its attestation (as :func:`manifest.attested_digests`
-    returns, or to a bare sha256 string).  A row carrying a
-    ``frame_sha256`` that does not match is a reading of a frame that is
-    no longer there -- a withdrawn capture, or a re-photographed index --
-    and it is discarded rather than attributed to the frame that now
-    holds the index.  A row with no such field predates the ledger; it is
-    used, and the fact that nothing binds it is reported once.
+    BOUND TO THE PIXELS, WHEN THE ROW SAYS WHICH.  `digests` maps a frame index
+    to its attestation (as :func:`manifest.attested_digests` returns, or to a
+    bare sha256 string).
 
-    A MALFORMED LINE IN A FILE THAT EXISTS RAISES.  It used to be
-    reported and skipped, on the reasoning that this is corroborating
-    evidence and losing one frame's worth of it could only degrade a
-    rollover to "unevidenced" rather than make the timeline wrong.  A
-    code review showed that reasoning is false: dropping a row is not
-    neutral, it CHANGES the evidence set.  Two frames whose audit rows
-    record the same date turn a backwards clock into a same-date
-    reconciliation; drop one of those rows and the same backwards clock
-    becomes an unevidenced wrap that the bounded clock-only rule may
-    believe -- a different, wrong timeline, published silently while
-    every count still tallies.  Publication here is fail-closed, so a
-    row that cannot be parsed stops the run and leaves the previous
-    timeline exactly as it was.
+    A MALFORMED LINE IN A FILE THAT EXISTS RAISES.  Skipping it looks
+    harmless -- this is corroborating evidence, and losing one frame's
+    worth of it can only degrade a rollover to "unevidenced" -- but
+    dropping a row CHANGES the evidence set: two rows recording the same
+    date turn a backwards clock into a same-date reconciliation, and
+    without one of them the same clock becomes an unevidenced wrap the
+    bounded rule may believe.  Publication is fail-closed, so an
+    unparseable row stops the run and leaves the previous timeline as it
+    was.
 
-    An ABSENT file is still not an error: "there is no audit" is a
-    complete, honest state, and it is the only one that means no
-    evidence.  A file that exists is a claim, and a claim this module
-    cannot read is not one it may read half of.
-
-    :raises TimelineError: when the file exists and any row of it is
-        malformed -- invalid JSON, not an object, no usable frame index,
-        or a date that is neither text nor null.
+    :raises TimelineError: when the file exists and any row of it is malformed
+        -- invalid JSON, not an object, no usable frame index, or a date that
+        is neither text nor null.
     """
     resolved = _validated_evidence_path(
         default_date_audit_path(root) if audit_path is None
@@ -1659,10 +1458,8 @@ def read_date_audit(
 def _bounded(indices: Sequence[int], limit: int = 10) -> str:
     """Render frame indexes for a diagnostic, bounded but not rounded.
 
-    Three affected frames should be named; four hundred should not print
-    four hundred numbers into a terminal.  The remainder is COUNTED
-    rather than dropped, because "and 409 more" still states the true
-    size of what is being reported.
+    Three affected frames should be named; four hundred should not print four
+    hundred numbers into a terminal.
     """
     shown = ", ".join(str(index) for index in indices[:limit])
     if len(indices) > limit:
@@ -1697,14 +1494,12 @@ def date_lines_for_rows(
 ) -> List[Optional[str]]:
     """Line the date evidence up with the manifest rows.  Pure.
 
-    KEYED OFF THE ROWS, never off the sidecar: the manifest is the
-    session's evidence and the sidecar only corroborates it, so a record
-    for a frame that no row mentions is ignored.  That case is real
-    rather than hypothetical -- a frame withdrawn by capture.sh after
-    its audit record was already written leaves exactly such an orphan
-    record behind, and its date must not be attributed to whatever
-    frame later took that index.  The returned list is always the same
-    length as `rows`, with None wherever nothing was observed.
+    KEYED OFF THE ROWS, never off the sidecar: the manifest is the session's
+    evidence and the sidecar only corroborates it, so a record for a frame that
+    no row mentions is ignored.  That case is real rather than hypothetical --
+    a frame withdrawn by capture.sh after its audit record was already written
+    leaves exactly such an orphan record behind, and its date must not be
+    attributed to whatever frame later took that index.
     """
     resolved = (read_date_audit(audit_path, root, digests)
                 if dates is None else dates)
@@ -1723,12 +1518,9 @@ def date_lines_for_rows(
 def raw_deltas(absolutes: Sequence[int]) -> List[float]:
     """Return the unclamped in-game seconds each frame is on screen.
 
-    raw[i] is the clock advance between frame i and frame i + 1; the
-    final frame has no successor and is therefore 0.0, which the floor
-    turns into 0.25 s of video.  A negative delta cannot occur --
-    absolutise_clocks() guarantees a non-decreasing sequence -- and is
-    refused loudly here rather than propagated, because it would mean
-    the guard upstream had broken.
+    raw[i] is the clock advance between frame i and frame i + 1; the final
+    frame has no successor and is therefore 0.0, which the floor turns into
+    0.25 s of video.
     """
     values = list(absolutes)
     deltas: List[float] = []
@@ -1750,10 +1542,9 @@ def raw_deltas(absolutes: Sequence[int]) -> List[float]:
 def clamp_duration(raw: float) -> float:
     """Clamp one raw delta into the on-screen duration.
 
-    The floor keeps a zero-delta frame visible; the ceiling keeps a
-    night's sleep watchable.  Nothing else is applied, and no frame is
-    ever removed by this function -- a zero delta returns the floor,
-    it does not return zero.
+    The floor keeps a zero-delta frame visible; the ceiling keeps a night's
+    sleep watchable.  Nothing else is applied, and no frame is ever removed by
+    this function -- a zero delta returns the floor, it does not return zero.
     """
     return min(max(round_seconds(raw), FLOOR), CEIL)
 
@@ -1788,17 +1579,13 @@ def cue_windows(
 ) -> Tuple[List[Tuple[float, float]], float]:
     """Walk the video cursor and return every cue window and the total.
 
-    Frame i occupies [cue_start, cue_end); the cursor then advances by
-    that frame's duration, and by TRANSITION as well when the frame is
-    flagged -- charged to VIDEO time, before the next frame's window
-    opens.  That is what keeps the captions on the picture once
-    transitions have been inserted, and it is why the cue after the
-    first transition of the reference sequence starts at 17.25 s
-    rather than 16.25 s.
+    Frame i occupies [cue_start, cue_end); the cursor then advances by that
+    frame's duration, and by TRANSITION as well when the frame is flagged --
+    charged to VIDEO time, before the next frame's window opens.
 
-    The returned total is the cursor's final value, which equals the
-    last cue end whenever the last frame is unflagged -- and it always
-    is, because the last frame's raw delta is 0.0 by construction.
+    The returned total is the cursor's final value, which equals the last cue
+    end whenever the last frame is unflagged -- and it always is, because the
+    last frame's raw delta is 0.0 by construction.
     """
     if len(durations) != len(flags):
         raise TimelineError(
@@ -1834,23 +1621,12 @@ def timeline_total(
 def format_srt_timecode(seconds: float) -> str:
     """Return `seconds` as a SubRip timecode, "HH:MM:SS,mmm".
 
-    A COMMA before the milliseconds: this is SubRip, not WebVTT, and a
-    full stop there produces a file some players silently ignore.
-    Hours are zero-padded to two digits even when there are none, so
-    every cue in playthrough/transcript.srt has the same width; a film
-    longer than a hundred hours widens the field rather than
-    truncating, which SubRip tolerates.
+    A COMMA before the milliseconds: this is SubRip, not WebVTT, and a full
+    stop there produces a file some players silently ignore.
 
-    Milliseconds are rounded half-up so that the same input always
-    gives the same timecode -- 3661.5 s is 01:01:01,500 exactly.  The
-    values this pipeline produces are whole multiples of a quarter
-    second and so are never near a rounding boundary, but a formatter
-    that rounded a shade differently on a different platform would put
-    the captions and the container out of step, which is precisely the
-    failure the shared timeline exists to prevent.
-
-    Negative time has no meaning in a caption file and is refused
-    rather than wrapped.
+    Milliseconds are rounded half-up so that the same input always gives the
+    same timecode -- 3661.5 s is 01:01:01,500 exactly.  Negative time has
+    no meaning in a caption file and is refused rather than wrapped.
     """
     if not isinstance(seconds, (int, float)) or isinstance(seconds,
                                                            bool):
@@ -1883,11 +1659,8 @@ def format_srt_timecode(seconds: float) -> str:
 def _row_index(row: Dict[str, Any], position: int) -> int:
     """Return a row's frame index, or its position if it has none.
 
-    session.py owns the counter and every real row carries it; a row
-    that does not is numbered by where it sits, which is what an index
-    means.  A present index has to be a genuine positive integer,
-    because a string or a float there would put the frames array out of
-    step with the frames directory.
+    session.py owns the counter and every real row carries it; a row that does
+    not is numbered by where it sits, which is what an index means.
     """
     if "frame" not in row:
         return position
@@ -1906,11 +1679,9 @@ def _row_index(row: Dict[str, Any], position: int) -> int:
 def _row_text(row: Dict[str, Any], key: str) -> str:
     """Return a carried-through text field, defaulting to empty.
 
-    action and commentary belong to the in-character record and are
-    copied VERBATIM: this module never edits, summarises, translates or
-    annotates them, and never injects engineering language into the
-    survivor's voice.  A row that omits one carries an empty string
-    rather than an invented sentence.
+    action and commentary belong to the in-character record and are copied
+    VERBATIM: this module never edits, summarises, translates or annotates
+    them, and never injects engineering language into the survivor's voice.
     """
     value = row.get(key)
     if value is None:
@@ -2000,81 +1771,48 @@ def build_timeline(
     Nothing is dropped, merged, reordered or decimated, so the length
     of the frames array is always the number of rows given.
 
-    :param observations: the capture telemetry, keyed by frame index,
-        as :func:`load_observations` returns it.  Its ``date`` values
-        are the sidebar date lines the day counter is cross-checked
-        against.  It is a parameter rather than a file read so that the
-        whole computation stays pure and testable.  A SEQUENCE is
-        accepted here too and is read as ``dates`` below: the two
-        records carry the same evidence in two shapes, and this
-        argument is the one every caller reaches for first.
-    :param dates: the same evidence in its other form -- the per-frame
-        date lines ocr_clock.py recorded as it read them, parallel to
-        ``rows``, as :func:`date_lines_for_rows` returns them.  It is
-        NOT a fallback consulted only where the telemetry is silent.
-        Both records are read for every frame and held to ONE unanimity
-        rule, because there is no ground on which one file's reading of
-        the same photograph beats the other's: where only one of them
-        has a date, that date stands; where both do and they agree, it
-        stands; where they disagree, the frame's date is unobserved and
-        the disagreement is reported by frame.  This paragraph used to
-        describe the telemetry-preferred precedence the body below now
-        refuses, which is the same defect in the declared contract that
-        the preference itself was.
+    Passing NEITHER means NO EVIDENCE: the timeline is then computed from the
+    clock alone under the MAX_WRAP_ADVANCE bound, so a backwards clock is
+    believed only where the crossing it implies is small enough to be a
+    crossing and is otherwise reconciled rather than inferred into a day that
+    may never have passed; and every day decision is recorded as AGREE_NONE --
+    no date was read at all, which is a different statement from
+    AGREE_UNVERIFIED and is kept distinct from it (see
+    :func:`_audit_evidence`).
 
-    Passing NEITHER means NO EVIDENCE: the timeline is then computed
-    from the clock alone under the MAX_WRAP_ADVANCE bound, so a
-    backwards clock is believed only where the crossing it implies is
-    small enough to be a crossing and is otherwise reconciled rather
-    than inferred into a day that may never have passed; and every
-    day decision is recorded as AGREE_NONE -- no date was read at all,
-    which is a different statement from AGREE_UNVERIFIED and is kept
-    distinct from it (see :func:`_audit_evidence`).  This function
-    stays pure and reads nothing from the disk; main() supplies the
-    evidence.
-
-    Strictness is split deliberately.  This function refuses only what
+    :param observations: the capture telemetry, keyed by frame index, as
+        :func:`load_observations` returns it.
+    Strictness is split deliberately: this function refuses only what
     would make the arithmetic wrong -- a non-integer frame index, a
-    non-text action -- and tolerates a row that omits a presentational
-    field, so the mathematics can be exercised from a two-key test row.
-    The stricter shape check that every real row carries all six
-    manifest fields belongs to manifest.verify_manifest() and to
-    main(), which runs before writing.
+    non-text action -- and everything about the manifest's own schema is
+    the caller's gate, so a caller holding rows in memory is not made to
+    satisfy a file format.
+
+    :param dates: the same evidence in its other form -- the per-frame date
+        lines ocr_clock.py recorded as it read them, parallel to ``rows``, as
+        :func:`date_lines_for_rows` returns them.
     """
     materialised = [_as_row(row, position)
                     for position, row in enumerate(rows, start=1)]
-    # The evidence argument is shape-tolerant on purpose.  The telemetry
-    # is a MAPPING keyed by frame index; the audit is a SEQUENCE
-    # parallel to the rows.  Both are date evidence for the same
-    # frames, and both callers pass theirs in the same position, so a
-    # sequence arriving as `observations` is read as `dates` rather than
-    # being misindexed by frame number.
+    # The evidence argument is shape-tolerant on purpose.  The telemetry is a
+    # MAPPING keyed by frame index; the audit is a SEQUENCE parallel to the
+    # rows.
     if observations is not None and not isinstance(observations, dict):
         if dates is None:
             dates = observations
         observations = None
     # THE TWO DATE RECORDS ARE ONE BODY OF EVIDENCE, judged by one rule.
-    # capture.sh's telemetry row carries the date it emitted for a
-    # frame; ocr_clock.py's audit carries the date the module recorded
-    # as it read the very pixels.  Either alone is evidence.  Where BOTH
-    # exist they are held to UNANIMITY, exactly as two rows inside either
-    # record are: agreement corroborates, a `null` is an absence of
-    # evidence rather than counter-evidence, and a genuine disagreement
-    # makes that frame's date UNOBSERVED and is reported.
-    #
-    # It used to PREFER the telemetry and consult the audit only for
-    # frames the telemetry had no date for.  A code review named the
-    # consequence: the audit is the record that is unanimity-checked and
-    # digest-bound, so preferring the other one let a single conflicting
-    # telemetry row override it and change R4 timing.  Preference is the
-    # wrong instrument here -- there is no rule by which one record's
-    # reading of the same photograph beats the other's -- so neither is
-    # preferred and a contradiction resolves to "not observed".
-    #
-    # With neither record, `resolved` stays None and absolutise_clocks
-    # falls back to its BOUNDED clock-only rule: a wrap within
-    # MAX_WRAP_ADVANCE is believed, anything larger is reconciled rather
-    # than inflated into a day that may never have passed.
+    # capture.sh's telemetry row carries the date it emitted for a frame;
+    # ocr_clock.py's audit carries the date the module recorded as it read the
+    # very pixels.  Either alone is evidence.  Where BOTH exist they are held
+    # to UNANIMITY, exactly as two rows inside either record are: agreement
+    # corroborates, a `null` is an absence of evidence rather than
+    # counter-evidence, and a genuine disagreement makes that frame's date
+    # UNOBSERVED and is reported.  NEITHER RECORD IS PREFERRED -- there is
+    # no rule by which one reading of the same photograph beats the other,
+    # and preferring the telemetry would let one conflicting row of it
+    # override the audit, which is the record that is unanimity-checked
+    # and digest-bound.
     audit_dates = list(dates) if dates is not None else []
     resolved: Optional[List[Any]] = None
     if observations is not None or dates is not None:
@@ -2128,13 +1866,10 @@ def build_timeline(
     total_transition = round_seconds(TRANSITION * transition_count)
     document = {
         "version": TIMELINE_VERSION,
-        # The provenance of this computation.  Supplied by the caller
-        # rather than read here, because this function is PURE: the
-        # caller is the one that resolved and read the manifest, so it
-        # is the only party that can honestly say which file that was.
-        # An unattested document is refused by
-        # assert_timeline_document(), which is the gate every producer
-        # of a rendered artifact passes.
+        # The provenance of this computation.  Supplied by the caller rather
+        # than read here, because this function is PURE: the caller is the one
+        # that resolved and read the manifest, so it is the only party that can
+        # honestly say which file that was.
         "manifest": (dict(manifest_attestation)
                      if isinstance(manifest_attestation, dict)
                      else manifest_attestation),
@@ -2560,14 +2295,12 @@ def timeline_problems(
 ) -> List[Problem]:
     """Return every problem with a timeline, WITH its check's code.
 
-    The structured form of :func:`validate_timeline`, which is a thin
-    view of this function.  Each :class:`Problem` names the check that
-    caught the defect, so a caller can act on -- or assert on -- one
-    specific invariant instead of matching on prose.
+    The structured form of :func:`validate_timeline`, which is a thin view of
+    this function.
 
     Pure, and evaluated in exactly the order the invariants are stated:
-    document shape, then the per-entry checks, then the properties that
-    only exist across entries, then the totals.
+    document shape, then the per-entry checks, then the properties that only
+    exist across entries, then the totals.
     """
     if not isinstance(document, dict):
         return [Problem(
@@ -2650,15 +2383,11 @@ def validate_timeline(
 
         sum(durations) + sum(transitions) == total == final cue end
 
-    Nothing is repaired.  A problem is reported so that the pipeline
-    stops before pacing a film and its captions from numbers that do
-    not agree.
+    Nothing is repaired.  A problem is reported so that the pipeline stops
+    before pacing a film and its captions from numbers that do not agree.
 
-    The messages are what an operator reads, so this is the form the
-    command line and every existing caller use.  Use
-    :func:`timeline_problems` when the identity of the check matters --
-    for instance to prove in a test that a specific invariant, and not
-    a neighbouring one, is what caught a specific defect.
+    The messages are what an operator reads, so this is the form the command
+    line and every existing caller use.
     """
     return [problem.message
             for problem in timeline_problems(document,
@@ -2670,11 +2399,9 @@ def _document_numeric_problems(
 ) -> List[Problem]:
     """Report document-level fields that are not usable numbers.
 
-    Separated from the checks that compare those numbers, and run before
-    them, so that every arithmetic comparison downstream is guaranteed a
-    real, finite number to work with.  Counts must be integers because
-    they count things; the constants and totals may be either integer or
-    float because JSON writes 10.0 and 10 alike.
+    Separated from the checks that compare those numbers, and run before them,
+    so that every arithmetic comparison downstream is guaranteed a real, finite
+    number to work with.
     """
     problems = []
     for name in ("version", "frame_count", "transition_count",
@@ -2813,10 +2540,12 @@ def _total_problems(
 
 
 # ---------------------------------------------------------------------
-# Filesystem.  Every path taken from the environment or the command
-# line is validated before it reaches open(), and nothing here uses a
-# shell, so the new tooling adds no alert to the repository's CodeQL
-# gate.  There is no network surface of any kind.
+# Filesystem
+#
+# Every path taken from the environment or the command line is validated
+# before it reaches open(), and nothing here uses a shell, so the new
+# tooling adds no alert to the repository's CodeQL gate.  There is no
+# network surface of any kind.
 # ---------------------------------------------------------------------
 
 
@@ -2838,17 +2567,11 @@ def _playthrough_dir() -> str:
 def approved_root(root: Optional[str] = None) -> str:
     """Return the only directory tree this module may read or write.
 
-    Derived from this module's own location and NEVER from the
-    environment.  PLAYTHROUGH_TIMELINE, a -o argument and a caller's
-    typo are untrusted input, and this file is the single source of
-    truth the renderer and the caption generator both consume: if
-    either of them can be pointed at a document written somewhere
-    else, "single source of truth" stops meaning anything.
-    playthrough/ is the root because every artifact lives beneath it.
+    Derived from this module's own location and NEVER from the environment.
 
-    `root` exists so that a test can hold the same rules against a
-    temporary directory it owns -- an explicit argument at the call
-    site, never something the environment can reach.
+    `root` exists so that a test can hold the same rules against a temporary
+    directory it owns -- an explicit argument at the call site, never something
+    the environment can reach.
     """
     if root is None:
         return os.path.realpath(_playthrough_dir())
@@ -2881,10 +2604,9 @@ def _assert_within_root(
 ) -> str:
     """Refuse a path that does not resolve inside the approved root.
 
-    The FULLY RESOLVED form is what is tested, so `../` sequences and
-    a symlink pointing out of the tree are both caught: /etc/anything,
-    a device node and a sibling checkout are refused rather than
-    written.  Returns the approved root for the caller to reuse.
+    The FULLY RESOLVED form is what is tested, so `../` sequences and a symlink
+    pointing out of the tree are both caught: /etc/anything, a device node and
+    a sibling checkout are refused rather than written.
     """
     approved = approved_root(root)
     canonical = os.path.realpath(resolved)
@@ -2959,16 +2681,10 @@ def _validated_evidence_path(
 ) -> str:
     """Return an absolute EVIDENCE path this module may read.
 
-    The date audit and the capture telemetry are read with exactly the
-    contract the timeline artifact itself is read with: shape, then
-    canonical containment inside the approved root, then no symbolic
-    link on the path or on any component below that root.  Reading is
-    not harmless -- these two files decide whether a day passed, so a
-    redirected read paces the film from somebody else's evidence while
-    every downstream check still passes.  Unlike the timeline target
-    the NAME is not pinned, because a caller legitimately points
-    --observations or --date-audit at a second capture's sidecar inside
-    the tree.
+    The date audit and the capture telemetry are read with exactly the contract
+    the timeline artifact itself is read with: shape, then canonical
+    containment inside the approved root, then no symbolic link on the path or
+    on any component below that root.
     """
     resolved = _validated_path(value, label)
     approved = _assert_within_root(resolved, label, root)
@@ -3006,12 +2722,10 @@ def _validated_timeline_target(
 ) -> str:
     """Return an absolute timeline path this module may touch.
 
-    The shared half of reading and writing, so neither entry point can
-    be the lenient one: the path must resolve inside the approved root,
-    must not be reached through a symlinked component, and must not
-    name anything other than a regular file.  A FIFO, a device node,
-    /etc/anything and a path outside playthrough/ are refused here
-    rather than opened.
+    The shared half of reading and writing, so neither entry point can be the
+    lenient one: the path must resolve inside the approved root, must not be
+    reached through a symlinked component, and must not name anything other
+    than a regular file.
     """
     resolved = _validated_path(value, "timeline path")
     approved = _assert_within_root(resolved, "the timeline path", root)
@@ -3042,10 +2756,10 @@ def default_timeline_path() -> str:
 #
 # THREE PRODUCERS PUBLISH FROM THIS ONE DOCUMENT -- make_transitions.py,
 # render_movie.py and make_srt.py -- and each publishes a file or a
-# directory that the next stage reads.  Two runs of the same producer, or
-# a producer racing a reader, used to interleave: a half-composed
+# directory that the next stage reads.  Unserialised, two runs of the same
+# producer or a producer racing a reader interleave: a half-composed
 # transitions directory, a movie truncated by `ffmpeg -y` before its
-# replacement was verified, an SRT published while its Markdown twin was
+# replacement is verified, an SRT published while its Markdown twin is
 # still the previous generation.
 #
 # So each publication takes an exclusive lock first.  The lock lives
@@ -3139,9 +2853,8 @@ def scratch_dir(root: Optional[str] = None) -> str:
 def artifact_lock_path(name: str, root: Optional[str] = None) -> str:
     """Return the lock file that serialises one artifact's publication.
 
-    :param name: a bare stem naming the artifact -- "transitions",
-        "movie", "transcripts".  Refused if it could reach outside the
-        scratch directory.
+    :param name: a bare stem naming the artifact -- "transitions", "movie",
+        "transcripts".
     """
     if not isinstance(name, str) or not name.strip():
         raise TimelineError("the lock name must be a non-empty string")
@@ -3155,28 +2868,17 @@ def artifact_lock_path(name: str, root: Optional[str] = None) -> str:
 class ArtifactLock:
     """The exclusive right to publish one artifact.
 
-    Held across build-then-verify-then-switch, so a concurrent run waits
-    for a whole generation rather than interleaving with half of one.
-    The lock file is never unlinked: removing a lock another process is
-    waiting on is how a lock stops working.
+    Held across build-then-verify-then-switch, so a concurrent run waits for a
+    whole generation rather than interleaving with half of one.
 
-    AND THE CHECKOUT'S MUTATION LOCK, SHARED, TAKEN FIRST.  This lock
-    keeps two publications of the SAME artifact apart, which was never the
-    whole problem: a gate reading the movie, or a checkpoint staging it,
-    is not another publication and was excluded by nothing.  A render that
-    lands between the gate that passed and the commit that publishes puts
-    a film in the history that no gate ever measured -- with both locks
-    correctly held throughout, because the two holders were never the same
-    stage.  Shared rather than exclusive because a producer beside this
-    one is not the hazard; the gate and the committer are, and they take
-    the same lock exclusively.
+    AND THE CHECKOUT'S MUTATION LOCK, SHARED, TAKEN FIRST.  This lock keeps two
+    publications of the SAME artifact apart, which was never the whole problem:
+    a gate reading the movie, or a checkpoint staging it, is not another
+    publication and was excluded by nothing.
 
-    The order is fixed -- mutation first, artifact second -- and it is the
-    same order session.py uses, so no two stages can take the pair in
-    opposite orders and wedge each other.  A producer run by
-    run_pipeline.sh finds the sequencer's exclusive hold already in place,
-    proves it and reuses it rather than blocking against its own parent;
-    see manifest.mutation_lock_inherited.
+    The order is fixed -- mutation first, artifact second -- and it is the same
+    order session.py uses, so no two stages can take the pair in opposite
+    orders and wedge each other.
     """
 
     def __init__(self, name: str, root: Optional[str] = None,
@@ -3262,9 +2964,8 @@ class ArtifactLock:
 def fsync_directory(directory: str) -> None:
     """Force a directory's entries to the device.
 
-    Without this a rename is durable but the FILES it now names may not
-    be, so a crash could leave a switch visible and the artifact it
-    published empty.
+    Without this a rename is durable but the FILES it now names may not be, so
+    a crash could leave a switch visible and the artifact it published empty.
     """
     try:
         descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
@@ -3380,11 +3081,11 @@ def write_generation_journal(name: str, record: Mapping[str, Any],
         0o600)
     try:
         # A SHORT WRITE IS LEGAL AND IS RETRIED, not reported as a fault.
-        # This used to refuse the whole publication the moment os.write
-        # returned less than it was given, which conflates "the device
-        # took what it could this time" -- ordinary, and the reason the
-        # call returns a count at all -- with "the device cannot take
-        # it".  Only a call that makes NO progress is the second thing.
+        # Refusing the publication the moment os.write returns less than
+        # it was given conflates "the device took what it could this
+        # time" -- ordinary, and the reason the call returns a count at
+        # all -- with "the device cannot take it".  Only a call that
+        # makes NO progress is the second thing.
         data = payload.encode("utf-8")
         offset = 0
         while offset < len(data):
@@ -3449,18 +3150,14 @@ def clear_generation_journal(name: str,
             "could not clear the %s generation journal %s: %s.  The "
             "next run would report a publication that has completed"
             % (name, path, err)) from err
-    # THE FLUSH IS PART OF THE REMOVAL, NOT A COURTESY AFTER IT.  This
-    # used to be swallowed on the reasoning that "the unlink itself is
-    # what matters; a filesystem that will not flush the directory has
-    # not resurrected the file".  The first half is true and the second
-    # is the mistake: an unflushed directory entry is exactly how a
-    # crash resurrects it, and the next run would then report a
-    # publication that has completed as one that was interrupted --
-    # refusing to render over a tree that is perfectly sound.  Nothing is
-    # lost either way, which is why this is reported rather than
-    # tolerated: an operator can clear a journal by hand in a second,
-    # and cannot do anything at all about a warning that was never
-    # printed.
+    # THE FLUSH IS PART OF THE REMOVAL, NOT A COURTESY AFTER IT.  The
+    # unlink is not the whole of it: an unflushed directory entry is
+    # exactly how a crash resurrects the journal, and the next run would
+    # then report a publication that has completed as one that was
+    # interrupted -- refusing to render over a tree that is perfectly
+    # sound.  A failure here is reported rather than swallowed, because
+    # an operator can clear a journal by hand and can do nothing about a
+    # warning that was never printed.
     fsync_directory(os.path.dirname(path) or os.curdir)
 
 
@@ -3471,8 +3168,7 @@ def generation_journal_problems(name: str,
     Empty means either no journal or a journal whose every target already
     carries the digest it names -- which is the state after a switch that
     completed but was killed before the journal was cleared, and is not a
-    fault.  Anything else is a MIXED GENERATION, named file by file, with
-    the digest that was expected and the one that is there.
+    fault.
     """
     record = read_generation_journal(name, root)
     if record is None:
@@ -3525,10 +3221,9 @@ def generation_journal_problems(name: str,
 def count_manifest_lines(path: str) -> int:
     """Return the number of rows in a JSONL file.
 
-    Counted from the BYTES, not from parsed rows, because this number
-    is part of an attestation of the file as it sits on disk.  A blank
-    line is not a row; manifest.py's own schema check is what refuses
-    one.
+    Counted from the BYTES, not from parsed rows, because this number is part
+    of an attestation of the file as it sits on disk.  A blank line is not a
+    row; manifest.py's own schema check is what refuses one.
     """
     total = 0
     try:
@@ -3549,15 +3244,13 @@ def attest_manifest(
     """Describe the manifest this timeline is being computed from.
 
     Returns the attestation that travels in the document: the
-    repository-relative path, the sha256 of the file's exact bytes, and
-    the row count.  Read-only.
+    repository-relative path, the sha256 of the file's exact bytes, and the row
+    count.
 
-    The path is resolved through manifest.py's own containment gate
-    first, so an attestation can only ever name a manifest this
-    pipeline was allowed to read in the first place -- the record and
-    the read cannot disagree about which file was used.  ``None`` means
-    the canonical manifest, exactly as :func:`load_manifest_rows` reads
-    it, so the attestation and the read cannot default differently.
+    The path is resolved through manifest.py's own containment gate first, so
+    an attestation can only ever name a manifest this pipeline was allowed to
+    read in the first place -- the record and the read cannot disagree about
+    which file was used.
     """
     if manifest_path is None:
         manifest_path = manifest.default_manifest_path()
@@ -3636,13 +3329,9 @@ def attest_captures(
 def _attested_relpath(resolved: str, root: Optional[str] = None) -> str:
     """Express a path relative to the parent of the approved root.
 
-    In production the approved root is ``<repo>/playthrough``, so this
-    yields ``playthrough/manifest.jsonl`` -- the same repository-relative
-    form every other record in this pipeline uses.  Deriving it from the
-    NOMINATED root rather than from the real checkout is what lets a
-    test hold the identical rule against a directory it owns: the
-    attestation a confined caller writes is resolvable by the confined
-    verifier, and neither reaches outside the tree it was given.
+    In production the approved root is ``<repo>/playthrough``, so this yields
+    ``playthrough/manifest.jsonl`` -- the same repository-relative form every
+    other record in this pipeline uses.
     """
     base = os.path.dirname(approved_root(root))
     return os.path.relpath(resolved, base).replace(os.sep, "/")
@@ -3655,23 +3344,13 @@ def _document_manifest_problems(
 
     Shape only: that the field is an object carrying exactly the three
     attestation fields, that the path is relative and free of parent
-    references, that the digest is 64 lowercase hex digits, and that the
-    row count is a non-negative integer agreeing with frame_count.  The
-    bytes on disk are checked separately by
-    manifest_attestation_problems(), which is I/O and therefore cannot
-    live inside a pure validator.
+    references, that the digest is 64 lowercase hex digits, and that the row
+    count is a non-negative integer agreeing with frame_count.
 
-    ``null`` IS ACCEPTED HERE, and the division of labour is deliberate.
-    This validator's subject is the timing: the clamp bounds, the
-    contiguity of the cue windows, the invariant sum(durations) +
-    sum(transitions) == total == final cue end.  Those are properties of
-    the numbers and are checkable with no file anywhere -- which is what
-    lets the arithmetic be tested, and audited, without a manifest on
-    disk.  Provenance is a different question, and it is asked where it
-    bites: assert_timeline_document() REQUIRES an attestation and
-    requires it to match, and that gate is what every producer of a
-    rendered artifact passes.  So an unattested document is not a
-    malformed document -- it is simply one that may not pace a film.
+    ``null`` IS ACCEPTED HERE, and the division of labour is deliberate. This
+    validator's subject is the timing: the clamp bounds, the contiguity of the
+    cue windows, the invariant sum(durations) + sum(transitions) == total ==
+    final cue end.
     """
     attestation = document.get("manifest")
     if attestation is None:
@@ -3742,12 +3421,8 @@ def _document_manifest_problems(
 def _document_amendment_problems(document: Any) -> List[Problem]:
     """Check the amendment attestation's SHAPE.  Pure.
 
-    ``None`` is valid and is the ordinary case: a session with nothing to
-    amend has no ledger, and requiring one would make an honest document
-    fail.  What is not valid is a value of the wrong shape, a digest that
-    is not a digest, or an `applied` count larger than the ledger it
-    claims to have read -- each of which would let a document assert a
-    provenance nothing could check.
+    ``None`` is valid and is the ordinary case: a session with nothing to amend
+    has no ledger, and requiring one would make an honest document fail.
     """
     attestation = document.get("amendments")
     if attestation is None:
@@ -3896,21 +3571,13 @@ def capture_attestation_problems(
 ) -> List[str]:
     """Check the capture attestation against the frames ON DISK.
 
-    THE ORDERED SET, BOUND.  A timeline is the single source of truth for
-    the film's pacing and its caption timings, and until now it named the
-    manifest it was computed from and said nothing whatever about the
-    PIXELS it paced.  A security review named the consequence: a
-    same-sized, non-blank replacement frame passed the entire chain.  So
-    this re-reads the attestation ledger, re-hashes every frame the
-    document paces, and reports any difference -- and because
-    assert_timeline_document() runs it, the transition composer, the
-    encoder and the caption generator all inherit the check rather than
-    each having to remember it.
+    THE ORDERED SET, BOUND.  A timeline is the single source of truth for the
+    film's pacing and its caption timings, and until now it named the manifest
+    it was computed from and said nothing whatever about the PIXELS it paced.
 
-    An absent attestation is checked in the other direction too: a
-    document that attests none while a ledger exists on disk was computed
-    before the frames were sealed, and is not the document that paces
-    them.
+    An absent attestation is checked in the other direction too: a document
+    that attests none while a ledger exists on disk was computed before the
+    frames were sealed, and is not the document that paces them.
     """
     if not isinstance(document, dict):
         return ["the timeline is a %s, not an object"
@@ -3989,18 +3656,16 @@ def amendment_attestation_problems(
 ) -> List[str]:
     """Check the amendment attestation against the ledger ON DISK.
 
-    The counterpart of :func:`manifest_attestation_problems`, and it
-    matters for the same reason: the entries of this document may carry
-    narration an amendment supplied, so a reader has to be able to prove
-    WHICH ledger supplied it.  A document attesting a ledger that has
-    since grown, shrunk or changed is refused rather than trusted.
+    The counterpart of :func:`manifest_attestation_problems`, and it matters
+    for the same reason: the entries of this document may carry narration an
+    amendment supplied, so a reader has to be able to prove WHICH ledger
+    supplied it.
 
-    An absent attestation is checked in the other direction too: a
-    document that claims no ledger while entries are marked `amended` is
-    a contradiction, and a document that claims none while a ledger
-    exists on disk is a stale document -- the amendments were recorded
-    after it was computed, and its narration is therefore not the
-    published one.
+    An absent attestation is checked in the other direction too: a document
+    that claims no ledger while entries are marked `amended` is a
+    contradiction, and a document that claims none while a ledger exists on
+    disk is a stale document -- the amendments were recorded after it was
+    computed, and its narration is therefore not the published one.
     """
     if not isinstance(document, dict):
         return ["the timeline is a %s, not an object"
@@ -4079,13 +3744,11 @@ def manifest_attestation_problems(
 ) -> List[str]:
     """Check the attestation against the manifest ON DISK.
 
-    This is the check that makes the attestation worth carrying: it
-    re-reads the named manifest, recomputes its digest, and reports any
-    difference.  A stale timeline beside a re-recorded manifest fails
-    here, which is exactly the case no internal invariant can catch.
+    This is the check that makes the attestation worth carrying: it re-reads
+    the named manifest, recomputes its digest, and reports any difference.
 
-    Read-only.  Returns messages, like :func:`validate_timeline`, so a
-    caller has one reporting shape for both gates.
+    Read-only.  Returns messages, like :func:`validate_timeline`, so a caller
+    has one reporting shape for both gates.
     """
     if not isinstance(document, dict):
         return ["the timeline is a %s, not an object"
@@ -4140,13 +3803,9 @@ def assert_timeline_document(
     """The gate every producer of a rendered artifact must pass.
 
     THE ONE ENTRY POINT FOR TRUSTING A TIMELINE.  make_transitions.py,
-    render_movie.py and make_srt.py each read this document and each
-    used to accept a bare ARRAY of entries -- which skipped
-    validate_timeline() entirely, because that validator's first act is
-    to require an object.  An array carried no totals to check the
-    entries against, no constants to prove the clamp under, and no
-    provenance at all, so a hand-edited list of durations paced the film
-    and its captions with nothing objecting.
+    render_movie.py and make_srt.py each read this document and each used to
+    accept a bare ARRAY of entries -- which skipped validate_timeline()
+    entirely, because that validator's first act is to require an object.
 
     Three things are required here, and all three are refusals rather
     than warnings:
@@ -4182,12 +3841,9 @@ def load_manifest_rows(
 ) -> List[Dict[str, Any]]:
     """Return the manifest's rows, in file order.  Read-only.
 
-    Delegates to manifest.read_rows(), which reports a malformed line
-    by path and line number, and re-raises its complaint as a
-    TimelineError so that a caller of this module has one exception
-    type to catch.  `root` is passed straight through and exists for
-    the same reason approved_root() takes one: a caller may hold the
-    same containment rules against a directory it owns.
+    Delegates to manifest.read_rows(), which reports a malformed line by path
+    and line number, and re-raises its complaint as a TimelineError so that a
+    caller of this module has one exception type to catch.
     """
     try:
         return manifest.read_rows(manifest_path, root)
@@ -4198,10 +3854,9 @@ def load_manifest_rows(
 def default_observations_path(root: Optional[str] = None) -> str:
     """Where the capture telemetry sidecar lives.
 
-    Same precedence as default_date_audit_path(): a nominated root
-    outranks $PLAYTHROUGH_OBSERVATIONS because it is the containment
-    boundary, then the export, then this file's own location.
-    load_observations() takes an explicit path and outranks both.
+    Same precedence as default_date_audit_path(): a nominated root outranks
+    $PLAYTHROUGH_OBSERVATIONS because it is the containment boundary, then the
+    export, then this file's own location.
     """
     if root is not None:
         return os.path.join(approved_root(root),
@@ -4219,13 +3874,10 @@ def _validated_observation(
 ) -> int:
     """Check one telemetry row against its schema.  Returns its frame.
 
-    THE SCHEMA IS PART OF THE EVIDENCE.  session.py writes these rows
-    from OBSERVATION_FIELDS plus ATTESTED_FIELDS, and this module makes a
-    timing decision out of two of the columns, so a row whose shape
-    cannot be believed cannot be believed about the date either.  A field
-    of the wrong TYPE is refused rather than coerced: `"date": 3` is not
-    a date line and `"capture_attempts": "many"` is not a count, and
-    guessing what either meant would be inventing evidence.
+    THE SCHEMA IS PART OF THE EVIDENCE.  session.py writes these rows from
+    OBSERVATION_FIELDS plus ATTESTED_FIELDS, and this module makes a timing
+    decision out of two of the columns, so a row whose shape cannot be believed
+    cannot be believed about the date either.
 
     Fail-closed on anything that could change a decision, and reported
     once for anything that cannot: an unknown column means a writer this
@@ -4233,8 +3885,8 @@ def _validated_observation(
     for discarding a session's date evidence.
 
     :raises TimelineError: on a missing or non-integer frame index, an
-        out-of-range index, a known field of the wrong type, a `file`
-        that names a different frame, or a non-positive attempt count.
+        out-of-range index, a known field of the wrong type, a `file` that
+        names a different frame, or a non-positive attempt count.
     """
     index = row.get(OBSERVATION_FRAME_FIELD)
     if isinstance(index, bool) or not isinstance(index, int):
@@ -4303,23 +3955,17 @@ def load_observations(
     """Read the capture telemetry sidecar, keyed by frame index.
 
     One JSON object per captured frame is appended to
-    playthrough/build/observations.jsonl, carrying the sidebar DATE
-    line this module cross-checks its day decisions against.  capture.sh
-    REPORTS each row on its machine payload and session.py appends it
-    beside the manifest row for the same frame, so one record has one
-    writer and the capture's own write surface stays the frame.
+    playthrough/build/observations.jsonl, carrying the sidebar DATE line this
+    module cross-checks its day decisions against.
 
-    UNANIMITY OR UNOBSERVED, and BOUND TO THE PIXELS -- which is what
-    env.sh's description of this sidecar has always said and what this
-    reader did not do.  It took the LAST row for a frame, unconditionally
-    and with no digest check, and a code review named all three
-    consequences: a stale or later duplicate row could override a
-    reading that agreed with everything else; a later row whose date was
-    `null` -- the ordinary shape of an unreadable reading -- silently
-    ERASED a date that had been read; and a row could be attributed to a
-    frame whose bytes it was never read from.  read_date_audit() had been
-    hardened against exactly those and this reader had not, so the
-    unhardened record was the one the timeline preferred.
+    UNANIMITY OR UNOBSERVED, and BOUND TO THE PIXELS, which is what
+    env.sh's description of this sidecar says.  Taking the LAST row for a
+    frame -- unconditionally and with no digest check -- has three
+    consequences: a stale or later duplicate row overrides a reading that
+    agreed with everything else; a later row whose date is `null`, the
+    ordinary shape of an unreadable reading, silently ERASES a date that
+    was read; and a row is attributed to a frame whose bytes it was never
+    read from.
 
     So, per frame:
 
@@ -4340,35 +3986,26 @@ def load_observations(
         keystroke makes one frame, so two keystrokes claiming one index
         is not a duplicate reading, it is a broken record.
 
-    The merged row this returns is the last surviving row for the frame
-    with its `date` replaced by the agreed value, so a caller reads one
-    row per frame exactly as before.
+    The merged row this returns is the last surviving row for the frame with
+    its `date` replaced by the agreed value, so a caller reads one row per
+    frame exactly as before.
 
-    An ABSENT file returns None -- the timeline is then computed from
-    the clock alone and every day decision is recorded as AGREE_NONE,
-    which says no date was read rather than that one was read and
-    disagreed -- unless `required`, which turns it into a hard failure
-    for a run that must not accept unevidenced rollovers.
+    AN ABSENT FILE RETURNS None, and the timeline is then computed from
+    the clock alone with every day decision recorded as AGREE_NONE.  A
+    file that EXISTS but cannot be read, parsed or believed always
+    RAISES: a sidecar that cannot be believed is not the same thing as no
+    sidecar, and quietly treating it as one would compute a timeline from
+    less evidence than the session actually left.
 
-    A file that EXISTS but cannot be read, parsed or believed always
-    raises: a sidecar that cannot be believed is not the same thing as no
-    sidecar, and quietly falling back to the clock would hide the
-    difference.
-
-    :param root: a CALL SITE's argument and nothing else -- argparse
-        never produces one and the shell entry point never passes one.
-        It exists so a test can hold this reader against a temporary
-        directory it owns, the same discipline read_timeline() and
-        load_manifest_rows() already follow.
+    :param root: a CALL SITE's argument and nothing else -- argparse never
+        produces one and the shell entry point never passes one.
     :param digests: frame index to attestation, as
         :func:`manifest.attested_digests` returns it or as a bare
-        index-to-sha256 mapping, for binding each row to the pixels it
-        was read from.  ``None`` leaves every row unbound, which is
-        reported rather than presented as checked.
-
-    :raises TimelineError: on a missing required file, an unreadable
-        file, a malformed line, a row that fails its schema, or two
-        keystrokes attested for one index.
+        index-to-sha256 mapping, for binding each row to the pixels it was read
+        from.
+    :raises TimelineError: on a missing required file, an unreadable file, a
+        malformed line, a row that fails its schema, or two keystrokes attested
+        for one index.
     """
     path = _validated_evidence_path(
         observations_path or default_observations_path(root),
@@ -4474,11 +4111,10 @@ def load_observations(
 def _row_date(row: Any) -> Optional[str]:
     """Return the date line ONE telemetry row observed, or None.
 
-    A row that reports a status other than "read" carries no date this
-    module may use, even if the field happens to be non-empty: the
-    status is capture.sh's own account of whether the line was read,
-    and honouring it is what keeps a faulted read from being treated
-    as evidence.
+    A row that reports a status other than "read" carries no date this module
+    may use, even if the field happens to be non-empty: the status is
+    capture.sh's own account of whether the line was read, and honouring it is
+    what keeps a faulted read from being treated as evidence.
     """
     if not isinstance(row, dict):
         return None
@@ -4498,10 +4134,9 @@ def _observed_date(
 ) -> Optional[str]:
     """Return the date the telemetry observed for one frame, or None.
 
-    The row this reads is load_observations()' MERGED row, whose `date`
-    is already the unanimous reading of every row recorded for the frame
-    -- or None where they disagreed.  So a disagreement inside the
-    telemetry arrives here as "unobserved", which is what it is.
+    The row this reads is load_observations()' MERGED row, whose `date` is
+    already the unanimous reading of every row recorded for the frame -- or
+    None where they disagreed.
     """
     return _row_date(observations.get(frame))
 
@@ -4509,20 +4144,18 @@ def _observed_date(
 def encode_timeline(document: Dict[str, Any]) -> str:
     """Return the exact text playthrough/timeline.json holds.
 
-    Two-space indentation, because the artifact is committed and a
-    reviewer should be able to read a diff of it; keys in the order
-    this module declares rather than sorted, so the shape of an entry
-    matches the order it is documented in; non-ASCII written as itself,
-    the convention the repository's own tooling follows; NaN and
-    Infinity refused outright rather than emitted as the non-standard
-    tokens Python would otherwise produce; and exactly one trailing
-    newline.
+    Two-space indentation, because the artifact is committed and a reviewer
+    should be able to read a diff of it; keys in the order this module declares
+    rather than sorted, so the shape of an entry matches the order it is
+    documented in; non-ASCII written as itself, the convention the repository's
+    own tooling follows; NaN and Infinity refused outright rather than emitted
+    as the non-standard tokens Python would otherwise produce; and exactly one
+    trailing newline.
 
-    Nothing here varies from run to run -- no timestamp, no host name,
-    no absolute path, no set iteration -- so recomputing the timeline
-    from the same manifest produces a byte-identical file, which is
-    what makes the committed artifact diffable and its regeneration
-    checkable.
+    Nothing here varies from run to run -- no timestamp, no host name, no
+    absolute path, no set iteration -- so recomputing the timeline from the
+    same manifest produces a byte-identical file, which is what makes the
+    committed artifact diffable and its regeneration checkable.
     """
     try:
         text = json.dumps(document, ensure_ascii=False, indent=2,
@@ -4537,13 +4170,8 @@ def encode_timeline(document: Dict[str, Any]) -> str:
 def _sync_directory(parent: str) -> None:
     """Force a rename in `parent` to the device, tolerating refusal.
 
-    os.replace() below is atomic with respect to a reader, but the
-    directory entry it creates is not durable until the directory
-    itself is synced.  Without this a crash immediately after a
-    successful write could leave the OLD timeline in place while the
-    renderer had already been told the new one existed.  A filesystem
-    that refuses to sync a directory is reported rather than allowed to
-    end the run: the data itself is already fsynced.
+    os.replace() below is atomic with respect to a reader, but the directory
+    entry it creates is not durable until the directory itself is synced.
     """
     try:
         descriptor = os.open(parent, os.O_RDONLY | os.O_DIRECTORY)
@@ -4568,26 +4196,14 @@ def write_timeline(
 ) -> str:
     """Validate a timeline and write it.  Returns the path written.
 
-    The document is verified before a byte is written, because a
-    timeline that fails its own invariant must not reach the disk where
-    the renderer and the caption generator would both trust it.
-    newline="\\n" pins LF whatever the platform, which is what the
-    committed artifact's `*.json text` attribute expects.
+    The document is verified before a byte is written, because a timeline that
+    fails its own invariant must not reach the disk where the renderer and the
+    caption generator would both trust it.
 
-    THE REPLACEMENT IS ATOMIC.  Opening the destination "w" truncates it
-    first, so an interruption between the truncation and the last byte
-    -- a full disk, a signal, a crash -- destroyed a timeline that was
-    valid and left a half-written one in its place.  That artifact is
-    the single source of truth for both the movie's pacing and the
-    caption timings, and a truncated one is worse than a stale one: the
-    stale one is at least internally consistent.  So the text is written
-    to a temporary file IN THE SAME DIRECTORY -- the same filesystem is
-    what makes the rename atomic -- flushed and fsynced so the bytes are
-    durable before anything is swapped, and then moved into place with
-    os.replace(), which either fully succeeds or leaves the previous
-    file untouched.  The directory entry itself is fsynced afterwards so
-    the rename survives a crash too, and a failed attempt cleans up its
-    temporary file rather than leaving litter beside the artifact.
+    THE REPLACEMENT IS ATOMIC.  Opening the destination "w" truncates it first,
+    so an interruption between the truncation and the last byte -- a full disk,
+    a signal, a crash -- destroyed a timeline that was valid and left a
+    half-written one in its place.
     """
     if timeline_path is None:
         timeline_path = default_timeline_path()
@@ -4757,16 +4373,13 @@ def _find_frames_array(handle: Any) -> Optional[str]:
 def iter_timeline_frames(path: str) -> Iterator[Dict[str, Any]]:
     """Yield the timeline's per-frame entries, one at a time.
 
-    An event reader: the file is consumed in chunks and each entry is
-    decoded, handed to the caller and released, so the memory a walk
-    costs is one entry rather than the session.  The decoding itself is
-    the standard library's, so an entry that is not valid JSON raises
-    here exactly as json.loads() would -- a streamed read is not a
-    lenient one.
+    An event reader: the file is consumed in chunks and each entry is decoded,
+    handed to the caller and released, so the memory a walk costs is one entry
+    rather than the session.
 
-    A document with no frames array yields nothing, which is the honest
-    answer for one: the caller's own "this timeline carries no entries"
-    verdict is what should be reported, not an exception from the reader.
+    A document with no frames array yields nothing, which is the honest answer
+    for one: the caller's own "this timeline carries no entries" verdict is
+    what should be reported, not an exception from the reader.
     """
     decoder = json.JSONDecoder()
     with _open_timeline_for_stream(path) as handle:
@@ -4803,15 +4416,11 @@ def iter_timeline_frames(path: str) -> Iterator[Dict[str, Any]]:
 def read_timeline_header(path: str) -> Any:
     """Return the document with its frames array emptied.
 
-    Everything except the per-frame entries: the version, the three
-    provenance blocks, the declared constants and the declared totals.
-    The array is replaced by an empty one rather than removed, so a
-    caller reads ``document["frames"] == []`` and cannot mistake a
-    streamed read for a document that never had entries -- and every
-    other key is exactly the one on disk.
+    Everything except the per-frame entries: the version, the three provenance
+    blocks, the declared constants and the declared totals.
 
-    A document with no frames array is returned whole, because there is
-    nothing to leave out.
+    A document with no frames array is returned whole, because there is nothing
+    to leave out.
     """
     decoder = json.JSONDecoder()
     with _open_timeline_for_stream(path) as handle:
@@ -4874,36 +4483,16 @@ def manifest_row_problems(
 ) -> List[str]:
     """Report rows that are not a complete manifest row.  Pure.
 
-    The strict shape gate build_timeline() deliberately does not
-    apply: exactly the six declared fields, in the declared order, an
-    integer index running 1..n whose `file` names the capture that
-    index formats to, a real_ts in the one canonical form, and text
-    where text is required.  Applied by BOTH command line paths --
-    before a timeline is written, and before one already on disk is
-    attested to -- so a manifest that lost a field, or that points a
-    row at somebody else's capture, cannot become a timeline that
-    quietly filled it in.
+    The strict shape gate build_timeline() deliberately does not apply: exactly
+    the six declared fields, in the declared order, an integer index running
+    1..n whose `file` names the capture that index formats to, a real_ts in the
+    one canonical form, and text where text is required.
 
-    The rules themselves live in manifest.row_problems() and are
-    delegated to rather than restated here.  A second copy is exactly
-    how a defect slips through: the copy this function used to carry
-    checked only that `file` was non-empty text and never looked at
-    real_ts at all, so a row whose `file` named frame_00099.png while
-    its `frame` said 1, with "yesterday" for a capture timestamp,
-    passed a gate that was believed to be authoritative.  One
-    implementation, both callers, same words.
+    The rules themselves live in manifest.row_problems() and are delegated to
+    rather than restated here.
 
-    manifest.verify_manifest() additionally checks the file's byte
-    shape -- LF endings, one trailing newline -- and is run by
-    verify_artifacts.sh; reproducing that here would report every
-    schema defect twice and read the file a second time to do it.
-
-    `narration` is manifest.row_field_problems()' own argument, passed
-    straight through.  _load_rows() gates the RECORDED rows with it
-    false and _resolved_rows() applies the full gate to the rows the
-    amendment ledger resolves, because a recorded narration is not
-    editable and the sentence that reaches the transcript and the
-    caption track is the resolved one.
+    `narration` is manifest.row_field_problems()' own argument, passed straight
+    through.
     """
     return manifest.row_problems(rows, allow_index_gaps, narration)
 
@@ -5030,46 +4619,23 @@ def _load_rows(
 ) -> List[Dict[str, Any]]:
     """Read the manifest and gate it, or raise TimelineError.
 
-    The single way rows enter either command line path -- generation
-    and verification both come through here, so neither can be the
-    lenient one.  The gate is manifest_row_problems(), i.e.
-    manifest.row_problems(), which works on the rows already in memory
-    and covers everything a correct timeline depends on.
-    manifest.verify_manifest() additionally checks the file's byte
-    shape -- LF endings, one trailing newline -- and is run by
-    verify_artifacts.sh; reproducing it here would report every
-    schema defect twice and read the file a second time to do it.
+    The single way rows enter either command line path -- generation and
+    verification both come through here, so neither can be the lenient one.
 
-    THE GATE IS THE DEFAULT AND IT REFUSES.  A manifest that fails its
-    own schema stops the run, nothing is written, and the remedy named
-    in the message is to fix the manifest or recapture -- because a
-    timeline written from evidence that had already been reported as
-    invalid would look exactly like a correct one to render_movie.py and
-    make_srt.py, which read it as the single source of truth and never
-    see the warning.
+    THE GATE IS THE DEFAULT AND IT REFUSES.  A manifest that fails its own
+    schema stops the run, nothing is written, and the remedy named in the
+    message is to fix the manifest or recapture -- because a timeline written
+    from evidence that had already been reported as invalid would look exactly
+    like a correct one to render_movie.py and make_srt.py, which read it as the
+    single source of truth and never see the warning.
 
     WHAT THIS GATE DOES NOT DECIDE IS THE NARRATION, and the split is
-    deliberate.  The structural half -- the six fields in order, the
-    index inside its range, the `file` that index formats to, the
-    canonical real_ts, the clock that is a reading or null -- describes
-    the capture, cannot be amended by anything, and is refused here on
-    the recorded rows.  The voice gate and the placeholder sentinels
-    describe the two AMENDABLE narrations, and refusing the record for
-    one of those would leave a recorded session with no honest way
-    forward: a captured row is never edited, so the only remedy is an
-    amendment, and the sentence that actually reaches the transcript and
-    the caption track is the resolved one.  So `narration=False` here,
-    and _resolved_rows() applies the full gate -- the same function, the
-    same words -- to what manifest.resolve_rows() returns.  Nothing is
-    skipped; it is checked one step later, on the text a reader sees.
+    deliberate.  The structural half -- the six fields in order, the index
+    inside its range, the `file` that index formats to, the canonical real_ts,
+    the clock that is a reading or null -- describes the capture, cannot be
+    amended by anything, and is refused here on the recorded rows.
 
-    The two overrides exist ONLY as diagnostics and neither is ever
-    implicit.  --ignore-manifest-problems and --allow-index-gaps each
-    report every problem they pass over AND announce themselves by name
-    on stderr, so a timeline computed under one is never mistaken for a
-    clean one.  They are for looking at a broken session, not for
-    shipping it; `--verify` is the fully read-only route and reports
-    every problem while returning non-zero without writing anything.
+    The two overrides exist ONLY as diagnostics and neither is ever implicit.
     """
     rows = load_manifest_rows(args.manifest, root)
     if not rows and not args.allow_empty:
@@ -5104,18 +4670,13 @@ def _date_evidence_problems(
 ) -> List[str]:
     """Report frames whose day decision the date line did not settle.
 
-    Only consulted under --require-date, which is for a run that must
-    not accept an inferred day: every frame carrying an exact clock has
-    to have had its day either confirmed or corrected by the sidebar
-    date line.  A frame with no clock at all is exempt -- there is no
-    day decision to verify on a menu screen.
+    Only consulted under --require-date, which is for a run that must not
+    accept an inferred day: every frame carrying an exact clock has to have had
+    its day either confirmed or corrected by the sidebar date line.
 
-    Two different failures reach here and are reported as the different
-    things they are: a day nothing established, and a day the evidence
-    positively contradicted.  Both refuse the run, because in neither
-    case is the frame's position on the timeline something the date
-    line settled -- but an operator reading the failure needs to know
-    which one to go and look at.
+    Two different failures reach here and are reported as the different things
+    they are: a day nothing established, and a day the evidence positively
+    contradicted.
     """
     problems = []
     for entry in document.get("frames", []):
@@ -5175,13 +4736,8 @@ def _audit_evidence(
 ) -> Optional[List[Any]]:
     """Return the audit's date lines, or None when it observed none.
 
-    ``date_lines_for_rows`` always returns one slot per row, so an
-    absent or empty audit comes back as a list of nulls.  Passing that
-    on would make every entry claim its day decision was CHECKED
-    against evidence and found unverified, when in truth no date was
-    read at all -- a materially different statement, and the artifact
-    distinguishes them (AGREE_NONE versus AGREE_UNVERIFIED).  So a
-    record that observed nothing is reported as no record.
+    ``date_lines_for_rows`` always returns one slot per row, so an absent or
+    empty audit comes back as a list of nulls.
     """
     lines = date_lines_for_rows(
         rows, audit_path=args.date_audit, root=root,
@@ -5194,12 +4750,8 @@ def _audit_evidence(
 def _attested_frames(root: Optional[str] = None) -> Dict[int, Any]:
     """Return the capture attestations, for binding the date audit.
 
-    Read-only and non-fatal: an unreadable or absent ledger yields an
-    empty mapping, which leaves every audit row UNBOUND rather than
-    discarded.  The ledger's own enforcement lives in
-    :func:`_verified_captures`, which refuses the run; this is the
-    corroborating half and must not raise a second, later error about the
-    same file.
+    Read-only and non-fatal: an unreadable or absent ledger yields an empty
+    mapping, which leaves every audit row UNBOUND rather than discarded.
     """
     path = (manifest.default_digests_path() if root is None
             else os.path.join(approved_root(root),
@@ -5218,17 +4770,13 @@ def _verified_captures(
 ) -> Optional[Dict[str, Any]]:
     """Verify every recorded frame's bytes and attest the ledger.
 
-    THE CHECK THAT MUST HAPPEN BEFORE THE TIMING, not after it.  A
-    duration is derived from a clock READ OFF A FRAME, so a timeline
-    computed over frames whose bytes nothing attests is a claim about
-    files rather than about a session.  Returns the attestation to travel
-    in the document, or None when no ledger exists.
+    THE CHECK THAT MUST HAPPEN BEFORE THE TIMING, not after it.  A duration is
+    derived from a clock READ OFF A FRAME, so a timeline computed over frames
+    whose bytes nothing attests is a claim about files rather than about a
+    session.
 
-    A ledger that exists is authoritative: a frame missing from it, or a
-    frame whose bytes have moved, stops the run.  --allow-unattested-
-    frames exists for the one honest case -- a session captured before
-    the ledger did -- announces itself, and never suppresses a MISMATCH,
-    only an absence.
+    A ledger that exists is authoritative: a frame missing from it, or a frame
+    whose bytes have moved, stops the run.
     """
     path = (manifest.default_digests_path() if root is None
             else os.path.join(approved_root(root),
@@ -5284,17 +4832,16 @@ def _resolved_rows(
            Tuple[int, ...]]:
     """Apply the amendment ledger to the rows a derivative will use.
 
-    THE ONE PLACE THE LEDGER IS READ, so generation and verification
-    cannot differ about which narration the film and the captions carry.
-    Returns the resolved rows, the attestation to travel in the document,
-    and the frames an amendment reached.
+    THE ONE PLACE THE LEDGER IS READ, so generation and verification cannot
+    differ about which narration the film and the captions carry. Returns the
+    resolved rows, the attestation to travel in the document, and the frames an
+    amendment reached.
 
-    The record itself is untouched -- manifest.resolve_rows() works on a
-    copy -- and it FAILS CLOSED: a digest that has moved, a quoted value
-    that no longer matches or a frame the rows do not carry raises rather
-    than being skipped, because a derivative computed past a broken
-    binding would look correct and mean nothing.  With no ledger the rows
-    pass through unchanged and the attestation is None.
+    The record itself is untouched -- manifest.resolve_rows() works on a copy
+    -- and it FAILS CLOSED: a digest that has moved, a quoted value that no
+    longer matches or a frame the rows do not carry raises rather than being
+    skipped, because a derivative computed past a broken binding would look
+    correct and mean nothing.
     """
     path = (manifest.default_amendments_path() if root is None
             else os.path.join(approved_root(root),
@@ -5333,19 +4880,17 @@ def _assert_resolved_narration(
 ) -> None:
     """Refuse narration the transcript and the captions may not carry.
 
-    THE OTHER HALF OF _load_rows()' GATE, applied where it can honestly
-    be applied: to the rows an amendment has already reached.  A recorded
-    narration is evidence and is never edited, so a meta word or a
-    placeholder sentinel in one is corrected by
-    playthrough/amendments.jsonl -- but the corrected sentence is what
-    goes verbatim into playthrough/transcript.md and onto the film, so it
-    is held to the same gate, in the same words, from the same function.
-    An uncorrected one is refused here exactly as it used to be refused
-    on the recorded rows.
+    THE OTHER HALF OF _load_rows()' GATE, applied where it can honestly be
+    applied: to the rows an amendment has already reached.  A recorded
+    narration is evidence and is never edited, so a meta word or a placeholder
+    sentinel in one is corrected by playthrough/amendments.jsonl -- but the
+    corrected sentence is what goes verbatim into playthrough/transcript.md and
+    onto the film, so it is held to the same gate, in the same words, from the
+    same function.
 
-    manifest.verify_amendments() already applies this to the resolved
-    rows when a ledger exists, so in practice this is what catches a
-    session with NO ledger and a defended second reading for one with.
+    manifest.verify_amendments() already applies this to the resolved rows when
+    a ledger exists, so in practice this is what catches a session with NO
+    ledger and a defended second reading for one with.
     """
     problems = manifest_row_problems(
         rows, allow_index_gaps=True, narration=True)
@@ -5371,28 +4916,22 @@ def _verify(
 ) -> int:
     """Check the timeline on disk against the manifest.  Read-only.
 
-    THE MANIFEST IS GATED FIRST, and by the same gate a write passes.
-    --verify claims that the artifact on disk describes THIS session,
-    and that claim cannot rest on evidence the canonical validator
-    rejects: a row whose `file` names frame_00099.png while its
-    `frame` says 1, or whose real_ts is not a timestamp, is a defect
-    the drift comparison is structurally blind to, because a timeline
-    computed from that manifest carries the same defect on both sides
-    and matches itself byte for byte.  Reading the rows through
-    _load_rows() is what keeps this an attestation rather than a
-    self-consistency check; --ignore-manifest-problems remains the
-    only way past it, and it says so on stderr.
+    THE MANIFEST IS GATED FIRST, and by the same gate a write passes. --verify
+    claims that the artifact on disk describes THIS session, and that claim
+    cannot rest on evidence the canonical validator rejects: a row whose `file`
+    names frame_00099.png while its `frame` says 1, or whose real_ts is not a
+    timestamp, is a defect the drift comparison is structurally blind to,
+    because a timeline computed from that manifest carries the same defect on
+    both sides and matches itself byte for byte.
 
-    The order matters as much as the gate.  The manifest is the
-    evidence and the timeline is the claim about it, so the evidence is
-    checked before the claim -- an operator is told the record is
-    malformed instead of being handed a drift report computed from it.
+    The order matters as much as the gate.  The manifest is the evidence and
+    the timeline is the claim about it, so the evidence is checked before the
+    claim -- an operator is told the record is malformed instead of being
+    handed a drift report computed from it.
 
-    The fresh computation reads the SAME telemetry and the SAME date
-    evidence the write used, so the byte comparison still means "this
-    file was computed from this manifest and this evidence by this
-    code".  Verifying without them would report drift on every session
-    that legitimately crossed midnight.
+    The fresh computation reads the SAME telemetry and the SAME date evidence
+    the write used, so the byte comparison still means "this file was computed
+    from this manifest and this evidence by this code".
     """
     rows = _load_rows(args, root)
     # THE SAME LEDGER, BOUND THE SAME WAY, as the write used -- so that a
@@ -5445,13 +4984,12 @@ def _drift_problems(
 ) -> List[str]:
     """Report a timeline that no longer matches its manifest.
 
-    BOTH SIDES ARE RE-ENCODED AND THE ENCODINGS COMPARED, because the
-    encoder is deterministic and total (stable key order, fixed float
-    formatting, every key it was given).  So a semantic change -- an
-    altered value, a new key, a frame added or dropped, a total that no
-    longer follows -- fails, while a formatting-only difference passes:
-    raising drift for whitespace would train an operator to ignore the
-    one check that guards the timing evidence.
+    BOTH SIDES ARE RE-ENCODED AND THE ENCODINGS COMPARED, because the encoder
+    is deterministic and total (stable key order, fixed float formatting, every
+    key it was given).  So a semantic change -- an altered value, a new key, a
+    frame added or dropped, a total that no longer follows -- fails, while a
+    formatting-only difference passes: raising drift for whitespace would train
+    an operator to ignore the one check that guards the timing evidence.
     """
     if encode_timeline(stored) == encode_timeline(fresh):
         return []
@@ -5479,14 +5017,9 @@ def main(
 ) -> int:
     """Run the command line and return an exit status.
 
-    `root` is a call site's argument and nothing else: argparse never
-    produces it, no environment variable reaches it, and the shell
-    entry point below never passes one.  It exists so that
-    test_timeline.py can hold the REAL command line -- this function,
-    its gate and its exit status -- against a temporary directory it
-    owns, instead of either testing a paraphrase of it or writing into
-    the committed artifact tree, which is the captured evidence of a
-    session and is not a test fixture.
+    `root` is a call site's argument and nothing else: argparse never produces
+    it, no environment variable reaches it, and the shell entry point below
+    never passes one.
     """
     args = build_parser().parse_args(argv)
     # --allow-index-gaps reaches the row gate, the document validator

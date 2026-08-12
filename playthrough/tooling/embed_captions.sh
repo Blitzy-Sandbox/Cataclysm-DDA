@@ -34,12 +34,17 @@
 #     playthrough/transcript.srt    <- PLAYTHROUGH_TRANSCRIPT_SRT
 #     playthrough/cata-play-cc.mp4  <- PLAYTHROUGH_MOVIE_CC
 #
-# Those three files are the only ones this stage will ever touch.  The
+# Those three are the CANONICAL INPUT AND OUTPUT ARTIFACTS, and the
 # positionals do NOT relocate them: each is resolved and must name the
 # canonical artifact for its role, so a different spelling of the same
 # file is accepted and a different file is refused (see WHICH FILES
 # below).  They exist to let a caller state the paths explicitly and be
-# told if it has them wrong.
+# told if it has them wrong.  Two TRANSIENT paths are written as well and
+# are neither artifacts nor configurable: a dot-prefixed staging file
+# beside the output, which is renamed into place and removed on every exit
+# this script can run code on, and one scratch file under the pipeline's
+# private runtime directory, outside the tree entirely.  WHAT THIS FILE
+# READS AND WRITES, below, is the exhaustive statement.
 #
 # There is likewise no argument, and no environment variable, that can
 # add a filter, re-encode the picture, burn text into it, drop the
@@ -52,197 +57,124 @@
 #     ffmpeg -y -i <film> -i <cues> -c copy \
 #            -c:s mov_text -metadata:s:s:0 language=eng <output>
 #
-# This is the command the requirement specifies, used as given.  Each
-# flag is load-bearing:
+# This is the command the requirement specifies, used as given.  Each flag
+# is load-bearing:
 #
-#   -c copy         The picture is copied, packet for packet.  The film
-#                   that was measured non-blank and correctly paced is
-#                   the film that ships.  Re-encoding here would be a
-#                   second lossy generation over evidence, and would
-#                   also break the byte-identity check below.
-#
-#   -c:s mov_text   NOT OPTIONAL, AND NOT COSMETIC.  `-c copy` alone
-#                   would try to copy the SubRip codec into MP4, which
-#                   is not a legal MP4 subtitle codec, and the mux
-#                   fails outright.  mov_text (3GPP timed text) is the
-#                   only broadly supported subtitle codec inside MP4
-#                   and it is what makes the track SOFT -- carried
-#                   beside the picture and toggled by the player --
-#                   rather than drawn into it.
-#
+#   -c copy         The picture is copied packet for packet, so the film
+#                   measured non-blank and correctly paced is the film that
+#                   ships.  Re-encoding would be a second lossy generation
+#                   over evidence and would break the byte-identity check.
+#   -c:s mov_text   NOT OPTIONAL.  `-c copy` alone would try to copy the
+#                   SubRip codec into MP4, which is not a legal MP4
+#                   subtitle codec, and the mux fails outright.  mov_text
+#                   (3GPP timed text) is the only broadly supported
+#                   subtitle codec inside MP4, and it is what makes the
+#                   track SOFT -- carried beside the picture and toggled by
+#                   the player -- rather than drawn into it.
 #   -metadata:s:s:0 language=eng
-#                   The ISO-639 three-letter code on the first
-#                   subtitle stream, so a player lists the track as
-#                   English.  English only: there is no translation
-#                   track and no localisation in this feature.
+#                   The ISO-639 three-letter code on the first subtitle
+#                   stream, so a player lists the track as English.
+#                   English only: this feature has no translation track.
+#   -y              Overwrite, so re-running is idempotent.  It applies to
+#                   this script's staging file, never to a published
+#                   artifact not yet replaced by a verified one.
 #
-#   -y              Overwrite, so re-running the stage is idempotent.
-#                   It is applied to this script's own staging file
-#                   (see THE STAGING FILE), never to a published
-#                   artifact that has not yet been replaced by a
-#                   verified one.
-#
-# THREE FLAGS ARE ADDED TO THE SPECIFIED RECIPE, and each of them
-# REMOVES a way for something unintended to travel into the artifact:
+# THREE FLAGS ARE ADDED, and each REMOVES a way for something unintended to
+# travel into the artifact:
 #
 #   -map 0:v:0      Exactly the first input's first video stream and
-#   -map 1:s:0      exactly the second input's first subtitle stream.
-#                   The recipe relies on ffmpeg's DEFAULT selection,
-#                   which picks the best stream of each type it finds --
+#   -map 1:s:0      exactly the second input's first subtitle stream.  The
+#                   recipe otherwise relies on ffmpeg's DEFAULT selection,
 #                   so a render that ever gained an audio, data or
-#                   attachment stream would have it carried silently
-#                   into a committed film.  This feature has no audio at
-#                   all (SOUND_ENABLED=false, SDL_AUDIODRIVER=dummy), so
-#                   anything of the kind is a fault to refuse rather
-#                   than a stream to copy.  Naming both streams also
-#                   makes the two `-map`s the only mapping in the
-#                   command, which is what the assertions below hold it
-#                   to; the stream census after the mux proves the
-#                   result carries nothing else.
-#
+#                   attachment stream would have it carried silently into a
+#                   committed film.  This feature has no audio at all
+#                   (SOUND_ENABLED=false, SDL_AUDIODRIVER=dummy), so
+#                   anything of the kind is a fault to refuse.
 #   -map_metadata -1
 #   -map_chapters -1
-#                   Carry NO container metadata and NO chapters over
-#                   from either input.  Without them ffmpeg copies the
-#                   input's global tags, and the render's tags name the
-#                   encoder and its version -- facts about the machine
-#                   this ran on, travelling into an artifact that is
-#                   committed to a public repository.  A whitelist of
-#                   the tags the muxer legitimately writes for itself is
-#                   enforced afterwards, and the chapter count is
-#                   asserted to be zero.
+#                   Carry NO container metadata and NO chapters from either
+#                   input.  Without them ffmpeg copies the input's global
+#                   tags, and the render's tags name the encoder and its
+#                   version -- facts about the machine this ran on,
+#                   travelling into an artifact committed to a public
+#                   repository.  A whitelist of the tags the muxer writes
+#                   for itself is enforced afterwards, and the chapter
+#                   count is asserted to be zero.
 #
 # ---------------------------------------------------------------------
 # *** THE CAPTIONS ARE NEVER DRAWN INTO THE PICTURE ***
 #
-# The whole point of this pipeline is the captured pixels.  Text
-# painted over them would obscure the very evidence the film exists to
-# carry, and a caption that cannot be switched off is not a
-# closed-caption track.
+# The whole point of this pipeline is the captured pixels.  Text painted
+# over them would obscure the very evidence the film exists to carry, and a
+# caption that cannot be switched off is not a closed-caption track.
 #
-# So: this script builds NO filter graph and offers no way to ask for
-# one.  There is no video-filter flag anywhere in it, no
-# subtitle-burning filter, no text-drawing filter, and no video
-# encoder -- the video disposition is `-c copy` and nothing else.  That
-# is asserted after the mux by comparing the output's video stream
-# against the input's.  Burned-in text has to be encoded, so it changes
-# the picture, and every one of the comparisons catches that -- but
-# they are not equally strong, and the summary says which one was
-# actually taken rather than letting a reader assume the best of them:
-#
-#   stream hash       a SHA-256 over the copied packets.  Equal hashes
-#                     mean the picture is byte-identical.  This is the
-#                     proof to want, and it is what this host takes.
-#   duration + frames  the fallback where this ffmpeg was built without
-#                     the streamhash muxer.  A re-encode that preserved
-#                     both to the millisecond and the frame would pass
-#                     it, which is why its absence is WARNED about
-#                     rather than passed over silently.
-#   neither            nothing is published.
-#
-# VIDEO_COPY_PROOF carries the answer, so "the picture was copied" is
-# never a stronger claim than the measurement behind it.
+# So this script builds NO filter graph and offers no way to ask for one:
+# no video-filter flag, no subtitle-burning filter, no text-drawing filter
+# and no video encoder.  That is asserted after the mux by comparing the
+# output's video stream against the input's.  Burned-in text has to be
+# encoded, so it changes the picture and every comparison catches it -- but
+# they are not equally strong.  VIDEO_COPY_PROOF (see THE EVIDENCE THIS
+# SCRIPT PRINTS) names which one was actually taken, so "the picture was
+# copied" is never a stronger claim than the measurement behind it, and
+# nothing is published when neither is available.
 #
 # ---------------------------------------------------------------------
 # WHAT THIS FILE READS AND WRITES
 #
-# Reads two files.  Writes exactly one path inside the working tree --
-# the output container -- plus one dot-prefixed staging file beside it,
-# and one scratch file under the pipeline's private runtime directory,
-# outside the tree entirely.  The staging file is removed on every exit
-# this script is able to run code on; a SIGKILL, a full disk or a
-# permission fault can still leave it, which is why the start of a run
-# removes a stale one rather than assuming there is none.  It touches no
-# frame, no manifest, no timeline, no save data and no configuration.
-# It starts no server, needs no display, makes no network call, and
-# runs no command through a shell string: every external call is an
-# argument list.  There is no dynamic-code construct anywhere in it and
+# Reads two files.  Writes exactly one path inside the working tree -- the
+# output container -- plus one dot-prefixed staging file beside it and one
+# scratch file under the pipeline's private runtime directory, outside the
+# tree entirely.  The staging file is removed on every exit this script can
+# run code on; a SIGKILL, a full disk or a permission fault can still leave
+# it, which is why a run removes a stale one rather than assuming there is
+# none.  It touches no frame, no manifest, no timeline, no save data and no
+# configuration.  It starts no server, needs no display, makes no network
+# call, and runs no command through a shell string: every external call is
+# an argument list.  There is no dynamic-code construct anywhere in it and
 # no unquoted glob.
 #
 # ---------------------------------------------------------------------
 # THE STAGING FILE, AND WHY exit 0 MEANS SOMETHING
 #
 # ffmpeg writes to a sibling staging path, the whole verification runs
-# against THAT file, and only a container that has passed every check
-# is renamed into place.  The rename is within one directory, so it is
-# atomic: a reader sees either the previous film or the new one, never
-# a half-written one.
-#
-# Three consequences, all of them the point:
+# against THAT file, and only a container that has passed every check is
+# renamed into place.  The rename is within one directory, so it is atomic:
+# a reader sees either the previous film or the new one, never a
+# half-written one.  Three consequences, all of them the point:
 #
 #   * exit 0 <=> a VERIFIED container exists at the output path.  A
-#     container that ffmpeg called a success but that carries no
-#     caption track can never be published: which streams reach the
-#     output is a stream-selection decision, and a container missing
-#     the track would satisfy any check that only asks whether the
-#     file exists.  That is why the checks are here rather than left
-#     to a later stage.
-#   * A failed run leaves nothing new in the working tree, because the
-#     staging file is removed on the way out -- so the commit stage
-#     cannot stage a truncated container that nobody authored.  A run
-#     that is KILLED cannot run that cleanup, and the staging name is
-#     then still there: dot-prefixed, never at the output path, and
-#     removed by the next run before it writes.  What no interruption
-#     can do is publish, because the output path is only ever reached
-#     by a rename of a container that passed.
-#   * A previously published, verified film is not destroyed by a
-#     failed re-run.  It is replaced only by a film that passed.
+#     container ffmpeg called a success but carrying no caption track can
+#     never be published -- which streams reach the output is a
+#     stream-selection decision, and a container missing the track would
+#     satisfy any check that only asks whether the file exists.
+#   * A failed run leaves nothing new in the working tree, so the commit
+#     stage cannot stage a truncated container nobody authored.  A run that
+#     is KILLED cannot run that cleanup and the staging name is then still
+#     there: dot-prefixed, never at the output path, and removed by the
+#     next run before it writes.  What no interruption can do is PUBLISH,
+#     because the output path is only ever reached by a rename of a
+#     container that passed.
+#   * A previously published, verified film is not destroyed by a failed
+#     re-run.  It is replaced only by a film that passed.
 #
-# EVERY FALLIBLE CHECK HAPPENS BEFORE THE RENAME.  That is a correction,
-# not a restatement: the byte-size comparison, both mandated probe
-# readouts and the audio/data/attachment census all used to run AFTER the
-# rename, against the published file, and each of them could exit
-# non-zero.  So the canonical captioned MP4 -- a committed artifact -- was
-# replaced first and interrogated second, and a failure left the
-# unverified container in the working tree as the film while the previous
-# one, which had passed every check, was already gone.
-#
-# After the rename there is now exactly ONE check, and it asks nothing
-# about what the container holds: the sha256 of the published bytes
-# against the sha256 of the bytes that were verified.  The previous film
-# is copied aside first, so a mismatch RESTORES it and quarantines the
-# file that failed rather than merely reporting the loss.
+# EVERY FALLIBLE CHECK HAPPENS BEFORE THE RENAME, so a canonical committed
+# artifact is never replaced first and interrogated second.
 #
 # ---------------------------------------------------------------------
 # THE PROVENANCE GATE
 #
-# Length, cue count, codec and geometry can all agree between a film and
-# a caption track that describe DIFFERENT sessions -- a re-record of the
-# same opening, or a re-render of one session beside a transcript from
-# another.  So before anything is muxed, this stage reads the generation
-# manifests render_movie.py and make_srt.py publish beside their outputs,
-# requires both to name the same playthrough/timeline.json BY THAT
-# DOCUMENT'S OWN DIGEST, and requires each input to carry the digest its
-# own manifest declares.  A missing manifest is a refusal: treating it as
-# "nothing to check" would switch the gate off for exactly the older
-# render it exists to catch.
-#
+# Length, cue count, codec and geometry can all agree between a film and a
+# caption track that describe DIFFERENT sessions -- a re-record of the same
+# opening, or a re-render of one session beside a transcript from another.
+# So each producer publishes the digest of the timeline it worked from, and
+# this stage requires the two to agree before it muxes anything.
 # ---------------------------------------------------------------------
 # THE EVIDENCE THIS SCRIPT PRINTS
 #
 # It does not claim the track is there; it shows the probe output that
-# proves it, then exits on any assertion that fails.  The two mandated
-# readouts are run verbatim against the container that is published and
-# printed on stderr as they came back --
-#
-#     ffprobe -v error -select_streams s \
-#       -show_entries stream=index,codec_name:stream_tags=language \
-#       -of default=nw=1 <output>
-#     ffprobe -v error -select_streams v \
-#       -show_entries stream=codec_name,width,height \
-#       -of default=nw=1 <output>
-#
-# -- and the first must report codec_name=mov_text with
-# TAG:language=eng while the second must report h264 at 1920x1080.
-#
-# Everything printed on stdout is a KEY=value line, one per line, in a
-# fixed order, so a caller can read a field without parsing prose:
-#
-#     out="$(playthrough/tooling/embed_captions.sh)"
-#     path="$(printf '%s\n' "${out}" | sed -n 's/^OUTPUT_FILE=//p')"
-#
-# Diagnostics, warnings and the two verbatim probe readouts go to
-# stderr, so the machine channel stays clean.  The keys, in order:
+# proves it, then exits on any assertion that fails.  STDOUT IS A MACHINE
+# CHANNEL -- KEY=value lines only, with the two verbatim probe readouts,
+# the diagnostics and the warnings on stderr.  The keys, in order:
 #
 #     INPUT_MOVIE          the film that was read, repository-relative
 #     INPUT_SRT            the cue file that was read
@@ -253,18 +185,15 @@
 #     VIDEO_HEIGHT         1080
 #     VIDEO_DURATION       seconds, from the output's video stream
 #     VIDEO_FRAMES         frame count, from the output's video stream
-#     VIDEO_COPY_PROOF     the strongest evidence that established
-#                          that the picture was copied rather than
-#                          re-encoded: stream-hash (byte-identical
-#                          packets, the usual answer and the one to
-#                          want) or, where this ffmpeg cannot hash a
-#                          stream, duration+frames -- or duration or
-#                          frames alone where the container carries
-#                          only one of them
-#     AUDIO_STREAMS        0, measured.  The film is silent by
-#                          requirement, and the count is stated rather
-#                          than left to be inferred from the absence
-#                          of a complaint
+#     VIDEO_COPY_PROOF     the strongest evidence that established that
+#                          the picture was COPIED rather than re-encoded:
+#                          stream-hash (byte-identical packets, the answer
+#                          to want) or, where this ffmpeg cannot hash a
+#                          stream, duration+frames -- or one of those two
+#                          alone where the container carries only one
+#     AUDIO_STREAMS        0, measured.  The film is silent by requirement
+#                          and the count is stated rather than inferred
+#                          from the absence of a complaint
 #     SUBTITLE_INDEX       the stream index the caption track occupies
 #     SUBTITLE_CODEC       mov_text
 #     SUBTITLE_LANGUAGE    eng
@@ -276,15 +205,15 @@
 # ---------------------------------------------------------------------
 # EXIT CODES
 #     0  a verified captioned container is at the output path
-#     1  usage error -- an unknown option, too many arguments, or a
-#        path this script will not hand to ffmpeg
+#     1  usage error -- an unknown option, too many arguments, or a path
+#        this script will not hand to ffmpeg
 #     2  layout error -- this file cannot locate itself, or env.sh is
 #        missing or refused to load
-#     3  an input is missing, empty, or not the shape a cue file has,
-#        or the output cannot be published where it was asked for.  Run
+#     3  an input is missing, empty, or not the shape a cue file has, or
+#        the output cannot be published where it was asked for.  Run
 #        render_movie.py or make_srt.py first; the message says which
-#     4  the mux itself failed or timed out, or another run of this
-#        stage holds the lock
+#     4  the mux itself failed or timed out, or another run of this stage
+#        holds the lock
 #     5  the command assembled was not the mandated recipe, or the
 #        container was produced and does not carry what it must -- in
 #        either case NOTHING was published
@@ -294,19 +223,12 @@
 # COUNTING CUES: ONE MEASURED TRAP
 #
 # MP4 timed text has to cover the container contiguously, so the muxer
-# PADS the gaps this transcript leaves for the cinematic transitions
-# with empty samples of its own.  Measured against this script: three
-# cues with one one-second gap between them go in, and ffprobe counts
-# FOUR subtitle packets in the result.  make_srt.py records the same
-# effect on its reference sequence -- seven cues in, nine packets out.
-#
-# So the packet count is NOT the cue count, and this script never
-# treats it as one.  It reads the cues back OUT of the finished
-# container with the SubRip encoder and counts those.  Measured against
-# this script: three of three through that padded track, and 560 of 560
-# for the real playthrough/transcript.srt -- cue text, cue numbering
-# and cue timings all round-trip intact.
-#
+# PADS the gaps this transcript leaves for the cinematic transitions with
+# empty samples of its own: three cues with one one-second gap between
+# them go in, and ffprobe counts FOUR subtitle packets in the result.  So
+# the packet count is NOT the cue count, and this script never treats it
+# as one -- it reads the cues back OUT of the finished container with the
+# SubRip encoder and counts those.
 # ---------------------------------------------------------------------
 # THE PRODUCERS THIS STAGE FOLLOWS
 #
@@ -315,26 +237,23 @@
 #                    entry per captured frame.  The MP4 container is
 #                    required rather than incidental: mov_text is an
 #                    MP4 feature.
-#   make_srt.py      writes playthrough/transcript.srt -- SubRip, one
-#                    cue per frame, sequence numbers from 1, timecodes
-#                    HH:MM:SS,mmm with a comma, UTF-8 with LF endings
-#                    and no byte-order mark, plain text with no
-#                    override codes, positioning or markup, precisely
-#                    so that it muxes cleanly as a caption track.
+#   make_srt.py      writes playthrough/transcript.srt -- SubRip, one cue
+#                    per frame, sequence numbers from 1, timecodes
+#                    HH:MM:SS,mmm with a comma, UTF-8 with LF endings and
+#                    no byte-order mark, plain text with no override
+#                    codes, positioning or markup, precisely so that it
+#                    muxes cleanly as a caption track.
 #
-# Both are driven by playthrough/timeline.json, the single source of
-# truth for pacing, so the cue windows already agree with the frame
-# windows before this stage runs.  NOTHING IS RETIMED HERE.  This
-# script adds no cue, drops none, shifts none and rewords none: the
-# captions muxed are exactly the cues make_srt.py generated from
-# exactly the frames that were captured.
+# Both are driven by playthrough/timeline.json, the single source of truth
+# for pacing, so the cue windows already agree with the frame windows
+# before this stage runs.  NOTHING IS RETIMED HERE: no cue is added,
+# dropped, shifted or reworded.
 #
-# On the trust state: env.sh's bypass switches are asserted by the two
-# stages that produce PRIMARY evidence -- launch_game.sh and
-# capture.sh.  The derivation stages, this one included, do not repeat
-# that gate; what they do instead is resolve every tool through
-# playthrough_require_tools, which verifies ownership and writability
-# of each binary it hands back and warns loudly when a bypass is in
+# env.sh's bypass switches are asserted by the two stages that produce
+# PRIMARY evidence -- launch_game.sh and capture.sh.  The derivation
+# stages, this one included, resolve every tool through
+# playthrough_require_tools instead, which verifies ownership and
+# writability of each binary it hands back and warns when a bypass is in
 # force.
 # ---------------------------------------------------------------------
 
@@ -359,10 +278,7 @@ _ec_on_error() {
 trap '_ec_on_error "$?" "${LINENO}"' ERR
 
 # ---------------------------------------------------------------------
-# Exit codes, named so the call sites read as intent.  Declared before
-# anything else can fail, because the first two failures this file can
-# suffer -- not finding itself, and not finding env.sh -- happen before
-# any other definition exists.
+# Exit codes, named so the call sites read as intent.
 # ---------------------------------------------------------------------
 readonly EX_OK=0
 readonly EX_USAGE=1
@@ -373,12 +289,8 @@ readonly EX_VERIFY=5
 readonly EX_PREREQ=8
 
 # ---------------------------------------------------------------------
-# Locate this file, then load the one definition of the environment
-# and the artifact layout.
-#
-# The root-resolution idiom is the repository's own, from
-# build-scripts/clang-tidy-run.sh:8, as capture.sh and launch_game.sh
-# also adopt it.
+# Locate this file, then load the one definition of the environment and the
+# artifact layout.
 # ---------------------------------------------------------------------
 _ec_script_dir="$(
     cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd
@@ -428,9 +340,6 @@ cd "${PLAYTHROUGH_REPO_ROOT}"
 
 # ---------------------------------------------------------------------
 # THE CONTRACT, spelled as constants.
-#
-# Every one of these is a requirement rather than a preference, so each
-# appears exactly once and is asserted rather than assumed.
 # ---------------------------------------------------------------------
 
 # The caption codec.  The only broadly supported subtitle codec inside
@@ -442,50 +351,20 @@ readonly SUBTITLE_CODEC="mov_text"
 readonly SUBTITLE_LANGUAGE="eng"
 readonly SUBTITLE_METADATA_KEY="-metadata:s:s:0"
 
-# The container layout flag, spelled exactly as render_movie.py spells
-# it (MOVFLAGS = "+faststart" there).  It puts the `moov` index in front
-# of `mdat` so a player can start on its first request instead of
-# fetching the tail first; see THE MUX below for the measurement that
-# put it here.  That the flag TOOK EFFECT on the published container --
-# rather than merely being asked for -- is asserted against the
-# committed artifact by test_artifacts.py, which walks both films' top
-# level atoms and requires `moov` before `mdat` in each.  It is checked
-# there rather than here because the check has to read real container
-# bytes, and this stage's own suite drives it against a stubbed ffmpeg.
+# The container layout flag, spelled exactly as render_movie.py spells it
+# (MOVFLAGS = "+faststart" there).
 readonly MOVFLAGS="+faststart"
 
 # The container tags the published film may carry, and only these.
-#
-# WHY A WHITELIST RATHER THAN A CHECK FOR THE KNOWN BAD.  -map_metadata
-# -1 drops what the inputs carried, but the MUXER still writes its own
-# structural tags, and which ones it writes is a property of the ffmpeg
-# build rather than of this script.  Measured on the input this pipeline
-# produces, the inherited set was major_brand, minor_version,
-# compatible_brands and encoder=Lavf61.7.100 -- so the encoder's name
-# and version travelled into a committed artifact.  Enumerating what is
-# ALLOWED means a tag a future ffmpeg starts adding is reported here
-# instead of shipping unnoticed, which is the direction that stays
-# correct as the tool changes.
-#
-# creation_time is deliberately NOT in this list.  A timestamp is a fact
-# about the operator's clock rather than about the session, and it also
-# makes the artifact non-reproducible: two identical renders would
-# differ.
 readonly ALLOWED_FORMAT_TAGS="major_brand minor_version \
 compatible_brands encoder"
 
 # The digest used to prove the picture came through the mux untouched.
-# SHA-256, not MD5: MD5 is collision-broken and chosen-prefix collisions
-# against it are cheap, so a matching MD5 was a statement about accident
-# rather than about intent.  Named as a constant because the algorithm
-# is REPORTED alongside every digest -- a bare hex string tells a later
-# reader nothing about what produced it.
 readonly STREAM_HASH_ALGORITHM="sha256"
 
-# What ffprobe must report for the copied picture.  h264 is the codec
-# name for the stream render_movie.py produced; the geometry is the X
-# root this pipeline captures, straight from env.sh so the number is
-# not written down twice.
+# What ffprobe must report for the copied picture. h264 is the codec name for
+# the stream render_movie.py produced; the geometry is the X root this pipeline
+# captures, straight from env.sh so the number is not written down twice.
 readonly VIDEO_CODEC_EXPECTED="h264"
 readonly VIDEO_WIDTH_EXPECTED="${PLAYTHROUGH_SCREEN_WIDTH}"
 readonly VIDEO_HEIGHT_EXPECTED="${PLAYTHROUGH_SCREEN_HEIGHT}"
@@ -502,72 +381,36 @@ readonly CUE_ARROW=" --> "
 # The first line of a SubRip file: the first cue's sequence number.
 readonly FIRST_CUE_NUMBER="1"
 
-# A container smaller than this is a header and nothing else.  The
-# smallest honest film here is one 1920x1080 keyframe of real screen
-# content, which measures tens of kilobytes, so four kilobytes sits
-# comfortably below anything legitimate and above a truncated write.
-# The value is render_movie.py's MIN_OUTPUT_BYTES, deliberately.
+# A container smaller than this is a header and nothing else.
 readonly MIN_OUTPUT_BYTES=4096
 
-# How far the output's video stream duration may differ from the
-# input's.  A stream copy reproduces the sample durations exactly, so
-# the honest answer is zero; a millisecond of slack absorbs the
-# hundredth-of-a-second formatting ffprobe prints and nothing more.  A
-# re-encode or a burned-in overlay would miss by far more than this,
-# and the stream-hash check below catches both regardless.
+# How far the output's video stream duration may differ from the input's.
 readonly DURATION_EPSILON="0.001"
 
 # ---------------------------------------------------------------------
 # HOW FAR THE CAPTION TRACK MAY DIFFER FROM THE PICTURE, IN EITHER
 # DIRECTION
 #
-# THE DEFECT THIS REPLACES.  The comparison used to be one-sided: only a
-# caption track running PAST the end of the picture was refused.  A track
-# that ends EARLY was accepted, and that is the direction a stale cue file
-# fails in -- an SRT left over from a shorter session muxes cleanly into a
-# longer film, every count tallies because the cue count is checked
-# against that same stale file, and the result is a committed artifact
-# whose captions stop partway through and whose every cue after the first
-# few describes a different session's keystrokes.
+# The bound is on the ABSOLUTE difference, because a track that ends EARLY
+# is the direction a STALE cue file fails in: an SRT from a shorter session
+# muxes cleanly into a longer film and every count tallies, since the cue
+# count is checked against that same stale file.
 #
-# So the bound is now on the ABSOLUTE difference.  The number comes from
-# arithmetic the two upstream stages already document:
-#
-#   * the subtitle stream's duration is the last cue's end, and make_srt.py
-#     writes that equal to the timeline total exactly;
-#   * the video stream's duration is the container's, which render_movie.py
-#     measures as the timeline total plus [0.02, 0.06] s -- the concat
-#     demuxer's per-entry quantisation plus the repeated final entry's own
-#     default packet.
-#
-# Measured on the committed artifacts: timeline total 301.000, video
-# stream 301.040, subtitle stream 301.000 -- a difference of 0.040.
-#
-# The smallest staleness worth catching is a session one keystroke shorter,
-# which differs by at least the timeline's 0.25 s floor.  0.12 s therefore
-# sits between the largest honest quantisation (0.06) and the smallest
-# possible staleness (0.25 - 0.06 = 0.19), which is the same reasoning and
-# the same value as render_movie.py's own DURATION_TOLERANCE.
+# The number follows from arithmetic the two upstream stages document.  The
+# subtitle stream's duration is the last cue's end, which make_srt.py
+# writes equal to the timeline total exactly; the video stream's is the
+# container's, which render_movie.py measures as the timeline total plus
+# [0.02, 0.06] s of concat-demuxer quantisation.  The smallest staleness
+# worth catching is a session one keystroke shorter, which differs by at
+# least the timeline's 0.25 s floor.  0.12 therefore sits between the
+# largest honest quantisation (0.06) and the smallest possible staleness
+# (0.25 - 0.06 = 0.19) -- the same reasoning and the same value as
+# render_movie.py's own DURATION_TOLERANCE.
 # ---------------------------------------------------------------------
 readonly CAPTION_DURATION_TOLERANCE="0.12"
 
 # ---------------------------------------------------------------------
 # THE GENERATION MANIFESTS, and why this stage reads them
-#
-# THE DEFECT.  Holding the caption track against the length of the
-# picture catches a track from a session of a DIFFERENT length.  It cannot
-# catch one from a session of the SAME length -- and "same length" is not
-# far-fetched: a re-record of the same scripted opening, or a re-render of
-# one session with a transcript from another, produces two artifacts whose
-# durations agree to the millisecond and whose contents describe different
-# keystrokes.  Duration is a weak proxy for identity and a digest is not.
-#
-# So both producers publish a generation manifest naming the timeline they
-# computed from BY THAT DOCUMENT'S OWN DIGEST, and this stage requires the
-# two to name the same one, and requires the movie and the cue file on disk
-# to carry the digests their own manifests declare.  That makes muxing a
-# caption track from one session into a film from another arithmetically
-# impossible rather than merely unlikely.
 # ---------------------------------------------------------------------
 readonly MOVIE_MANIFEST_NAME="movie.json"
 readonly TRANSCRIPT_MANIFEST_NAME="transcript.json"
@@ -587,10 +430,7 @@ readonly PROBE_ABSENT="N/A"
 readonly TIMEOUT_EXPIRED=124
 readonly TIMEOUT_KILLED=137
 
-# How long a child gets between TERM and KILL.  GNU timeout puts the
-# command in a process group of its own and signals the group, so this is
-# what makes the advertised ceiling hold against a tool that ignores TERM
-# rather than being a request it can decline.
+# How long a child gets between TERM and KILL.
 readonly KILL_GRACE=10
 
 # ---------------------------------------------------------------------
@@ -600,33 +440,26 @@ readonly KILL_GRACE=10
 # would hang the pipeline sequencer indefinitely with nothing written and
 # nothing reported -- the one failure mode worse than an error.
 #
-# IT CANNOT BE ONE NUMBER.  Three of the calls below read the whole video
-# stream -- the mux, the stream hash and the cue extraction -- and the mux
-# additionally RELOCATES the moov atom for `+faststart`, which is a second
-# pass over the output.  Both costs are O(bytes), and the session length
-# this pipeline is built for is deliberately unbounded, so a fixed number
-# is either too small for a long film -- killing a healthy mux and
-# reporting it as wedged, after which the pipeline has no captioned film
-# at all -- or so large it is not a bound.  Measured on the committed
-# 3.7 MB film the mux takes well under a second; a two-hour session at the
-# same bitrate is gigabytes, and the fixed 900 s was chosen against
-# neither.
+# IT CANNOT BE ONE NUMBER.  Three calls read the whole video stream (the
+# mux, the stream hash and the cue extraction) and the mux additionally
+# relocates the moov atom for `+faststart`, a second pass over the output.
+# Both costs are O(bytes) and the session length is deliberately unbounded,
+# so a fixed number is either too small for a long film -- killing a
+# healthy mux and reporting it as wedged, leaving no captioned film at all
+# -- or so large it is not a bound.
 #
-# So the ceiling starts at the fixed value for the METADATA reads (a
-# header probe is O(1) in the film's length) and is re-derived from the
-# input film's own byte count and duration before the mux, which is the
-# first call whose cost scales.  An explicit PLAYTHROUGH_CAPTION_TIMEOUT
-# is honoured EXACTLY and never derived over: an operator who names a
-# ceiling has named it.
+# So the ceiling starts at the fixed value for the METADATA reads, a header
+# probe being O(1) in the film's length, and is re-derived from the input
+# film's own byte count and duration before the mux, the first call whose
+# cost scales.  An explicit PLAYTHROUGH_CAPTION_TIMEOUT is honoured EXACTLY
+# and never derived over: an operator who names a ceiling has named it.
 # ---------------------------------------------------------------------
 readonly DEFAULT_STAGE_TIMEOUT=900
 
-# The derivation: a base for process start-up and container parsing, one
-# second per this many bytes for each of the two passes a faststart mux
-# makes over the film, and one second per this many seconds of film for
-# the per-packet bookkeeping.  Both divisors are deliberately far below
-# what any host achieves (this one copies at hundreds of MB/s), so an
-# expiry means wedged rather than slow.
+# The derivation: a base for process start-up and container parsing, one second
+# per this many bytes for each of the two passes a faststart mux makes over the
+# film, and one second per this many seconds of film for the per-packet
+# bookkeeping.
 readonly MUX_BASE_SECONDS=300
 readonly MUX_BYTES_PER_SECOND=1048576
 readonly MUX_PASSES=2
@@ -637,16 +470,8 @@ readonly MUX_FILM_SECONDS_PER_SECOND=10
 # producing something absurd.
 readonly MUX_MAX_SECONDS=86400
 
-# THE WATCHDOG.  The derived ceiling is the backstop; this is how a wedge
-# is caught EARLY.  A mux that is working extends its own deadline by
-# making progress -- the staging file grows, and while the moov atom is
-# being relocated it stops growing but keeps being written, so the
-# signature is size AND modification time.  A file that has done neither
-# for this long has stalled, whatever its ceiling says.
-#
-# The stall window is overridable for the same reason the ceiling is: how
-# long a legitimate quiet period can be depends on the host's storage, and
-# a refusal nobody can reach in a test is a refusal nobody has read.
+# THE WATCHDOG. The derived ceiling is the backstop; this is how a wedge is
+# caught EARLY.
 readonly WATCH_POLL_SECONDS=5
 readonly DEFAULT_WATCH_STALL_SECONDS=120
 
@@ -677,17 +502,14 @@ else
     fi
     CEILING_SOURCE="the metadata default, re-derived before the mux"
 fi
-# NEITHER IS readonly YET: the ceiling and the sentence that explains it
-# are both re-derived once the film's size is known, and both are frozen
-# there.  Whether an override was given IS fixed here -- an operator's
-# number is never adjusted.
+# NEITHER IS readonly YET: the ceiling and the sentence that explains it are
+# both re-derived once the film's size is known, and both are frozen there.
 STAGE_TIMEOUT="${PLAYTHROUGH_INT}"
 readonly CEILING_OVERRIDDEN="${PLAYTHROUGH_CAPTION_TIMEOUT:+yes}"
 
-# How long to wait for another run of this stage to finish before
-# giving up.  Two muxes writing one output would race over the same
-# staging file, so they are serialised rather than allowed to
-# interleave.
+# How long to wait for another run of this stage to finish before giving up.
+# Two muxes writing one output would race over the same staging file, so they
+# are serialised rather than allowed to interleave.
 readonly DEFAULT_LOCK_TIMEOUT=60
 
 if ! playthrough_validate_int \
@@ -722,18 +544,10 @@ note() {
 #   PATH spelled relative to the repository root when it lies inside
 #   it, so the summary reads as playthrough/cata-play-cc.mp4 rather
 #   than as an absolute path nobody can compare against the
-#   requirement.  Anything outside the checkout is reported as given.
-# rel PATH -- the repository-relative spelling, for reporting.
-#
-# DELEGATES to playthrough_rel() in env.sh, which is the single
-# definition the whole pipeline uses.  This wrapper used to have its own
-# copy, and the copy's fall-through branch printed an outside path AS
-# GIVEN -- so a --output pointing at /home/someone/scratch/x.mp4 put
-# that operator's home directory into the machine-readable summary and
-# into every log line that named the file.  playthrough_rel reduces an
-# outside path to its basename behind a marker instead, which is the
-# same information a reader needs and none of the information they do
-# not.  Kept as a name because this file calls it forty times.
+#   requirement.  Delegates to playthrough_rel() in env.sh, which is the
+#   single definition the whole pipeline uses and which reduces an
+#   outside path to its basename behind a marker rather than printing
+#   somebody's home directory into the machine-readable summary.
 rel() {
     playthrough_rel "${1-}"
 }
@@ -797,23 +611,13 @@ USAGE
 
 # ---------------------------------------------------------------------
 # Argument parsing.
-#
-# Options are recognised only before the positionals, and the only
-# option is --help: there is deliberately nothing to switch on.  An
-# unrecognised argument is refused rather than ignored, because an
-# ignored flag is an operator who believes something happened that did
-# not.
 # ---------------------------------------------------------------------
 INPUT_MOVIE=""
 INPUT_SRT=""
 OUTPUT_MOVIE=""
 
 _ec_positional=0
-# One option exists, so this loop takes at most one turn today.  It is
-# written as a loop rather than as a test on $1 because that is the
-# shape that stays correct if a second option is ever added, and
-# because it is where `--` is honoured -- the only way to name a file
-# that genuinely begins with a dash.
+# One option exists, so this loop takes at most one turn today.
 while [ "$#" -gt 0 ]; do
     case "$1" in
         -h|--help)
@@ -837,11 +641,6 @@ done
 
 for _ec_arg in "$@"; do
     # Arithmetic on a counter this script initialised to zero itself.
-    # env.sh's warning about arithmetic expansion applies to values
-    # that came from the environment, where the substitution inside an
-    # expansion would be executed rather than counted; every value the
-    # environment supplies to this file goes through
-    # playthrough_validate_int first.
     _ec_positional=$((_ec_positional + 1))
     case "${_ec_positional}" in
         1) INPUT_MOVIE="${_ec_arg}" ;;
@@ -865,23 +664,10 @@ INPUT_MOVIE="${INPUT_MOVIE:-${PLAYTHROUGH_MOVIE}}"
 INPUT_SRT="${INPUT_SRT:-${PLAYTHROUGH_TRANSCRIPT_SRT}}"
 OUTPUT_MOVIE="${OUTPUT_MOVIE:-${PLAYTHROUGH_MOVIE_CC}}"
 
-# NOT readonly yet.  The confinement gate below resolves each of these
-# and, once it has proved the path names the one artifact its role is
-# allowed to name, replaces it with env.sh's own spelling of that
-# artifact -- so every line after the gate works on exactly the strings
-# the no-argument run uses.  They are frozen there.
+# NOT readonly yet.
 
 # ---------------------------------------------------------------------
 # Path shape, checked before anything is handed to ffmpeg.
-#
-# ffmpeg has no end-of-options marker, so a path that begins with a
-# dash would be read as a flag, and a path whose first component
-# contains a colon would be read as a protocol -- "C:/x" and
-# "http:/x" alike.  Both are refused here with an explanation, rather
-# than producing an ffmpeg error about something the operator never
-# asked for.  An input path can be passed as an option value with -i,
-# but an output path is positional and has no such shelter, so all
-# three are held to the same rule.
 # ---------------------------------------------------------------------
 assert_path_shape() {
     local path="$1" label="$2"
@@ -922,59 +708,26 @@ assert_path_shape "${OUTPUT_MOVIE}" "output"
 
 # ---------------------------------------------------------------------
 # PREREQUISITES.
-#
-# playthrough_require_tools reports every missing tool at once with the
-# package that ships it, and hands back a VERIFIED absolute path in
-# PLAYTHROUGH_BIN_<NAME> for each one that passes -- ownership and
-# writability checked on the binary and on every directory above it.
-# Those paths are what get invoked below, rather than a bare name
-# re-searched on PATH at the point of use.
-#
-# ffmpeg muxes and extracts, ffprobe measures, grep counts cues, awk
-# compares two decimal durations (the shell has no floating point), wc
-# sizes a file through a redirection rather than by argument, mv
-# publishes the verified container, and readlink canonicalises the three
-# paths for the confinement gate below -- a comparison of path STRINGS
-# would be defeated by "playthrough/../playthrough/cata-play-cc.mp4",
-# which is why the gate compares resolved paths instead.
+# playthrough_require_tools reports every missing tool at once with the package
+# that ships it, and hands back a VERIFIED absolute path in
+# PLAYTHROUGH_BIN_<NAME> for each one that passes -- ownership and writability
+# checked on the binary and on every directory above it.
 # ---------------------------------------------------------------------
-#
-# sha256sum is the addition that makes the provenance check possible: the
-# two generation manifests name their inputs by digest, and a digest has
-# to be computed to be compared.  cp retains the previous generation
-# beside the target so a publication that cannot be verified can be undone
-# rather than merely reported.
-#
-# df and sleep are the additions the capacity reserve and the stall
-# watchdog need: a mux that runs out of room mid-write leaves a truncated
-# container, and a wedge is only detectable by looking at the staging file
-# repeatedly rather than once.
+# sha256sum is the addition that makes the provenance check possible: the two
+# generation manifests name their inputs by digest, and a digest has to be
+# computed to be compared.
 if ! playthrough_require_tools ffmpeg ffprobe grep awk wc mv cp rm \
         sha256sum timeout readlink df sleep; then
     exit "${EX_PREREQ}"
 fi
 
-# THE PLATFORM, checked here for the same reason capture.sh checks it:
-# ffmpeg parses a container in this stage, and on a release past its
-# end-of-life date its known issues stay unfixed by definition however
-# current `dpkg-query` looks.  A refusal by default, waived only through
-# PLAYTHROUGH_ALLOW_EOL_PLATFORM=<reason>, whose reason is warned once
-# and printed in the environment summary.  This stage used to be the one
-# shell entry point that did NOT check -- an inconsistency, not a
-# decision, since it sources the same env.sh the others do.
+# THE PLATFORM, checked here for the same reason capture.sh checks it: ffmpeg
+# parses a container in this stage, and on a release past its end-of-life date
+# its known issues stay unfixed by definition however current `dpkg-query`
+# looks.
 playthrough_check_platform || exit "${EX_PREREQ}"
 
 # AND THE TRUST STATE, because this stage produces PRODUCTION MEDIA.
-# The captioned film is the pipeline's final artifact and it is
-# committed, so it is evidence in exactly the sense capture.sh's kept
-# frame is -- and a security review was right that the platform waiver
-# had to force the diagnostic state rather than merely be recorded.
-# PLAYTHROUGH_ALLOW_EOL_PLATFORM is a registered trust bypass now, and
-# under it (or any other) the mux refuses HERE, before ffmpeg is
-# invoked, rather than producing a container nobody can attest to.
-# Diagnosis of this stage is a matter of reading the refusal and fixing
-# what the bypass was hiding; there is no captioned film worth having
-# that was produced under a relaxed check.
 playthrough_assert_trusted "the caption mux" || exit "${EX_PREREQ}"
 
 readonly FFMPEG="${PLAYTHROUGH_BIN_FFMPEG}"
@@ -1012,25 +765,6 @@ file_digest() {
 
 # manifest_digest FILE SECTION [BASENAME]
 #   Read one sha256 out of a generation manifest.
-#
-#   READ WITH A REAL JSON PARSER, not scraped.  These manifests are the
-#   evidence that two artifacts belong to one session, so a reader that
-#   could mis-parse a nested object -- which every awk or grep approach
-#   can, given a field named the same way at a different depth -- would
-#   turn the provenance gate into a formality.  $PLAYTHROUGH_PYTHON is the
-#   interpreter env.sh already resolved and verified, and it is
-#   unconditionally present whenever this stage runs: the two producers
-#   immediately upstream of it are Python.
-#
-#   The program is a fixed literal and the paths arrive as argv, never
-#   interpolated into source -- the repository's CodeQL python leg gates on
-#   exactly that [.github/workflows/codeql-analysis.yml:35].
-#
-#   With BASENAME, the digest is taken from the "outputs" list entry whose
-#   path ends in that name; without it, from the named top-level object.
-#   Prints nothing and returns non-zero when the value is absent or is not
-#   a 64-character hex digest, so a caller cannot mistake "unreadable" for
-#   "matches".
 manifest_digest() {
     local file="$1" section="$2" basename="${3:-}" out
     out="$("${PLAYTHROUGH_PYTHON}" -c '
@@ -1074,14 +808,11 @@ print(found.get("sha256", ""))
 #   Run one external command under the stage ceiling, reporting an
 #   expiry as an expiry.  stderr is deliberately NOT captured or
 #   silenced anywhere in this file: when ffmpeg refuses something, its
-#   own message is the most useful thing an operator can be shown, and
-#   swallowing it to print a tidier one would cost the diagnosis.
+#   own message is the most useful thing an operator can be shown.
 #
 #   TERM THEN KILL, over the child's own process group.  A plain
-#   `timeout N` sends one TERM and then reports an expiry whether or not
-#   the child acted on it, so a tool wedged inside its own signal
-#   handling kept running while this stage said it had been stopped.
-#   --kill-after is what makes the advertised ceiling a fact.
+#   `timeout N` reports an expiry whether or not the child acted on the
+#   signal, so --kill-after is what makes the advertised ceiling a fact.
 run_bounded() {
     local label="$1"
     shift
@@ -1106,14 +837,6 @@ run_bounded() {
 # progress_signature FILE
 #   A value that changes whenever FILE is being written, and does not
 #   change when it is not.
-#
-#   SIZE ALONE IS NOT ENOUGH, and that is the whole reason this is a
-#   function rather than a `wc -c`.  A `+faststart` mux writes the
-#   container, then RELOCATES the moov atom to the front, and the
-#   relocation rewrites the file in place -- the size does not move while
-#   the largest single piece of work in the stage is happening.  The
-#   modification time does.  So the signature is both, and a mux that is
-#   working cannot be mistaken for one that has stalled.
 progress_signature() {
     local out=""
     out="$("${PLAYTHROUGH_UTIL_STAT}" -c '%s %Y' -- "$1" \
@@ -1124,23 +847,6 @@ progress_signature() {
 # run_watched LABEL WATCH_FILE COMMAND...
 #   Run the one command whose cost is the film, under the derived ceiling
 #   AND under a stall watchdog.
-#
-#   THE CEILING IS THE BACKSTOP, NOT THE DETECTOR.  Derived from the
-#   film's own size, it is necessarily generous: on a multi-gigabyte
-#   session it is hours, and waiting hours to discover that ffmpeg wedged
-#   in its first second is not a diagnosis.  So progress is watched, and a
-#   file that has neither grown nor been touched for
-#   ${WATCH_STALL_SECONDS}s is stopped early with TERM -- which ffmpeg
-#   honours immediately -- while the derived ceiling and its --kill-after
-#   remain in force underneath for the case where it does not.
-#
-#   A child that ignores the early TERM is REPORTED and left to that
-#   ceiling rather than having its wrapper killed: SIGKILL to `timeout`
-#   would orphan the ffmpeg underneath it, and an orphaned encoder still
-#   writing into the staging file is strictly worse than one that is
-#   stopped a few minutes later by its own bound.
-#
-#   Sets LAST_WATCH_OUTCOME to ok, stalled, expired or failed.
 LAST_WATCH_OUTCOME="ok"
 
 run_watched() {
@@ -1200,72 +906,12 @@ run_watched() {
 }
 
 # ---------------------------------------------------------------------
-# WHICH FILES.  The three canonical artifacts, and nothing else, ever.
-#
-# assert_path_shape above only rules out spellings ffmpeg would
-# MISREAD -- a leading dash, a protocol-looking first component, a
-# newline.  It says nothing about WHERE the path points, and that gap
-# was the whole vulnerability: the three positionals were handed
-# straight to ffmpeg, so
-#
-#     embed_captions.sh in.mp4 in.srt ../../../etc/somefile.mp4
-#
-# wrote an MP4 wherever the invoking user could write, and
-#
-#     embed_captions.sh playthrough/manifest.jsonl ...
-#
-# read the session's own evidence as a film.  Worse than either, an
-# output of playthrough/cata-play.mp4 would have put the captioned copy
-# where the base render lives -- and the base render is the measured,
-# non-blank, byte-hashed evidence every later stage compares against.
-# (The equal-input-and-output check below catches only the case where
-# BOTH name it; it cannot catch an output that collides with a
-# DIFFERENT artifact.)
-#
-# CONTAINMENT INSIDE THE CHECKOUT IS NOT ENOUGH, and this is the gap it
-# leaves.  Everything this pipeline produces lives under playthrough/,
-# so a rule that says only "inside the working tree" still accepts
-# playthrough/manifest.jsonl, playthrough/timeline.json,
-# playthrough/transcript.md, playthrough/dossier.md and everything the
-# engine wrote under playthrough/userdir/.  A caption mux that lands on
-# any of those reports success and destroys the record: the manifest
-# every count is derived from, the timeline both producers read as the
-# single source of truth, or the save itself.
-#
-# So the destinations are ENUMERATED rather than bounded.  This stage
-# reads exactly playthrough/cata-play.mp4 and playthrough/transcript.srt
-# and writes exactly playthrough/cata-play-cc.mp4, and the permitted set
-# is built from the same env.sh variables the defaults above are built
-# from, so the two cannot drift apart.
-#
-# The positionals therefore no longer RELOCATE anything; they can only
-# CONFIRM the canonical artifact for their role.  That is the intended
-# loss.  These are committed evidence with one place to live, and env.sh
-# exports their paths so that every stage AGREES about where that place
-# is -- not so that it can be moved.
-#
-# Two comparisons, because either alone is defeated:
-#
-#   the resolved path   ".", ".." and a symlinked ANCESTOR all spell the
-#                       same file differently, so the match is on what
-#                       readlink -m returns rather than on the string.
-#                       A checkout reached through a symlinked parent
-#                       still matches, which is why this is the outer
-#                       test.
-#   no symlinked        resolving both sides means a symlink INSIDE the
-#   component           tree that points at the canonical artifact would
-#                       compare equal and be followed.  Every component
-#                       below the repository root is walked and refused
-#                       if it is a link, because the invariant is that
-#                       these artifacts are real files nobody has
-#                       redirected -- and publication is a rename, which
-#                       REPLACES a link rather than following it.
+# WHICH FILES. The three canonical artifacts, and nothing else, ever.
 # ---------------------------------------------------------------------
 
 # resolve_path PATH
 #   The absolute, symlink-free spelling of PATH, whether or not its last
 #   component exists yet -- the output does not exist on a first run.
-#   Printed, never assigned globally, so each caller keeps its own.
 resolve_path() {
     "${READLINK}" -m -- "$1"
 }
@@ -1296,12 +942,7 @@ assert_canonical_artifact() {
             "capture, and an MP4 written over any of them would" \
             "report success and destroy the record."
     fi
-    # The UNRESOLVED canonical spelling, deliberately.  This walk exists
-    # to find links, and readlink has already followed them: handing it
-    # real_canonical would give it a path with no links left in it and
-    # it would pass everything.  The literal env.sh spelling always
-    # begins with PLAYTHROUGH_REPO_ROOT as a string, which is what the
-    # walk needs to find its starting point.
+    # The UNRESOLVED canonical spelling, deliberately.
     if ! playthrough_assert_no_symlink "${canonical}" \
             "${PLAYTHROUGH_REPO_ROOT}" "the ${label}"; then
         exit "${EX_USAGE}"
@@ -1315,26 +956,15 @@ assert_canonical_artifact "${INPUT_SRT}" \
 assert_canonical_artifact "${OUTPUT_MOVIE}" "${PLAYTHROUGH_MOVIE_CC}" \
     "output"
 
-# Proved equivalent, so from here on the CANONICAL spelling is the one
-# in play.  Rebinding rather than keeping the operator's spelling means
-# there is exactly one code path below this line: an argumentless run
-# and a run that named all three files behave identically, and nothing
-# downstream has to wonder which it is looking at.  rel() also reports
-# these against PLAYTHROUGH_REPO_ROOT verbatim, so the summary reads the
-# same either way.
+# Proved equivalent, so from here on the CANONICAL spelling is the one in play.
 INPUT_MOVIE="${PLAYTHROUGH_MOVIE}"
 INPUT_SRT="${PLAYTHROUGH_TRANSCRIPT_SRT}"
 OUTPUT_MOVIE="${PLAYTHROUGH_MOVIE_CC}"
 readonly INPUT_MOVIE INPUT_SRT OUTPUT_MOVIE
 
 # ---------------------------------------------------------------------
-# THE INPUTS.  Both must exist, both must be non-empty, and the cue
-# file must actually look like SubRip before anything is muxed.
-#
-# The alternative is worse than an error: ffmpeg will happily produce a
-# container from an empty cue file, exit 0, and leave a film whose
-# caption track carries nothing.  That passes a file-exists check and
-# fails the requirement.
+# THE INPUTS. Both must exist, both must be non-empty, and the cue file must
+# actually look like SubRip before anything is muxed.
 # ---------------------------------------------------------------------
 
 # assert_readable_file PATH LABEL PRODUCER
@@ -1387,12 +1017,8 @@ assert_mp4_suffix() {
 assert_mp4_suffix "${INPUT_MOVIE}" "input film"
 assert_mp4_suffix "${OUTPUT_MOVIE}" "output"
 
-# Both operands are env.sh constants by the time this runs, so this
-# cannot fire on anything an operator typed -- the confinement gate
-# already refused that.  It is kept as a guard on env.sh itself: if
-# PLAYTHROUGH_MOVIE and PLAYTHROUGH_MOVIE_CC were ever edited into the
-# same path, the mux would read and write one file and the base render
-# would be gone, and this says so instead.
+# Both operands are env.sh constants by the time this runs, so this cannot fire
+# on anything an operator typed -- the confinement gate already refused that.
 if [ "${INPUT_MOVIE}" = "${OUTPUT_MOVIE}" ]; then
     die "${EX_USAGE}" "env.sh names the input film and the output as" \
         "the same path ($(rel "${INPUT_MOVIE}")).  ffmpeg cannot read" \
@@ -1402,13 +1028,12 @@ fi
 
 # ---------------------------------------------------------------------
 # THE CUE FILE'S SHAPE.
-#
-# Two checks, both of which catch a real and otherwise silent failure:
+# Two checks, each catching a real and otherwise silent failure:
 #
 #   * The first line must be the first cue's sequence number.  A
-#     byte-order mark sits in front of it and stops it matching --
-#     which is exactly why make_srt.py writes UTF-8 WITHOUT one -- and
-#     a truncated or half-written file fails here too.
+#     byte-order mark in front of it stops it matching -- which is why
+#     make_srt.py writes UTF-8 WITHOUT one -- and a truncated or
+#     half-written file fails here too.
 #   * There must be at least one cue.  A file of prose with no timing
 #     line would otherwise mux into an empty caption track.
 # ---------------------------------------------------------------------
@@ -1459,19 +1084,14 @@ fi
 # THE PROVENANCE.  Do these two files describe the same session?
 #
 # Asked BEFORE the mux, because the answer decides whether there is
-# anything worth muxing, and a refusal here costs nothing at all.
-#
-# Every other check in this file compares the output against the INPUTS.
-# That is the wrong axis for the failure that matters most: a caption
-# track and a film can agree in length, in cue count, in geometry and in
+# anything worth muxing.  Every other check compares the output against
+# the INPUTS, which is the wrong axis for the failure that matters most: a
+# caption track and a film can agree in length, cue count, geometry and
 # codec while describing two different sessions.  Only the digest of the
-# document they were each computed from settles it, and each producer
-# publishes exactly that.
-#
-# The manifests are required rather than optional.  Treating an absent one
-# as "nothing to check" would mean the gate silently stopped applying the
-# moment an older render left none behind -- and an older render is
-# precisely the case it exists to catch.
+# document each was computed from settles it, and each producer publishes
+# exactly that.  An absent manifest is a refusal rather than "nothing to
+# check", because an older render leaving none behind is precisely the
+# case this gate exists to catch.
 # ---------------------------------------------------------------------
 MOVIE_MANIFEST="${PLAYTHROUGH_BUILD_DIR}/${MOVIE_MANIFEST_NAME}"
 TRANSCRIPT_MANIFEST="${PLAYTHROUGH_BUILD_DIR}/\
@@ -1557,10 +1177,9 @@ playthrough_log "the film and the caption track are both attributed to" \
 
 # ---------------------------------------------------------------------
 # WHERE THE OUTPUT GOES.
-#
-# The parent directory must already exist: this stage publishes into a
-# layout the pipeline owns, and quietly creating a directory tree
-# because a path was mistyped would hide the mistake.
+# The parent directory must already exist: this stage publishes into a layout
+# the pipeline owns, and quietly creating a directory tree because a path was
+# mistyped would hide the mistake.
 # ---------------------------------------------------------------------
 # Split with parameter expansion rather than dirname/basename: the
 # output path has already been proved to end in the container suffix,
@@ -1591,22 +1210,20 @@ if [ -e "${OUTPUT_MOVIE}" ] && [ ! -f "${OUTPUT_MOVIE}" ]; then
 fi
 
 # ---------------------------------------------------------------------
-# SERIALISE.  Two runs of this stage over one checkout would race over
-# the staging file and could publish a container assembled from two
-# muxes.  The lock lives outside the working tree, is held by an open
-# descriptor, and is released by the kernel even if this shell dies.
+# SERIALISE.  Two runs of this stage over one checkout would race over the
+# staging file and could publish a container assembled from two muxes.  The
+# lock lives outside the working tree, is held by an open descriptor, and is
+# released by the kernel even if this shell dies.
 # ---------------------------------------------------------------------
 if ! playthrough_acquire_lock captions "${LOCK_TIMEOUT}"; then
     exit "${EX_MUX}"
 fi
 
-# AND JOIN THE CHECKOUT'S QUIESCENCE, as a producer: SHARED, because
-# this stage may legitimately run beside another producer -- it has
-# its own exclusive lock above for the one thing it must not share --
-# but it must NOT run beside the gate that measures the film it is
-# replacing, or the checkpoint that commits it.  A run started by
-# run_pipeline.sh proves and inherits the sequencer's exclusive hold
-# instead of blocking against it; see env.sh's mutation lock section.
+# AND JOIN THE CHECKOUT'S QUIESCENCE, as a producer: SHARED, because this stage
+# may legitimately run beside another producer -- it has its own exclusive lock
+# above for the one thing it must not share -- but it must NOT run beside the
+# gate that measures the film it is replacing, or the checkpoint that commits
+# it.
 if ! playthrough_acquire_mutation_lock shared "${LOCK_TIMEOUT}"; then
     die "${EX_MUX}" "the caption mux could not join THIS" \
         "checkout's quiescence: a gate or a checkpoint holds the" \
@@ -1617,27 +1234,6 @@ fi
 
 # ---------------------------------------------------------------------
 # THE STAGING FILE and the scratch cue file.
-#
-# The staging file is a sibling of the output, so the publish is a
-# rename within one directory and therefore atomic.  Its name is
-# deterministic rather than random: a run killed outright cannot run
-# its own cleanup, and a fixed name means the NEXT run removes the
-# leftover instead of accumulating one per attempt.  The lock above is
-# what makes a fixed name safe.
-#
-# IT KEEPS THE CONTAINER SUFFIX, and that is not cosmetic: ffmpeg
-# chooses the muxer from the extension, and a staging name ending in
-# anything else fails with "Unable to choose an output format" --
-# measured, before this was named the way it is.  Naming the format on
-# the command line instead would mean adding an argument to a recipe
-# that is a requirement, so the file is named to suit the recipe rather
-# than the other way round.
-#
-# The scratch cue file goes under the pipeline's private runtime
-# directory -- 0700, verified by env.sh, outside the working tree --
-# because it is a diagnostic intermediate and the terminal
-# `!/playthrough/**` negation in .gitignore would otherwise make it
-# committable.
 # ---------------------------------------------------------------------
 STAGING_FILE="${OUTPUT_DIR}/.${OUTPUT_NAME%"${MOVIE_SUFFIX}"}\
 .staging${MOVIE_SUFFIX}"
@@ -1677,7 +1273,6 @@ fi
 
 # ---------------------------------------------------------------------
 # WHAT A PREVIOUS RUN'S PUBLICATION MAY HAVE LEFT.
-#
 # Two names, treated differently on purpose, and both matter because
 # .gitignore's terminal `!/playthrough/**` negation re-includes everything
 # under this tree -- so a leftover here is a file that would be COMMITTED.
@@ -1686,8 +1281,8 @@ fi
 #                        confirmation leaves it; the film it holds is
 #                        already published at its own path, so the copy is
 #                        redundant and is swept.
-#   the quarantined file EVIDENCE.  It exists only because a publication
-#                        was undone, which is a filesystem fault worth
+#   the quarantined file EVIDENCE.  It exists only because a publication was
+#                        undone, which is a filesystem fault worth
 #                        somebody's attention.  It is REPORTED and left
 #                        alone -- deleting the only record of the fault
 #                        would help nobody -- and the report says it must
@@ -1715,26 +1310,8 @@ fi
 unset _ec_quarantine_leftover
 
 # ---------------------------------------------------------------------
-# PROBING.  Small helpers so that every measurement below reads as the
-# question it is asking.
-#
-# Fields are read ONE AT A TIME in ffprobe's bare form, because the
-# keyed form prints fields in ffprobe's own order rather than the order
-# they were requested in -- parsing that by position is a defect
-# waiting for a version bump.  Input files are passed with -i so that
-# not even a path this script has already refused could be read as an
-# option.
-#
-# EVERY ONE OF THEM IS BOUNDED.  These helpers used to invoke ffprobe
-# directly, with no time limit, and there are more than a dozen calls
-# between them.  A malformed or truncated container is enough for
-# ffprobe to sit indefinitely trying to establish a stream, and this
-# script is one stage of a sequential pipeline -- so a single wedged
-# probe stopped the whole run with no diagnosis, after the mux had
-# already produced a staging file nobody would ever look at.  They go
-# through run_bounded now, which applies $PLAYTHROUGH_CAPTION_TIMEOUT,
-# reports the stop by name, and leaves stderr alone so ffprobe's own
-# complaint is still the thing an operator reads.
+# PROBING. Small helpers so that every measurement below reads as the question
+# it is asking.
 # ---------------------------------------------------------------------
 
 # probe_one FILE STREAM_SPEC FIELD
@@ -1805,8 +1382,8 @@ count_chapters() {
 
 # is_number VALUE
 #   True for a decimal ffprobe actually measured, false for an absent
-#   field.  The float comparisons below must never be handed 'N/A':
-#   awk would read it as zero and quietly report a match.
+#   field, so the float comparisons below are never handed 'N/A' -- awk
+#   would read it as zero and a missing measurement would pass as one.
 is_number() {
     case "${1-}" in
         ''|"${PROBE_ABSENT}") return 1 ;;
@@ -1857,27 +1434,21 @@ video_frames() {
 #   A SHA-256 over the video stream's copied packets.  This is the
 #   strongest available proof that the picture came through the mux
 #   untouched: a re-encode changes every packet, and text drawn into
-#   the picture would have to be encoded, so both fail it.  The stream
-#   is copied rather than decoded, so this is a read of the file and
-#   not a decode of the film.
+#   the picture would have to be encoded, so both fail it.  The stream is
+#   copied rather than decoded, so this reads the file without decoding
+#   the film.
 #
-#   SHA-256 RATHER THAN MD5.  MD5 is collision-broken, and chosen-prefix
-#   collisions against it are cheap -- so "the two hashes match" was a
-#   statement about accident rather than about intent.  The digest here
-#   is the evidence that the committed film's picture is the picture
-#   render_movie.py encoded, and evidence that an adversary can forge is
-#   not evidence.  The algorithm is RECORDED beside the digest in the
-#   log and in the machine-readable summary, so a later reader knows
-#   what they are comparing rather than inferring it from the length.
+#   SHA-256 RATHER THAN MD5, because MD5 is collision-broken and
+#   chosen-prefix collisions against it are cheap: "the two hashes match"
+#   would then be a statement about accident rather than about intent, and
+#   evidence an adversary can forge is not evidence.  The algorithm is
+#   RECORDED beside the digest so a later reader knows what they are
+#   comparing instead of inferring it from the length.
 #
-#   The muxer prints one line per stream as `0,v,SHA256=<digest>` -- the
-#   stream index, its type, then the algorithm and the value.  Only the
-#   digest is returned: the prefix is identical on both sides by
-#   construction (one `-map 0:v:0`, so always stream 0 of type v), it
-#   names the algorithm a second time when the algorithm is already
-#   recorded beside the value, and a reader comparing two digests should
-#   be shown two digests.  The comparison is unweakened -- equal digests
-#   over equal prefixes is equal lines.
+#   The muxer prints `0,v,SHA256=<digest>` per stream; only the digest is
+#   returned, because the prefix is identical on both sides by
+#   construction and a reader comparing two digests should be shown two
+#   digests.
 video_stream_hash() {
     local file="$1" out line
     out="$(run_bounded "the video stream hash" \
@@ -1895,34 +1466,22 @@ video_stream_hash() {
 
 # ---------------------------------------------------------------------
 # THE INPUT FILM CARRIES NOTHING BUT PICTURE.
-#
-# The mapping below names exactly one video stream and one caption
-# stream, and the verification after the mux proves the container that
-# came out carries nothing else -- so why ask the same question of the
-# input first?
+# The mapping below names exactly one video stream and one caption stream, and
+# the verification after the mux proves the container that came out carries
+# nothing else -- so why ask the same question of the input first?
 #
 # Because the two questions have different answers.  The output check
-# proves the MUX did not carry something through.  This one proves the
-# FILM IS THE FILM THIS PIPELINE PRODUCED.  render_movie.py encodes one
-# silent h264 stream from still images and nothing else; a
-# playthrough/cata-play.mp4 sitting here with an audio track, a data
-# stream or an attachment in it was written by something else, or over,
-# and the captioned film is then a caption track muxed onto a picture
-# whose provenance nothing in this repository accounts for.  `-c copy`
-# and an explicit mapping would publish that quite happily, with the
+# proves the MUX carried nothing extra through.  This one proves the FILM
+# IS THE FILM THIS PIPELINE PRODUCED: render_movie.py encodes one silent
+# h264 stream from still images and nothing else, so a cata-play.mp4 with
+# an audio track, a data stream or an attachment in it was written by
+# something else.  `-c copy` would publish that quite happily with the
 # picture's stream hash matching perfectly, because the hash proves the
-# picture survived the mux and says nothing about where the picture came
-# from.
-#
-# So it is EX_INPUT and not EX_VERIFY: the refusal is about what was
-# handed to this stage, it happens before ffmpeg is invoked at all
-# rather than after a mux nobody will look at, and it names re-running
-# the render as the remedy.
-#
-# It is also the first probe of the input, so it doubles as proof that
-# ffprobe can read the film as a container at all.  The checks up to
-# here have established that the path is a regular non-empty file with
-# an .mp4 suffix -- which a text file renamed .mp4 also satisfies.
+# picture survived the mux and says nothing about where it came from.
+# Hence EX_INPUT rather than EX_VERIFY, and hence re-running the render is
+# the named remedy.  Being the first probe of the input, it doubles as
+# proof that ffprobe can read the film as a container at all -- which a
+# text file renamed .mp4 would fail.
 # ---------------------------------------------------------------------
 for _ec_kind in a:audio d:data t:attachment; do
     _ec_spec="${_ec_kind%%:*}"
@@ -1948,73 +1507,7 @@ unset _ec_kind _ec_spec _ec_name _ec_extra
 
 # ---------------------------------------------------------------------
 # THE MUX.
-#
-# An argument LIST, never a string and never a shell.  That is the
-# repository's CodeQL python-leg discipline applied to its shell too
-# [.github/workflows/codeql-analysis.yml:35], and it means a path
-# containing a space, a quote or a semicolon cannot change what runs.
-#
-# Read this list against the requirement: overwrite, errors only, the
-# film, the cues, take exactly one picture stream and exactly one
-# caption stream, carry no inherited metadata and no chapters, copy the
-# packets, override only the subtitle codec, tag the language, write the
-# staging file.  There is nothing else in it -- no filter of any kind,
-# no video encoder, no scaling, no frame rate, and no audio.  `-v error`
-# is the only addition that is not a requirement, and it only silences
-# progress chatter: ffmpeg's own errors still reach stderr, which is the
-# whole reason nothing here captures or discards them.
-#
-# WHY THE FOUR ADDED FLAGS ARE NOT DECORATION.
-#
-# -map 0:v:0 -map 1:s:0.  Without any -map, ffmpeg applies its DEFAULT
-# STREAM SELECTION: for each type it picks the "best" stream it can find
-# across all inputs, and it carries types it was never asked about.  The
-# inputs this pipeline produces happen to hold one video stream and one
-# subtitle stream today, so the default happened to do the right thing
-# -- but "happens to" is the whole problem.  A film that ever acquired a
-# second video stream, an audio track, a data stream or an attachment
-# would have it silently carried into a committed artifact, and the
-# committed artifact is what a reader trusts to be exactly the captured
-# picture plus the transcript.  Naming the two streams makes the
-# container's contents a DECISION rather than an outcome, and the
-# assertions below then prove the decision held.
-#
-# -map_metadata -1.  ffmpeg copies the first input's container metadata
-# into the output by default, so every tag the encoder wrote travels
-# into the published film: encoder name and version, creation time, and
-# anything a future ffmpeg decides to add.  A creation timestamp in a
-# committed artifact is a fact about the operator's clock, not about the
-# session, and it also makes the artifact non-reproducible -- two
-# identical renders would differ. Dropping it and then setting only the
-# language tag means the container carries exactly what was chosen.
-#
-# -map_chapters -1.  Chapters are copied from the first input the same
-# way.  render_movie.py writes none, so this is the case that costs
-# nothing today and would otherwise be an unnoticed channel tomorrow.
-#
-# -movflags +faststart.  THE CAPTIONED FILM IS THE ONE A VIEWER
-# STREAMS, so it has to carry the property the base render was given.
-# render_movie.py encodes with `-movflags +faststart`, which relocates
-# the `moov` atom -- the index a player needs before it can decode
-# anything -- to the FRONT of the container, straight after `ftyp`.  A
-# mux does not inherit that: `-c copy` writes a fresh container, and
-# without this flag the MP4 muxer leaves `moov` where it naturally
-# falls, which is at the END, after every byte of `mdat`.
-#
-# A runtime QA pass measured exactly that on the shipped artifact.  Atom
-# walks: the base render read
-# `ftyp@0(32) -> moov@32(3717) -> free@3749(8) -> mdat@3757(3745389)`,
-# and the captioned film read
-# `ftyp@0(32) -> free@32(8) -> mdat@40(3763357) -> moov@3763397(11141)`.
-# Served over a Range-capable server, Chrome could start the base film
-# from its first request, while the captioned film cost an extra tail
-# fetch -- `Range: bytes=3735552-` -- before it could play at all.  That
-# is a defect of the DISTRIBUTION artifact and it gets worse, not
-# better, the larger a session is: every future viewer pays a round trip
-# for an index that could have been in the first kilobyte.
-#
-# It is asserted below like every other mandated flag, so the property
-# cannot be lost again by a quiet edit to this list.
+# An argument LIST, never a string and never a shell.
 # ---------------------------------------------------------------------
 MUX_ARGS=(
     -y -v error
@@ -2034,19 +1527,10 @@ readonly MUX_ARGS
 
 # ---------------------------------------------------------------------
 # THE COMMAND IS CHECKED AGAINST THE REQUIREMENT BEFORE IT RUNS.
-#
-# The recipe is not a default this file may drift away from, so the
-# argument list assembled above is held to it rather than trusted:
-#
-#   * the three mandated flag groups must be present, and they are
-#     matched as the literal text they have to be -- so a change to any
-#     constant that spelled one of them differently would be caught
-#     here instead of producing a container that fails verification
-#     twenty seconds later;
-#   * the element count must be exactly this, which is what makes
-#     "there is nothing else in this command" a CHECKED FACT rather
-#     than a promise in a comment.  A filter, an encoder, a scale or a
-#     mapping could not be added without changing it.
+# The recipe is not a default this file may drift away from, so the argument
+# list assembled above is held to it rather than trusted.  Every mandated
+# token is asserted present, and the argument count is asserted exact, so
+# an addition is as much a failure as an omission.
 # ---------------------------------------------------------------------
 readonly MUX_ARG_COUNT=24
 
@@ -2086,10 +1570,10 @@ fi
 # THE CEILING, DERIVED FROM THIS FILM.
 #
 # Everything above this point read headers, whose cost does not scale with
-# the session.  Everything below reads or writes the whole video stream,
-# so the ceiling is re-derived here from the film's own size and duration
-# -- see THE STAGE CEILING IS DERIVED FROM THE FILM above -- unless an
-# operator named one, in which case theirs stands unchanged.
+# the session.  Everything below reads or writes the whole video stream, so
+# the ceiling is re-derived here from the film's own size and duration --
+# see THE STAGE CEILING IS DERIVED FROM THE FILM above -- unless an operator
+# named one, in which case theirs stands unchanged.
 # ---------------------------------------------------------------------
 INPUT_BYTES="$("${WC}" -c < "${INPUT_MOVIE}")"
 INPUT_BYTES="${INPUT_BYTES//[[:space:]]/}"
@@ -2126,30 +1610,26 @@ unset _ec_in_duration _ec_in_seconds
 
 # ---------------------------------------------------------------------
 # ROOM TO WRITE IT, ESTABLISHED BEFORE ANYTHING IS WRITTEN.
+# A stream copy needs about the input's size for the staging container, and the
+# publication step retains a copy of whatever film is already published there
+# so that a publication which cannot be confirmed can be undone.  Both live
+# on the OUTPUT filesystem, at the same time.
 #
-# A stream copy needs about the input's size for the staging container,
-# and the publication step retains a copy of whatever film is already
-# published there so that a publication which cannot be confirmed can be
-# undone.  Both live on the OUTPUT filesystem, at the same time.
-#
-# A mux that runs out of room does not fail cleanly: ffmpeg writes until
-# the write fails, and what it leaves is a truncated container -- which
-# the verification below would reject, correctly, after having spent the
-# whole cost of the mux to find out.  The arithmetic is available before
-# any of it, so the refusal is available before any of it, and it names
-# the figure that is missing rather than leaving an operator to work out
-# why "No space left on device" appeared in an ffmpeg diagnostic.
+# A mux that runs out of room does not fail cleanly: ffmpeg writes until the
+# write fails and leaves a truncated container, which the verification below
+# would reject correctly, after having spent the whole cost of the mux to
+# find out.  The arithmetic is available before any of that, so the refusal
+# is too, and it names the figure that is missing rather than leaving an
+# operator to work out why "No space left on device" appeared in an ffmpeg
+# diagnostic.
 # ---------------------------------------------------------------------
 free_bytes() {
     local line="" last="" blocks=""
     local -a fields=()
-    # -P is the POSIX output format, which guarantees ONE line per
-    # filesystem -- without it a long device name wraps and the columns
-    # move -- and -k fixes the block size at 1024 bytes so the arithmetic
-    # does not depend on the host's BLOCKSIZE.  The last line is the data
-    # line; its fourth field is the available space.  Read with the shell
-    # rather than through awk, because the mount point is the LAST field
-    # and may contain spaces while the four before it may not.
+    # -P is the POSIX output format, which guarantees ONE line per filesystem
+    # -- without it a long device name wraps and the columns move -- and -k
+    # fixes the block size at 1024 bytes so the arithmetic does not depend on
+    # the host's BLOCKSIZE.
     while IFS= read -r line; do
         [ -n "${line}" ] || continue
         last="${line}"
@@ -2237,13 +1717,7 @@ if [ ! -s "${STAGING_FILE}" ]; then
 fi
 
 # ---------------------------------------------------------------------
-# VERIFICATION.  Nothing is published until every one of these passes.
-#
-# The checks run against the STAGING file, so a container that fails
-# one is never renamed into place.  An operator who wants to look at a
-# rejected mux will not find it in the working tree -- and that is the
-# point: an unverified container beside a verified one is worse than no
-# container at all.
+# VERIFICATION. Nothing is published until every one of these passes.
 # ---------------------------------------------------------------------
 
 OUTPUT_BYTES="$("${WC}" -c < "${STAGING_FILE}")"
@@ -2257,11 +1731,6 @@ if [ "${OUTPUT_BYTES}" -lt "${MIN_OUTPUT_BYTES}" ]; then
 fi
 
 # --- the picture ------------------------------------------------------
-#
-# Exactly one video stream, the codec the acceptance gate names, at the
-# geometry this pipeline captures.  A missing or second video stream
-# would mean the default stream selection did something other than what
-# is documented.
 _ec_video_streams="$(count_streams "${STAGING_FILE}" v)" ||
     die "${EX_VERIFY}" "ffprobe could not read the streams of the" \
         "muxed container"
@@ -2294,10 +1763,6 @@ if [ "${VIDEO_WIDTH}" != "${VIDEO_WIDTH_EXPECTED}" ] ||
 fi
 
 # --- the caption track ------------------------------------------------
-#
-# THIS IS THE CHECK THE WHOLE REQUIREMENT RESTS ON.  ffmpeg can exit 0
-# having produced a container whose subtitle stream was dropped by
-# stream selection, and a file-exists check would call that a success.
 _ec_subtitle_streams="$(count_streams "${STAGING_FILE}" s)" ||
     die "${EX_VERIFY}" "ffprobe could not read the subtitle streams" \
         "of the muxed container"
@@ -2315,20 +1780,6 @@ fi
 unset _ec_subtitle_streams
 
 # --- nothing else at all ----------------------------------------------
-#
-# THE MAPPING IS A DECISION; THESE ARE THE PROOF IT HELD.  The mux names
-# exactly two streams, so a container that came out carrying a third of
-# any type means either the mapping did not apply or an input held
-# something this pipeline never produced.  Either way a committed
-# artifact would carry a stream nobody chose, and the artifact's whole
-# value is that a reader can trust it to be the captured picture plus
-# the transcript and nothing besides.
-#
-# Audio is the case worth naming: the film is silent by requirement --
-# SOUND_ENABLED is false and SDL_AUDIODRIVER is dummy, so there is no
-# audio anywhere in the pipeline -- and a container that acquired an
-# audio stream would be carrying something whose provenance nothing in
-# this repository could account for.
 for _ec_kind in a:audio d:data t:attachment; do
     _ec_spec="${_ec_kind%%:*}"
     _ec_name="${_ec_kind##*:}"
@@ -2343,11 +1794,7 @@ for _ec_kind in a:audio d:data t:attachment; do
             "pipeline did not produce.  Nothing was published."
     fi
     if [ "${_ec_spec}" = "a" ]; then
-        # Kept for the summary.  A caller reading AUDIO_STREAMS=0 is
-        # reading a measurement of the published container, not this
-        # script's opinion of it -- and the film is silent by
-        # requirement, so the measurement is worth stating rather
-        # than leaving to be inferred from the absence of a complaint.
+        # Kept for the summary.
         AUDIO_STREAMS="${_ec_extra}"
     fi
 done
@@ -2355,9 +1802,6 @@ unset _ec_kind _ec_spec _ec_name _ec_extra
 readonly AUDIO_STREAMS
 
 # --- and only the tags that were chosen -------------------------------
-#
-# -map_metadata -1 says nothing is inherited; this says nothing arrived
-# that was not either structural or asked for.
 _ec_tag_lines="$(run_bounded "the container tag readout" \
     "${FFPROBE}" -v error -show_entries format_tags \
     -of "${PROBE_KEYED}" -i "${STAGING_FILE}")" ||
@@ -2423,19 +1867,6 @@ if [ "${SUBTITLE_LANGUAGE_FOUND}" != "${SUBTITLE_LANGUAGE}" ]; then
 fi
 
 # --- the picture came through UNTOUCHED -------------------------------
-#
-# Three independent measurements, and at least one of them must be
-# available or the copy cannot be called proven.  Their point is not
-# redundancy for its own sake: a re-encode and text drawn into the
-# picture are the two ways this stage could quietly ruin the evidence,
-# and each of these catches both.
-#
-#   the stream hash   SHA-256 over the video stream's packets.  Equal
-#                     hashes mean the picture is byte-for-byte the
-#                     render that was measured non-blank.  The
-#                     strongest proof and the one to prefer.
-#   the duration      a copy reproduces the sample durations exactly.
-#   the frame count   and it reproduces the sample count exactly.
 IN_VIDEO_DURATION="$(probe_one "${INPUT_MOVIE}" v:0 duration)"
 OUT_VIDEO_DURATION="$(probe_one "${STAGING_FILE}" v:0 duration)"
 IN_VIDEO_FRAMES="$(video_frames "${INPUT_MOVIE}")"
@@ -2445,10 +1876,8 @@ readonly IN_VIDEO_FRAMES OUT_VIDEO_FRAMES
 
 VIDEO_COPY_PROOF=""
 
-# The streamhash muxer is old and universal, but it is a build option
-# rather than a guarantee, so its absence is reported and the weaker
-# proofs stand.  Availability is probed from the muxer list, because
-# `ffmpeg -h muxer=<name>` exits 0 for a name that does not exist.
+# The streamhash muxer is old and universal, but it is a build option rather
+# than a guarantee, so its absence is reported and the weaker proofs stand.
 if run_bounded "the muxer list" \
         "${FFMPEG}" -hide_banner -muxers 2>/dev/null |
         "${GREP}" -qE '(^|[[:space:]])streamhash([[:space:]]|$)'; then
@@ -2529,16 +1958,6 @@ readonly VIDEO_COPY_PROOF
 unset _ec_duration_checked _ec_frames_checked
 
 # --- the cues survived ------------------------------------------------
-#
-# Read the captions back OUT of the container and count them.
-#
-# *** DO NOT COUNT SUBTITLE PACKETS INSTEAD ***  MP4 timed text has to
-# cover the container contiguously, so the muxer pads the gaps this
-# transcript leaves for the cinematic transitions with empty samples of
-# its own.  Measured here: three cues with one gap between them come
-# back as FOUR packets.  Counting packets would report a caption track
-# that had gained cues nobody wrote.  The round trip counts CUES, and
-# it also proves the track is readable rather than merely present.
 if ! run_bounded "the cue round-trip" \
         "${FFMPEG}" -y -v error -i "${STAGING_FILE}" \
         -map 0:s:0 -c:s srt -f srt "${ROUND_TRIP_SRT}"; then
@@ -2561,36 +1980,6 @@ if [ "${CUES_ROUND_TRIP}" != "${CUES_IN}" ]; then
 fi
 
 # --- the captions cover the picture, in BOTH directions ---------------
-#
-# The cue file is written from the same timeline the film is paced by, so
-# its last cue ends where the picture ends -- give or take the concat
-# demuxer's quantisation, which is what CAPTION_DURATION_TOLERANCE is
-# sized for.  A disagreement is an upstream drift between the timeline and
-# the render rather than a fault in this mux.  IT IS STILL A REFUSAL.
-#
-# Warning and publishing anyway was tried, on the reasoning that
-# misattributing an upstream drift to this stage would send an operator to
-# the wrong file.  The message can say where the fault is without the film
-# shipping: a published container whose captions do not cover its picture
-# is a broken artifact whichever stage broke it, and it is COMMITTED -- so
-# warning and publishing means the defect reaches the repository with a
-# note about it in a log nobody re-reads.
-#
-# *** THE COMPARISON IS ABSOLUTE, AND THAT IS THE FIX ***  It used to
-# refuse only a track running PAST the end of the picture.  A track that
-# ends EARLY was published, and early is the direction a STALE cue file
-# fails in: an SRT left over from a shorter session muxes cleanly into a
-# longer film, the cue-count check passes because it is checked against
-# that same stale file, and the artifact ships with captions that stop
-# partway through and that describe another session's keystrokes
-# throughout.  Both directions are now bounded, and each gets its own
-# message because the diagnosis differs.
-#
-# AND AN UNMEASURABLE DURATION IS ALSO A REFUSAL.  The comparison used to
-# be skipped when either value was not a number, which is precisely the
-# case where nothing is known: ffprobe printing N/A for the subtitle
-# stream's duration means the check did not run, and a skipped check that
-# leaves no trace is indistinguishable from a check that passed.
 if ! is_number "${SUBTITLE_DURATION}"; then
     die "${EX_VERIFY}" "ffprobe could not measure the caption" \
         "track's duration in the muxed container (it reported" \
@@ -2640,22 +2029,11 @@ readonly CONTAINER_DURATION
 # ---------------------------------------------------------------------
 # THE EVIDENCE, MEASURED BEFORE ANYTHING IS PUBLISHED
 #
-# THE DEFECT THIS ORDERING FIXES.  These two probe readouts, the stream
-# census beneath them and the byte-size comparison all used to run AFTER
-# the rename, against the published file, and each of them could `die`.
-# So the canonical captioned MP4 -- a committed artifact -- was replaced
-# first and interrogated second, and a failure left the unverified
-# container sitting in the working tree as the film while the previous
-# one, which had passed every check, was already gone.  "The file is left
-# in place for inspection" was the stated policy, and what it meant in
-# practice was that a broken artifact became the published one.
-#
-# Every fallible measurement therefore happens HERE, on the staging file.
-# The rename below is preceded by a copy of the previous generation and
-# followed by ONE cheap, infallible-by-construction check: the digest of
-# the published bytes against the digest of the bytes that were measured.
-# Printing the staged readouts as the evidence is sound precisely because
-# of that check -- the published file is proved to be the same bytes.
+# These two probe readouts, the stream census beneath them and the byte-size
+# comparison all run against the STAGING file, before the rename.  Each of
+# them can `die`, so measuring after the rename would replace a canonical
+# committed artifact first and interrogate it second -- and a failure would
+# leave the unverified container in the working tree as the film.
 # ---------------------------------------------------------------------
 SUBTITLE_READOUT="$(run_bounded "the caption stream readout" \
     "${FFPROBE}" -v error -select_streams s \
@@ -2690,11 +2068,8 @@ assert_readout_contains "${VIDEO_READOUT}" \
 assert_readout_contains "${VIDEO_READOUT}" \
     "height=${VIDEO_HEIGHT_EXPECTED}" "the capture height"
 
-# The digest of what is about to be published, taken while the bytes are
-# still reachable under a name this stage controls.  It is the whole basis
-# of the identity check after the rename, and it cannot be taken
-# afterwards: by then the only file to hash is the one whose identity is
-# in question.
+# The digest of what is about to be published, taken while the bytes are still
+# reachable under a name this stage controls.
 STAGED_SHA="$(file_digest "${STAGING_FILE}")" ||
     die "${EX_VERIFY}" "could not hash the verified container, so its" \
         "publication could not be confirmed afterwards.  Nothing was" \
@@ -2702,15 +2077,9 @@ STAGED_SHA="$(file_digest "${STAGING_FILE}")" ||
 readonly STAGED_SHA
 
 # ---------------------------------------------------------------------
-# PUBLISH.  A rename inside one directory, so a reader sees either the
-# previous film or this one -- with the previous one retained beside it
-# until this one is confirmed.
-#
-# The retained copy is what turns "the file is left in place for
-# inspection" into an actual recovery.  It is a plain copy rather than a
-# rename, so the previous film stays readable at its published path right
-# up to the moment it is replaced, and it is removed only once the new
-# bytes are confirmed.
+# PUBLISH. A rename inside one directory, so a reader sees either the previous
+# film or this one -- with the previous one retained beside it until this one
+# is confirmed.
 # ---------------------------------------------------------------------
 RETAINED_FILE="${OUTPUT_DIR}/.${OUTPUT_NAME%"${MOVIE_SUFFIX}"}\
 .previous${MOVIE_SUFFIX}"
@@ -2762,11 +2131,8 @@ if ! "${MV}" -f -- "${STAGING_FILE}" "${OUTPUT_MOVIE}"; then
         "$(rel "${OUTPUT_MOVIE}").  The previous film is untouched."
 fi
 
-# THE ONE CHECK AFTER THE RENAME, and it is a byte-identity check rather
-# than a re-interrogation.  Every question about what the container HOLDS
-# was answered above, on the bytes this digest names; all that remains is
-# whether the filesystem moved those bytes faithfully.  A mismatch here is
-# a fault below this mux, and it is now RECOVERABLE.
+# THE ONE CHECK AFTER THE RENAME, and it is a byte-identity check rather than a
+# re-interrogation.
 _ec_published_sha="$(file_digest "${OUTPUT_MOVIE}")" ||
     restore_previous "the container published as" \
         "$(rel "${OUTPUT_MOVIE}") could not be hashed, so it cannot be" \
@@ -2787,14 +2153,7 @@ if [ "${_ec_retained}" -eq 1 ]; then
 fi
 unset _ec_retained
 
-# NOBODY ELSE MAY REWRITE THE FILM.  ffmpeg creates the staging container
-# under whatever umask this process inherited, and a security review
-# measured the consequence on the delivered tree: the captioned film was
-# published at mode 0666, so any local account could have replaced the
-# one artifact this stage exists to produce -- after every check on it
-# had passed.  The mode is therefore asserted here, on the PUBLISHED
-# path, rather than left to the environment.  Read access is untouched:
-# this file is committed to a git repository and is meant to be read.
+# NOBODY ELSE MAY REWRITE THE FILM.
 playthrough_deny_foreign_write "${OUTPUT_MOVIE}" \
     "the captioned film" || exit "${EX_VERIFY}"
 

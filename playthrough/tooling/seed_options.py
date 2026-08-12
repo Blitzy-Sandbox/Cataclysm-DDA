@@ -20,27 +20,25 @@ WHERE THE TARGET LIVES, AND WHY
     [src/path_info.cpp:164] and ``options_value = config_dir_value +
     "options.json"`` [src/path_info.cpp:167].
 
-    Two build flags would move that ground, for two DIFFERENT reasons,
-    and ``launch_game.sh`` owns both prohibitions.  ``USE_XDG_DIR=1`` is
-    the only one that touches ``config_dir``: it is the ``#if`` arm of
+    Two build flags would move that ground, and ``launch_game.sh`` owns
+    both prohibitions.  ``USE_XDG_DIR=1`` is the only one that touches
+    ``config_dir``: it is the ``#if`` arm of
     [src/path_info.cpp:152-166] and relocates ``config/`` to
     ``$XDG_CONFIG_HOME/cataclysm-dda/``, so this module's target would
-    not be there at all.  ``USE_HOME_DIR=1`` leaves ``config_dir``
-    alone and only changes the DEFAULT user directory
-    [src/main.cpp:684; src/path_info.cpp:99-102], which an explicit
-    ``--userdir`` never consults.  This module verifies the file is
-    where it expects and fails loudly when it is not.
+    not be there at all.  ``USE_HOME_DIR=1`` leaves ``config_dir`` alone
+    and only changes the DEFAULT user directory [src/main.cpp:684;
+    src/path_info.cpp:99-102], which an explicit ``--userdir`` never
+    consults.  This module verifies the file is where it expects and
+    fails loudly when it is not.
 
 IN PLACE, KEY BY KEY -- NEVER WHOLESALE
-    The engine writes an entry for every option it knows about.  Only
-    the eight named below are touched; every other entry, and every
-    member of every entry including the engine's own ``info`` and
-    ``default`` annotations, is preserved byte for byte.  There is no
-    code path here that builds an options document from nothing: a
+    Only the eight options named below are touched; every other entry,
+    and every member of every entry including the engine's own ``info``
+    and ``default`` annotations, is preserved byte for byte.  There is
+    no code path here that builds an options document from nothing: a
     wholesale rewrite is the fastest way to make the game regenerate
     defaults and quietly lose the seeded values, so the file is always
-    loaded first and an absent file is a hard error rather than an
-    invitation to create one.
+    loaded first and an absent file is a hard error.
 
 THE FILE FORMAT IS REPRODUCED EXACTLY
     ``options_manager::serialize`` writes an ARRAY of objects, each with
@@ -56,109 +54,91 @@ THE FILE FORMAT IS REPRODUCED EXACTLY
 
     Two layouts exist -- pretty for the global file, compact for a
     world's -- and :func:`load_entries` reports which one it found so
-    :func:`serialize_entries` can write the same one back.  Seeding a
-    value therefore produces a one-line diff rather than reformatting
-    the file, and running this module twice leaves it byte-identical.
-
-    The engine's own escaping rules are reproduced with it
-    [src/json.cpp:2363-2404], so a value carrying a quote or a
-    backslash survives a round trip unchanged.
+    :func:`serialize_entries` can write the same one back, so seeding a
+    value produces a one-line diff and running this module twice leaves
+    the file byte-identical.  The engine's own escaping rules are
+    reproduced with it [src/json.cpp:2363-2404], so a value carrying a
+    quote or a backslash survives a round trip unchanged.
 
 THE EIGHT VALUES, AND THE REASON FOR EACH
     Counted from :data:`SEEDED_OPTIONS`, which is the same list the
-    plan, the patch and the verifier all read: ``24_HOUR``,
-    ``SOUND_ENABLED``, ``USE_TILES``, ``TILES``, ``TERMINAL_X``,
-    ``TERMINAL_Y``, ``CHARACTER_POINT_POOLS``, ``WORLD_COMPRESSION2``.
-    All eight are decided on every production run; none of them is
-    optional, and there is no command-line path that omits one.
+    plan, the patch and the verifier all read.  All eight are decided on
+    every production run; none is optional, and no command-line path
+    omits one.  :data:`REASONS` is the
+    single source of truth for WHY each is needed and is quoted in the
+    report and in every change record, so the reason travels with the
+    change.  Each engine-declared value set, default and range is
+    recorded beside the constant it is checked against.  The three that
+    fail SILENTLY when they are wrong are ``24_HOUR``, ``TILES`` and the
+    terminal dimensions.
 
-    :data:`REASONS` is the single source of truth for WHY each is
-    needed, and it is quoted in the report and in every change record,
-    so the reason travels with the change rather than living only here.
-    Each engine-declared value set, default and range is recorded
-    beside the constant it is checked against.  The three that fail
-    SILENTLY when they are wrong -- ``24_HOUR``, ``TILES`` and the
-    terminal dimensions -- are called out as such below.
-
-    ``24_HOUR = "24h"``
-        Values are ``{ "12h", "military", "24h" }``, default ``"12h"``
-        [src/options.cpp:1868-1877].  ``to_string_time_of_day``
-        renders ``"military"`` as ``"%02d%02d.%02d"`` (``0815.32``),
-        ``"24h"`` as the fixed-width ``"%02d:%02d:%02d"``, and
-        otherwise a variable-width AM/PM form
-        [src/calendar.cpp:638-662].  Only ``"24h"`` matches the
-        pipeline's ``[0-9]{2}:[0-9]{2}:[0-9]{2}`` clock regex.
-        ``"military"`` is the trap this module exists to prevent: a
-        legal value that matches nothing, sends every ``ingame_clock``
-        to null, collapses every duration onto the 0.25 s floor and
-        yields a plausible-looking movie built on nothing.  The
-        written value is therefore verified, and ``"military"`` is
-        rejected by name.
-    ``SOUND_ENABLED = "false"``
-        Default ``true`` [src/options.cpp:1774-1777].  Matches
-        ``SDL_AUDIODRIVER=dummy`` so the game does not spend the
-        session retrying an audio device that will never appear.
-    ``USE_TILES = "true"``
-        Default ``true`` [src/options.cpp:2500-2503], but set
-        explicitly because ``TILES`` is gated on it --
-        ``get_option( "TILES" ).setPrerequisite( "USE_TILES" )``
-        [src/options.cpp:2530].  Without it the seeded tileset is
-        inert.
-    ``TILES = <resolved>``
-        The MSXotto+ pack, which the run requires.  SILENT when it is
-        wrong: an ASCII capture looks like a perfectly good frame, so a
-        session recorded in the wrong artwork passes every other check.
-        Ids come from the ``NAME:`` field of each ``tileset.txt`` and
-        never from the directory name -- the required pack's directory
-        is ``MShockXotto+`` while its id is ``MshockXottoplus``, and
-        the checkout's own directory is ``ASCIITileset`` while its id
-        is ``ASCIITiles``.  An id that is not installed is never
-        written, and neither is a DIFFERENT installed one: when the
-        pack is missing this module refuses rather than quietly writing
-        the ``ASCIITiles`` that ship with the checkout, because that
-        would record the session in the wrong tileset while every other
-        check still passed.  There is no opt-in and no switch: the
-        requirement names one pack, so an absent pack is a refusal
-        that says how to install it.
-    ``TERMINAL_X = "240"`` and ``TERMINAL_Y = "67"``
-        Ranges 80-960 and 24-270, defaults 80 and 24
-        [src/options.cpp:2408-2416].  240x67 is what the engine
-        derives on a 1920x1080 display, and seeding it removes the
-        first-launch geometry discrepancy: 640x384 on launch one (the
-        compiled 80 columns x 8 px by 24 rows x 16 px) against
-        1920x1072 on launch two, since ``WindowWidth =
-        TERMINAL_WIDTH * fontwidth * scaling_factor``
-        [src/sdltiles.cpp:595-596].  Both are range-checked before
-        anything is written.
-    ``CHARACTER_POINT_POOLS = "any"``
-        A ``world_default`` option with values ``{ "any",
-        "multi_pool", "story_teller" }`` and default
-        ``"story_teller"`` [src/options.cpp:2893-2897].  At that
-        default ``pool_selection_modes_for_option`` offers FREEFORM
-        only and ``pool_selection_is_fixed`` makes the pool tab
-        informational and read-only [src/newcharacter.cpp:438-446,
-        462-467] -- that is, there is no point-buy at all.  ``"any"``
-        offers FREEFORM, MULTI_POOL and ONE_POOL, so the tab is live.
-    ``WORLD_COMPRESSION2 = "false"``
-        Default ``true`` [src/options.cpp:1816-1819].  With it on,
-        ``game::save_player_data`` writes ``playerfile +
-        SAVE_EXTENSION + zzip_suffix``, i.e. ``#<b64>.sav.zzip``
-        [src/game_io.cpp:601-621; src/worldfactory.h:25], so the
-        committed character file would be a compressed archive.
-        Seeding ``false`` keeps it a plain, auditable ``#<b64>.sav``.
+``24_HOUR = "24h"``
+    Values are ``{ "12h", "military", "24h" }``, default ``"12h"``
+    [src/options.cpp:1868-1877].  ``to_string_time_of_day`` renders
+    ``"military"`` as ``"%02d%02d.%02d"`` (``0815.32``), ``"24h"`` as
+    the fixed-width ``"%02d:%02d:%02d"``, and otherwise a
+    variable-width AM/PM form [src/calendar.cpp:638-662].  Only
+    ``"24h"`` matches the pipeline's ``[0-9]{2}:[0-9]{2}:[0-9]{2}``
+    clock regex.  ``"military"`` is the trap this module exists to
+    prevent: a legal value that matches nothing, sends every
+    ``ingame_clock`` to null, collapses every duration onto the 0.25 s
+    floor and yields a plausible-looking movie built on nothing.  The
+    written value is verified, and ``"military"`` is rejected by name.
+``SOUND_ENABLED = "false"``
+    Default ``true`` [src/options.cpp:1774-1777].  Matches
+    ``SDL_AUDIODRIVER=dummy`` so the game does not spend the session
+    retrying an audio device that will never appear.
+``USE_TILES = "true"``
+    Default ``true`` [src/options.cpp:2500-2503], but set explicitly
+    because ``TILES`` is gated on it -- ``get_option( "TILES"
+    ).setPrerequisite( "USE_TILES" )`` [src/options.cpp:2530].  Without
+    it the seeded tileset is inert.
+``TILES = <resolved>``
+    The MSXotto+ pack, which the run requires.  SILENT when it is
+    wrong: an ASCII capture looks like a perfectly good frame, so a
+    session recorded in the wrong artwork passes every other check.
+    Ids come from the ``NAME:`` field of each ``tileset.txt`` and never
+    from the directory name -- the required pack's directory is
+    ``MShockXotto+`` while its id is ``MshockXottoplus``.  An id that is
+    not installed is never written, and neither is a DIFFERENT installed
+    one: an absent pack is a refusal that says how to install it, with
+    no opt-in and no switch.
+``TERMINAL_X = "240"`` and ``TERMINAL_Y = "67"``
+    Ranges 80-960 and 24-270, defaults 80 and 24
+    [src/options.cpp:2408-2416].  240x67 is what the engine derives on a
+    1920x1080 display, and seeding it removes the first-launch geometry
+    discrepancy -- 640x384 from the compiled defaults against 1920x1072
+    once real values exist, since ``WindowWidth = TERMINAL_WIDTH *
+    fontwidth * scaling_factor`` [src/sdltiles.cpp:595-596].  Both are
+    range-checked before anything is written.
+``CHARACTER_POINT_POOLS = "any"``
+    A ``world_default`` option with values ``{ "any", "multi_pool",
+    "story_teller" }`` and default ``"story_teller"``
+    [src/options.cpp:2893-2897].  At that default
+    ``pool_selection_modes_for_option`` offers FREEFORM only and
+    ``pool_selection_is_fixed`` makes the pool tab informational and
+    read-only [src/newcharacter.cpp:438-446, 462-467] -- that is, there
+    is no point-buy at all.  ``"any"`` offers FREEFORM, MULTI_POOL and
+    ONE_POOL, so the tab is live.
+``WORLD_COMPRESSION2 = "false"``
+    Default ``true`` [src/options.cpp:1816-1819].  With it on,
+    ``game::save_player_data`` writes ``playerfile + SAVE_EXTENSION +
+    zzip_suffix``, i.e. ``#<b64>.sav.zzip`` [src/game_io.cpp:601-621;
+    src/worldfactory.h:25], so the committed character file would be a
+    compressed archive.  Seeding ``false`` keeps it a plain, auditable
+    ``#<b64>.sav``.
 
 WORLD DEFAULTS LAND IN TWO PLACES
     A new world copies the global world defaults at creation --
     ``WORLD_OPTIONS = get_options().get_world_defaults()``
-    [src/worldfactory.cpp:2039] -- so seeding
-    ``CHARACTER_POINT_POOLS`` into ``options.json`` BEFORE the world
-    exists is what the world inherits.  An existing world instead reads
-    its own ``save/<World>/worldoptions.json``
-    [src/path_info.cpp:416-419; src/worldfactory.cpp:2021-2035], and
-    the pipeline's rule for a run that finds a save is to RESUME it,
-    not to reshape it -- so the default ``--worlds`` mode reports an
-    existing world's value and warns when it is not point-buy capable
-    but changes nothing.
+    [src/worldfactory.cpp:2039] -- so seeding ``CHARACTER_POINT_POOLS``
+    into ``options.json`` BEFORE the world exists is what the world
+    inherits.  An existing world instead reads its own
+    ``save/<World>/worldoptions.json`` [src/path_info.cpp:416-419;
+    src/worldfactory.cpp:2021-2035], and the pipeline's rule for a run
+    that finds a save is to RESUME it, not to reshape it -- so the
+    default ``--worlds`` mode reports an existing world's value and
+    warns when it is not point-buy capable but changes nothing.
 
 WHAT IS DELIBERATELY NOT TOUCHED
     ``SIDEBAR_POSITION`` stays ``"right"`` [src/options.cpp:2132-2136]
@@ -261,8 +241,8 @@ OPT_WORLD_COMPRESSION = "WORLD_COMPRESSION2"
 # rendered image is resampled at all, and SIDEBAR_POSITION decides which
 # side of the frame the clock is on.  Every one of those is an input to
 # the capture rectangle and to the OCR crop, so seeding two of the six
-# and verifying only those two -- which is what a review found -- proves
-# the grid is 240x67 while leaving the pixels it lands on unproven.
+# and verifying only those two would prove the grid is 240x67 while
+# leaving the pixels it lands on unproven.
 OPT_FONT_WIDTH = "FONT_WIDTH"
 OPT_FONT_HEIGHT = "FONT_HEIGHT"
 OPT_SIDEBAR_POSITION = "SIDEBAR_POSITION"
@@ -387,12 +367,12 @@ TILESET_SEARCH_DEPTH = 3
 # environment variable.
 # ---------------------------------------------------------------------
 # env.sh exports the eight below from its "Artifact layout" and
-# "Display, window and grid geometry" sections.  They are cited by
-# NAME rather than by line: env.sh is a sibling that changes in the
-# same commit as this file, so a line number there rots, while
-# `grep 'export PLAYTHROUGH_USERDIR' playthrough/tooling/env.sh`
-# does not.  Engine-source citations keep their line numbers, because
-# that tree is upstream and frozen.
+# "Display, window and grid geometry" sections.  They are cited by NAME
+# rather than by line: env.sh is a sibling that changes in the same
+# commit as this file, so a line number there rots, while
+# `grep 'export PLAYTHROUGH_USERDIR' playthrough/tooling/env.sh` does
+# not.  Engine-source citations keep their line numbers, because that
+# tree is upstream and frozen.
 ENV_REPO_ROOT = "PLAYTHROUGH_REPO_ROOT"
 ENV_USERDIR = "PLAYTHROUGH_USERDIR"
 ENV_OPTIONS_JSON = "PLAYTHROUGH_OPTIONS_JSON"
@@ -477,15 +457,7 @@ ENTRY_MEMBERS = ("info", "default", "name", "value")
 
 
 class SeedError(Exception):
-    """A seeding operation could not be completed honestly.
-
-    Raised for every condition that must be loud rather than
-    silent: an absent options file (the first launch has not
-    happened), an unparseable or non-engine-shaped one, an expected
-    option missing from it, a tileset id that is not installed, a
-    terminal dimension outside the engine's documented range, and a
-    written value that does not read back as intended.
-    """
+    """A seeding operation could not be completed honestly."""
 
 
 # ---------------------------------------------------------------------
@@ -501,11 +473,11 @@ class SeedError(Exception):
 class Tileset:
     """One installed tileset, as the engine would enumerate it.
 
-    :param ident: the ``NAME:`` field -- the value that goes into the
-        ``TILES`` option.
-    :param view: the ``VIEW:`` field, the human-facing name shown in
-        the options menu; empty when the pack omits it, in which case
-        the engine falls back to the id [src/options.cpp:1227-1229].
+    :param ident: the ``NAME:`` field -- the value that goes into the ``TILES``
+        option.
+    :param view: the ``VIEW:`` field, the human-facing name shown in the
+        options menu; empty when the pack omits it, in which case the engine
+        falls back to the id [src/options.cpp:1227-1229].
     :param directory: absolute path of the directory holding the
         ``tileset.txt`` that declared it.
     """
@@ -522,19 +494,7 @@ class Tileset:
 
 @dataclass(frozen=True)
 class TilesetChoice:
-    """The resolved tileset, with the reason it was chosen.
-
-    ``origin`` is ``requested`` when a caller named the tileset and
-    ``required`` when the pipeline's own required pack was resolved --
-    two values, because those are the only two ways a tileset can be
-    chosen here.  The distinction is still worth recording in
-    ``playthrough/TECHNICAL_NOTES.md``: a run that used an
-    operator-nominated spelling of the pack is worth telling apart from
-    one that resolved the pack by its own id.  There was a third value,
-    ``fallback``, for a deliberately allowed ASCIITiles substitution;
-    the requirement names one pack, so that branch is gone rather than
-    merely defaulted off.
-    """
+    """The resolved tileset, with the reason it was chosen."""
 
     tileset: Tileset
     origin: str
@@ -551,14 +511,14 @@ class TilesetChoice:
 class Change:
     """One option value that this module altered.
 
-    :param before: the value the ENGINE was using, verbatim.  With a
-        duplicated key that is the LAST occurrence's value, because the
-        engine applies them in order and each overwrites the previous.
+    :param before: the value the ENGINE was using, verbatim. With a duplicated
+        key that is the LAST occurrence's value, because the engine applies
+        them in order and each overwrites the previous.
     :param after: the value written, verbatim.
     :param reason: why the pipeline needs it, for the report.
-    :param path: the file the change was made in, when it is not the
-        global options file.  Carried so a world change can be
-        confirmed against the file it actually landed in.
+    :param path: the file the change was made in, when it is not the global
+        options file. Carried so a world change can be confirmed against the
+        file it actually landed in.
     """
 
     name: str
@@ -575,16 +535,15 @@ class Change:
 class SeedReport:
     """The outcome of one patch run.
 
-    :param path: the file that was inspected, and written when
-        ``changes`` is non-empty and this was not a dry run.
-    :param changes: the values altered, in the order they were
-        applied.
-    :param already: names that already held the wanted value, so no
-        write was needed for them.
-    :param notes: everything the operator should know that is not a
-        change -- fallbacks taken, worlds found, decisions recorded.
-    :param tileset: the resolved tileset, or ``None`` when tileset
-        resolution was skipped.
+    :param path: the file that was inspected, and written when ``changes`` is
+        non-empty and this was not a dry run.
+    :param changes: the values altered, in the order they were applied.
+    :param already: names that already held the wanted value, so no write was
+        needed for them.
+    :param notes: everything the operator should know that is not a change --
+        fallbacks taken, worlds found, decisions recorded.
+    :param tileset: the resolved tileset, or ``None`` when tileset resolution
+        was skipped.
     :param written: whether the file on disk was actually replaced.
     :param dry_run: whether writing was suppressed.
     :param pretty: the layout the file used, and was rewritten in.
@@ -678,7 +637,7 @@ def _looks_like_checkout(candidate: str) -> bool:
 # anywhere below that userdir.  The one way to move the tree is an
 # explicit --repo-root/root= naming a genuine checkout, which is a
 # deliberate act at the call site; the environment may CONFIRM the
-# location but can no longer redirect it.
+# location and cannot redirect it.
 # ---------------------------------------------------------------------
 def _module_repo_root() -> str:
     """Return the checkout this file is part of, from its own path.
@@ -699,8 +658,8 @@ def _within(path: str, root: str) -> bool:
 def _assert_within(resolved: str, root: str, label: str) -> None:
     """Refuse a path that does not resolve inside ``root``.
 
-    The FULLY RESOLVED form is tested, so ``../`` and a symlink
-    pointing out of the tree are both caught.
+    The FULLY RESOLVED form is tested, so ``../`` and a symlink pointing
+    out of the tree are both caught.
 
     :raises SeedError: when the path resolves outside ``root``.
     """
@@ -715,12 +674,6 @@ def _assert_within(resolved: str, root: str, label: str) -> None:
 
 def _assert_no_symlink(resolved: str, root: str, label: str) -> None:
     """Refuse ``resolved`` if it or a component below ``root`` links.
-
-    A link inside the tree still points somewhere else, and following
-    one would let a single planted link turn a configuration patch
-    into a write to an arbitrary file that the caller believes is
-    options.json.  The final component is checked first because that
-    case is well defined however the path was spelled.
 
     :raises SeedError: when any component is a symbolic link.
     """
@@ -754,13 +707,7 @@ def _confined(resolved: str, root: str, label: str) -> str:
 
 
 def approved_userdir(root: Optional[str] = None) -> str:
-    """Return the only userdir tree this module may read or write.
-
-    Derived from :func:`repo_root`, which honours an explicit argument
-    but requires the environment to agree with this file's own
-    location.  Every path this module opens is checked against the
-    result.
-    """
+    """Return the only userdir tree this module may read or write."""
     return _join(repo_root(root), USERDIR_PARTS)
 
 
@@ -771,24 +718,17 @@ def repo_root(explicit: Optional[str] = None) -> str:
     ``$PLAYTHROUGH_REPO_ROOT`` [playthrough/tooling/env.sh], then
     two directories above this file.
 
-    An explicit argument is AUTHORITATIVE: when it is supplied and is
-    not a checkout, this raises instead of quietly falling through to a
-    root that happens to work.  Silently disagreeing with the root a
-    caller named is exactly the sort of plausible-but-wrong behaviour
-    this module exists to avoid, and it would leave every sibling in
-    the pipeline pointed somewhere else.
-
-    ``$PLAYTHROUGH_REPO_ROOT`` may CONFIRM the root but can no longer
-    move it.  env.sh derives that variable from its own location
+    ``$PLAYTHROUGH_REPO_ROOT`` may CONFIRM the root and cannot move
+    it.  env.sh derives that variable from its own location
     [playthrough/tooling/env.sh] and this file sits beside env.sh,
     so in every legitimate invocation the two agree; a value that
     names a DIFFERENT checkout is a redirection of every subsequent
     write and is refused rather than followed.  Relocating the tree is
     the explicit argument's job.
 
-    :raises SeedError: when a supplied candidate, or the fallback, is
-        not a Cataclysm-DDA checkout, or when the environment names a
-        different checkout from the trusted one.
+    :raises SeedError: when a supplied candidate, or the fallback, is not a
+        Cataclysm-DDA checkout, or when the environment names a different
+        checkout from the trusted one.
     """
     marker_dir = os.path.join(*ROOT_MARKER_DIR_PARTS)
     marker_file = os.path.join(*ROOT_MARKER_FILE_PARTS)
@@ -930,14 +870,13 @@ def character_saves_in(world_dir: str) -> List[str]:
 
     ``#<base64-name>.sav`` and ``#<base64-name>.sav.zzip`` are the SAME
     survivor -- WORLD_COMPRESSION2 decides which form is written and it
-    defaults to true -- so the ``.zzip`` suffix is stripped and each base
-    name counted once.  Every candidate is ``lstat``-ed: a symlink is
-    refused rather than counted, because the engine writes the save
+    defaults to true -- so the ``.zzip`` suffix is stripped and each
+    base name counted once.  Every candidate is ``lstat``-ed: a symlink
+    is refused rather than counted, because the engine writes the save
     through that name and a link puts it outside the committed tree.
-
-    This is what makes "does a survivor exist in this world?" a question
-    with an answer, which is the question ``--worlds patch`` must not be
-    allowed to ignore.
+    This is what makes "does a survivor exist in this world?" a
+    question with an answer, which is the question ``--worlds patch``
+    must not be allowed to ignore.
     """
     names = set()
     try:
@@ -1036,13 +975,7 @@ def proc_fields(pid: int, name: str) -> Tuple[str, ...]:
 
 
 def userdir_of(pid: int) -> Optional[str]:
-    """Return the ``--userdir`` a process was started with, canonical.
-
-    ``--userdir <path>`` and ``--userdir=<path>`` both reach
-    PATH_INFO::init_user_dir, and the value is resolved against the
-    process's OWN working directory because src/path_info.cpp:105
-    normalises it without absolutising it.
-    """
+    """Return the ``--userdir`` a process was started with, canonical."""
     argv = proc_fields(pid, "cmdline")
     cwd = proc_link(pid, "cwd")
     if not argv or cwd is None:
@@ -1060,14 +993,7 @@ def userdir_of(pid: int) -> Optional[str]:
 
 
 def live_engine_pids(root: Optional[str] = None) -> List[int]:
-    """Return every running engine using THIS userdir, authenticated.
-
-    Read from /proc rather than from a process-name match: the check is
-    that the executable is this checkout's binary AND that the command
-    line names this userdir, so another checkout's engine, another
-    userdir's engine and an unrelated process that merely looks like one
-    are all excluded.
-    """
+    """Return every running engine using THIS userdir, authenticated."""
     binary = engine_binary_path(root)
     wanted = os.path.realpath(userdir_path(root))
     found = []
@@ -1296,27 +1222,15 @@ def _validated_target(path: str, root: Optional[str] = None) -> str:
     5. the file already EXISTS, because this module patches what the
        engine wrote and never creates a configuration document.
 
-    :func:`load_entries` then requires it to parse as an engine-shaped
-    option array before any write is attempted.
+    :raises SeedError: when the basename is not writable by this module, when
+        the path is outside or misplaced within the userdir, when any component
+        is a link, or when the file does not exist.
 
     Conditions 2 to 4 are the ones that matter for anything but a typo.
     A basename check alone accepts ANY writable ``options.json`` on the
     host -- another checkout's, another user's, one planted in a
     world-writable directory -- and accepts a symlink wearing the right
-    name while pointing somewhere else entirely.  A caller-supplied
-    ``--options`` path, or an unexpected
-    ``$PLAYTHROUGH_OPTIONS_JSON``, is exactly how that would happen,
-    so both are confined here rather than trusted.  Condition 4 is a
-    REFUSAL rather than a resolution for a reason worth stating: a
-    link planted at ``save/<World>`` that was followed would make
-    whatever it points at writable, which is the escape this function
-    exists to close.  Position inside a tree this module can vouch for
-    is what makes the authorisation real.
-
-    :raises SeedError: when the basename is not writable by this
-        module, when the path is outside or misplaced within the
-        userdir, when any component is a link, or when the file does
-        not exist.
+    name while pointing somewhere else entirely.
     """
     resolved = os.path.abspath(os.path.normpath(path))
     name = os.path.basename(resolved)
@@ -1392,13 +1306,7 @@ def _validated_target(path: str, root: Optional[str] = None) -> str:
 # "ASCIITileset" into the TILES option would select nothing.
 # ---------------------------------------------------------------------
 def _parse_tileset_conf(path: str) -> Optional[Tuple[str, str]]:
-    """Return ``(ident, view)`` from one ``tileset.txt``, or None.
-
-    A file that cannot be read, or that declares no ``NAME:``, yields
-    ``None`` and a debug line: an unreadable pack is simply not an
-    installed tileset, and treating it as one would risk writing an id
-    the engine cannot resolve.
-    """
+    """Return ``(ident, view)`` from one ``tileset.txt``, or None."""
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as fh:
             lines = fh.read().splitlines()
@@ -1458,11 +1366,6 @@ def discover_tilesets(root: Optional[str] = None) -> List[Tileset]:
     and a duplicate id keeps its first definition, matching
     ``search_resource``'s "only add if not a duplicate" behaviour
     [src/options.cpp:1250-1262].
-
-    Returns an empty list when nothing is installed.  That is not
-    raised here: :func:`resolve_tileset` is the function that has to
-    fail, and it produces a far more useful message because it knows
-    what was being looked for.
     """
     resolved_root = repo_root(root)
     bases = [
@@ -1511,16 +1414,14 @@ def _match_tileset(
 def _required_aliases(required: str) -> List[str]:
     """Return every spelling the required tileset may be known by.
 
-    ``$PLAYTHROUGH_TILESET_ALIASES`` is honoured when it is set, so the
-    list lives in one place -- ``env.sh`` -- rather than being
-    maintained twice.  The requested id always comes first, and the
-    module's own constants are the floor, so an environment that
-    supplies nothing still resolves the pack correctly.
-
     The pack genuinely is spelled several ways -- the ``NAME:`` id, the
     ``VIEW:`` display name and the directory the upstream repository
-    ships it as -- so matching on one spelling alone would fail to find
-    an installed pack and report it as absent.
+    ships it as -- so matching on one spelling alone would miss an
+    installed pack.  ``$PLAYTHROUGH_TILESET_ALIASES`` is honoured when
+    it is set, so the list lives in one place -- ``env.sh`` -- rather
+    than being maintained twice.  The requested id always comes first,
+    and the module's own constants are the floor, so an environment that
+    supplies nothing still resolves the pack correctly.
     """
     aliases = [required]
     from_env = os.environ.get(ENV_TILESET_ALIASES) or ""
@@ -1534,14 +1435,7 @@ def _required_aliases(required: str) -> List[str]:
 
 
 def _is_required(tileset: Tileset, wanted: str) -> bool:
-    """True when ``tileset`` IS the MSXotto+ pack the run requires.
-
-    Asked through :func:`_required_aliases` rather than against a
-    literal, so the id, the display name and every directory spelling
-    are accepted from the ONE list ``env.sh`` owns.  Used to decide
-    whether an explicitly requested tileset is the required pack under
-    another of its names or a genuine substitution.
-    """
+    """True when ``tileset`` IS the MSXotto+ pack the run requires."""
     names = set(_required_aliases(wanted))
     return tileset.ident in names or tileset.view in names
 
@@ -1553,8 +1447,6 @@ def resolve_tileset(
     tilesets: Optional[Sequence[Tileset]] = None,
 ) -> TilesetChoice:
     """Resolve the ONE tileset this pipeline is allowed to write.
-
-    Order:
 
     1. ``requested`` -- an explicit ``--tileset`` argument, or
        ``$PLAYTHROUGH_TILESET_RESOLVED`` as emitted by
@@ -1568,25 +1460,20 @@ def resolve_tileset(
 
     THERE IS NO THIRD STEP, AND NO SWITCH THAT ADDS ONE.  The
     requirement is not "some tileset": the game must be configured to
-    use MSXotto+.  An opt-in ASCIITiles substitution used to live here,
-    off by default and announced when taken, and a review was right that
-    a feature whose requirement names one pack should not carry the
-    losing side of that requirement as a code path at all.  Quietly
-    writing ``ASCIITiles`` produced a run that looked entirely
-    successful -- every count tallied, every frame captured -- while
-    recording a session in the wrong artwork, and the only symptom was
-    the artwork itself.  ``launch_game.sh`` hydrates the pack from its
-    pre-placed copy before this module runs, so an absent pack means the
-    pack is genuinely unavailable; the remedy is to install it with
+    use MSXotto+, so the losing side of that requirement is not carried
+    as a code path at all.  Quietly writing ``ASCIITiles`` would produce
+    a run that looked entirely successful -- every count tallied, every
+    frame captured -- while recording a session in the wrong artwork,
+    with the artwork itself as the only symptom.  ``launch_game.sh``
+    hydrates the pack from its pre-placed copy before this module runs, so
+    an absent pack means the pack is genuinely unavailable; the remedy is
+    to install it with
     ``playthrough/tooling/launch_game.sh tileset``.  The resolution of
     the plan's two artwork statements is recorded once, in
     playthrough/README.md ("Which artwork the requirement means").
 
-    :raises SeedError: when the hint is not installed, when the hint is
-        not the required pack, and when the required tileset is not
-        installed.  Writing an id that is not installed would leave the
-        game with a tileset it cannot load, and claiming otherwise in
-        the run's notes would be a fabrication.
+    :raises SeedError: when the hint is not installed, when the hint is not the
+        required pack, and when the required tileset is not installed.
     """
     available = (list(tilesets) if tilesets is not None
                  else discover_tilesets(root))
@@ -1650,14 +1537,7 @@ def resolve_tileset(
 # Reading and writing the engine's option documents
 # ---------------------------------------------------------------------
 def _read_text(path: str) -> str:
-    """Return a file's exact text, or raise SeedError.
-
-    Separate from :func:`load_entries` because the rollback in
-    :func:`_commit_writes` restores the ORIGINAL BYTES rather than a
-    re-serialisation of the parsed values: those two differ in
-    whitespace, and "the file is exactly as you found it" is a claim
-    worth being literally true.
-    """
+    """Return a file's exact text, or raise SeedError."""
     try:
         with open(path, "r", encoding="utf-8") as handle:
             return handle.read()
@@ -1668,16 +1548,13 @@ def _read_text(path: str) -> str:
 def load_entries(path: str) -> Tuple[List[Dict[str, object]], bool]:
     """Load one engine option document.
 
-    :returns: ``(entries, pretty)`` where ``entries`` is the array of
-        option objects exactly as stored -- member order preserved,
-        unknown members preserved -- and ``pretty`` records whether the
-        file was written by the pretty printer, so it can be rewritten
-        in the same layout.
-    :raises SeedError: when the file cannot be read, is not valid
-        JSON, is not a JSON array, or holds an entry that is not an
-        object with string ``name`` and ``value`` members.  Every one
-        of those means the file is not what this module thinks it is,
-        and patching past it would corrupt the engine's configuration.
+    :returns: ``(entries, pretty)`` where ``entries`` is the array of option
+        objects exactly as stored -- member order preserved, unknown members
+        preserved -- and ``pretty`` records whether the file was written by the
+        pretty printer, so it can be rewritten in the same layout.
+    :raises SeedError: when the file cannot be read, is not valid JSON, is not
+        a JSON array, or holds an entry that is not an object with string
+        ``name`` and ``value`` members.
     """
     try:
         with open(path, "r", encoding="utf-8") as handle:
@@ -1762,16 +1639,7 @@ def _json_string(value: str) -> str:
 
 
 def _json_member_value(value: object) -> str:
-    """Encode one member value for the engine's layout.
-
-    Strings go through :func:`_json_string`, which is the engine's own
-    encoder.  Anything else -- which the engine never writes into
-    these documents, but which a future option type or a hand-edit
-    could introduce -- is encoded compactly and non-ASCII-safe, the
-    repository's ``json.dump(..., ensure_ascii=False)`` convention, so
-    that an unexpected member survives a round trip instead of being
-    dropped.
-    """
+    """Encode one member value for the engine's layout."""
     if isinstance(value, str):
         return _json_string(value)
     return json.dumps(value, ensure_ascii=False,
@@ -1791,11 +1659,6 @@ def serialize_entries(
     bracket [src/json.cpp:2251-2350].  ``pretty=False`` reproduces
     ``JsonOut( stream )``, which ``WORLD::save_world_options`` uses
     [src/worldfactory.cpp:339], i.e. fully compact.
-
-    Reproducing the layout rather than reformatting with
-    ``json.dump(indent=...)`` is what keeps a seeded value to a
-    one-line diff against what the game wrote, and what makes a second
-    run byte-identical to the first.
     """
     rendered = []
     for entry in entries:
@@ -1890,11 +1753,10 @@ def _validated_range(name: str, value: int,
                      bounds: Tuple[int, int]) -> str:
     """Return ``value`` as the engine's text, once range-checked.
 
-    :raises SeedError: when it falls outside the engine's documented
-        minimum and maximum.  Seeding a terminal dimension the engine
-        rejects would silently leave the window at its compiled 80x24
-        default, and the capture geometry would be wrong for the whole
-        session.
+    :raises SeedError: when it falls outside the engine's documented minimum
+        and maximum. Seeding a terminal dimension the engine rejects would
+        silently leave the window at its compiled 80x24 default, and the
+        capture geometry would be wrong for the whole session.
     """
     low, high = bounds
     if not isinstance(value, int) or isinstance(value, bool):
@@ -2005,17 +1867,10 @@ def _apply(
 ) -> None:
     """Set one option's value in situ, or record that it was correct.
 
-    Only the ``value`` member is touched.  The entry object itself is
-    never replaced, so the engine's ``info`` and ``default``
-    annotations -- which are useful evidence in their own right, the
-    ``TILES`` entry's ``default`` text being a live inventory of what
-    is installed -- survive untouched.
-
-    :raises SeedError: when the option is absent from the file.  The
-        engine writes every option it knows about, so a missing one
-        means this file is not the document this module thinks it is,
-        and adding an entry would mean inventing the ``info`` and
-        ``default`` strings the engine owns.
+    :raises SeedError: when the option is absent from the file. The engine
+        writes every option it knows about, so a missing one means this file is
+        not the document this module thinks it is, and adding an entry would
+        mean inventing the ``info`` and ``default`` strings the engine owns.
     """
     occurrences = grouped.get(name)
     if not occurrences:
@@ -2068,43 +1923,30 @@ def patch(
 ) -> SeedReport:
     """Seed the pipeline's option values into ``path``, in place.
 
-    :param path: the options file; defaults to
-        :func:`options_json_path`, i.e.
+    :param path: the options file; defaults to :func:`options_json_path`, i.e.
         ``playthrough/userdir/config/options.json``.
-    :param root: repository root override, for tileset discovery and
-        the default path.
-    :param tileset: an explicit ``TILES`` id or display name.  Treated
-        as a hint and validated against what is installed.
-    :param terminal_x: ``TERMINAL_X``; defaults to 240, range-checked
-        against 80-960 [src/options.cpp:2408-2411].
-    :param terminal_y: ``TERMINAL_Y``; defaults to 67, range-checked
-        against 24-270 [src/options.cpp:2413-2416].
-    :param point_pools: ``CHARACTER_POINT_POOLS``; defaults to
-        ``"any"``.  A value that disables point-buy is accepted only
-        because the engine accepts it, and is warned about.
-    :param world_compression: ``WORLD_COMPRESSION2``; defaults to
-        ``False``.
-    :param resolve_tiles: when ``False``, ``TILES`` is left exactly as
-        the engine wrote it and no tileset discovery is performed --
-        for a caller patching a COPY of the file on a host with no
-        ``gfx/`` tree.  CALL-SITE ONLY: :func:`build_parser` exposes no
-        flag that sets it, so no command line and therefore no
-        pipeline stage can drop ``TILES`` out of the plan.  A
-        production run always decides all eight values.
-    :param worlds: what to do about an existing world's
-        ``worldoptions.json`` -- ``"auto"`` reports but does not touch
-        it, ``"patch"`` edits it, ``"skip"`` ignores it entirely.
+    :param root: repository root override, for tileset discovery and the
+        default path.
+    :param tileset: an explicit ``TILES`` id or display name. Treated as a hint
+        and validated against what is installed.
+    :param terminal_x: ``TERMINAL_X``; defaults to 240, range-checked against
+        80-960 [src/options.cpp:2408-2411].
+    :param terminal_y: ``TERMINAL_Y``; defaults to 67, range-checked against
+        24-270 [src/options.cpp:2413-2416].
+    :param point_pools: ``CHARACTER_POINT_POOLS``; defaults to ``"any"``. A
+        value that disables point-buy is accepted only because the engine
+        accepts it, and is warned about.
+    :param world_compression: ``WORLD_COMPRESSION2``; defaults to ``False``.
+    :param resolve_tiles: when ``False``, ``TILES`` is left exactly as the
+        engine wrote it and no tileset discovery is performed -- for a caller
+        patching a COPY of the file on a host with no ``gfx/`` tree.
+    :param worlds: what to do about an existing world's ``worldoptions.json``
+        -- ``"auto"`` reports but does not touch it, ``"patch"`` edits it,
+        ``"skip"`` ignores it entirely.
     :param dry_run: compute and report everything, write nothing.
-
-    ``24_HOUR``, ``SOUND_ENABLED`` and ``USE_TILES`` are deliberately
-    NOT parameters.  There is no legitimate configuration of this
-    pipeline in which the clock is not ``"24h"``, and offering the
-    knob would offer ``"military"`` with it -- the one legal value that
-    silently destroys every duration in the finished movie.
-
     :returns: a :class:`SeedReport` naming every change.
-    :raises SeedError: for any condition that cannot be resolved
-        honestly; nothing is written when one is raised.
+    :raises SeedError: for any condition that cannot be resolved honestly;
+        nothing is written when one is raised.
     """
     if worlds not in WORLDS_MODES:
         raise SeedError(
@@ -2193,25 +2035,11 @@ def patch(
                report.changes, report.already, notes)
 
     # ------------------------------------------------------------------
-    # PREFLIGHT EVERYTHING, THEN WRITE.  Nothing above this point has
-    # touched the disk: the global file's new content is computed in
-    # memory, and _plan_worlds() below validates and computes every
-    # world file's new content the same way -- resolving each target
-    # under the confinement rules, loading it, and raising for anything
-    # it cannot do honestly.
-    #
-    # The old sequence wrote the global options file first and only then
-    # looked at the worlds, so a world that could not be patched left
-    # the configuration half-applied: the global file already carried
-    # 24_HOUR=24h and the new tileset while the world still carried a
-    # point-pool setting that makes the creator's pool tab read-only,
-    # and the run had failed, so nobody had been told which half had
-    # landed.  Recovering from that means knowing what the file used to
-    # say, which is precisely what an aborted run does not record.
-    #
-    # So the writes happen together, last, and if any one of them fails
-    # the ones already made are restored from the bytes they had before.
-    # ------------------------------------------------------------------
+    # PREFLIGHT EVERYTHING, THEN WRITE.  Nothing above this point has touched
+    # the disk: the global file's new content is computed in memory, and
+    # _plan_worlds() below validates and computes every world file's new
+    # content the same way -- resolving each target under the confinement
+    # rules, loading it, and raising for anything it cannot do honestly.
     planned: List[_PlannedWrite] = []
     if report.changes:
         planned.append(_PlannedWrite(
@@ -2276,14 +2104,7 @@ def _lock_timeout() -> int:
 
 @dataclass(frozen=True)
 class _PlannedWrite:
-    """One file's fully computed new content, not yet written.
-
-    ``original`` is the exact text the file held when it was read, kept
-    so that a failure part-way through a multi-file commit can put every
-    already-written file back the way it was.  ``plan`` is the
-    name/value pairs to confirm afterwards, empty for a world file whose
-    single change is confirmed directly.
-    """
+    """One file's fully computed new content, not yet written."""
 
     target: str
     text: str
@@ -2298,19 +2119,6 @@ def _commit_writes(
     root: Optional[str] = None,
 ) -> None:
     """Write every planned file, or restore the ones already written.
-
-    Each individual write is atomic already (:func:`write_atomic`
-    renames into place), so the only failure this has to handle is a
-    write that succeeds followed by one that does not.  In that case
-    every file written by this call is put back to the bytes it held
-    before, in reverse order, and the original error is re-raised: the
-    configuration is then exactly as it was found, which is a state the
-    operator can reason about.
-
-    A rollback write that itself fails is reported at ERROR with the
-    path and the content that could not be restored, because at that
-    point the module genuinely cannot fix it and saying so is the only
-    honest thing left to do.
 
     :raises SeedError: the first write failure, after rolling back.
     """
@@ -2362,11 +2170,6 @@ def _confirm_world_writes(
 ) -> None:
     """Prove every world change actually reached the disk.
 
-    The same argument as :func:`_confirm_written`: reporting a change
-    that did not take effect would be a fabrication, and a world file is
-    no less load-bearing than the global one -- it is what decides
-    whether the character creator's pool tab is live or read-only.
-
     :raises SeedError: when a recorded world change is not on disk.
     """
     problems = []
@@ -2392,19 +2195,8 @@ def _confirm_written(
 ) -> None:
     """Re-read ``target`` and prove the write took effect.
 
-    This answers one narrow question -- did every planned value land on
-    disk? -- and deliberately not the broader "does this file satisfy
-    the pipeline's requirements?", which is :func:`verify`'s job.
-    Keeping them apart means a caller who deliberately seeds an unusual
-    value still gets an honest confirmation of what was written, while
-    the acceptance gate stays strict.
-
-    Reporting a change that did not take effect would be a fabrication,
-    which is why this runs unconditionally after every write.
-
-    :raises SeedError: when any planned value is not what the file now
-        holds, naming the ``24_HOUR`` trap explicitly when that is the
-        value at fault.
+    :raises SeedError: when any planned value is not what the file now holds,
+        naming the ``24_HOUR`` trap explicitly when that is the value at fault.
     """
     observed = read_values(target, root)
     problems = []
@@ -2436,14 +2228,6 @@ def _plan_worlds(
     dry_run: bool = False,
 ) -> List["_PlannedWrite"]:
     """Preflight existing worlds and RETURN their planned writes.
-
-    Nothing here touches the disk.  Every world target is resolved
-    under the confinement rules, loaded, and checked; the new content is
-    computed in memory and handed back so that :func:`patch` can commit
-    the global file and the world files together, or neither.  A
-    condition this cannot handle honestly -- ``--worlds patch`` against
-    a world that carries no such entry -- still raises here, BEFORE any
-    write has happened, which is the whole point of preflighting.
 
     ``CHARACTER_POINT_POOLS`` is a ``world_default`` option
     [src/options.cpp:2893], and a world captures the global world
@@ -2530,14 +2314,10 @@ def _plan_worlds(
             _note(message, report.notes)
             continue
 
-        # The LAST occurrence, not the first.  A world options file may
-        # legally carry the same key twice, and the engine deserialises
-        # the array in order -- each assignment overwriting the one
-        # before it -- so the final occurrence is the value the game is
-        # actually running under.  Reading occurrences[0] would report
-        # a value the world does not have, and would then decide
-        # "point-buy is available" (or not) from it: a wrong answer to
-        # the one question this branch exists to answer.
+        # The LAST occurrence, not the first.  A world options file may legally
+        # carry the same key twice, and the engine deserialises the array in
+        # order -- each assignment overwriting the one before it -- so the
+        # final occurrence is the value the game is actually running under.
         current = str(occurrences[-1]["value"])
         if len(occurrences) > 1:
             _note(
@@ -2551,16 +2331,15 @@ def _plan_worlds(
                 report.notes)
         if mode == WORLDS_AUTO:
             survivors = character_saves_in(os.path.dirname(world_path))
-            # A WORLD WITH NO SURVIVOR IN IT IS NOT A SAVE TO RESUME,
-            # and `auto` used to treat it as one.  A review found the
-            # consequence: this run resolves to CREATE against an
-            # existing empty world -- an interrupted creation, or a
-            # world the engine reset after a death -- and the character
-            # is created INSIDE that world, so the world's own
-            # CHARACTER_POINT_POOLS is what the creator obeys
-            # [src/worldfactory.cpp:2021-2035].  Leaving it at
-            # 'story_teller' with only a note meant the pool tab could
-            # be read-only while the global option said otherwise and
+            # A WORLD WITH NO SURVIVOR IN IT IS NOT A SAVE TO RESUME.
+            # Treating it as one has a consequence worth spelling out:
+            # this run resolves to CREATE against an existing empty
+            # world -- an interrupted creation, or a world the engine
+            # reset after a death -- and the character is created INSIDE
+            # that world, so the world's own CHARACTER_POINT_POOLS is
+            # what the creator obeys [src/worldfactory.cpp:2021-2035].
+            # Leaving it at 'story_teller' with only a note would leave
+            # the pool tab read-only while the global option said
             # every check passed.  So `auto` now patches exactly that
             # case, and refuses to leave it unusable:
             #
@@ -2647,13 +2426,13 @@ def _plan_worlds(
 # Verification
 #
 # Reading the file back is not belt-and-braces here: the failure this
-# guards against is silent by nature.  A 24_HOUR value of "military"
-# is legal, is accepted by the engine, and renders 0815.32 -- which
-# the pipeline's [0-9]{2}:[0-9]{2}:[0-9]{2} clock regex never matches,
-# so every ingame_clock goes null, every duration collapses onto the
-# 0.25 s floor, and the finished movie looks entirely plausible while
-# its pacing means nothing at all.  So the value is asserted, and the
-# forbidden one is named in the failure.
+# guards against is silent by nature.  A 24_HOUR value of "military" is
+# legal, is accepted by the engine, and renders 0815.32 -- which the
+# pipeline's [0-9]{2}:[0-9]{2}:[0-9]{2} clock regex never matches, so
+# every ingame_clock goes null, every duration collapses onto the 0.25 s
+# floor, and the finished movie looks entirely plausible while its pacing
+# means nothing at all.  So the value is asserted, and the forbidden one
+# is named in the failure.
 # ---------------------------------------------------------------------
 SEEDED_OPTIONS = (
     OPT_24_HOUR, OPT_SOUND_ENABLED, OPT_USE_TILES, OPT_TILES,
@@ -2670,14 +2449,8 @@ def read_values(
 ) -> Dict[str, str]:
     """Return the current on-disk value of every seeded option.
 
-    Observation only: nothing is asserted and nothing is written, so a
-    dry run can report what the file actually holds without turning a
-    not-yet-applied change into a failure.  An option absent from the
-    file is absent from the result rather than defaulted, because the
-    engine's compiled default is not what the file says.
-
-    :raises SeedError: only when the file itself cannot be believed --
-        missing, unreadable, or not an engine-shaped option array.
+    :raises SeedError: only when the file itself cannot be believed -- missing,
+        unreadable, or not an engine-shaped option array.
     """
     target = _validated_target(path or options_json_path(root), root)
     entries, _ = load_entries(target)
@@ -2695,13 +2468,7 @@ def read_values(
 def effective_point_pools(
     world_path: str,
 ) -> Optional[str]:
-    """Return the value a world's own options file gives the pool.
-
-    ``None`` when the file carries no such entry at all, which means the
-    world inherits the global world default and the global check is the
-    right one for it.  The LAST occurrence wins, exactly as the engine's
-    in-order deserialisation makes it win.
-    """
+    """Return the value a world's own options file gives the pool."""
     entries, _pretty = load_entries(world_path)
     occurrences = _index_entries(entries).get(OPT_POINT_POOLS)
     if not occurrences:
@@ -2712,14 +2479,7 @@ def effective_point_pools(
 def _effective_pool_problems(
     root: Optional[str], expected: str,
 ) -> List[str]:
-    """Return a problem per world whose own pool value blocks point-buy.
-
-    Only worlds with NO character save are held to it: those are the
-    worlds a creating session will put its survivor in.  A world that
-    already holds a survivor is one this pipeline resumes rather than
-    creates in, and its rules are the ones that survivor was made
-    under.
-    """
+    """Return a problem per world whose own pool value blocks point-buy."""
     problems: List[str] = []
     for world_path in world_options_paths(root):
         world_dir = os.path.dirname(world_path)
@@ -2760,20 +2520,40 @@ def verify(
 ) -> Dict[str, str]:
     """Read the options file back and assert every seeded value.
 
-    :param tileset: the id that should be present.  When ``None`` the
-        stored value is instead checked against what is installed,
-        which is the stronger check of the two whenever ``gfx/`` is
-        reachable.
-    :param require_installed: when ``True``, the stored ``TILES`` value
-        must name an installed tileset AND must be the MSXotto+ pack the
-        run requires.  Set ``False`` only when verifying a copy of the
-        file away from a ``gfx/`` tree.  CALL-SITE ONLY:
-        :func:`build_parser` exposes no flag that sets it, so every
-        command-line verification -- and so every production
-        verification -- makes the strong check.
-    :returns: the observed values of every seeded option.
-    :raises SeedError: listing every mismatch found, so one run
-        reports all of them rather than one at a time.
+    Every mismatch is collected and reported together, so one run tells an
+    operator everything that is wrong rather than one thing at a time.
+    Nothing is written: this is a read and a judgement.
+
+    :param path: the options file to read.  Defaults to
+        :func:`options_json_path` under ``root``.
+    :param root: the checkout the file must resolve inside.  It is forwarded
+        to :func:`read_values` too, so the reader confines its own target
+        rather than falling back to this module's checkout.
+    :param tileset: the id that should be present.  When ``None`` the stored
+        value is instead checked against what is installed, which is the
+        stronger check of the two whenever ``gfx/`` is reachable.
+    :param terminal_x: the expected ``TERMINAL_X``.  Defaults to
+        ``TERMINAL_X_WANTED``.
+    :param terminal_y: the expected ``TERMINAL_Y``.  Defaults to
+        ``TERMINAL_Y_WANTED``.
+    :param point_pools: the expected ``CHARACTER_POINT_POOLS``.  Defaults to
+        ``POINT_POOLS_WANTED``, and a value outside ``POINT_POOLS_POINT_BUY``
+        is reported even when it matches, because it would disable the
+        point-buy creator R10 requires.
+    :param world_compression: the expected ``WORLD_COMPRESSION2``.  Defaults
+        to ``WORLD_COMPRESSION_WANTED``.
+    :param require_installed: when ``True``, the stored ``TILES`` value must
+        name an installed tileset AND must be the MSXotto+ pack the run
+        requires.  Set ``False`` only when verifying a copy of the file away
+        from a ``gfx/`` tree.  CALL-SITE ONLY: :func:`build_parser` exposes
+        no flag that sets it, so every command-line verification -- and so
+        every production verification -- makes the strong check.
+    :returns: the observed values of every seeded option, so a caller can
+        report what it saw and not only that it agreed.
+    :raises SeedError: listing every mismatch found, including a sidebar
+        layout whose column carries no clock -- and, before any value is
+        read, when ``path`` is not a real options file inside the pipeline's
+        userdir.
     """
     target = _validated_target(path or options_json_path(root), root)
     # `root` is forwarded, not dropped: read_values confines its own
@@ -2831,15 +2611,13 @@ def verify(
     # read correctly.  The import is local so that verifying an options
     # file stays possible in a tree where the geometry module is absent.
     # WHAT IS ACTUALLY REQUIRED OF THE LAYOUT, and it is not its NAME.
-    # This used to demand DEFAULT_LAYOUT_ID and reject every other
-    # persisted layout, which a review found wrong on its own terms:
+    # Demanding DEFAULT_LAYOUT_ID would be wrong on its own terms:
     # sidebar_geometry resolves any of the shipped presets to its width
     # in cells and computes the crop from that, so a session running
     # under legacy_classic_sidebar or the narrow labels preset is
     # perfectly readable -- and an existing save that had persisted one
     # of them could not be continued at all.  The two properties that
-    # DO matter are checked instead, and they are checked by
-    # COMPUTATION rather than by comparison against a name:
+    # DO matter are checked by COMPUTATION rather than against a name:
     #
     #   1. the active layout RESOLVES to a crop -- compute_sidebar_geometry
     #      runs, the width in cells is believable, and the rectangle
@@ -2850,7 +2628,7 @@ def verify(
     #      that resolves to a perfectly valid crop over a column with no
     #      clock in it would send every duration to the floor.
     try:
-        from sidebar_geometry import (  # noqa: E402  (local by design)
+        from sidebar_geometry import (
             GeometryError, compute_sidebar_geometry,
             layout_shows_the_clock, read_current_layout_id)
     except ImportError as err:                    # pragma: no cover
@@ -2956,9 +2734,9 @@ def verify(
     # a world DEFAULT: a world captures it at creation
     # [src/worldfactory.cpp:2039] and its own worldoptions.json is
     # authoritative for it afterwards [src/worldfactory.cpp:2021-2035].
-    # A review found this verification checking the global value alone,
-    # so a run could pass every check and still meet a read-only pool
-    # tab.  The EFFECTIVE value is therefore checked per world, and only
+    # Checking the global value alone would let a run pass every check
+    # and still meet a read-only pool tab.  The EFFECTIVE value is
+    # therefore checked per world, and only
     # for a world with no character save -- the world a CREATE session
     # will put its survivor in.  A world that already holds a survivor
     # is being resumed, not created in, so its value is reported rather
@@ -3061,11 +2839,10 @@ def build_parser() -> argparse.ArgumentParser:
              f"error, never a substitution")
     # THERE IS DELIBERATELY NO --no-tileset FLAG.
     #
-    # It used to exist, and it was a production bypass: it dropped
-    # TILES out of the plan -- eight decided values became seven -- and
-    # it turned off the verifier's installed-tileset check, so a run
-    # could report complete success with ASCIITiles, or the absent
-    # compiled default UltimateCataclysm, left in place.  The run is
+    # Such a flag is a production bypass: it would drop TILES out of the
+    # plan and turn off the verifier's installed-tileset check, so a run
+    # could report complete success with ASCIITiles -- or the absent
+    # compiled default UltimateCataclysm -- left in place.  The run is
     # required to be recorded in MSXotto+, and a flag that quietly
     # removes the only check of that is worse than no check at all,
     # because every other gate still passes.
@@ -3075,11 +2852,10 @@ def build_parser() -> argparse.ArgumentParser:
     # rules against a copy of an options file on a host with no gfx/
     # tree.  argparse cannot produce either of them, so no command line
     # -- and therefore no pipeline stage -- can reach the relaxed
-    # behaviour.  AND THERE IS NO FLAG THAT ACCEPTS ANOTHER TILESET.
-    # There was one, --allow-tileset-fallback, off by default and
-    # announced when used; the requirement names one pack, so the flag,
-    # the environment variable behind it and the branch they reached are
-    # all gone.  An operator who wants a different tileset installs it
+    # behaviour.  AND THERE IS NO FLAG THAT ACCEPTS ANOTHER TILESET:
+    # the requirement names one pack, so no fallback flag, environment
+    # variable or branch exists for a second one.
+    # An operator who wants a different tileset installs it
     # and names it with --tileset, which is validated just as strictly.
     parser.add_argument(
         "--terminal-x", type=int, metavar="N",
@@ -3136,13 +2912,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _configure_cli_logging(verbose: bool) -> None:
-    """Route this module's log records to the current stderr.
-
-    Deliberately not :func:`logging.basicConfig`, which is a silent
-    no-op once the root logger has a handler: a warning about a
-    substituted default is the mechanism by which a fallback stays
-    visible, so it must not be routed somewhere nobody is looking.
-    """
+    """Route this module's log records to the current stderr."""
     for existing in list(LOG.handlers):
         LOG.removeHandler(existing)
         existing.close()
