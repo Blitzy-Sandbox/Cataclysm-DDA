@@ -1,6 +1,6 @@
 verify_artifacts.sh -- the acceptance gate for the playthrough capture subsystem
 reading the committed artifacts under playthrough/ at the repository root
-measuring the tree at HEAD b2d185ab8c
+measuring the tree at HEAD 3ef0e70883
 
 === 1. the measuring environment ===
 PASS  every command this gate invokes is present, verified and called by its resolved path
@@ -77,7 +77,7 @@ PASS  the acknowledgment ledger is reconciled -- a second reading of a frame nam
 PASS  every capture has a standing acknowledgment, the final frame included
       observed: all 307 captures carry a standing reading, frame 307 included
 PASS  the evidence anchor is a sound hash chain
-      observed: 45 row(s) over 15 artifact(s), chained and re-derived; head c075e517be125534
+      observed: 60 row(s) over 15 artifact(s), chained and re-derived; head 90d3add014759564
 PASS  every sealed artifact still hashes to its seal, as sha256 AND as git's own blob name
       observed: 15 artifact(s) re-hashed and unchanged: amendments.jsonl, build/acknowledgments.jsonl, build/concat.txt, build/frame_dates.jsonl, build/frame_digests.jsonl, build/movie.json, ...; none awaiting a seal
 
@@ -267,7 +267,7 @@ PASS  the lifecycle checkpoints are about the survivor in the tree
 PASS  the recording in the tree has a checkpoint pair of its own
       observed: Fairport Harbor / Odette Vachon: 'final' 555b12b88d anchored to 'creation' 800ab8e11f, both recording that survivor
 DIVERGENCE  the evidence anchor's head is published in the history
-      observed: commit 778f189f3a Commit the acceptance report and the final three-section report declares Playthrough-Evidence-Anchor: c075e517be125534, which is the head the anchor ends on, but 5 required checkpoint(s) publish no head of their own: 800ab8e11f (creation) 7e10721d4e (creation) 555b12b88d (final) 4e8a49879a (final) b0038360c7 (media)
+      observed: commit 89082f7821 Commit the acceptance report and the final three-section report declares Playthrough-Evidence-Anchor: 90d3add014759564, which is the head the anchor ends on, but 5 required checkpoint(s) publish no head of their own: 800ab8e11f (creation) 7e10721d4e (creation) 555b12b88d (final) 4e8a49879a (final) b0038360c7 (media)
       the plan requires: a trailer on EACH required checkpoint, so that the seal is contemporaneous with the commit it seals rather than a later statement about it, and the head additionally retained OUTSIDE this repository (a transparency log or a detached signature) so that rewriting the history could not also rewrite its own witness
       why it stands: those checkpoints were taken BEFORE the anchor mechanism existed, and this pipeline does not rewrite published history -- no rewriting and no force-push (AAP 0.10.2, least privilege over the repository) -- so a commit object that already exists can never acquire a contemporaneous trailer.  The seal that IS present is a true statement about the artifact bytes and NOT a witness to when they were made; closing the gap needs a re-recording taken through the hardened committer, and the external retention needs a network service this offline pipeline does not have
 
@@ -314,7 +314,7 @@ PASS  this report contains every check this gate declares
 
 SUMMARY  132 of 134 checks passed with 2 DIVERGENCE(S) from the plan (134 of 134 declared for the 'all' phase), 16 informational note(s).  Nothing FAILED, but the run does not claim full compliance: each divergence above prints what the plan requires, what was delivered instead, and why it stands.
 VERIFY_PHASE=all
-VERIFY_MEASURED_COMMIT=HEAD b2d185ab8c
+VERIFY_MEASURED_COMMIT=HEAD 3ef0e70883
 VERIFY_CHECKS=134
 VERIFY_EXPECTED_CHECKS=134
 VERIFY_PASSES=132
