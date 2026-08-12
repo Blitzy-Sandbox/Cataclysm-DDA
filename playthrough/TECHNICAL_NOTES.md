@@ -139,7 +139,7 @@ Fairport Harbor that shipped. Only the last of them exists in the tree.
 | *The session was re-recorded…* | the **second, 395-frame** set | **RETIRED.** Its own heading says it "supersedes every count above", which was true when written — and it was itself superseded twice over |
 | *Frame 397 correction after the death ending*, *AAP R11: the ending is legitimate…*, *Runtime QA remediation of the 419-frame record* | the **third, 419-frame** set | **RETIRED** |
 | *Runtime QA remediation of the earlier 395-frame capture set* | the second set again | **RETIRED**, kept because the engine behaviours it pins down and the tooling it produced are still in force |
-| *The commit identity…*, *The three checkpoints…* | requirements and design, set-independent | current — each states what it previously claimed and why that changed |
+| *The commit identity…*, *The three checkpoints…* | requirements and design, set-independent | **the commit-identity block is RETRACTED IN PART — read its banner first.** It was written about `persist_identity_locally`, which does not exist: the committer writes no git configuration in any scope, the identity is forwarded as `GIT_AUTHOR_*`/`GIT_COMMITTER_*` by `supported_env.sh forward_commit_identity()`, and AAP R1's local-identity element is **UNMET and carried as an open divergence** rather than implemented. Any sentence on this page saying the script "writes", "persists" or "records" the local pair is retracted. *The three checkpoints…* is current |
 | *The pipeline as built* and everything after it | the pipeline, the host and the engine | current except where it names a retired count |
 
 **One difference between the sets matters more than any count, because three
@@ -676,6 +676,57 @@ PY
 29 [220, 222, 230, 238, 239, 241, 246, 249, 251, 259, 264, 265, 269, 271, 274,
     275, 281, 291, 293, 297, 299, 301, 303, 304, 305, 309, 310, 312, 313]
 ```
+
+### The weekday lags the day of the month, and that is the engine, not a misread
+
+Relocated here from the retired 395-frame block, and restated, because the
+earlier account of it named the wrong cause and `timeline.py` said so in its own
+diagnostic. It happens in the **shipped** record too, once, and here is exactly
+where.
+
+The record's own two frames: **299** reads `Thursday, May 20` at `22:00:00` and
+**300** reads `Thursday, May 21` at `00:04:18`. Both are `clock_kind: exact`,
+both `date_agreement: confirmed`, and both were read off a real captured frame.
+The day of the month advanced by one and the weekday word did not — so on the
+face of it one of the two readings has to be wrong.
+
+**Neither is.** The engine computes the two halves of that line from two
+different epochs:
+
+* `display::date_string` → `calendar::name_month` / `month_and_day`, which count
+  from the start of the year: `to_days<int>( time_past_new_year( turn ) )`
+  [src/calendar.cpp:875-893]. That rolls over at **midnight**.
+* `display::date_string` → `day_of_week`, which counts from the start of the
+  game: `( to_days<int>( p - calendar::start_of_game ) + THURSDAY ) % 7`
+  [src/calendar.cpp:688-695]. `to_days` truncates, so this rolls over at the
+  **scenario's start hour** — 08:00 for `missed`, which is the scenario played.
+
+Between midnight and 08:00, therefore, the day of the month has advanced and the
+weekday has not. They are one step out of phase, by construction, for eight hours
+of every in-game day. Frame 300 at `00:04:18` sits four minutes into exactly that
+window.
+
+`timeline.py`'s `weekday_disagreement()` used to call this a misread — *"one of
+the two lines was misread"* — which accused the pipeline's own evidence of a
+fault that belonged to nothing at all. It now distinguishes a one-step lag from a
+wider gap and explains the first rather than indicting it. Verbatim, from a
+`timeline.py --verify` run over the committed record:
+
+    the date line went from 'Thursday, May 20' to 'Thursday, May 21', a step
+    of 1 day(s), which puts the weekday at Friday while the line reads
+    Thursday -- one step behind.  That is the engine's own phase offset and
+    not a misread: day_of_week counts days from the start of the game
+    (src/calendar.cpp:688-695), so it turns over at the scenario's start hour,
+    while month_and_day counts from the new year (src/calendar.cpp:875-893)
+    and turns over at midnight, leaving the weekday one step behind the day
+    of the month until the start hour comes round.  No timing depends on the
+    weekday, and the day count is reported as it was read
+
+A gap of more than one step still reports a misread, because that cannot be
+explained by the phase offset. Either way the reading is reported as it was read
+and never repaired, and **no frame duration depends on the weekday**: the whole
+timing model differences `HH:MM:SS`, and the date line only supplies the
+midnight-rollover guard, for which the day of the month is the relevant half.
 
 ### One rendering artifact worth naming
 
@@ -1529,8 +1580,17 @@ the game, and that boundary is gated. Stated here so a later reader knows it
 was weighed.
 
 **The Pillow pin cannot be raised, and what was done instead.** `pillow`
-11.3.0 carries 36 advisory records in OSV against 12.3.0's zero, so the
-attractive move is obvious — and it is unreachable. `moviepy` declares
+11.3.0 carried 36 advisory *records* in OSV against 12.3.0's zero when that was
+measured on 2026-08-04, so the attractive move is obvious — and it is
+unreachable. Two counts appear in this evidence and they are not in conflict,
+because they count different things: OSV carries a GHSA record *and* a PYSEC
+record for the same CVE (`GHSA-whj4-6x5x-4v2j` and `PYSEC-2026-2250` are both
+`CVE-2026-40192`), so a record count runs ahead of a distinct-identifier count.
+`playthrough/tooling/requirements.txt` holds the enumerated ledger — the
+**14 distinct CVE identifiers** established against 11.3.0 on 2026-08-12, each
+with its first-fixed release and the Pillow surface that shuts it out — and is
+explicit that the enumeration is a dated snapshot rather than a completeness
+claim. `moviepy` declares
 `pillow<12.0,>=9.2.0`, and 2.2.1 is the newest `moviepy` there is (both
 re-verified against the live index on 2026-08-04), so **11.3.0 is the newest
 Pillow the declared render stack supports**, and the AAP pins that pair
@@ -1672,11 +1732,15 @@ manifest values agree with the careful reader and not with a guess.
 `missed` spawn rather than an anomaly.** The sidebar on the first gameplay
 frame of the retired 560-frame set reads `Place: golf course servic…`. The
 citation is deliberately to an **immutable blob and not to a live path**,
-because `playthrough/frames/frame_00403.png` has since been rewritten twice
-by two re-records — row 403 of the shipped set is Delphine entering a letter
-of her last words, and the shipped spawn is a restaurant at frame 192 — so a
-live-path citation inside a retired section rots the moment the set is
-replaced:
+because `playthrough/frames/frame_00403.png` has since been rewritten by
+successive re-records — and in the set that finally shipped **that path does not
+exist at all**, so a live-path citation inside a retired section rots the moment
+the set is replaced. *(The parenthesis that stood here — "row 403 of the shipped
+set is Delphine entering a letter of her last words, and the shipped spawn is a
+restaurant at frame 192" — was true of the **retired 419-frame** set and is false
+of the tree. The shipped set is Odette Vachon's **307** frames, so there is no row
+403; and the shipped spawn is itself a **golf course service building**, which is
+the coincidence that makes this correction worth stating rather than deleting.)*
 
 ```console
 $ git show 7117ef9700:playthrough/frames/frame_00403.png > /tmp/retired_403.png
@@ -1879,9 +1943,26 @@ anything. Six entries are flagged in this session:
   the same class of hit the review itself recorded as a false positive against
   the superseded rows 509 and 523.
 
-### The date line's weekday disagreement
+### RELOCATED: the date line's weekday disagreement
 
-`timeline.py` reports:
+> **This behaviour is not specific to a retired set — it is in the shipped record
+> too, and the current account of it is *The weekday lags the day of the month,
+> and that is the engine, not a misread* in the shipped-session block.** Go there
+> for the cause, the engine citations and the shipped record's own pair of frames.
+> What follows is the earlier account, kept because it is the observation as first
+> made, and because the diagnostic it quotes has since been corrected.
+>
+> **Two things in it were wrong.** The quoted message called this "a misread",
+> which it is not: `day_of_week` counts from `calendar::start_of_game` and rolls
+> over at the scenario's 08:00 start hour [src/calendar.cpp:688-695] while
+> `month_and_day` counts from the new year and rolls over at midnight
+> [src/calendar.cpp:875-893], so the weekday lags the day of the month for eight
+> hours of every in-game day, by construction. And the section sat inside a
+> retired block, which implied the behaviour had been retired with the set.
+> `timeline.py`'s message now explains the phase offset instead of indicting the
+> reading; a gap of more than one step still reports a misread.
+
+`timeline.py` reported, before that correction:
 
     the date line went from 'Thursday, May 20' to 'Thursday, May 21', a step
     of 1 day(s), but Thursday is not 1 day(s) after Thursday; one of the two
@@ -2214,15 +2295,33 @@ final commit carrying no save is the second of those two in name only. Asserting
 it from the index rather than after the fact means the run refuses instead of
 leaving a commit the gate will then reject.
 
-### The one configuration the committer writes, and the fence around it
+### RETRACTED: the one configuration the committer was said to write
 
-`git config --local user.name` and `user.email`, and only when this repository
-does not already record them.
+> **THE COMMITTER WRITES NO CONFIGURATION. This section's own title was the
+> claim, and it is false.** No `git config` write exists in
+> `commit_artifacts.sh` in any scope — every invocation is a `--get` read
+> through `local_config_value()`, and the script's header records the reversal
+> under *WHERE THAT IDENTITY CAME FROM -- REPORTED, AND NEVER WRITTEN*. The
+> "fence" described below therefore guards nothing, because there is no write to
+> fence: properties 1–3 are the limits a write *would* have had. What actually
+> carries the identity into the container is
+> `supported_env.sh:430 forward_commit_identity()`, which forwards
+> `GIT_AUTHOR_*` and `GIT_COMMITTER_*` as `--env` rather than persisting
+> anything. The full retraction, the falsifying measurement from this checkout,
+> and the honest R1 status are in *The commit identity: the script reports it and
+> never writes it*. Kept because the container measurement in the second
+> paragraph is real, and it is why `forward_commit_identity()` exists.
+>
+> The one thing below that is still live and still worth reading is the
+> `/dev/null` incident in the closing paragraph: that was a real damaged
+> machine, and the sandbox hardening it produced is in force.
 
 This page previously stated that `commit_artifacts.sh` writes no git
 configuration in any scope, and treated that as the constraint the design turned
-on. **The constraint was wrong, and the measurement that showed it is worth
-keeping.** The render and capture stages may only legally run inside the
+on. **That statement was correct, and this section was written to overturn it on
+the strength of a measurement that turned out to justify a different fix
+entirely.** The measurement itself stands, and it is this. The render and
+capture stages may only legally run inside the
 declared container, which mounts the checkout, sets its own `HOME` and forwards
 no `GIT_*` variables at all — so an identity living in the invoking user's
 `~/.gitconfig` *does not exist in there*. `git var GIT_AUTHOR_IDENT` resolved to
@@ -2231,21 +2330,25 @@ checkpoint taken in the only environment where rendering is permitted exited 3.
 A pipeline whose committer cannot resolve an identity in its own production
 environment has no commit path.
 
-Three properties make the write safe, and each is a deliberate limit:
+Three properties were to have made the write safe, each a deliberate limit —
+none of which is in force, because the write they bounded was never kept:
 
-1. **The value is never chosen here.** What is written is exactly what `git var`
-   already resolved a moment earlier, so the author and committer of the commit
-   that follows are identical whether or not the write happened. It cannot
-   re-attribute a commit; it can only make an existing attribution durable.
-2. **The scope is `--local` and nothing else.** Never `--global`, never
-   `--system`, never `--worktree`. Verified two ways: every `git config`
-   invocation in the source names `--local`, and a whole lifecycle leaves a real,
-   writable global configuration file byte-identical.
-3. **An existing local pair is left exactly as found.** Only a missing half is
-   filled in, so a re-run cannot overwrite a deliberate setting.
+1. **The value would never be chosen here.** What was to be written is exactly
+   what `git var` already resolved a moment earlier, so the author and committer
+   of the commit that follows are identical whether or not the write happened. It
+   could not re-attribute a commit; only make an existing attribution durable.
+2. **The scope was to be `--local` and nothing else.** Never `--global`, never
+   `--system`, never `--worktree`. Verified two ways at the time: every `git
+   config` invocation in the source named `--local`, and a whole lifecycle left a
+   real, writable global configuration file byte-identical. *(Both still hold, for
+   the stronger reason that every remaining invocation is a read.)*
+3. **An existing local pair was to be left exactly as found.** Only a missing
+   half would be filled in, so a re-run could not overwrite a deliberate setting.
 
-A missing identity is still a **refusal**. The script persists an identity; it
-does not invent one.
+A missing identity is still a **refusal**, and that part is unchanged and live:
+`assert_identity()` at `commit_artifacts.sh:606` exits `EX_IDENTITY` (3) rather
+than commit under an identity git cannot determine. What the script does *not* do
+is persist one.
 
 One incident from testing that fence is recorded here because its failure mode
 was a damaged machine rather than a failed test. `git` performs every
@@ -2634,21 +2737,71 @@ dead weight.
   interruption can do is publish, because a published path is only ever
   reached by renaming something that passed.
 
-## The commit identity: the script now records it, in this repository only
+## The commit identity: the script reports it and never writes it
 
-**This section previously reported AAP R1's local-identity element as UNMET and
-blocked, and stated that `commit_artifacts.sh` "does not, and will not" write
-it. Both statements are superseded.** The script writes it, the requirement is
-implemented, and the reasoning that led to the earlier position is kept below
-because the constraint it was protecting is real and the fence it argued for is
-the fence that now exists.
+> **RETRACTED IN FULL — THIS SECTION DESCRIBED A FUNCTION THAT DOES NOT EXIST.**
+> Everything below this banner was written about `persist_identity_locally`, a
+> routine said to write `user.name` and `user.email` into this checkout with
+> `git config --local`. **There is no such function anywhere in the tree, and no
+> `git config` write in any scope.**
+> `git grep -n persist_identity` matches this page and nothing else. Every
+> `git config` invocation left in `commit_artifacts.sh` is a **read**:
+> `local_config_value()` is `"${GIT}" config --local --get "$1"`, and
+> `report_identity_scope()` calls it twice to say where the identity came from.
+> The script's own header records the reversal under the title *WHERE THAT
+> IDENTITY CAME FROM -- REPORTED, AND NEVER WRITTEN*, and its refusal message
+> says it in operator-facing words: *"This step does not rewrite git
+> configuration -- not in any scope."*
+>
+> **How the identity actually reaches a commit.** It is forwarded as
+> environment, not persisted as configuration.
+> `supported_env.sh:430 forward_commit_identity()` asks `git var
+> GIT_AUTHOR_IDENT`, splits the name and address out of the answer, and appends
+> `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME` and
+> `GIT_COMMITTER_EMAIL` to the container's `--env` list. That closes the very
+> gap the retracted argument below was built on — a `HOME` reassigned inside the
+> image no longer hides the identity, because the identity travels beside the
+> mount instead of inside it — and it does so without writing a byte of git
+> configuration.
+>
+> **One claim below is not merely unimplemented but falsified by this very
+> checkout.** It states that "in a checkout where a checkpoint *has* run, the
+> pair is present". This history carries **twelve** `Playthrough-Checkpoint`
+> commits, including the `final` one at `555b12b88d`, and
+> `git config --local --list | grep -c '^user\.'` here answers **0**. The
+> identity resolves from `file:<operator home>/.gitconfig`, and `git var
+> GIT_AUTHOR_IDENT` answers `Blitzy Agent <agent@blitzy.com>`. Checkpoints ran;
+> no local pair appeared; the commits are correctly attributed anyway.
+>
+> **The requirement is therefore NOT implemented, and the honest status is a
+> divergence, not a resolution.** AAP §0.1.1 R1's *"Repository-local `git config
+> user.name` / `user.email` must be set"* is unmet, because the platform
+> directive this session runs under forbids the only command that would set it.
+> That conflict is recorded as a divergence — `README.md`'s DIVERGENCE verdict
+> class, `REPORT.md`'s opening section, and group 7 of the acceptance report —
+> and it is for a human requirement owner to settle, not for this page to
+> declare closed. See also *The identity conflict, quoted rather than
+> paraphrased*.
+>
+> **The suite already holds the correct behaviour**, so this was a documentation
+> defect alone and no code changed to fix it:
+> `test_commit_artifacts.TestItNeverWritesTheIdentityAnywhere` — *"Where the
+> committer identity may be written: nowhere"* — asserts it against the source
+> and against a whole lifecycle run.
+>
+> The account below is kept unedited because the container measurement that
+> prompted it was real and is the reason `forward_commit_identity()` exists.
+> Read it as the history of a position that was tried and abandoned. **Every
+> present-tense claim in it about what the script writes is false.**
 
 The AAP requires a repository-local git identity — "Repository-local `git config
 user.name` / `user.email` must be set" (§0.1.1 R1), reinforced at §0.1.2
 ("**Repository-local git identity must be configured** or every commit fails
 outright"), §0.1.3 and §0.4.2 — and names the script that should write it:
 "`commit_artifacts.sh` **sets** the repository-local git identity" (§0.7.2.5,
-and §0.3.1 to the same effect). `persist_identity_locally` does exactly that.
+and §0.3.1 to the same effect). *(The retracted claim continued:
+"`persist_identity_locally` does exactly that." It does not, because no function
+of that name exists in the tree.)*
 
 **What changed the position was a measurement, not a re-reading.** The render
 and capture stages may only legally run inside the declared container. It mounts
@@ -2704,13 +2857,33 @@ taken there:
     $ git var GIT_AUTHOR_IDENT
     Blitzy Agent <agent@blitzy.com> 1786095278 +0000
 
-So the local keys appear when a checkpoint is taken, not before — the write is
-part of taking one, and this pass took none here. In a checkout where a
-checkpoint *has* run, the pair is present and the gate's identity check passes
-inside the container:
+**FALSIFIED — the two sentences that stood here are the sharpest example of why
+this whole section is retracted.** They said: *"So the local keys appear when a
+checkpoint is taken, not before — the write is part of taking one, and this pass
+took none here. In a checkout where a checkpoint has run, the pair is present."*
+This checkout is that counter-example. Twelve `Playthrough-Checkpoint` commits
+have run in this history — `dossier`, `creation`, the session, `final` at
+`555b12b88d`, and the publication commits after them — and the local pair is
+still absent:
+
+    $ git log --grep='^Playthrough-Checkpoint: ' --oneline | wc -l
+    12
+    $ git config --local --list | grep -c '^user\.'
+    0
+    $ git config --show-origin --get user.name
+    file:<operator home>/.gitconfig   Blitzy Agent
+    $ git var GIT_AUTHOR_IDENT
+    Blitzy Agent <agent@blitzy.com> 1786568560 +0000
+
+Checkpoints ran, no key was written, and the commits are correctly attributed
+regardless — which is the whole point: attribution never depended on the local
+pair. What *is* true, and is the one line worth keeping from what stood here, is
+that the gate's identity check passes:
 
     PASS  git has an identity to commit these artifacts under
           observed: Blitzy Agent <agent@blitzy.com>
+
+It passes because an identity **resolves**, not because one was persisted.
 
 `git var GIT_AUTHOR_IDENT` is the right question to ask
 because it is git answering with the same resolution order it will use when it
@@ -6750,6 +6923,15 @@ Ran 3589 tests in 2293.168s
 OK (skipped=2)
 ```
 
+*(Recounted 2026-08-12 after the alternate-model review remediation, which added
+four cases to `test_timeline` and two to `test_session` and touched no other
+suite: **3595** across the same 21 modules, `Ran 3595 tests in 2298.195s`,
+`OK (skipped=2)`, exit 0 — the final validation run over the delivered tree, on a
+quiet host, within five seconds of the elapsed figure above it. The table below
+carries the recount, and the two rows it moved are marked. One thing worth knowing before trusting a single discovery
+run on a busy host is recorded in* The discovery run is load-sensitive, and two
+failures once said so *below.)*
+
 Per module, counted the same mechanical way — `TestLoader.loadTestsFromName`
 then `countTestCases()`:
 
@@ -6760,16 +6942,19 @@ then `countTestCases()`:
 | `test_commit_artifacts` | 294 | | `test_render_movie` | 136 |
 | `test_embed_captions` | 113 | | `test_run_pipeline` | 136 |
 | `test_env` | 290 | | `test_seed_options` | 131 |
-| `test_launch_game` | 206 | | `test_session` | 302 |
+| `test_launch_game` | 206 | | `test_session` | **304** |
 | `test_make_srt` | 146 | | `test_sidebar_geometry` | 81 |
 | `test_make_transitions` | 118 | | `test_supported_env` | 80 |
 | `test_manifest` | 293 | | `test_tileset_provenance` | 58 |
-| `test_ocr_clock` | 215 | | `test_timeline` | 383 |
+| `test_ocr_clock` | 215 | | `test_timeline` | **387** |
 | | | | `test_verify_artifacts` | 269 |
-|  |  | | **total (21 modules)** | **3589** |
+|  |  | | **total (21 modules)** | **3595** |
 
-**The per-module figures sum to 3589 exactly, which equals the discovery run's
-own `Ran 3589 tests`** — the same agreement check, and the only reason to trust
+The two bold figures are the ones the remediation moved: `test_session`
+302 → **304** and `test_timeline` 383 → **387**. Nineteen modules are unchanged.
+
+**The per-module figures sum to 3595 exactly, which equals the discovery run's
+own `Ran 3595 tests`** — the same agreement check, and the only reason to trust
 either number. It is a test now rather than a habit: `test_readme.py` resolves
 every total the operator page quotes against what the loader collects for the
 command written above it, so a count that moves without its page being
@@ -6793,6 +6978,34 @@ page's own suite went 54 → **82** and the shipped-artifact suite 122 → **125
 both from tests added to hold a published figure to a measurement. One module was
 edited without gaining a case: `test_capture` is three lines in and four out
 from the artwork fallback's deletion, and stays at **109**.
+
+### The discovery run is load-sensitive, and two failures once said so
+
+Recorded because a run that failed and was then not published would be exactly
+the kind of quiet edit this record exists to prevent. During the alternate-model
+review remediation the first full discovery over the corrected tree reported
+`Ran 3595 tests in 5912.899s` and **`FAILED (failures=4, skipped=2)`**. Two of
+the four were real and expected: `test_readme` had caught its own page quoting
+3589 where the loader now collects 3595, and 383 where `test_timeline` now
+collects 387 — the guard doing precisely the job the paragraphs above claim for
+it, on the pass that moved the counts. The other two were not reproducible. That
+run shared the host with the rest of the remediation and took **2.6×** the
+published elapsed, and the captured output names what gave way: *"the window
+geometry was still changing after 20 reads"*, then the launcher's own refusal to
+photograph a surface it could not measure. Every one of the twenty-one modules
+was then run individually — all **OK**, summing to exactly **3595** — and the
+discovery was repeated twice on a quieter host: `Ran 3595 tests in 3457.355s` and
+then, for the final validation of the delivered tree, `Ran 3595 tests in
+2298.195s`. Both `OK (skipped=2)`, both **exit 0**, and grepping the whole output
+of each for `^FAIL:` and `^ERROR:` returns nothing.
+
+So the two are a timing sensitivity in the real-launch geometry read under
+contention, not a defect in what the suite measures, and the honest reading is
+narrow: **a single discovery run on a loaded host is not by itself evidence of a
+regression, and neither is it evidence of health.** Per-module runs are what
+attribute a failure to a module; the elapsed figure is what tells you whether the
+run you are looking at was contended. Both figures above were measured on this
+host on 2026-08-12 and both are published, including the one that failed.
 
 **Two skips now, both named rather than smoothed, and neither of them new.**
 Each declines for the same kind of reason: this host cannot present the
@@ -7233,20 +7446,25 @@ longer the end of the story.** The AAP requires the identity to be set
 script deliberately did not, and this paragraph reported R1's local element as
 UNMET and blocked.
 
-**It is implemented now.** `persist_identity_locally` writes `user.name` and
-`user.email` in the local scope only, taking the value `git var` already
-resolved and never overwriting a pair the repository already carries — so the
-author and committer are byte-identical whether or not it ran, and it cannot
-override an attribution. What settled the earlier position was a measurement
-rather than a re-reading: inside the declared container, which mounts the
-checkout, reassigns `HOME` and forwards no `GIT_*`, an identity in the
-operator's global configuration does not exist at all, so the gate's identity
-check reported
-`user.name='' user.email=''` and a checkpoint exited 3. The local keys appear
-when a checkpoint is taken; the console block above shows a checkout where none
-had been. See *"The commit identity: the script now records it, in this
-repository only"* above for the quoted prohibition, the three limits that fence
-the write, and the full measurement.
+**It is still UNMET, and a later revision of this page claiming otherwise has
+been retracted.** That revision said `persist_identity_locally` wrote the pair
+in the local scope; **no such function exists in the tree and there is no `git
+config` write in any scope** — `git grep -n persist_identity` matches this page
+alone. The measurement that prompted the claim was real: inside the declared
+container, which mounts the checkout, reassigns `HOME` and forwards no `GIT_*`,
+an identity in the operator's global configuration does not exist at all, so the
+gate's identity check reported `user.name='' user.email=''` and a checkpoint
+exited 3. **What fixed that was forwarding, not persisting** —
+`supported_env.sh:430 forward_commit_identity()` passes `GIT_AUTHOR_*` and
+`GIT_COMMITTER_*` into the container as `--env`, which closes the gap without
+writing configuration. So R1's local element remains unmet, by a platform
+directive that forbids the only command that would meet it, and it is carried as
+a **recorded divergence** rather than a resolution. The claim that a checkout
+with a checkpoint therefore carries the pair is falsified by this one: twelve
+`Playthrough-Checkpoint` commits, `git config --local --list | grep -c '^user\.'`
+= **0**. See *The commit identity: the script reports it and never writes it*
+above for the full retraction, and *The identity conflict, quoted rather than
+paraphrased* for the prohibition quoted verbatim.
 
 #### The no-cheating claim is auditable, and the audit result is recorded
 
@@ -7527,7 +7745,7 @@ August 12, 2026** supersedes both, and everything downstream of it carrying a
 
 | Earlier statement | Where | Current measurement |
 | --- | --- | --- |
-| **the shipped session is Odette Vachon's 305-frame Barrows recording, 219.750 + 3.000 = 222.750 s, with a 62-entry amendment ledger** | **the row below, and every section it points at** | **superseded wholesale.** The tree holds Odette Vachon's **307**-frame recording in **Fairport Harbor**, totalling **288.500 + 12.000 = 300.500 s**, with a **202**-row amendment ledger reaching **201** of those frames. She *lived*, so there is no `graveyard/` and no `memorial/`; the Barrows recording by the same survivor ended in death and was retired for reasons its own section gives. Derived artifacts: **307** cues, **307** transcript entries, **452** `file` directives over **451** `duration` lines in the concat list, **12** transition groups of twelve images (**144** in all), **307** tracked PNGs, **452** encoded packets, container **300.560 s**. The gate declares **134** checks — **119** before a commit and **37** after one — not the 120 the rows below quote. Suites, recounted **2026-08-12**: **3589** tests across **21** modules, `OK (skipped=2)`. Digests are deliberately NOT restated here: they are in *The shipped derivative chain, as it stands*, measured the same day, because a digest list copied into a corrections table is simply a second place for it to go stale. See *[The shipped session: Odette Vachon of Fairport Harbor](#the-shipped-session-odette-vachon-of-fairport-harbor)* |
+| **the shipped session is Odette Vachon's 305-frame Barrows recording, 219.750 + 3.000 = 222.750 s, with a 62-entry amendment ledger** | **the row below, and every section it points at** | **superseded wholesale.** The tree holds Odette Vachon's **307**-frame recording in **Fairport Harbor**, totalling **288.500 + 12.000 = 300.500 s**, with a **202**-row amendment ledger reaching **201** of those frames. She *lived*, so there is no `graveyard/` and no `memorial/`; the Barrows recording by the same survivor ended in death and was retired for reasons its own section gives. Derived artifacts: **307** cues, **307** transcript entries, **452** `file` directives over **451** `duration` lines in the concat list, **12** transition groups of twelve images (**144** in all), **307** tracked PNGs, **452** encoded packets, container **300.560 s**. The gate declares **134** checks — **119** before a commit and **37** after one — not the 120 the rows below quote. Suites, recounted **2026-08-12** after the alternate-model review remediation: **3595** tests across **21** modules, `OK (skipped=2)`. Digests are deliberately NOT restated here: they are in *The shipped derivative chain, as it stands*, measured the same day, because a digest list copied into a corrections table is simply a second place for it to go stale. See *[The shipped session: Odette Vachon of Fairport Harbor](#the-shipped-session-odette-vachon-of-fairport-harbor)* |
 | **the shipped session is Ambrose Halloran's, 326 frames, 218.500 + 1.000 = 219.500 s, with no amendment ledger, ended by a signal inside `death_screen()`** | **the row below, and every section it points at** | **superseded wholesale.** The tree holds a **305**-frame session played by **Odette Vachon** in **Barrows**, totalling **219.750 + 3.000 = 222.750 s**, with a **62**-entry amendment ledger. The reason is R11 again, from the other direction: Ambrose's ending path was cut short by a signal, so `cleanup_at_end()` never ran, there was no `graveyard/` or `memorial/`, and the tree kept a live-shaped save for a dead man. Odette's death ran the engine's whole ending path and every screen of it was captured. Derived artifacts: **305** cues (206 one-line, 99 two-line, longest line 42 columns), **305** transcript entries, **341** concat entries with the final `file` repeated to 342 lines, **3** transition groups of 12 frames (**36** images), **305** tracked PNGs, **342** encoded frames, container **222.800 s**. Digests, measured on the shipped tree: `manifest.jsonl` **`9307363ad4c0…`** 69 574 B and `build/observations.jsonl` **`096a7292e89b…`** — both byte-identical to the capture; `amendments.jsonl` **`1274d753815b…`** 54 615 B, 62 rows; `timeline.json` **`3c4339c0412f…`** 200 163 B; `transcript.md` **`374f6f0b97b2…`** 14 465 B, titled `# Odette Vachon — what I did, and why`; `transcript.srt` **`7dd7ec12a9f7…`** 19 462 B; `cata-play.mp4` **`990ad52b4710…`** 9 189 760 B; `cata-play-cc.mp4` **`a82d6ffb387d…`** 9 205 909 B; `build/concat.txt` **`c37bee284844…`** 16 692 B; `build/movie.json` **`26bae7499ea5…`** and `build/transitions.json` **`96ac1c53e770…`**. The gate's own verdict over this tree is committed at `playthrough/acceptance-report.txt`: **117 of 117** checks passed, which was its whole declared inventory then; the gate now declares **120** and the receipt is the run that published the record rather than a statement about the current inventory. Suites, recounted 2026-08-10 over the integrated tree: **3017** tests across **21** modules, `OK (skipped=1)`. See *[The shipped session: Odette Vachon](#the-shipped-session-odette-vachon-of-fairport-harbor)* |
 | **the shipped session is Delphine Ouellette's, 419 frames, 233.000 s, with a 27-entry amendment ledger** | **essentially this whole page** | **superseded wholesale.** The tree now holds a **326**-frame session played by **Ambrose Halloran**, totalling **218.500 + 1.000 = 219.500 s**, with **no** amendment ledger (there is nothing to amend: the record was written once and not corrected). Frames, manifest, telemetry, digest ledger, date audit, timeline, both transcripts, both films, the dossier and the userdir were all replaced. The reason is R11: Delphine died, `ACTION_SAVE` is unreachable after death, so the Save & Quit her artifacts implied had never happened — and a captured record cannot be edited into compliance. See *The re-recorded session: Ambrose Halloran* |
 | 419-frame counts of every derived artifact — SRT cues, transcript entries, concat entries, transition groups, tracked PNGs | throughout | **326** cues, **326** transcript entries, **338** concat entries, **1** transition group of 12 frames, **326** tracked PNGs |
@@ -7535,11 +7753,11 @@ August 12, 2026** supersedes both, and everything downstream of it carrying a
 | 395 frames, then a 397-frame correction | the re-record sections | 419; the 395-frame set was retired and re-recorded |
 | "frames 1–243 have no clock; frame 244 is the first frame with an exact clock" | the reconciliation section | the first exact clock in this set is **frame 192** (`08:00:00`); 49 frames below 244 carry one |
 | "246 of 395 clock readings were reconciled" | same | **204 of 419**, all with `reconciled_reason: clock-missing` |
-| the date line's weekday disagreement | its own section | this set reports `date_corrected_count` **0** and `date_conflict_count` **0**; 215 `confirmed`, 204 `unverified` |
+| the date line's weekday disagreement | its own section | **that row's figures were the retired 419-frame set's — 215 `confirmed`, 204 `unverified` — and are corrected here.** The shipped 307-frame record reports `date_confirmed_count` **114**, `date_unverified_count` **193**, `date_corrected_count` **0** and `date_conflict_count` **0**; the 193 are the creation frames and the few others with no sidebar to read, and the first exact clock is frame **164** at `08:00:00`. The disagreement itself was also **mis-diagnosed**: it is the engine's own phase offset between `day_of_week` (from `start_of_game`, rolling at 08:00) and `month_and_day` (from the new year, rolling at midnight), not a misread. Both the account and `timeline.py`'s message are corrected — see *The weekday lags the day of the month, and that is the engine, not a misread* |
 | two advisory hits on "frame" at rows 509/523; then **three** at rows 233/235/237 | the transcript-clean section | **none**: the blunt pattern, `frame` included, now returns nothing against `transcript.md`, `transcript.srt` or `dossier.md` — the published entries say `window`, which is the noun the game's own message used, supplied by amendments 9-11 of the ledger rather than by an edit to those three recorded rows |
-| 1377 tests across eleven test modules (and 152 earlier still), then 1992, then 2035, 2048, 1998 and 2222 in the individual remediation passes | the suite sections | 2284 across sixteen modules when this row was written; then 2607 across 20; then 3017 across 21 on 2026-08-10; **recounted 2026-08-12 after the remediation of the published record and the pipeline's defences it is 3589 tests across 21 modules, `OK (skipped=2)`** — and only 486 of that growth is that pass's, because four modules it never opened already counted 86 higher than the 2026-08-10 table published. Both skips are environment-conditional and neither is new: the read-permission test declines as root, and the path-ancestry test declines because this sandbox's own base is an unsafe road. See *The tooling's own suites, mechanically counted*. Each earlier figure was correct for the tree it was measured in |
+| 1377 tests across eleven test modules (and 152 earlier still), then 1992, then 2035, 2048, 1998 and 2222 in the individual remediation passes | the suite sections | 2284 across sixteen modules when this row was written; then 2607 across 20; then 3017 across 21 on 2026-08-10; 3589 across 21 after the remediation of the published record and the pipeline's defences, of which only 486 was that pass's, because four modules it never opened already counted 86 higher than the 2026-08-10 table published; **recounted 2026-08-12 after the alternate-model review remediation it is 3595 tests across 21 modules, `OK (skipped=2)`**, the +6 being four cases in `test_timeline` and two in `test_session`. Both skips are environment-conditional and neither is new: the read-permission test declines as root, and the path-ancestry test declines because this sandbox's own base is an unsafe road. See *The tooling's own suites, mechanically counted*. Each earlier figure was correct for the tree it was measured in |
 | "four AAP artifacts do not exist", then "three" | its own section | **none**: `run_pipeline.sh`, `verify_artifacts.sh`, `commit_artifacts.sh` and `playthrough/README.md` all exist, each of the three scripts with its own suite. Those suites were 37, 21 and 142 tests when this row was written; **recounted 2026-08-10 they are 63, 50 and 157** |
-| the commit identity element is "UNMET, and blocked", and `commit_artifacts.sh` "does not, and will not" write it | the commit-identity section | **implemented**: `persist_identity_locally` records the identity git already resolved, `--local` only, never overwriting an existing pair. The container measurement is what settled it — with `HOME` reassigned and no `GIT_*` forwarded, an identity outside the mounted tree does not exist inside it |
+| the commit identity element is "UNMET, and blocked", and `commit_artifacts.sh` "does not, and will not" write it | the commit-identity section | **that original wording was right, and a later row here claiming "implemented: `persist_identity_locally` records the identity git already resolved" is RETRACTED — no such function exists and no `git config` write exists in any scope.** The container measurement behind the reversal was real, but the fix it justified is `supported_env.sh:430 forward_commit_identity()`, which forwards `GIT_AUTHOR_*`/`GIT_COMMITTER_*` as `--env` instead of persisting a pair. R1's local element stays **UNMET**, carried as a recorded divergence because the platform directive forbids the only command that would meet it. Falsifying measurement from this checkout: 12 `Playthrough-Checkpoint` commits, and `git config --local --list \| grep -c '^user\.'` = 0 |
 | "the two checkpoints" | the checkpoint section | **three**: `dossier` → `creation` → `final`, because "before the first gameplay frame" is ancestry between two commits |
 | under `-fps_mode vfr` the header's `nb_frames` is "routinely absent" | the packet-counting section | `nb_frames=444` is present and agrees with the packet count |
 | "the committed list sums to `301.000000` s" | the transition-remainder section | **`233.000000` s** — 419 capture durations summing to `231.000000` plus 24 transition shares summing to `2.000000`, which is the timeline's declared `total` |
@@ -7553,7 +7771,7 @@ August 12, 2026** supersedes both, and everything downstream of it carrying a
 | frame 221 at `0.194235 / 0.214209` | the luminance-calibration table | **`0.195958 / 0.219861`**, which is both what `convert` reports today and what `build/observations.jsonl` row 221 recorded at capture time; 218 and 219 are the neighbours the old pair sat between |
 | the grid is "1920×1072 at `+0+4`" with "a 4-pixel letterbox top and bottom" | the root-window capture section | measured over all **419** captures: 412 frames carry ink in y0–3, 223 reach y1071, and **none** carries a pixel in y1072–1079. The grid sits at **`+0+0`** with one 8-pixel band at the bottom; the crop's `+4` is the centred derivation, which `ocr_clock.py` re-measures per frame anyway |
 | "MSXotto+ is **not** in this clone's `gfx/`" | the tileset section | it is never *tracked* (only four `gfx/` entries are), and in a worktree where `launch_game.sh tileset` has run it IS present and ignored — `gfx/MShockXotto+/tileset.txt` reads `NAME: MshockXottoplus` / `VIEW: MSXotto+`, matched by `.gitignore:52` |
-| the retired golf-course spawn cites `playthrough/frames/frame_00403.png` | the first session's verification section | that live path has been rewritten twice since; the claim now cites the immutable blob `a50ce8d123c6…` at commit `7117ef9700`, re-read with `ocr_clock.py` to confirm `Place: golf course servic…`. Row 403 of the shipped set is a letter of Delphine's last words, and the shipped spawn is a restaurant at frame 192 |
+| the retired golf-course spawn cites `playthrough/frames/frame_00403.png` | the first session's verification section | that live path has been rewritten since; the claim now cites the immutable blob `a50ce8d123c6…` at commit `7117ef9700`, re-read with `ocr_clock.py` to confirm `Place: golf course servic…`. **The rest of this row was itself stale and is corrected here:** "row 403 of the shipped set is a letter of Delphine's last words, and the shipped spawn is a restaurant at frame 192" described the **retired 419-frame** set. The shipped set has **307** rows, so `frame_00403.png` does not exist in it, and the shipped spawn is a **golf course service building** |
 | "`capture.sh` refuses `PLAYTHROUGH_CAPTURE_AUDIT` *and* `PLAYTHROUGH_CAPTURE_AUDIT_PATH` outright in diagnostic mode"; "An explicit `PLAYTHROUGH_CAPTURE_AUDIT=on` still records one" | the two date-audit sections | refusing the variable's *presence* refused the pipeline's only caller: `launch_game.sh` declares `PLAYTHROUGH_CAPTURE_AUDIT=off` at its probe call site, so the probe exited `EX_USAGE`, the launcher read that as "the screen could not be read", and **every resumed launch published `INITIAL_UI_STATE=unverified`** — the resume proof was structurally disabled. Current contract, one API both scripts hold to: in diagnostic mode `=off` is **accepted** (it names the value the mode forces and can enable nothing), `=on` is **refused**, any `PLAYTHROUGH_CAPTURE_AUDIT_PATH` is **refused** at any value including beside `off`, and anything else is refused by the shared `on|off` case. The launcher additionally treats `EX_USAGE` from the probe as **fatal** rather than as an unreadable screen, so a future disagreement between the two scripts stops the run instead of quietly removing a proof |
 | "**The derived stages are deliberately unaffected** … timeline, transitions, render, transcripts and the caption mux can be re-run over an existing record" | the platform-waiver section | **two of the five DO refuse**: `render_movie.assert_trusted_render()` raises "REFUSING to encode the film while the trust state is diagnostic" [render_movie.py:605] and `embed_captions.sh` exits **8** at `playthrough_assert_trusted "the caption mux"` [embed_captions.sh:874]. `timeline.py`, `make_transitions.py` and `make_srt.py` carry no trust gate and are genuinely unaffected. Measured under this host's waiver; both films byte-identical after the probe |
 | the declared capture environment is `ubuntu:24.04`, with an eleven-stage table measured there | *The supported release is now DECLARED* | the base is **`ubuntu:26.04`** (EOL 2031-04) and every stage figure was **re-measured** there. 24.04 was rejected on a functional ground the dated table cannot express: its **SDL 2.30.0 delivers no keyboard input to the engine's ImGui screens**, so the character creator cannot be driven, and a full rebuild inside 24.04 (1570 s, 446 objects, compile and runtime both 2.30.0) did not change it. 26.04's **SDL 2.32.10** drives them. Consequences recorded with the base: `g++-14` stays pinned against 26.04's GCC 15 default; SDL3 3.4.2 is now *present* but every `make` still carries `SDL3=0`; and because 26.04 has no `python3.12` while `env.sh` pins that ABI for `requirements.lock`'s `cp312` wheels, the image **builds CPython 3.12.13 from a sha256-pinned python.org tarball** rather than relaxing the closure |
@@ -7780,7 +7998,27 @@ be regenerated on a platform that satisfies the gate honestly, and it was.
 the capture, decode and encode programs the policy exists to constrain and the
 hash-locked pins from `playthrough/tooling/requirements.txt`:
 
+> **RETIRED RECIPE — DO NOT BUILD FROM THIS. The declared environment is a
+> tracked file: `playthrough/tooling/environment/Dockerfile`.** The block below
+> is the ad-hoc recipe this one regeneration was performed with, reproduced as
+> the record of what produced those digests. It was never tracked, and it is
+> weaker than the file that replaced it in four ways that matter:
+>
+> | | this retired block | tracked `environment/Dockerfile` |
+> | --- | --- | --- |
+> | base | `FROM ubuntu:24.04`, a moving tag | `FROM ubuntu@sha256:678c6550cc43…`, a digest |
+> | release | 24.04, whose SDL 2.30.0 delivers **no keyboard input** to the engine's ImGui screens | 26.04 LTS |
+> | Python | the archive's `python3` | CPython `3.12.13` built from a tarball pinned by `PYTHON_SHA256=0816c476…` and `sha256sum -c` |
+> | pins | `pip install -r requirements.txt` — **no hashes, sdists permitted** | `requirements.lock` under `--require-hashes --only-binary :all: --no-deps` |
+> | completeness | media stack only: no X server, no window manager, no `xdotool`, no SDL, no engine — it **cannot take a frame** | every tool `playthrough_require_tools` asserts, plus the SDL2 runtime |
+>
+> The tracked image is tagged **`playthrough-capture:26.04`**
+> (`supported_env.sh:67`, overridable by `PLAYTHROUGH_SUPPORTED_IMAGE`) and is
+> driven through `playthrough/tooling/supported_env.sh {build|inventory|run|shell|preflight}`,
+> which verifies the image by id and refuses one it did not build. Use that.
+
 ```dockerfile
+# RETIRED — superseded by playthrough/tooling/environment/Dockerfile.
 FROM ubuntu:24.04
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get -y upgrade && apt-get -y install --no-install-recommends \
@@ -8135,15 +8373,19 @@ equals it exactly.
 
 ### R1's repository-local identity: what this branch carries
 
-R1 asks for a repository-local git identity, and `commit_artifacts.sh`
-implements it — `persist_identity_locally` writes the pair git already resolved
-with `--local` only, never `--global`, never `--system`, never over an existing
-pair. That is the design, and *The one configuration the committer writes, and
-the fence around it* describes it.
+R1 asks for a repository-local git identity. **`commit_artifacts.sh` does not
+implement it, and an earlier sentence here saying it did — via
+`persist_identity_locally`, `--local` only — is retracted: no such function is in
+the tree and no `git config` write exists in any scope.** What the script does is
+*assert* that an identity resolves (`assert_identity()` at
+`commit_artifacts.sh:606`, exit 3 when it cannot) and *report* which scope
+supplied it (`report_identity_scope()`), reading with `--local --get` and writing
+nothing. What carries the identity into the container where rendering is legal is
+`supported_env.sh:430 forward_commit_identity()`, as `--env`.
 
-**What this branch actually carries is not that, and the difference is recorded
-rather than papered over.** The commits here were taken with plain `git commit`
-instead of through that script, so:
+**So no branch carries the local pair, whether or not it went through the
+script** — and this one does not either. The difference is recorded rather than
+papered over:
 
 ```console
 $ git config --local user.email; echo "exit=$?"
@@ -8165,10 +8407,14 @@ act — which is why it has not been done rather than been overlooked.
 The consequence, stated exactly: **R1's substance holds and its mechanism does
 not.** Every commit carries a real, attributable identity, which is what the
 requirement is for; the identity is not recorded in `.git/config`, which is what
-the requirement says. Anyone who needs the local pair should take the next
-checkpoint through `commit_artifacts.sh` in an environment that permits
-`git config --local`, and it will be written there and then. Nothing about the
-committed artifacts depends on it.
+the requirement says. **The remedy is not a re-run**, and an earlier version of
+this paragraph wrongly said it was — taking the next checkpoint through
+`commit_artifacts.sh` would not write the pair either, because the script writes
+no configuration in any scope. Closing R1's mechanism needs a decision this
+implementation cannot take: either a requirement owner grants a scoped exception
+permitting `git config --local user.*` in this checkout, or the AAP is amended to
+record the platform directive as governing. Until then it is an open divergence,
+and it is published as one. Nothing about the committed artifacts depends on it.
 
 
 ### No user-specified rules exist for this project
@@ -9895,10 +10141,15 @@ unverifiable native binary no advisory database describes), and **dropping
 MoviePy altogether** — refused on the plan's authority, which names it as one of
 the five libraries the requirement asks for (§0.5.1) and puts the transition unit
 where it is genuinely load-bearing (§0.7.2.4). What is done instead is isolation,
-and the isolation is now measurable: there are exactly **two** Pillow decodes in
-the pipeline, both over an in-memory buffer restricted to the PNG plugin, both on
-bytes read through a validated descriptor, both under a pre-decode pixel ceiling,
-and both on a PNG this pipeline captured itself.
+and the isolation is now measurable: there are exactly **three** Pillow decodes
+in the pipeline — `open_png` and `open_png_bytes` in `ocr_clock.py`, and the
+frame read in `make_transitions.py` that this same descriptor rewrite created —
+every one of them over an in-memory buffer restricted to the PNG plugin, on
+bytes read through a validated descriptor, under a pre-decode pixel ceiling, and
+on a PNG this pipeline captured itself. *(Corrected: this paragraph said "exactly
+two" while naming, one sentence earlier, the rewrite that added the third.
+`git grep -n 'Image\.open(' playthrough/tooling` outside the suites returns
+`ocr_clock.py:1153`, `ocr_clock.py:1181` and `make_transitions.py:1400`.)*
 
 The trigger remains enforced rather than stated: `env.sh`'s closure checker reads
 MoviePy's declared Pillow bound from installed metadata and **fails** the moment
@@ -9998,9 +10249,12 @@ found and fixed, it is in git history, which is where a change history belongs.
 
 **No behaviour changed in this pass.** No executable statement was edited except
 to delete fifty suppression comments that suppressed nothing, so the tooling's
-own suites are the regression evidence: 3589 tests, `OK (skipped=2)`, the same
-result as before the pass, alongside a clean `flake8 playthrough/`, `bash -n`
-and `shellcheck` over every script.
+own suites were the regression evidence for it: 3589 tests, `OK (skipped=2)`, the
+same result as before the pass, alongside a clean `flake8 playthrough/`, `bash
+-n` and `shellcheck` over every script. *(That figure is this pass's, not the
+tree's current one — the alternate-model review remediation after it added six
+cases, and the count is **3595** today. See the recount beside the per-module
+table.)*
 
 ### The no-cheat group says "no evidence", because that is what it measures
 

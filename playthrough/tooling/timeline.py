@@ -267,8 +267,12 @@ MONTH_NAMES = (
 UNKNOWN_MONTH_NAME = "Cataclysm"
 
 # src/weather.cpp to_string( const weekdays & ), in week order.  Used
-# only as a cross-check: a day count and a weekday step must agree
-# modulo seven, and a disagreement means one of the two was misread.
+# only as a cross-check, and a WEAK one: the weekday and the day of the
+# month are counted from different epochs, so they agree modulo seven
+# for only part of the day.  A one-step lag is the engine's own phase
+# offset and a wider gap is a misread -- weekday_disagreement() draws
+# that line and explains which case it found.  Nothing here decides a
+# day count from a weekday.
 WEEKDAY_NAMES = (
     "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday",
     "Saturday",
@@ -372,6 +376,22 @@ OBSERVATION_FIELD_TYPES: Dict[str, Tuple[type, ...]] = {
     "screen_diff_px": (int,),
     "map_diff_px": (int,),
     "map_diff_box": (str,),
+    # THE STEP'S OWN DECLARATION AND THE QUERY-BOX READING, added to the
+    # row by Session.step after observation_row has built it, so that a
+    # halt leaves a trace in the record instead of only in a terminal.
+    # `expected` is the effect the step declared it wanted,
+    # `expect_modal` the token of the engine query box it declared
+    # (empty when it declared none), `modals` the tokens actually
+    # detected in the captured frame, and `halted` whether the step's
+    # own anomaly rule fired.  They are declared here so the sidecar
+    # validates completely rather than warning about columns nobody
+    # taught this reader about -- NOTHING in this module decides
+    # anything from them.  The day decision reads `date` and
+    # `date_status` and no other column.
+    "expected": (str,),
+    "expect_modal": (str,),
+    "modals": (list,),
+    "halted": (bool,),
 }
 OBSERVATION_KNOWN_FIELDS = frozenset(OBSERVATION_FIELD_TYPES)
 
@@ -864,10 +884,33 @@ def weekday_disagreement(
     current: DateReading,
     days: int,
 ) -> Optional[str]:
-    """Report a weekday that contradicts a day count, or None.
+    """Report a weekday that disagrees with a day count, or None.
 
-    Weekdays advance one per day (src/calendar.cpp day_of_week), so a day count
-    and a weekday step must agree modulo seven.
+    The weekday word and the day-of-month in one sidebar date line are
+    derived from DIFFERENT EPOCHS, so "they agree modulo seven" holds for
+    only part of the day.  This function says which of the two cases it is
+    looking at; it never repairs either reading.
+
+    * ``day_of_week()`` counts whole days from ``calendar::start_of_game``
+      -- ``(to_days<int>(p - start_of_game) + THURSDAY) % 7``
+      (src/calendar.cpp:688-695) -- so a scenario that begins at 08:00
+      turns the weekday over at 08:00.
+    * ``month_and_day()`` counts ``to_days<int>(time_past_new_year(turn))``
+      (src/calendar.cpp:875-893), which turns over at midnight.
+
+    Between midnight and the scenario's start hour the day-of-month has
+    advanced and the weekday has not, so the weekday reads exactly ONE
+    STEP BEHIND the day count.  That is the engine's own phase offset,
+    reported as an explanation: it is NOT evidence that either line was
+    misread, and the shipped record contains one instance of it (a sleep
+    that ended after midnight).  No timing depends on the weekday -- the
+    day count comes from the day-of-month, which is the half that is in
+    phase with the clock.
+
+    Any OTHER disagreement has no such explanation: the two readings
+    cannot both be right, and the message says so plainly.  In both cases
+    the day count is reported exactly as it was read, because repairing a
+    reading is the one thing the honesty rule forbids.
     """
     if previous.weekday is None or current.weekday is None:
         return None
@@ -879,11 +922,33 @@ def weekday_disagreement(
     actual = WEEKDAY_NAMES.index(current.weekday)
     if expected == actual:
         return None
+    behind = (expected - actual) % DAYS_PER_WEEK
+    if behind == 1:
+        return ("the date line went from %r to %r, a step of %d day(s), "
+                "which puts the weekday at %s while the line reads %s "
+                "-- one step behind.  That is the engine's own phase "
+                "offset and not a misread: day_of_week counts days from "
+                "the start of the game (src/calendar.cpp:688-695), so "
+                "it turns over at the scenario's start hour, while "
+                "month_and_day counts from the new year "
+                "(src/calendar.cpp:875-893) and turns over at midnight, "
+                "leaving the weekday one step behind the day of the "
+                "month until the start hour comes round.  No timing "
+                "depends on the weekday, and the day count is reported "
+                "as it was read"
+                % (previous.text, current.text, days,
+                   WEEKDAY_NAMES[expected], current.weekday))
     return ("the date line went from %r to %r, a step of %d day(s), "
-            "but %s is not %d day(s) after %s; one of the two lines "
-            "was misread and the day count is reported as it was read"
-            % (previous.text, current.text, days, current.weekday,
-               days, previous.weekday))
+            "which puts the weekday at %s while the line reads %s -- %d "
+            "steps behind.  The engine's weekday and its day of the "
+            "month are one step out of phase between midnight and the "
+            "scenario's start hour (src/calendar.cpp:688-695, 875-893), "
+            "and %d steps is not that, so the two readings cannot both "
+            "be right and one of them was misread.  The day count is "
+            "reported as it was read, never repaired"
+            % (previous.text, current.text, days,
+               WEEKDAY_NAMES[expected], current.weekday, behind,
+               behind))
 
 
 def normalise_date(value: Any) -> Optional[str]:

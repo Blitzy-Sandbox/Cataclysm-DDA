@@ -3133,10 +3133,45 @@ class RelativeReporting(unittest.TestCase):
             manifest.relative_to_repo("playthrough/manifest.jsonl"),
             os.path.join("playthrough", "manifest.jsonl"))
 
+    def test_the_answer_does_not_depend_on_the_working_directory(self):
+        """A relative input is anchored to the checkout, not to the cwd.
+
+        `repo_root()` is derived from the module's own location while the
+        other half of the comparison used to be `os.path.abspath()`,
+        which anchors to the process working directory.  Run from
+        `playthrough/tooling/`, the case above therefore reported
+        `playthrough/tooling/playthrough/manifest.jsonl` -- a path that
+        does not exist -- and failed.  The two halves now share one
+        anchor, so this asserts the property rather than the symptom:
+        the same input gives the same answer from anywhere.
+        """
+        expected = os.path.join("playthrough", "manifest.jsonl")
+        here = os.getcwd()
+        self.addCleanup(os.chdir, here)
+        for where in (manifest.repo_root(),
+                      os.path.dirname(os.path.abspath(manifest.__file__)),
+                      tempfile.gettempdir()):
+            with self.subTest(cwd=where):
+                os.chdir(where)
+                self.assertEqual(
+                    manifest.relative_to_repo(
+                        "playthrough/manifest.jsonl"),
+                    expected)
+
     def test_an_outside_path_discloses_no_location(self):
         reported = manifest.relative_to_repo("/etc/hostname")
         self.assertNotIn("/etc", reported)
         self.assertTrue(reported.endswith("hostname"))
+
+    def test_an_absolute_path_is_still_resolved_as_given(self):
+        """Anchoring relative inputs did not change absolute ones."""
+        inside = os.path.join(manifest.repo_root(), "playthrough",
+                              "manifest.jsonl")
+        self.assertEqual(
+            manifest.relative_to_repo(inside),
+            os.path.join("playthrough", "manifest.jsonl"))
+        self.assertEqual(
+            manifest.relative_to_repo(manifest.repo_root()), ".")
 
     def test_the_step_payload_carries_no_absolute_path(self):
         # The command line's own contract, read off the source of truth

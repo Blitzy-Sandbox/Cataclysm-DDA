@@ -883,8 +883,10 @@ def assert_decodable_provenance(path: str) -> None:
 
     THE POINT OF THIS CHECK IS THE PIN, NOT THE FILE.  Pillow 11.3.0 is
     pinned because moviepy 2.2.1 declares `pillow<12.0`, and 11.3.0
-    carries published advisories in native decoders that are first fixed
-    in 12.1.1.  The reason that is an acceptable risk is stated in
+    carries published advisories in native decoders, first fixed across
+    12.1.1, 12.2.0 and 12.3.0 -- every one of them out of reach of a
+    stack capped below 12.  The reason that is an acceptable risk, one
+    record at a time and with the surface that shuts each out, is in
     requirements.txt and rests on ONE property: the only images this
     pipeline decodes are PNGs it captured itself, from an X server it
     started, on the machine doing the decoding.  A mode set at creation

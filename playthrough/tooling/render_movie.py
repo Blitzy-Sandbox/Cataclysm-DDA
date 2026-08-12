@@ -199,11 +199,19 @@ except ImportError:
 # a flag somebody will eventually "clean up".
 # ---------------------------------------------------------------------
 
-# The demuxer, and relative-or-absolute entries permitted.  Safe mode
-# rejects an absolute entry outright -- measured: "Unsafe file name
-# '/.../frames/a.png'" -- and the encode list is absolute by
-# construction (see the module docstring), so this is required rather
-# than merely convenient.
+# The demuxer, with safe mode off.  Safe mode accepts only a plain
+# relative name under the list's own directory: it rejects an absolute
+# entry -- measured: "Unsafe file name '/.../frames/a.png'" -- AND it
+# rejects a relative entry containing "..", which is exactly the form
+# this list uses.  The entries are spelled from the list file's own
+# directory (`../frames/...` for a capture, `transitions/...` for a
+# transition frame; see the module docstring), because that is the base
+# the demuxer resolves against and it is the only spelling that means
+# the same thing in every checkout.  So -safe 0 is required rather than
+# merely convenient, and the containment it would have given is
+# supplied instead by resolved_committed_entries, which resolves every
+# entry back from the bytes on disk against that same base and refuses
+# anything outside playthrough/frames/ or playthrough/build/transitions/.
 CONCAT_FORMAT = "concat"
 CONCAT_SAFE = "0"
 

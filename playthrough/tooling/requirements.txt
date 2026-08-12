@@ -28,6 +28,62 @@ numpy==2.5.1  # frame luminance statistics and MoviePy arrays
 # ocr_clock.py holds the same value as PILLOW_MIN_VERSION, and env.sh's
 # closure check FAILS the day a moviepy release lifts that bound, so the
 # justification for the pin cannot quietly become false.
+#
+# THE ADVISORY LEDGER BEHIND THAT ACCEPTED RISK, measured 2026-08-12
+# against 11.3.0.  Fourteen distinct CVE identifiers were established as
+# covering this release; a record count in OSV runs higher, because it
+# carries a GHSA and a PYSEC entry for one and the same CVE.  NOT ONE of
+# the fourteen is reachable here, and the ground is grouped below by the
+# Pillow surface that shuts it out rather than restated per record --
+# because the surface is a property of THIS TREE that a reader can check
+# line by line, and it goes on holding for records published after the
+# date above.
+#
+# (a) Every decoder except PNG: never entered.  All three Image.open
+#     calls pass formats=["PNG"] over an in-memory buffer, so Pillow
+#     loads the PNG plugin alone and no other plugin is ever built
+#     [ocr_clock.py:1153,1181][make_transitions.py:1400].
+#       CVE-2026-25990  PSD out-of-bounds write        fixed 12.1.1
+#       CVE-2026-40192  FITS GZIP decompression bomb   fixed 12.2.0
+#       CVE-2026-42311  PSD memory corruption          fixed 12.2.0
+#       CVE-2026-55380  GD 2.x header bomb             fixed 12.3.0
+#       CVE-2026-59200  PDF FlateDecode zlib bomb      fixed 12.3.0
+#       CVE-2026-59203  EPS byte count, endless loop   fixed 12.3.0
+#       CVE-2026-59204  JPEG2000 tiled scratch buffer  fixed 12.3.0
+#
+# (b) The font compilers: never entered.  The one font call is
+#     ImageFont.truetype() on the attested interface face
+#     [ocr_clock.py:874].  Nothing calls FontFile.compile(), and no PCF
+#     or BDF font is opened anywhere in the tree.
+#       CVE-2026-54059  PCF glyph metrics bomb         fixed 12.3.0
+#       CVE-2026-54060  FontFile.compile() bomb        fixed 12.3.0
+#       CVE-2026-55379  BDF BBX bomb                   fixed 12.3.0
+#
+# (c) The coordinate, filter and colour APIs: never reached with a
+#     value from outside.  The one drawing call has a constant origin,
+#     ImageDraw.Draw(cell).text((0, 0), ...) [ocr_clock.py:1241];
+#     there is no ImagePath, polygon, line, rank filter or ImageCms
+#     anywhere, the only filter being a GaussianBlur of a fixed radius
+#     [ocr_clock.py:2382].  The crop and paste boxes
+#     [ocr_clock.py:1427,2398,2405,2414,2664] are the computed sidebar
+#     rectangle and whole multiples of one row height, taken from the
+#     frame's own dimensions, and open_png sets
+#     Image.MAX_IMAGE_PIXELS to MAX_PIXELS (64 Mpx) before any of them
+#     runs, so no dimension reaches the signed 32-bit edge these need.
+#       CVE-2026-42309  ImagePath/polygon/line write   fixed 12.2.0
+#       CVE-2026-59197  RankFilter expand() overflow   fixed 12.3.0
+#       CVE-2026-59199  paste/crop coordinate write    fixed 12.3.0
+#       CVE-2026-59205  ImageCms apply() mode clash    fixed 12.3.0
+#
+# That enumeration is a dated snapshot and NOT a completeness claim:
+# the same 12.3.0 batch carries CVE-2026-54058 and CVE-2026-59198,
+# whose affected ranges were not established at this measurement, and
+# more will be published.  It changes nothing available to do here.
+# Every fix named above -- 12.1.1, 12.2.0 and 12.3.0 alike -- lies
+# outside moviepy 2.2.1's own `pillow<12.0`, so no pin move can close
+# any of them while this render stack is the declared one.  The
+# ceiling, not the ledger, is what has to lift first, and env.sh's
+# closure check is what fails on the day it does.
 
 # "imageio" is lowercase on purpose: `pip list --format=freeze` prints
 # "ImageIO" from the distribution's declared Name metadata, while the

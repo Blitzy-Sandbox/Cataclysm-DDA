@@ -2927,12 +2927,22 @@ def relative_to_repo(path: str) -> str:
 
     A path outside the checkout is reduced to its basename behind a marker, so
     the line stays honest about the file being elsewhere without naming where.
+
+    A relative input is anchored to the CHECKOUT rather than to the process
+    working directory, for the reason set out beside manifest.relative_to_repo:
+    the checkout is derived from this module's own location, so anchoring the
+    other half to the working directory makes the answer depend on where the
+    caller stood and can produce a path that does not exist.  An absolute
+    input is resolved as given.
     """
     try:
         checkout = repo_root()
     except TransitionError:  # pragma: no cover - defensive
         return os.path.basename(path)
-    resolved = os.path.abspath(path)
+    if os.path.isabs(path):
+        resolved = os.path.abspath(path)
+    else:
+        resolved = os.path.abspath(os.path.join(checkout, path))
     if resolved == checkout:
         return "."
     prefix = checkout + os.sep

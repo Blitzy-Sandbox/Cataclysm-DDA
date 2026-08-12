@@ -705,6 +705,21 @@ def relative_to_repo(path):
     basename with a marker rather than as a traversal, because "../.."
     still discloses depth and an outside path is a fault to notice, not
     a location to publish.
+
+    A RELATIVE INPUT IS ANCHORED TO THE CHECKOUT, NOT TO THE PROCESS
+    WORKING DIRECTORY.  `repo_root()` is derived from this module's own
+    location, so anchoring the other half of the comparison to the
+    working directory made the answer depend on where the caller
+    happened to stand: run from `playthrough/tooling/`, this function
+    reported `playthrough/manifest.jsonl` as
+    `playthrough/tooling/playthrough/manifest.jsonl` -- a path that does
+    not exist -- and a test asserting the honest answer failed for a
+    reason that had nothing to do with what it was measuring.  Every
+    relative path this pipeline passes here is already spelled from the
+    checkout root (README.md makes a repo-root working directory a
+    source-level requirement), so joining it onto the root is what the
+    caller meant in the first place.  An absolute input is resolved as
+    given, which is unchanged.
     """
     if path is None:
         return ""
@@ -714,7 +729,10 @@ def relative_to_repo(path):
     if not text:
         return ""
     base = repo_root()
-    resolved = os.path.realpath(os.path.abspath(text))
+    if os.path.isabs(text):
+        resolved = os.path.realpath(text)
+    else:
+        resolved = os.path.realpath(os.path.join(base, text))
     if resolved == base:
         return "."
     if resolved.startswith(base + os.sep):

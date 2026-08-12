@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # ---------------------------------------------------------------------
 # playthrough/tooling/run_pipeline.sh
 #

@@ -1933,12 +1933,22 @@ def relative_to_repo(path: str) -> str:
     report, and an absolute path there discloses the filesystem layout of the
     host -- the home directory, the operator's name, the build root -- to every
     reader of an artifact that says nothing about them otherwise.
+
+    A relative input is anchored to the CHECKOUT rather than to the process
+    working directory, for the reason set out beside manifest.relative_to_repo:
+    the checkout is derived from this module's own location, so anchoring the
+    other half to the working directory makes the answer depend on where the
+    caller stood and can produce a path that does not exist.  An absolute
+    input is resolved as given.
     """
     try:
         checkout = os.path.dirname(approved_root())
     except TimelineError:  # pragma: no cover - defensive
         return os.path.basename(path)
-    resolved = os.path.abspath(path)
+    if os.path.isabs(path):
+        resolved = os.path.abspath(path)
+    else:
+        resolved = os.path.abspath(os.path.join(checkout, path))
     if resolved == checkout:
         return "."
     prefix = checkout + os.sep

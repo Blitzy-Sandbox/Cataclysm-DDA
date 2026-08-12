@@ -2331,9 +2331,10 @@ class TestTheDecoderIsEnteredUnderConditions(unittest.TestCase):
 
     Pillow 11.3.0 is pinned because moviepy 2.2.1 declares
     ``pillow<12.0``, and 11.3.0 carries published advisories in native
-    decoders first fixed in 12.1.1.  requirements.txt accepts that risk
-    on ONE stated ground: the only images this pipeline decodes are PNGs
-    it captured itself, on the machine doing the decoding.
+    decoders first fixed across 12.1.1, 12.2.0 and 12.3.0 -- all of them
+    above that cap.  requirements.txt enumerates them and accepts the
+    risk on ONE stated ground: the only images this pipeline decodes are
+    PNGs it captured itself, on the machine doing the decoding.
 
     A security review found the ground was not enforced -- 151 frames at
     mode 0666 and 15 directories at 02777, so any local account could

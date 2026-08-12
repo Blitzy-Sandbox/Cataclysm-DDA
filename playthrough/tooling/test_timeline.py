@@ -1571,6 +1571,48 @@ class TestDateParsing(unittest.TestCase):
                                           timeline.DAYS_PER_WEEK),
             msg="seven days on is the same weekday")
 
+    def test_a_one_step_lag_is_explained_and_not_called_a_misread(self):
+        """The engine's own phase offset, named as such.
+
+        `day_of_week` counts whole days from `calendar::start_of_game`
+        (src/calendar.cpp:688-695) and turns over at the scenario's
+        start hour; `month_and_day` counts from the new year
+        (src/calendar.cpp:875-893) and turns over at midnight.  Between
+        midnight and the start hour the weekday reads exactly one step
+        behind the day of the month, which is what the shipped record's
+        own `Thursday, May 20` -> `Thursday, May 21` pair is.  The
+        message used to accuse that evidence of an OCR misread; it must
+        explain the offset instead.
+        """
+        previous = timeline.parse_date_line("Thursday, May 20")
+        current = timeline.parse_date_line("Thursday, May 21")
+        note = timeline.weekday_disagreement(previous, current, 1)
+        self.assertIsNotNone(
+            note, msg="a one-step lag is still reported, not hidden")
+        self.assertIn("one step behind", note)
+        self.assertIn("phase offset", note)
+        self.assertIn("not a misread", note)
+        self.assertNotIn("was misread", note)
+        # And it names both engine functions, so a reader can check the
+        # explanation rather than take it on trust.
+        self.assertIn("day_of_week", note)
+        self.assertIn("month_and_day", note)
+
+    def test_a_wider_gap_is_still_reported_as_a_misread(self):
+        """Only ONE step is explicable by the phase offset.
+
+        Two or more cannot be, so the message must keep saying that the
+        readings disagree -- the correction to the one-step case must not
+        turn every disagreement into an excuse.
+        """
+        previous = timeline.parse_date_line("Thursday, Mar 8")
+        current = timeline.parse_date_line("Wednesday, Mar 9")
+        note = timeline.weekday_disagreement(previous, current, 1)
+        self.assertIsNotNone(note)
+        self.assertIn("misread", note)
+        self.assertIn("cannot both be right", note)
+        self.assertIn("never repaired", note)
+
 
 class TestDateCrossCheck(unittest.TestCase):
     """The day comes from the date line; the clock gives the time.
@@ -2102,6 +2144,59 @@ class TestObservationSidecar(unittest.TestCase):
             set(row) - timeline.OBSERVATION_KNOWN_FIELDS, set(),
             msg=("every column the writer produces has a declared type "
                  "in the reader's copy of the schema"))
+
+    def test_the_step_telemetry_columns_are_known_to_this_reader(self):
+        """The four columns Session.step adds after the row is built.
+
+        `observation_row()` does not carry them -- `Session.step` writes
+        `expected`, `expect_modal`, `modals` and `halted` onto the row it
+        returns -- so the round-trip above cannot see them and the reader
+        warned about a writer it had not been taught about over the
+        pipeline's own committed sidecar.  They are declared now, with
+        their types, and nothing in this module decides anything from
+        them.
+        """
+        for field, kinds in (("expected", (str,)),
+                             ("expect_modal", (str,)),
+                             ("modals", (list,)),
+                             ("halted", (bool,))):
+            with self.subTest(field=field):
+                self.assertIn(field, timeline.OBSERVATION_KNOWN_FIELDS)
+                self.assertEqual(
+                    timeline.OBSERVATION_FIELD_TYPES[field], kinds)
+        path = self.sidecar(json.dumps({
+            "frame": 1,
+            "date": "Thursday, Mar 8",
+            "date_status": "read",
+            "expected": "screen",
+            "expect_modal": "",
+            "modals": [],
+            "halted": False,
+        }) + "\n")
+        # _warn_once reports each condition once per process, so the
+        # ledger is cleared first: another test in this run may already
+        # have spent the key and hidden a warning this one must see.
+        timeline._WARNED.clear()
+        self.addCleanup(timeline._WARNED.clear)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            rows = timeline.load_observations(path, root=self.directory)
+        self.assertEqual(rows[1]["date"], "Thursday, Mar 8")
+        self.assertNotIn(
+            "does not know", err.getvalue(),
+            msg=("a sidecar carrying only declared columns produces no "
+                 "unknown-column warning"))
+
+    def test_a_declared_column_of_the_wrong_type_is_still_refused(self):
+        """Declaring the columns did not stop them being checked."""
+        for text in ('{"frame": 1, "modals": "menu"}\n',
+                     '{"frame": 1, "halted": "yes"}\n',
+                     '{"frame": 1, "expected": 3}\n',
+                     '{"frame": 1, "expect_modal": []}\n'):
+            with self.subTest(text=text):
+                with self.assertRaises(timeline.TimelineError):
+                    timeline.load_observations(
+                        self.sidecar(text), root=self.directory)
 
     def test_blank_lines_are_tolerated(self):
         path = self.sidecar(

@@ -1681,9 +1681,20 @@ MODULES = [
 ]
 PIN = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)==([^\s\\;#]+)")
 
-# The first Pillow release that carries the fix for the advisories the pinned
-# 11.3.0 is exposed to -- CVE-2026-25990 (HIGH) first fixed in 12.1.1, with
-# further records first fixed in 12.2.0 and 12.3.0.
+# The EARLIEST Pillow release carrying a fix for any advisory the pinned
+# 11.3.0 is exposed to.  Fourteen distinct CVE identifiers were established
+# against 11.3.0 on 2026-08-12, across three releases: CVE-2026-25990 (PSD)
+# fixed in 12.1.1; CVE-2026-40192 (FITS bomb), CVE-2026-42309 (ImagePath) and
+# CVE-2026-42311 (PSD) fixed in 12.2.0; and CVE-2026-54059 (PCF),
+# CVE-2026-54060 (FontFile.compile), CVE-2026-55379 (BDF), CVE-2026-55380
+# (GD), CVE-2026-59197 (RankFilter), CVE-2026-59199 (paste/crop),
+# CVE-2026-59200 (PDF), CVE-2026-59203 (EPS), CVE-2026-59204 (JPEG2000) and
+# CVE-2026-59205 (ImageCms) fixed in 12.3.0.  requirements.txt names the
+# Pillow surface that shuts each one out, per record; not one is reachable
+# from this pipeline.  The value below is the EARLIEST of the three on
+# purpose: it is the first release the render stack would have to admit
+# before ANY of those fixes became installable, which is the one thing this
+# check can measure.
 PILLOW_FIRST_FIXED = "12.1.1"
 
 # The bootstrap tools belonging to the interpreter. These are NOT in the lock

@@ -1582,12 +1582,88 @@ hides an operator's mistake behind a run that looks fine.
 | `PLAYTHROUGH_CHECKPOINT_LOCK_TIMEOUT` | 120 s | the same, for a checkpoint |
 | `PLAYTHROUGH_RUNTIME_DIR` | `${XDG_RUNTIME_DIR}/playthrough` | where the locks, logs and the run receipt live. Whatever is nominated goes through the same 0700-and-not-a-symlink verification as the default. |
 | `CLONE_INDEX` | 0 | shifts the display and the runtime directory so parallel clones do not collide |
-| `PLAYTHROUGH_ALLOW_EOL_PLATFORM` | unset | a **registered trust bypass**, not a "make it work" flag (section 4) |
+| `PLAYTHROUGH_RESUME_WORLD` | unset | which world the resume branch continues. With one resumable world it is unnecessary; with several the probe **refuses** rather than guessing, and this is how you answer it. A name that is not a resumable world is refused, and the refusal lists the ones that are |
+| `PLAYTHROUGH_VERIFY_SAMPLES` | 64 | the default for the gate's `--samples`: how many captures have their pixels decoded for the luminance assertion |
+| `PLAYTHROUGH_USE_SUPERVISED_X` | unset (`0`) | use the host's own durable X service instead of starting one. Note what you give up: that service has **no `-auth`**, so the display is not authenticated |
+| `PLAYTHROUGH_REQUIRE_DURABLE_X` | unset (`0`) | refuse a display whose lifetime is only this process tree. Set it when a run must not be able to lose its X server with the shell that started it |
+| `PLAYTHROUGH_COMPILER` | unset — `g++-14` is the sanctioned compiler | which compiler builds the engine. `g++-14` is what this tree is known to build clean under; an unversioned `g++` is deliberately **not** accepted in its place, because a newer GCC's extra `-Werror` diagnostics fail in engine source |
+| `PLAYTHROUGH_MAX_RECORD_TOKEN` | 128 | the ceiling on the length of a single token written into a machine-readable record line |
+| `PLAYTHROUGH_ALLOW_EOL_PLATFORM` | unset | a **registered trust bypass**, not a "make it work" flag — see the table below |
+
+**This table is not exhaustive, and it would be dishonest to imply it were.** It
+covers the variables an operator is most likely to need. The authoritative
+statement of every one is the source that reads it: `tooling/env.sh` for the
+environment contract, the trust state and the record-token ceiling,
+`tooling/launch_game.sh` for the resume branch and the compiler,
+`tooling/verify_artifacts.sh` for the gate's own defaults (its `--help` lists
+them), and `tooling/supported_env.sh` for the container driver. One name that
+appears in neither this table nor the code is worth stating plainly rather than
+leaving to be discovered: **there is no `PLAYTHROUGH_ENCODE_TIMEOUT`.** The
+encode ceiling is a module constant in `tooling/render_movie.py` with no
+environment override, and the only place that name occurs in the tree is a
+defensive environment-clearing list inside a test.
 
 And two command-line switches worth knowing for the same reason:
 `verify_artifacts.sh --samples all` decodes every capture's pixels rather than
 the bounded default spread, and `run_pipeline.sh --rebuild` ignores the run
 receipt and re-runs every planned stage.
+
+### The registered trust bypasses, and the risk each one accepts
+
+There are **seven**, they are the only ones, and `env.sh` names them in
+`PLAYTHROUGH_TRUST_BYPASS_VARS`. Each is off by default and each is *enforced
+rather than deprecated*: setting any one moves `PLAYTHROUGH_TRUST_STATE` to
+`diagnostic`, and under `diagnostic` a production stage **refuses** — the
+launcher will not bring up an instance to be captured, the capturer will not keep
+a frame, the renderer will not encode and the caption mux will not run. A warning
+telling an operator not to record a session is not a control.
+
+The risk sentence beside each one below is the one the tooling itself prints,
+from `playthrough_trust_reason`, so the page and the refusal cannot drift apart.
+
+| Bypass | The risk it accepts, in the tooling's own words |
+| --- | --- |
+| `PLAYTHROUGH_ALLOW_UNVERIFIED_EXECUTABLES` | a tool or interpreter that another account can replace decides every reading in the film |
+| `PLAYTHROUGH_ALLOW_UNAUTHENTICATED_X` | any local account can read the screen being captured and inject keystrokes into the session |
+| `PLAYTHROUGH_ALLOW_UNVERIFIED_TILESET_PACK` | the artwork ingested into `gfx/` came from a path this host cannot vouch for |
+| `PLAYTHROUGH_ALLOW_VULNERABLE_PILLOW` | frames are decoded by a Pillow older than the pinned, reviewed one |
+| `PLAYTHROUGH_ALLOW_ANY_COMPILER` | the binary may have been built by a compiler the project does not sanction |
+| `PLAYTHROUGH_ALLOW_UNSAFE_PATH_ANCESTRY` | a component of the path to this run's own evidence or runtime state can be renamed or replaced by another local account, so a frame, a save or a lock may not be the one this pipeline wrote |
+| `PLAYTHROUGH_ALLOW_EOL_PLATFORM` | the ImageMagick, ffmpeg and Xorg/Xvfb packages that capture, decode and encode every frame receive no further security fixes on this release |
+
+Every bypass in effect is reported by name in the trust state and recorded in the
+acceptance evidence, so a run made under one cannot be mistaken for a run made
+without. The supported route — the digest-pinned container built from
+`tooling/environment/Dockerfile` and driven through `tooling/supported_env.sh` —
+exists so that the last of these never has to be set for production work.
+
+### Why there are no per-tool version floors
+
+A reviewer reasonably asks why nothing refuses, say, an ImageMagick or ffmpeg or
+tesseract older than some minimum. It is a deliberate choice, not an omission,
+and the reasoning is worth having in writing.
+
+A per-tool floor is a number that has to be maintained against upstream, and it
+answers the wrong question. What actually matters is not *which version* a tool
+reports but **whether the tool that runs is the one this host vouches for and
+whether its supplier is still shipping fixes for it** — and both of those are
+already controlled, more coarsely but more honestly:
+
+* **The platform gate** reads the release from `/etc/os-release` against a dated
+  support table and refuses an end-of-life one outright. That covers the whole
+  media stack at once, including the parts a floor would miss, and it cannot go
+  stale silently because the dates are in the table and the refusal is measured
+  rather than warned about. Its escape hatch is a registered bypass, above.
+* **Verified-executable attestation** resolves every tool through a check on the
+  binary and its path before it is run, so a floor's version string could not be
+  trusted anyway if that check were off.
+
+A floor added on top would be a third thing to keep current, would express the
+security property indirectly, and would tempt an operator to satisfy a number
+rather than a supported platform. If a specific tool ever develops a genuine
+behavioural minimum — a flag the pipeline needs that an older release lacks — the
+right response is a floor on **that** capability, asserted where it is used, not
+a table of versions.
 
 ---
 
@@ -2118,15 +2194,17 @@ Standard-library `unittest`, no new framework, discovered from this directory �
 one suite per script, `test_artifacts.py` over the artifact set and
 `test_readme.py` over this page's own commands, 21 in all,
 run against the real scripts rather than against restatements of them, and
-writing only inside their own sandboxes. It takes about thirty-eight minutes. Run
-here on **2026-08-12**, on a host with the tileset installed:
+writing only inside their own sandboxes. It takes about **thirty-eight minutes**
+on an otherwise idle machine, and rather longer on a contended one — treat the
+elapsed figure as a measurement of the host it was taken on rather than as a
+budget. Run here on **2026-08-12**, on a host with the tileset installed:
 
 ```console
 $ . playthrough/tooling/env.sh
 $ "$PLAYTHROUGH_PYTHON" -B -m unittest discover \
       -s playthrough/tooling -p 'test_*.py'
 [...]
-Ran 3589 tests in 2293.168s
+Ran 3595 tests in 2298.195s
 
 OK (skipped=2)
 ```
@@ -2160,7 +2238,7 @@ account of one such divergence, and of what it took to close it honestly, is in
 ```console
 $ "$PLAYTHROUGH_PYTHON" -B playthrough/tooling/test_timeline.py
 [...]
-Ran 383 tests in 14.841s
+Ran 387 tests in 46.739s
 
 OK
 ```
