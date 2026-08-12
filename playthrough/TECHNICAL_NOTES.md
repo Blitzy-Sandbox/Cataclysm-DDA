@@ -218,7 +218,28 @@ survivor and is kept for the engine behaviour it pins down.
 | `playthrough/transcript.srt` | **307** cues, contiguous from 1, the last closing at **00:05:00,500** — the timeline's own total; no cue over 2 lines of 42 columns |
 | `playthrough/transcript.md` | **307** stamped entries, every stamp a cue start |
 | `playthrough/userdir/save/Fairport Harbor/` | **134** tracked files, the live world; no `graveyard/` and no `memorial/` anywhere, because she lived |
-| `playthrough/acceptance-report.txt` | the gate's own verdict set over the tree it measured, published by the `attest` checkpoint. The gate declares **134** checks in all — **119** before a commit and **37** after one — summed from the derivation table beside `GROUP_CHECKS_ALL`, which is the authority on which group holds which. The run-specific passes, failures and divergences are in the published report itself rather than quoted here, for the reason given under *Read this before any count on this page* |
+| `playthrough/acceptance-report.txt` | the gate's own verdict set over the tree it measured, published by the `attest` checkpoint. The gate declares **134** checks in all — **119** before a commit and **37** after one — summed from the derivation table beside `GROUP_CHECKS_ALL`, which is the authority on which group holds which. The run-specific passes, failures and divergences are in the published report itself rather than quoted here, for the reason given under *Read this before any count on this page*. **Its `measuring the tree at HEAD` line names the commit it measured, which is by construction the PARENT of the `attest` commit that carries it** — see the note below |
+
+**The acceptance report always names the commit before the one it travels in, and
+that is not staleness.** Two reviews have now checked the `measuring the tree at
+HEAD` line against `git rev-parse HEAD` and found them different, so the reason
+belongs here rather than being rediscovered a third time. The order is forced:
+`verify_artifacts.sh` measures a tree, and `commit_artifacts.sh attest` is the
+only step permitted to publish what it produced — so the report has to exist
+before the commit that carries it exists, and it can only ever name that commit's
+parent. The same applies one row further down to the evidence-anchor head the
+report quotes: `attest` appends its own generation of seal rows *after* the report
+was written, so the report's head is the pre-`attest` one and the authority for
+the post-`attest` head is the `Playthrough-Evidence-Anchor` trailer on the
+`attest` commit itself.
+
+**What is a real defect, and what the earlier finding actually was**, is a report
+naming a commit that is *not* the parent of the `attest` commit — that means the
+gate was not re-run after the tree changed, and the published verdicts describe
+something other than what shipped. That is what happened before this pass: the
+report named `4b2061fb92` while two later commits had landed. The check to make
+is therefore not "does the report name HEAD" but **"is the commit the report names
+the parent of the commit that published it"**.
 
 ### The survivor, mechanically
 

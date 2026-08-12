@@ -145,7 +145,7 @@ reviewed.
 | `userdir/` | the engine's own tree: `save/<World>/`, `config/`, `achievements/`, `templates/`, `cache/`. Committed. The **save** is the engine's alone and is never edited; the **config** is engine-created and then patched in place by `seed_options.py` (see below) | the game, plus `seed_options.py` for `config/options.json` |
 | `TECHNICAL_NOTES.md` | the engineering log — measurements, pitfalls, divergences | authored |
 | `REPORT.md` | the deliverable account, in exactly three sections: *A) Screen Recording and Animation*, *B) Character Creation*, *C) Playing the Game* | authored |
-| `acceptance-report.txt` | the gate's own verdict set over the tree it measured — committed so a verdict outlives the terminal it was printed at. Only `pass` and `pass-with-divergence` are publishable; `fail` is not | `verify_artifacts.sh` |
+| `acceptance-report.txt` | the gate's own verdict set over the tree it measured — committed so a verdict outlives the terminal it was printed at. Only `pass` and `pass-with-divergence` are publishable; `fail` is not. Its `measuring the tree at HEAD` line names the **parent** of the commit that carries it, necessarily: the gate has to run before the checkpoint that publishes its output can exist. The check worth making is that the two are parent and child, not that the report names `HEAD` | `verify_artifacts.sh` |
 | `README.md` | this page | authored |
 
 Three properties of that set are easy to lose and are therefore stated rather
