@@ -1,6 +1,6 @@
 verify_artifacts.sh -- the acceptance gate for the playthrough capture subsystem
 reading the committed artifacts under playthrough/ at the repository root
-measuring the tree at HEAD d79b9372a3
+measuring the tree at HEAD 4b2061fb92
 
 === 1. the measuring environment ===
 PASS  every command this gate invokes is present, verified and called by its resolved path
@@ -37,6 +37,191 @@ WARN  the host this gate ran on: this release is past end of life; that does not
 PASS  every artifact this gate reads is present and readable
       observed: 12 paths, all of them readable
 
+=== 2. one frame per keystroke ===
+PASS  no keystroke is outstanding -- every key that was delivered became a frame and a row
+      observed: no step journal; every delivered keystroke was carried through to a capture and a row
+PASS  the session ended through the in-game Save & Quit path, and its last keystroke was capturable
+      observed: frame 306 delivered 'S' (press 'S' -- wake to the watch and go straight for the save and quit) and frame 307 confirmed with 'Y' (press 'Y' -- answer yes and close the day out through the door the game keeps for it), which is ACTION_SAVE answered yes -- the engine returned to the main menu with the process alive, so the final frame is a real capture
+PASS  the record parses as one JSON object per line
+      observed: 307 rows
+PASS  every row carries exactly the six documented keys, in order, and no others
+      observed: frame, file, real_ts, ingame_clock, action, commentary
+PASS  every row carries an action and a sentence about it
+      observed: 307 actions and 307 commentaries, none empty
+PASS  no entry is only the key that produced it
+      observed: 307 entr(ies) measured against the effective narration: the record with playthrough/amendments.jsonl applied: each closes as a sentence, each carries at least one word beyond its own keystroke, and no commentary is a single word.  This is the falsifiable half of the requirement; that what the entry adds is a REASON is not machine-decidable and is not claimed here
+INFO  the thinnest entries in the record, for a reader to judge: frame 120 'Marksmanship. No.'; frame 121 'Rifles. No.'; frame 267 'Two more.'; frame 47 'A. Boating.'; frame 48 'Show me.'
+PASS  the record's frame numbers are 1-based and contiguous
+      observed: 1 .. 307
+PASS  every row names its own capture canonically
+      observed: 307 rows match playthrough/frames/frame_%05d.png
+PASS  every row records when its capture was taken, and the record never goes backwards
+      observed: 307 instants from 2026-08-10T21:34:33.000Z to 2026-08-11T02:21:10.000Z, none out of order
+PASS  the record's real-time span is one plausible session
+      observed: 4.777 h from the first capture to the last
+PASS  the timeline's per-frame timestamps are the record's own
+      observed: 307 entries agree with their rows on real_ts and on the clock reading
+PASS  each capture was hashed just after the row that recorded it
+      observed: 307 attestations, every one at or after its row and within 32.8 s of it
+PASS  the captures directory holds captures and nothing else
+      observed: 307 files, every one a frame_NNNNN.png
+PASS  the capture count equals the record's row count -- one frame per keystroke
+      observed: 307 captures == 307 rows == 307 lines
+PASS  capture indices are contiguous from 00001
+      observed: 00001 .. 00307
+PASS  every capture the record names exists on disk
+      observed: 307 referenced files, all present
+INFO  clock readings in the record, by kind (an unreadable clock is honesty, not a fault): exact: 114, not readable (null): 193
+PASS  the acknowledgment ledger is reconciled -- a second reading of a frame names the one it replaces
+      observed: 309 row(s) resolving to 307 standing reading(s); 2 earlier reading(s) explicitly superseded
+PASS  every capture has a standing acknowledgment, the final frame included
+      observed: all 307 captures carry a standing reading, frame 307 included
+PASS  the evidence anchor is a sound hash chain
+      observed: 30 row(s) over 15 artifact(s), chained and re-derived; head 57fc2fa3ded2648e
+PASS  every sealed artifact still hashes to its seal, as sha256 AND as git's own blob name
+      observed: 15 artifact(s) re-hashed and unchanged: amendments.jsonl, build/acknowledgments.jsonl, build/concat.txt, build/frame_dates.jsonl, build/frame_digests.jsonl, build/movie.json, ...; none awaiting a seal
+
+=== 3. the timeline: the floor, the ceiling and the invariant ===
+PASS  the producers' own constants are the ones this gate measures against
+      observed: timeline.py FLOOR=0.25 CEIL=10.0 TRANSITION=1.0; make_transitions.py FRAMES_PER_GROUP=12; render_movie.py DURATION_TOLERANCE=0.12
+PASS  the timeline parses and carries per-frame entries
+      observed: object with a frames array, 307 entries
+PASS  the timeline names the artifacts it was computed from, and they still hash to what it recorded
+      observed: manifest 5b44cad73a5a, 307 row(s) (playthrough/manifest.jsonl); amendments 9e967f5da3eb, 202 row(s) (playthrough/amendments.jsonl); captures 68f76ea8436c, 307 row(s) (playthrough/build/frame_digests.jsonl)
+PASS  every committed capture still hashes to the digest taken when it was captured
+      observed: 307 captures re-hashed and unchanged, byte counts included
+PASS  every capture's digest was verified when the timeline was computed
+      observed: 307 of 307 verified, one per entry
+PASS  the timeline declares the contracted floor, ceiling and transition length
+      observed: floor=0.25 ceil=10.0 transition=1.0
+PASS  the timeline's declared entry count matches its entries
+      observed: 307 entries
+PASS  the timeline has one entry per recorded keystroke -- no zero-delta frame was dropped or merged
+      observed: 307 entries == 307 record rows
+PASS  every on-screen duration is inside the floor and the ceiling
+      observed: 307 entries, all within 0.25 .. 10.0 s
+PASS  every duration is exactly the clamped clock delta
+      observed: 307 entries; the sidebar clock is the only source of pacing
+PASS  no clock delta runs backwards
+      observed: 307 deltas, none negative
+PASS  a transition is flagged exactly where the clock delta exceeded the ceiling
+      observed: 12 flagged of 307 entries: frame(s) 170, 279, 283, 284, 285, 286, ... (6 more)
+PASS  the timeline's declared transition count matches its flags
+      observed: transition_count=12
+PASS  every cue window is exactly as long as its frame is on screen
+      observed: 307 windows
+PASS  the cue cursor is charged for every inserted transition second
+      observed: walked 307 cues to 300.500 s with no drift
+PASS  the timeline invariant holds: sum(durations) + sum(transitions) == total == final cue end
+      observed: 288.500 + 12.000 = 300.500 s, and the final cue ends at 300.500 s
+PASS  the transition directory holds transition images and nothing else
+      observed: 144 images in 12 group(s)
+PASS  one materialised transition group per flagged frame
+      observed: group(s) for frame(s) 170, 279, 283, 284, 285, 286, ... (6 more)
+PASS  each transition group holds its full complement of images
+      observed: 12 group(s) x 12 images
+INFO  clock readings reconciled against the previous frame rather than guessed: 193 of 307 entries
+INFO  where the ceiling engaged: 12 place(s): frame 170 raw_delta=172.0s held at 10.0s, frame 279 raw_delta=337.0s held at 10.0s, frame 283 raw_delta=2167.0s held at 10.0s, frame 284 raw_delta=830.0s held at 10.0s, frame 285 raw_delta=2401.0s held at 10.0s, frame 286 raw_delta=36869.0s held at 10.0s, ... (6 more)
+
+=== 4. the container and the inputs it was built from ===
+PASS  playthrough/cata-play.mp4 carries a h264 video stream
+      observed: codec_name=h264
+PASS  playthrough/cata-play.mp4 is at the X root's own resolution
+      observed: 1920x1080
+PASS  playthrough/cata-play.mp4 uses the broadly playable pixel format
+      observed: pix_fmt=yuv420p
+PASS  the film is as long as the timeline says
+      observed: container 300.560000s against timeline 300.500s (delta 0.060s, tolerance 0.12s)
+PASS  the film holds one encoded frame per still it was built from
+      observed: 452 frames DECODED out of it, from 307 captures + 144 transition images
+PASS  playthrough/cata-play.mp4 carries no audio stream
+      observed: no audio: the session was muted (SOUND_ENABLED=false, SDL_AUDIODRIVER=dummy) and nothing was narrated
+PASS  playthrough/cata-play-cc.mp4 carries no audio stream
+      observed: no audio: the session was muted (SOUND_ENABLED=false, SDL_AUDIODRIVER=dummy) and nothing was narrated
+PASS  playthrough/cata-play.mp4 decodes as many frames as it declares
+      observed: 452 decoded == 452 declared
+PASS  playthrough/cata-play-cc.mp4 decodes as many frames as it declares
+      observed: 452 decoded == 452 declared
+PASS  playthrough/cata-play.mp4 decodes from end to end
+      observed: every packet through the decoder with -xerror, 452 frame(s) decoded, no diagnostic on stderr
+PASS  playthrough/cata-play-cc.mp4 decodes from end to end
+      observed: every packet through the decoder with -xerror, 452 frame(s) decoded, no diagnostic on stderr
+PASS  the concat list is exactly the list this timeline plans
+      observed: 22845 bytes reproduced byte-for-byte by render_movie.plan_render() and format_concat_list() from playthrough/timeline.json
+PASS  the concat list carries one image and one duration per capture and per transition image, in timeline order
+      observed: 451 image/duration pairs, every path and every duration the timeline's own
+PASS  the concat list repeats its final entry, so the last duration takes effect
+      observed: 452 file lines against 451 duration lines; the repeat is ../frames/frame_00307.png
+PASS  the concat list's durations sum to the timeline's own total
+      observed: 300.500000 s over 451 entries against the timeline's 300.500 s
+PASS  every image the concat list names is present and still hashes to its recorded digest
+      observed: 451 distinct images held to a recorded digest -- 307 reused from the sweep in group 3 (captures against build/frame_digests.jsonl), 144 hashed here (transition frames against build/transitions.json)
+PASS  every materialised transition image is the one make_transitions composed
+      observed: 144 image(s) in 12 group(s) re-hashed and unchanged, composed from data/font/Terminus.ttf
+PASS  the concat list is the one the render stage declared
+      observed: playthrough/build/concat.txt: 22845 bytes hashing to ce01bc93ae05d811, exactly as playthrough/build/movie.json declares
+PASS  the film is the one the render stage declared
+      observed: playthrough/cata-play.mp4: 20047349 bytes hashing to 8e3610496ef3a3a2, exactly as playthrough/build/movie.json declares
+PASS  the render manifest describes this timeline and this capture set
+      observed: playthrough/build/movie.json: timeline 0a73bda25cc8, 307 captures, 12 group(s), 300.500 s, 1920x1080
+INFO  the films on disk: playthrough/cata-play.mp4 20047349 bytes, playthrough/cata-play-cc.mp4 20072142 bytes
+
+=== 5. the caption track and the transcripts ===
+PASS  the captioned film carries exactly one subtitle stream
+      observed: 1 subtitle stream
+PASS  the captions are a soft, player-selectable track
+      observed: codec_name=mov_text
+PASS  the caption track declares its language
+      observed: TAG:language=eng
+PASS  playthrough/cata-play-cc.mp4 carries a h264 video stream
+      observed: codec_name=h264
+PASS  playthrough/cata-play-cc.mp4 is at the X root's own resolution
+      observed: 1920x1080
+PASS  playthrough/cata-play-cc.mp4 uses the broadly playable pixel format
+      observed: pix_fmt=yuv420p
+PASS  the captions are not burned into the picture
+      observed: 0 differing pixels at each of 1.000 30.050 150.250 285.475s between playthrough/cata-play-cc.mp4 and playthrough/cata-play.mp4
+PASS  the cue file carries no byte-order mark
+      observed: 28092 bytes
+PASS  every cue is a well formed SubRip block
+      observed: 307 cues, 307 arrows
+PASS  cue sequence numbers are contiguous from 1
+      observed: 1 .. 307
+PASS  every cue carries text
+      observed: 307 cues
+PASS  cue windows advance and never overlap
+      observed: 307 cues
+PASS  the cue count equals the capture count -- one caption per keystroke
+      observed: 307 cues == 307 captures
+PASS  every cue window is the timeline's own window
+      observed: 307 windows agree to within 0.0005 s
+PASS  the last cue ends exactly where the timeline ends
+      observed: 300.500 s
+PASS  the readable record has one stamped entry per capture
+      observed: 307 entries == 307 captures
+PASS  every timestamp in the readable record opens an entry
+      observed: 307 stamps, 307 entries
+PASS  the readable record's sentences are the caption track's
+      observed: 307 entr(ies) equal to the timeline's commentary word for word, and 307 cue(s) equal to those sentences wrapped at 42 columns
+PASS  the readable record's timestamps are the cue starts
+      observed: 307 stamps agree with 307 cue starts
+PASS  the readable record is free of meta and engineering language
+      observed: 617 lines checked against 28 curated concepts
+INFO  the literal meta word list, applied as an advisory (the curated check above is the verdict): no hits
+
+=== 6. the luminance gate -- proof the pixels are real ===
+INFO  the calibration reading behind this threshold: mean=0.270018 std=0.198145 (one real frame, quoted as provenance only)
+PASS  every capture is a real, non-blank image
+      observed: 64 of 307 captures (an even spread including the first and the last; --samples all decodes every one, and the capture stage's own reading below covers all 307) read: each has mean > 0 and std > 0
+PASS  every capture is at the X root's resolution
+      observed: 64 captures at 1920x1080
+PASS  the capture stage recorded a non-blank reading for every frame as it was taken
+      observed: playthrough/build/observations.jsonl: 307 rows, every one recording mean > 0 and std > 0
+PASS  frames taken out of playthrough/cata-play.mp4 are not blank
+      observed: 4 reading(s) across the film -- 1.000s: 0.0122429 0.076262; 30.050s: 0.0154266 0.0893071; 150.250s: 0.212829 0.195042; 285.475s: 0.207371 0.209886
+PASS  frames taken out of playthrough/cata-play-cc.mp4 are not blank
+      observed: 4 reading(s) across the film -- 1.000s: 0.0122429 0.076262; 30.050s: 0.0154266 0.0893071; 150.250s: 0.212829 0.195042; 285.475s: 0.207371 0.209886
+
 === 7. version control -- the save is really committed ===
 PASS  the artifacts live in the working tree of a git repository
       observed: .
@@ -45,7 +230,7 @@ PASS  git's own configuration does not expose this checkout's credential to othe
 DIVERGENCE  git has an identity to commit these artifacts under, and the history agrees with it
       observed: Blitzy Agent <agent@blitzy.com>, resolved from a broader scope than this checkout, and the newest commit touching playthrough is authored by the same identity.  It is NOT repository-local: 'git config --local --get user.name' answers nothing here
       the plan requires: a repository-local pair -- 'git config --local user.name' and 'user.email' set in this checkout's own .git/config, per the plan's sections 0.3.1 and 0.10.2
-      why it stands: the execution environment this record was produced in FIXES the committer identity itself and PROHIBITS running 'git config user.name' or 'user.email' at any scope, so creating the pair the plan asks for would have been a violation rather than a compliance.  The property the plan wanted it FOR does hold and is measured above: an identity resolves, and it is the one the history was committed under.  What does not hold is where it is configured.  This is reported as a divergence rather than a pass because a report that reads as compliance is the defect; it is recorded in playthrough/TECHNICAL_NOTES.md as well
+      why it stands: the execution environment this record was produced in FIXES the committer identity itself and PROHIBITS creating that pair.  Its directive, verbatim: "All git commits must be authored and committed as `Blitzy Agent <agent@blitzy.com>`. Never run `git config user.name`/`user.email`, and never override the author/committer identity."  Setting a repository-local pair means running one of the two commands that sentence forbids, so satisfying the plan here would have been a violation rather than a compliance -- and the two instructions cannot both be obeyed, which is a requirement-level conflict for a human to settle rather than something a run of this gate can close.  The property the plan wanted the pair FOR does hold and is measured above: an identity resolves, and it is the one the history was committed under.  What does not hold is where it is configured.  This is reported as a divergence rather than a pass because a report that reads as compliance is the defect; it is recorded in playthrough/TECHNICAL_NOTES.md as well
 PASS  git's ignore rules exclude none of the artifact classes
       observed: 15 representative paths -- a character save live or buried, master.gsav, worldoptions.json, an engine log, a capture, both films, the cue file, the readable record, the record, the timeline, the concat list, the dossier and the requirements -- of which 15 are re-included by a negation and 0 match no rule at all
 PASS  no interpreter bytecode has been left under playthrough/
@@ -81,10 +266,41 @@ PASS  the lifecycle checkpoints are about the survivor in the tree
       observed: both newest checkpoints record Fairport Harbor / Odette Vachon, the survivor HEAD carries: 'creation' 800ab8e11f then 'final' 555b12b88d
 PASS  the recording in the tree has a checkpoint pair of its own
       observed: Fairport Harbor / Odette Vachon: 'final' 555b12b88d anchored to 'creation' 800ab8e11f, both recording that survivor
-PASS  the evidence anchor's head is published in the history
-      observed: commit d79b9372a3 Remediate the security review of the playthrough capture subsystem declares Playthrough-Evidence-Anchor: 468793a63e813a78, which is the head the anchor ends on
+DIVERGENCE  the evidence anchor's head is published in the history
+      observed: commit 4b2061fb92 Commit the film, the transcripts and the timeline derived from the record declares Playthrough-Evidence-Anchor: 57fc2fa3ded2648e, which is the head the anchor ends on, but 5 required checkpoint(s) publish no head of their own: 800ab8e11f (creation) 7e10721d4e (creation) 555b12b88d (final) 4e8a49879a (final) b0038360c7 (media)
+      the plan requires: a trailer on EACH required checkpoint, so that the seal is contemporaneous with the commit it seals rather than a later statement about it, and the head additionally retained OUTSIDE this repository (a transparency log or a detached signature) so that rewriting the history could not also rewrite its own witness
+      why it stands: those checkpoints were taken BEFORE the anchor mechanism existed, and this pipeline does not rewrite published history -- no rewriting and no force-push (AAP 0.10.2, least privilege over the repository) -- so a commit object that already exists can never acquire a contemporaneous trailer.  The seal that IS present is a true statement about the artifact bytes and NOT a witness to when they were made; closing the gap needs a re-recording taken through the hardened committer, and the external retention needs a network service this offline pipeline does not have
+
+=== 8. no cheating, as a checkable property ===
+PASS  no keybinding exists for any debug action
+      observed: playthrough/userdir/config/keybindings.json does not exist, so nothing was ever bound; the engine ships debug, debug_mode and debug_hour_timer with no bindings array, which leaves them unreachable
+PASS  the engine's own log records no debug-mode activation
+      observed: 1 log(s) read, no mention of debug mode or the debug menu
+PASS  the record itself names no debug or cheat action
+      observed: 5 committed file(s) read -- playthrough/manifest.jsonl playthrough/amendments.jsonl playthrough/timeline.json playthrough/transcript.md playthrough/transcript.srt -- none of them naming a debug action, a spawn, a teleport, god mode, noclip, a map reveal or a stat edit
 
 === 9. the binary, the required artwork and repository hygiene ===
+PASS  the binary that was played is the SDL tiles build
+      observed: Cataclysm Dark Days Ahead: 421659a9cf  +tiles, +sound  data dir: data/ user dir: ./
+PASS  the required tileset is installed and is the one the tracked anchor describes
+      observed: gfx/MShockXotto+ declares NAME: MshockXottoplus / VIEW: MSXotto+, which is the tileset the tracked anchor names (upstream https://github.com/I-am-Erk/CDDA-Tilesets.git at 6e864adbd2c5)
+INFO  the installed artwork against the tracked anchor's bytes: all 22 file(s) and the tree digest match the anchor
+PASS  the committed configuration selects the required tileset
+      observed: playthrough/userdir/config/options.json carries TILES=MshockXottoplus and USE_TILES=true
+PASS  the engine's own log records loading the required tileset
+      observed: playthrough/userdir: Loaded tileset: MshockXottoplus -- written by the engine at capture time, so it describes the recorded session and not this audit
+PASS  the captures were rendered from sprite artwork and not from glyphs
+      observed: capture 00164 holds 2558 distinct colours (8 of 114 in-game captures read, threshold 512; ASCII artwork holds 38 unique colours in total (gfx/ASCIITileset/ASCIITiles.png) against 170808 in gfx/MShockXotto+/tiles.png)
+PASS  the new Python satisfies the repository's own lint contract
+      observed: flake8 playthrough/ reports nothing, under .flake8's own configuration and its default 79-column limit
+PASS  the shared lint configuration was not weakened
+      observed: .flake8 names playthrough nowhere, so the new code passes the existing gate rather than being excluded from it
+PASS  the timeline's own test suite passes
+      observed: Ran 383 tests OK
+PASS  every artifact is a single-linked regular file this account owns, carrying no secret material
+      observed: the tree is sound to stage: provenance and content both hold
+PASS  every security control this record relies on is present, and this report names them
+      observed: 21 control(s): credential containment: the git config carrying the push token is owner-only; git runs no hook on a mutating command; the published commit tree is bound to the validated index; staging provenance: owner, regular file, single link, same device; a secret and credential scan over every path before it is staged; the runtime anchor refuses a group- or world-writable non-sticky ancestor; artifacts are created owner-only and foreign writability is refused; the inherited environment is sanitised before any child runs; one checkout-wide mutation lock, shared for producers and exclusive for the committer; the X server is identified by process identity, socket and cookie digest; a fresh X authority cookie per server generation; values chosen outside this pipeline are held to a record-token grammar; every diagnostic escapes control bytes; the evidence ledgers are hash-chained and anchored to git blob names; journal writes are verified and durability failures propagate; the machine-readable payload cannot be forged by a chosen value; the decoder is entered only on an owner-only regular file; the decode runs under resource limits with core dumps forbidden; the composer checks provenance before MoviePy decodes; the survivor name is held to a conservative grammar rather than escaped; the container is identified by image id and build-inputs digest;
 INFO  the base commit the change surface is measured from: f38c2fbae3 Merge branch 'CleverRaven:master' into master
 PASS  the change surface is only the two ignore files and playthrough/
       observed: 667 changed path(s) since f38c2fbae3, all of them under playthrough/ or one of: .gitignore .gitattributes
@@ -93,20 +309,20 @@ PASS  this gate itself left no interpreter bytecode behind
 
 === 10. the inventory of this report ===
 PASS  this report contains every check this gate declares
-      observed: 37 distinct checks against 37 declared for the 'post-commit' phase, group by group -- every group exactly its declared count
+      observed: 134 distinct checks against 134 declared for the 'all' phase, group by group -- every group exactly its declared count
 
-SUMMARY  36 of 37 checks passed with 1 DIVERGENCE(S) from the plan (37 of 37 declared for the 'post-commit' phase), 7 informational note(s).  Nothing FAILED, but the run does not claim full compliance: each divergence above prints what the plan requires, what was delivered instead, and why it stands.
-VERIFY_PHASE=post-commit
-VERIFY_MEASURED_COMMIT=HEAD d79b9372a3
-VERIFY_CHECKS=37
-VERIFY_EXPECTED_CHECKS=37
-VERIFY_PASSES=36
+SUMMARY  132 of 134 checks passed with 2 DIVERGENCE(S) from the plan (134 of 134 declared for the 'all' phase), 15 informational note(s).  Nothing FAILED, but the run does not claim full compliance: each divergence above prints what the plan requires, what was delivered instead, and why it stands.
+VERIFY_PHASE=all
+VERIFY_MEASURED_COMMIT=HEAD 4b2061fb92
+VERIFY_CHECKS=134
+VERIFY_EXPECTED_CHECKS=134
+VERIFY_PASSES=132
 VERIFY_FAILURES=0
-VERIFY_DIVERGENCES=1
-VERIFY_INFOS=7
-VERIFY_CAPTURES=?
-VERIFY_ROWS=?
-VERIFY_TIMELINE_TOTAL=?
-VERIFY_TRANSITIONS=?
+VERIFY_DIVERGENCES=2
+VERIFY_INFOS=15
+VERIFY_CAPTURES=307
+VERIFY_ROWS=307
+VERIFY_TIMELINE_TOTAL=300.500
+VERIFY_TRANSITIONS=12
 VERIFY_REPORT=<outside the checkout>/acceptance-report.txt
 VERIFY=pass-with-divergence
