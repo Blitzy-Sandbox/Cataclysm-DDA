@@ -154,10 +154,11 @@ NEGATION_LINE = "!/playthrough/**"
 # compressed map archives to content detection rather than to a
 # declaration -- so a sandbox without them is a sandbox in which no
 # checkpoint can be taken, which is the behaviour under test rather than
-# an obstacle to it.  The last row is the whitespace waiver over the
-# engine's own tree, and its position matters: git applies the last
-# matching pattern, so it is written after the suffix rows and asserted
-# not to have disturbed them.
+# an obstacle to it.
+#
+# SIX ROWS, AND NO SEVENTH.  A `playthrough/userdir/** -whitespace`
+# waiver was here as well; a review removed it, because the plan's file
+# schema for .gitattributes permits exactly these six additions.
 SANDBOX_GITATTRIBUTES = (
     "* text=auto\n"
     "*.mp4 binary\n"
@@ -166,7 +167,6 @@ SANDBOX_GITATTRIBUTES = (
     "*.gsav binary\n"
     "*.srt text\n"
     "*.jsonl text\n"
-    "playthrough/userdir/** -whitespace\n"
 )
 
 # The rows a checkpoint requires HEAD to carry, in the spelling it
@@ -178,10 +178,6 @@ REQUIRED_ATTRIBUTE_ROWS = (
     "*.gsav binary",
     "*.srt text",
     "*.jsonl text",
-    # The whitespace waiver over the engine's own tree.  Two files the
-    # game writes end with a blank line, so `git diff --check` reports
-    # them; the bytes are evidence and are not edited to please a linter.
-    "playthrough/userdir/** -whitespace",
 )
 
 # What git must APPLY, per representative artifact, which is a different
@@ -196,10 +192,6 @@ ATTRIBUTE_WITNESSES = (
     ("playthrough/userdir/save/World/master.gsav", "text", "unset"),
     ("playthrough/transcript.srt", "text", "set"),
     ("playthrough/manifest.jsonl", "text", "set"),
-    # The waiver, measured on BOTH sides of its boundary: it has to reach
-    # the engine's tree and it must not reach anything authored here.
-    ("playthrough/userdir/config/debug.log", "whitespace", "unset"),
-    ("playthrough/transcript.md", "whitespace", "unspecified"),
 )
 
 # The final report's three sections, in the order the requirement fixes
@@ -4443,6 +4435,17 @@ class TestSecretMaterialIsRefusedBeforeStaging(CheckpointFixture):
         return self.write(
             os.path.join(self.dir, "userdir", "cache", name), text)
 
+    def planted_path(self, name):
+        """The same location, for a test writing raw BYTES itself.
+
+        The directory is created here rather than by the writer, because
+        the cases that need this are about content a text helper cannot
+        express -- a NUL, a megabyte of noise, a byte offset.
+        """
+        directory = os.path.join(self.dir, "userdir", "cache")
+        os.makedirs(directory, exist_ok=True)
+        return os.path.join(directory, name)
+
     def prepared(self):
         self.write_save()
         self.write_evidence(self.CREATION_ROWS)
@@ -4489,22 +4492,101 @@ class TestSecretMaterialIsRefusedBeforeStaging(CheckpointFixture):
         self.assertEqual(fields["COMMITTED"], "yes")
         self.assertIn("found nothing unaccounted for", output)
 
-    def test_a_binary_capture_is_skipped_rather_than_decoded(self):
-        """The scan is affordable over ten thousand captures because of it.
+    def test_a_credential_behind_a_nul_is_found_not_skipped(self):
+        """The review's second blind spot, closed.
 
-        A PNG's first bytes carry a NUL, so the frames, both films and the
-        engine's binary save files never reach the expressions at all.
+        This scan used to abandon any file whose first bytes carried a
+        NUL, which is every PNG, both films and the engine's binary save
+        files -- so nine bytes after a PNG header was a place to publish a
+        credential while the scan reported that it had found nothing.  A
+        credential in binary content is still printable ASCII, so that is
+        what is required of a match there, and this token is exactly that.
         """
         self.prepared()
-        self.plant("blob.dat", "AKIA" + "IOSFODNN7EXAMPLE\n")
-        # The same bytes with a NUL in front are not text and are skipped,
-        # which is the behaviour being pinned -- not an exemption for
-        # anything whose name ends in .dat.
-        path = os.path.join(self.dir, "userdir", "cache", "blob.dat")
+        path = self.planted_path("blob.dat")
         with open(path, "wb") as handle:
             handle.write(b"\x89PNG\r\n\x1a\n\x00" +
-                         b"AKIA" + b"IOSFODNN7EXAMPLE\n")
+                         b"ghp_" + b"A" * 20 + b"\n")
+        message = self.refuse(EX_SCOPE, ("creation",))
+        self.assertIn("carry secret material", message)
+        self.assertIn("userdir/cache/blob.dat", message)
+        self.assertIn("github-token", message)
+
+    def test_a_credential_past_the_old_window_is_found(self):
+        """The review's first blind spot, closed.
+
+        The scan read the first 262 144 bytes of a file and no more.  This
+        token sits at four hundred kilobytes, which the old scan reported
+        as nothing at all.
+        """
+        self.prepared()
+        path = self.planted_path("big.json")
+        with open(path, "wb") as handle:
+            handle.write(b'{"note": "' + b"n" * 400000 + b'",\n')
+            handle.write(b'"key": "AKIA' + b'IOSFODNN7EXAMPLE"}\n')
+        message = self.refuse(EX_SCOPE, ("creation",))
+        self.assertIn("userdir/cache/big.json", message)
+        self.assertIn("aws-access-key", message)
+
+    def test_a_credential_straddling_a_read_boundary_is_found(self):
+        """Why the stream carries an overlap between its chunks.
+
+        Reading in chunks without one would lose exactly the matches that
+        span a boundary, which is a blind spot with a fixed address --
+        the worst kind.  This token is written across the 1 MiB mark.
+        """
+        self.prepared()
+        path = self.planted_path("edge.json")
+        with open(path, "wb") as handle:
+            handle.write(b"p" * (1048576 - 8))
+            handle.write(b"AKIA" + b"IOSFODNN7EXAMPLE\n")
+        message = self.refuse(EX_SCOPE, ("creation",))
+        self.assertIn("userdir/cache/edge.json", message)
+
+    def test_binary_noise_is_not_reported_as_a_credential(self):
+        """The false positive the printable-ASCII rule exists to stop.
+
+        Compressed bytes are effectively random, and a random stream long
+        enough contains the shape of a URL by arithmetic alone -- so a
+        scan that applied the text rules to binary content unchanged would
+        eventually refuse a checkpoint over a credential nobody wrote,
+        which is the one failure a control like this cannot have.  Two
+        megabytes of a deterministic pseudo-random stream, with a NUL in
+        front of it so it is classified as binary.
+        """
+        self.prepared()
+        state = 88172645463325252
+        block = bytearray()
+        for _ in range(2 * 1024 * 1024):
+            state ^= (state << 13) & 0xFFFFFFFFFFFFFFFF
+            state ^= state >> 7
+            state ^= (state << 17) & 0xFFFFFFFFFFFFFFFF
+            block.append(state & 0xFF)
+        path = self.planted_path("noise.bin")
+        with open(path, "wb") as handle:
+            handle.write(b"\x00" + bytes(block))
         fields, output = self.checkpoint("creation")
+        self.assertEqual(fields["COMMITTED"], "yes")
+        self.assertIn("found nothing unaccounted for", output)
+
+    def test_a_long_run_of_letters_does_not_hang_the_scan(self):
+        """The quadratic backtrack, pinned as a test.
+
+        Every repetition in the rules is bounded, and this is why: the
+        url-credential expression opened with an unbounded class followed
+        by a literal, which over a long run of letters costs one pass per
+        position.  Measured while the scan was extended to whole files --
+        a planted 400 KB run of one letter did not finish in five minutes.
+        A bounded scheme makes it linear, and this file would take minutes
+        without that fix.
+        """
+        self.prepared()
+        path = self.planted_path("run.txt")
+        with open(path, "wb") as handle:
+            handle.write(b"a" * (2 * 1024 * 1024) + b"\n")
+        started = time.monotonic()
+        fields, output = self.checkpoint("creation")
+        self.assertLess(time.monotonic() - started, 120.0)
         self.assertEqual(fields["COMMITTED"], "yes")
         self.assertIn("found nothing unaccounted for", output)
 

@@ -1655,9 +1655,54 @@ class TestTheComposerEntersTheDecoderUnderConditions(TransitionFixture):
                 break
             body.append(line)
         text = "".join(body)
-        self.assertIn("ImageClip(source)", text)
+        # The clips are built from the ARRAYS the verified read produced,
+        # which is what keeps a pathname away from the decoder; the guard
+        # still has to cover the lazy part, so the names are the array
+        # variables rather than the paths.
+        self.assertIn("ImageClip(source_frame)", text)
         self.assertIn("concatenate_videoclips(clips)", text)
         self.assertIn("iter_frames(fps=FPS)", text)
+
+    def test_no_clip_and_no_decoder_is_handed_a_pathname(self):
+        """The check-to-use race, asserted structurally.
+
+        A review found the provenance rule applied with `lstat` while the
+        frame was handed to MoviePy BY NAME, which reopens it and hands it
+        to Pillow -- so the bytes parsed were not the bytes checked.  An
+        `ImageClip(<a path>)` or an `Image.open(<a path>)` anywhere in
+        this module would be that defect returning, so both are asserted
+        against rather than left to a comment.
+        """
+        source = os.path.join(TOOLING, "make_transitions.py")
+        with io.open(source, encoding="utf-8") as handle:
+            lines = handle.readlines()
+        for number, line in enumerate(lines, start=1):
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue
+            with self.subTest(line=number):
+                if "Image.open(" in line:
+                    self.assertIn("Image.open(io.BytesIO(", line)
+                if "ImageClip(" in line and "def " not in line:
+                    self.assertNotIn("ImageClip(source)", line)
+                    self.assertNotIn("ImageClip(target)", line)
+
+    def test_the_verified_read_returns_the_bytes_it_validated(self):
+        """One open, one fstat, one read, and the bytes are the file's."""
+        paths = self.captures(1)
+        with io.open(paths[0], "rb") as handle:
+            expected = handle.read()
+        self.assertEqual(mt.read_verified_frame(paths[0]), expected)
+
+    def test_a_frame_past_the_byte_ceiling_is_refused_unread(self):
+        paths = self.captures(2)
+        with io.open(paths[1], "wb") as handle:
+            handle.write(mt.PNG_MAGIC)
+            handle.truncate(mt.MAX_FRAME_BYTES + 1)
+        os.chmod(paths[1], 0o600)
+        with self.assertRaises(mt.TransitionError) as caught:
+            mt.read_verified_frame(paths[1])
+        self.assertIn("ceiling", str(caught.exception))
 
     @unittest.skipIf(mt.resource is None, "needs POSIX resource limits")
     def test_a_core_dump_is_forbidden_and_cpu_bounded(self):

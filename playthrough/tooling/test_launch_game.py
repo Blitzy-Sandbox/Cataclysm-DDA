@@ -2564,16 +2564,17 @@ class TestTheTilesetResolution(LaunchFixture):
             msg="nothing is resolved when the requirement is unmet")
         joined = " ".join(err.split())
         self.assertIn(
-            "DIAGNOSIS ONLY", joined,
+            "There is no substitute and no switch that would accept "
+            "one", joined,
             msg=("falling back to ASCIITiles would produce a "
                  "plausible film that silently failed the "
-                 "requirement, so the substitution exists only for "
-                 "somebody debugging the pipeline"))
+                 "requirement, and the requirement names one pack, so "
+                 "no code path selects other artwork at all"))
         self.assertIn(
-            "PLAYTHROUGH_ALLOW_TILESET_FALLBACK=1", joined,
-            msg=("and it has to be asked for by name -- a refusal "
-                 "that does not say how to proceed deliberately is a "
-                 "dead end"))
+            "Provision the pack", joined,
+            msg=("a refusal that does not say how to proceed is a "
+                 "dead end: the remedy is to install the pack, and the "
+                 "message says where from and where to"))
         self.assertIn(
             ASCII_ID, err,
             msg=("what IS installed is reported, so the refusal is "
@@ -2671,44 +2672,37 @@ class TestTheTilesetResolution(LaunchFixture):
             msg=("the near-miss is listed in the inventory, so it is "
                  "visibly seen and rejected rather than overlooked"))
 
-    def test_the_substitute_has_to_be_asked_for_by_name(self):
-        """The sanctioned diagnostic path, and its loud announcement.
+    def test_no_switch_can_select_another_tileset(self):
+        """There is no diagnostic path any more, and that is the point.
 
-        A host with no pack can still bring the game up to be looked at,
-        but the run says so on stderr and records origin=fallback, so a
-        diagnostic launch cannot be mistaken for a compliant one.
+        A review found the requirement conflict resolved in favour of
+        MSXotto+ while the losing side was still carried as a switchable
+        branch.  It is gone: with only the checkout's own ASCIITiles
+        installed, every former opt-in changes nothing, because no
+        variable reaches a substitution.
         """
         self.install_tileset("ASCIITileset", ASCII_ID, "ASCII")
         status, out, err = self.run_launch(
-            "tileset", PLAYTHROUGH_ALLOW_TILESET_FALLBACK="1")
-        self.assertEqual(status, EX_OK)
-        emitted = self.emitted(out)
-        self.assertEqual(emitted["PLAYTHROUGH_TILESET_RESOLVED"],
-                         ASCII_ID)
-        self.assertEqual(emitted["PLAYTHROUGH_TILESET_ORIGIN"],
-                         "fallback")
-        self.assertIn("DIAGNOSTIC CONFIGURATION", err)
-        self.assertIn("do not record a session under it", err)
+            "tileset", PLAYTHROUGH_ALLOW_TILESET_FALLBACK="1",
+            PLAYTHROUGH_TILESET_FALLBACK=ASCII_ID)
+        self.assertEqual(
+            status, EX_TILESET,
+            msg="a retired switch must not resolve another tileset")
+        self.assertNotIn("PLAYTHROUGH_TILESET_RESOLVED",
+                         self.emitted(out))
+        self.assertIn("There is no substitute",
+                      " ".join(err.split()))
 
     def test_naming_a_substitute_does_not_authorise_one(self):
-        """$..._TILESET_FALLBACK says WHICH, never WHETHER."""
+        """A tileset that is merely installed is not the required one."""
         self.install_tileset("HouseStyle", "HouseStyle", "House")
         status, _, err = self.run_launch(
             "tileset", PLAYTHROUGH_TILESET_FALLBACK="HouseStyle")
         self.assertEqual(
             status, EX_TILESET,
-            msg=("naming the substitute is not asking for it; only "
-                 "PLAYTHROUGH_ALLOW_TILESET_FALLBACK=1 does that"))
-        self.assertIn("PLAYTHROUGH_ALLOW_TILESET_FALLBACK=1", err)
-
-    def test_a_malformed_fallback_switch_is_refused(self):
-        """Every reading of it that is not 1 is silently 0."""
-        for value in ("yes", "true", "2", "0 "):
-            with self.subTest(value=value):
-                status, _, err = self.run_launch(
-                    "tileset", PLAYTHROUGH_ALLOW_TILESET_FALLBACK=value)
-                self.assertEqual(status, EX_USAGE)
-                self.assertIn("neither 0 nor 1", err)
+            msg=("the retired variable names nothing this launcher "
+                 "reads, and no switch selects other artwork"))
+        self.assertIn("is not installed under gfx/", err)
 
     def test_a_pack_on_an_untrustworthy_path_is_refused(self):
         """The ingestion gate, with the condition arranged.
@@ -2998,22 +2992,20 @@ class TestTheTilesetProvenanceGate(LaunchFixture):
         self.assertIn("tile_config.json", err)
         self.assertNotIn("PLAYTHROUGH_TILESET_RESOLVED", out)
 
-    def test_the_diagnostic_fallback_is_exempt_and_says_so(self):
-        """ASCIITiles is TRACKED, and the run is already diagnostic.
+    def test_the_anchor_has_no_exemption_left_to_apply(self):
+        """It had exactly one, for the fallback, and the fallback is gone.
 
-        PLAYTHROUGH_ALLOW_TILESET_FALLBACK is a registered trust bypass,
-        so capture.sh already refuses to produce a production frame under
-        it; the anchor describes the required MSXotto+ and is not applied
-        to artwork git itself carries.  The exemption is logged.
+        The anchor now covers every tileset this launcher can resolve,
+        unconditionally -- so a checkout holding only its own ASCIITiles
+        resolves nothing at all, whatever is exported.
         """
         self.install_tileset("ASCIITileset", ASCII_ID, "ASCII")
         status, out, err = self.resolve(
             PLAYTHROUGH_ALLOW_TILESET_FALLBACK="1")
-        self.assertEqual(status, EX_OK)
-        self.assertEqual(
-            self.emitted(out)["PLAYTHROUGH_TILESET_ORIGIN"], "fallback")
-        self.assertIn("DIAGNOSTIC", err)
-        self.assertIn("is not applied to it", err)
+        self.assertEqual(status, EX_TILESET)
+        self.assertNotIn("PLAYTHROUGH_TILESET_ORIGIN",
+                         self.emitted(out))
+        self.assertNotIn("is not applied to it", err)
 
     def test_the_tracked_anchor_describes_the_real_installation(self):
         """The shipped anchor, checked against the shipped rules.
@@ -3274,7 +3266,6 @@ class TestTheTrustState(LaunchFixture):
         "PLAYTHROUGH_ALLOW_UNVERIFIED_EXECUTABLES",
         "PLAYTHROUGH_ALLOW_UNAUTHENTICATED_X",
         "PLAYTHROUGH_ALLOW_UNVERIFIED_TILESET_PACK",
-        "PLAYTHROUGH_ALLOW_TILESET_FALLBACK",
         "PLAYTHROUGH_ALLOW_VULNERABLE_PILLOW",
         "PLAYTHROUGH_ALLOW_ANY_COMPILER",
         # ADDED BY A SECURITY REVIEW, and it was right.  The end-of-life
@@ -3341,9 +3332,9 @@ class TestTheTrustState(LaunchFixture):
         status, _, err = self.run_launch(
             "launch", STUB_WINDOW_IDS="",
             PLAYTHROUGH_WINDOW_TIMEOUT="1",
-            PLAYTHROUGH_ALLOW_TILESET_FALLBACK="1")
+            PLAYTHROUGH_ALLOW_UNVERIFIED_TILESET_PACK="1")
         self.assertEqual(status, EX_USAGE)
-        self.assertIn("other than the required MSXotto+", err)
+        self.assertIn("this host cannot vouch for", err)
         self.assertIn("PLAYTHROUGH_CAPTURE_MODE=diagnostic", err)
 
     def test_a_calibration_launch_is_deliberately_exempt(self):
@@ -3359,7 +3350,7 @@ class TestTheTrustState(LaunchFixture):
         status, _, err = self.run_launch(
             "launch", STUB_WINDOW_IDS="",
             PLAYTHROUGH_WINDOW_TIMEOUT="1",
-            PLAYTHROUGH_ALLOW_TILESET_FALLBACK="1")
+            PLAYTHROUGH_ALLOW_UNVERIFIED_TILESET_PACK="1")
         self.assertIn("CALIBRATION LAUNCH", err)
         self.assertNotIn("trust state", err)
 

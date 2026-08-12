@@ -30,11 +30,15 @@ carry, which is exactly why the anchor exists.
 
 | Page | Audience | Holds |
 | --- | --- | --- |
-| `REPORT.md` | anyone arriving for the first time | the deliverable account, in the three mandated sections: the recording and animation, the character creation, and the session itself |
+| `REPORT.md` | anyone arriving for the first time, and any reviewer | the deliverable account in the three mandated sections — the recording and animation, the character creation, and the session itself — with every figure measured and every requirement that is not fully met named in the section it belongs to |
 | `README.md` (this page) | operator | the artifact inventory, the prerequisites, how to re-run each stage, the environment contract, the commit lifecycle, the contracts the gates check |
 | `TECHNICAL_NOTES.md` | engineer | the measurements, the pitfalls, the divergences, and the chronological log of how the record was produced and reviewed |
 | `dossier.md`, `transcript.md` | reader | the survivor's own voice, and nothing about machinery |
-| `REPORT.md` | reviewer | the mandated three-section account of the recording, the character and the session — every figure measured, and every requirement that is not fully met named in the section it belongs to |
+
+(Four pages, four rows. A review found five rows here with `REPORT.md` listed
+twice — once for a first reader and once for a reviewer — which made the heading
+count wrong and implied a document that does not exist. They are the same page
+and the same content, so they are one row.)
 
 This page is a reference; `TECHNICAL_NOTES.md` is a log. Where a fact here has
 an evidence trail longer than a sentence, this page states the fact and names
@@ -55,7 +59,9 @@ result that had all moved on. So counts here name the commit or the date they
 were taken at, a reader is entitled to re-run the command beside them, and
 where this page and `TECHNICAL_NOTES.md` disagree about a number the later
 measurement date wins. Unless a figure says otherwise, the measurements below
-were taken at **`5f902536e8`** on **2026-08-10**.
+were taken on **2026-08-12**, over the working tree whose parent commit is
+**`8873312545`** — working-tree figures rather than figures at a commit, because
+the checkpoint that commits them is taken after this page was written.
 
 ---
 
@@ -73,13 +79,13 @@ f38c2fbae3 Merge branch 'CleverRaven:master' into master
 $ git merge-base --is-ancestor f38c2fbae3 HEAD && echo "branch base"
 branch base
 $ git rev-list --count f38c2fbae3..HEAD
-33
+47
 ```
 
-(That count moves with every commit this feature adds; 32 is what it read at
-`5f902536e8`. The number that matters is not its value but that every one of
-them is under `playthrough/` or one of the two ignore files — section 8
-measures that.)
+(That count moves with every commit this feature adds: it read 32 at
+`5f902536e8`, then 33, and **47** on 2026-08-12. The number that matters is not
+its value but that every one of them is under `playthrough/` or one of the two
+ignore files — section 8 measures that.)
 
 `f38c2fbae3` is the branch base — the last upstream commit before any of this
 work — and the acceptance gate names it as the point the change surface is
@@ -139,11 +145,45 @@ reviewed.
 | `userdir/` | the engine's own tree: `save/<World>/`, `config/`, `achievements/`, `templates/`, `cache/`. Committed. The **save** is the engine's alone and is never edited; the **config** is engine-created and then patched in place by `seed_options.py` (see below) | the game, plus `seed_options.py` for `config/options.json` |
 | `TECHNICAL_NOTES.md` | the engineering log — measurements, pitfalls, divergences | authored |
 | `REPORT.md` | the deliverable account, in exactly three sections: *A) Screen Recording and Animation*, *B) Character Creation*, *C) Playing the Game* | authored |
-| `acceptance-report.txt` | the gate's own passing verdict set over the tree it measured — committed so a verdict outlives the terminal it was printed at | `verify_artifacts.sh` |
+| `acceptance-report.txt` | the gate's own verdict set over the tree it measured — committed so a verdict outlives the terminal it was printed at. Only `pass` and `pass-with-divergence` are publishable; `fail` is not | `verify_artifacts.sh` |
 | `README.md` | this page | authored |
 
-Two properties of that set are easy to lose and are therefore stated rather
+Three properties of that set are easy to lose and are therefore stated rather
 than left to be inferred.
+
+**Six of those paths are additions to the plan's own file inventory, and that is
+disclosed rather than glossed.** The plan (§0.7.1, §0.8.1) lists the frames, the
+manifest, the timeline, `build/concat.txt`, `build/transitions/`, both films, the
+four documents and the userdir. It does **not** list `amendments.jsonl`,
+`build/frame_digests.jsonl`, `build/observations.jsonl`,
+`build/acknowledgments.jsonl`, `build/frame_dates.jsonl` or
+`build/evidence_anchor.jsonl`. Each exists because a review of an earlier
+recording required it, and none of them relaxes anything the plan asked for —
+they are all evidence *about* the artifacts the plan named. A code review asked
+for the one that changes how the record is READ to be stated as a contract rather
+than left to be discovered, so here it is:
+
+* **`amendments.jsonl` is an overlay, and the manifest is never edited.** The
+  record the session wrote stays exactly as written; a correction is a row in the
+  ledger beside it.
+* **Every amendment is bound to the bytes it corrects.** It carries the sha256 of
+  the manifest **line** it concerns and a verbatim copy of the value it replaces.
+* **One amendment per (frame, field), and no more.** A second is refused — *"that
+  is resolved by a human, not by the last line to be written"* — so the effective
+  record has one author and one reading.
+* **`manifest.resolve_rows()` fails closed.** A digest that has moved, a
+  `recorded` value that no longer matches, or a frame the rows do not carry
+  **raises** rather than skipping, because a derivative computed over a partly
+  applied ledger would look correct while the record and the ledger disagreed.
+* **The overlay reaches derivatives only.** The timeline, the captions and the
+  readable transcript are computed from the resolved rows; `verify_manifest()` and
+  the row readers go on reading the raw record, which is what keeps the original
+  readable and the correction auditable.
+* **Both files are committed and both are sealed.** `manifest.jsonl` and
+  `amendments.jsonl` each carry a row in `build/evidence_anchor.jsonl`, so
+  amending after the fact invalidates the seal instead of silently changing the
+  published account. `timeline.json` additionally records the ledger's digest in
+  its own header.
 
 **Frame-directory purity is an integrity constraint, not a preference.**
 `frames/` holds exactly one PNG per keystroke and nothing else. Derived
@@ -164,7 +204,7 @@ every other count still tallied.
 
 ```console
 $ git ls-files playthrough | wc -l
-662
+665
 $ git ls-files playthrough/frames | wc -l
 307
 $ git ls-files playthrough/userdir | wc -l
@@ -723,6 +763,68 @@ reads committed evidence and writes nothing. It treats a **capture-time**
 bypass as a failure — evidence produced under a relaxed check is not evidence —
 and this one as a warning, in its own words: it "says something about the host
 doing the reading rather than about the session that was recorded".
+
+### Which artwork the requirement means
+
+**This is the resolution record.** The specification says two things about
+artwork, and they do not agree. `launch_game.sh`, `seed_options.py`,
+`capture.sh` and the acceptance gate all enforce the answer below and none of
+them restates the reasoning, so this is the one place it is written down.
+
+**The conflict, stated fairly.** One part of the plan is an instruction in the
+imperative: install the CDDA-Tilesets pack and configure **MSXotto+**. Three
+other parts name **`ASCIITiles`**, on the stated grounds that it is the only
+close-range tileset present in the checkout.
+
+**The resolution: MSXotto+ is required, and there is no ASCIITiles path at
+all.** Three reasons, in order of weight:
+
+1. The only text that names a pack **to install** is the imperative one. The
+   `ASCIITiles` statements describe the checkout **before any provisioning** —
+   and a description of the starting state does not override an instruction
+   about what to do to it.
+2. Those statements are premised on nothing being installed, and the plan's own
+   instruction is to install something. Reading them as a decision makes the
+   instruction unreachable, which cannot be the reading that satisfies both.
+3. The tiles-versus-curses hard rule is about the **binary**, not the artwork: a
+   build rendering through the SDL tiles path satisfies it whatever pack is
+   selected, so it cannot stand in for the artwork requirement. The two are
+   separate and both mandatory.
+
+**What the film is: MSXotto+, on the engine's own word.** The committed
+`playthrough/userdir/config/options.json` carries `"TILES":
+"MshockXottoplus"`, and every pixel of terrain, furniture, item and creature art
+in the finished film comes from that pack. `ASCIITiles` is installed in the
+checkout and was **never drawn** — it appears only as `DISTANT_TILES`, which is
+inert because `USE_DISTANT_TILES` is `false`. The id / menu-label / directory
+spellings (`MshockXottoplus`, `MSXotto+`, `MShockXotto+`), the prerequisite
+chain that makes `DISTANT_TILES` inert, and what is tracked versus merely
+installed are all measured in *The tileset: a conflict in the plan, and what
+actually rendered* in `TECHNICAL_NOTES.md`.
+
+**The losing side is not carried as a switch, and a review is why.** It was,
+once: `PLAYTHROUGH_TILESET_FALLBACK` named `ASCIITiles` and
+`PLAYTHROUGH_ALLOW_TILESET_FALLBACK` authorised a substitution, announced on
+stderr and recorded as `origin=fallback`, with the bypass registered so a
+capture launch refused while it was set. A code review made the point plainly:
+a feature whose requirement names one tileset should not ship two artwork
+branches, and a documented conflict with both branches implemented is still a
+conflict. **Both variables, the branch and the bypass registration are now
+removed** — from `env.sh`, `launch_game.sh`, `seed_options.py`,
+`supported_env.sh` and the gate — so `resolve_tileset()` has exactly two
+outcomes: the required pack is installed and reported, or the script exits
+non-zero. There is no code path left that can produce an ASCIITiles session.
+
+**Failing closed is also the safer half.** The checkout ships `ASCIITiles`, so a
+run that quietly fell back to it would still produce a full-length film of a
+genuine SDL tiles session with every count tallying, and the only symptom would
+be ASCII art in the finished film. That is the same shape of failure as a black
+movie, and it gets the same treatment: refuse rather than degrade.
+
+**`PLAYTHROUGH_TILESET` is a diagnostic override, not a production option.**
+Naming anything other than MSXotto+ leaves the artwork requirement unmet, so it
+has to be stated by name; whatever is named is then validated as strictly as the
+required pack and reported as what was used.
 
 ### The required artwork is the one input nothing can hand you
 
@@ -1691,14 +1793,23 @@ never a guess.
 ## 8. Repository integration — the only two pre-existing files that change
 
 ```console
-$ git diff --name-status f38c2fbae3..HEAD -- . ':(exclude)playthrough'
+$ git diff --name-status f38c2fbae3 -- . ':(exclude)playthrough'
 M       .gitattributes
 M       .gitignore
-$ git diff --shortstat f38c2fbae3..HEAD -- .gitignore .gitattributes
- 2 files changed, 44 insertions(+)
+$ git diff --shortstat f38c2fbae3 -- .gitignore .gitattributes
+ 2 files changed, 26 insertions(+)
 ```
 
 Two files, both additive appends, 26 inserted lines, zero deletions.
+
+Every diff in this section is taken against the **working tree** rather than a
+commit range, which is deliberate: it is the form whose answer does not depend
+on whether the checkpoint carrying this page has been taken yet, so a reader who
+runs the command gets the quoted output either way. Adding `..HEAD` gives the
+same answer once the tree is committed and a different one while a review is in
+flight, which is how this section came to claim 44 insertions above a paragraph
+saying 26 — the range was counting a seventh attribute rule and its comment
+block that a review has since removed (below).
 
 ### `.gitignore` — a terminal negation block
 
@@ -1757,17 +1868,18 @@ negation, and the one hygiene risk it leaves* in `TECHNICAL_NOTES.md`; the
 three things standing between that and a committed build product are listed
 there, and none of them is an ignore rule.
 
-### `.gitattributes` — six type rows and one waiver
+### `.gitattributes` — six type rows, and deliberately no seventh
 
 ```console
-$ git diff f38c2fbae3..HEAD -- .gitattributes | grep '^+[^+#]'
+$ git diff f38c2fbae3 -- .gitattributes | grep '^+[^+#]'
 +*.jsonl   text
 +*.srt     text
 +*.gsav    binary
 +*.mp4     binary
 +*.sav     binary
 +*.zzip    binary
-+playthrough/userdir/** -whitespace
+$ git diff --numstat f38c2fbae3 -- .gitattributes
+6	0	.gitattributes
 ```
 
 `*.jsonl` and `*.srt` join the text block [.gitattributes:7-19]; `*.gsav`,
@@ -1776,25 +1888,35 @@ $ git diff f38c2fbae3..HEAD -- .gitattributes | grep '^+[^+#]'
 `*.md`, `*.txt` and `*.json` already covered the narrative and data artifacts.
 The file's own stated rationale is to normalise explicitly rather than rely on
 detection [.gitattributes:5-6], so extending it for new artifact types is the
-treatment it prescribes for itself.
+treatment it prescribes for itself. **Six added lines and nothing removed** — the
+thirty-nine lines that were already there are untouched, which is what the
+`6	0` above says.
 
-**The seventh row is a whitespace waiver, and it is deliberately narrow.**
-Everything under `playthrough/userdir/` is written by the **engine** and is
-committed byte for byte because it is what the session produced. Two of those
-files end with a blank line — the debug log, and the survivor's memorial diary —
-so `git diff --check` reports `new blank line at EOF` against them. The bytes are
-evidence: a memorial rewritten to please a whitespace linter is no longer the
-memorial the game wrote. `-whitespace` suppresses the report while changing
-nothing, and it leaves the `text`/eol handling above in force.
+**There was a seventh row, and a review removed it.** It read
+`playthrough/userdir/** -whitespace`, and it was added so that `git diff --check`
+would stop reporting `new blank line at EOF` against files the **engine** writes
+that way, on the reasoning that a memorial rewritten to please a whitespace
+linter is no longer the memorial the game wrote. That reasoning still holds. What
+did not hold is the authority: the plan's file schema for `.gitattributes`
+permits **exactly** these six additions and no seventh, so the waiver was a
+change to repository-wide configuration made on this feature's own authority.
+Its comment also described the whole of `playthrough/userdir/` as engine-written,
+which is not quite true — `config/options.json` is patched by `seed_options.py`.
 
-Its scope is the engine's tree **alone** — every authored file here, the tooling,
-the transcripts and the reports, is still checked — and because git applies the
-**last** matching pattern, a directory-scoped row placed after the suffix rows is
-exactly the shape that could silently override them. So the committer asks git
-rather than reading the file: it holds one witness path per row through
-`git check-attr`, including one on each side of this waiver's boundary, and it
-asks the same of HEAD's own copy of the rules. `git diff --check` over
-`playthrough/` is clean, with no engine byte edited.
+Nothing was edited to compensate. The engine's bytes are committed exactly as
+they were, and whatever `git diff --check` has to say about them is now **said
+rather than suppressed** — measured over this tree, it says nothing at all, so
+the waiver was covering a report that the current recording does not produce.
+`test_readme.py` asserts that emptiness directly, so a future recording whose
+engine files do end with a blank line surfaces as a finding instead of being
+silenced in advance.
+
+Because git applies the **last** matching pattern, a row added after these six
+that also matched an `.mp4` would silently override it — and with the film left
+to `text`, `git add` would run end-of-line normalisation over an h264 stream. So
+the committer asks git rather than reading the file: it holds one witness path per
+row through `git check-attr`, and it asks the same of HEAD's own copy of the
+rules.
 
 ### What does not change
 
@@ -1943,7 +2065,8 @@ and the dictionary at `tools/spell_checker/dictionary.txt` — which carries
 `playthroughs` at line 5351, the plural only — is not consulted either way. This
 page's correctness therefore rests on the commands written beside its numbers,
 which is why they are written down. Measured across all **35** workflow files in
-`.github/workflows/` at `5f902536e8`.
+`.github/workflows/`, a count unchanged through this remediation because it adds
+none and edits none.
 
 **flake8, at the DEFAULT 79 columns.** `.flake8` excludes only
 `.git,__pycache__,lang/json,tools/clang-tidy-plugin/test/check_clang_tidy.py`
@@ -1995,24 +2118,31 @@ Standard-library `unittest`, no new framework, discovered from this directory �
 one suite per script, `test_artifacts.py` over the artifact set and
 `test_readme.py` over this page's own commands, 21 in all,
 run against the real scripts rather than against restatements of them, and
-writing only inside their own sandboxes. It takes about twenty-two minutes. Run
-here on **2026-08-10**, on a host with the tileset installed:
+writing only inside their own sandboxes. It takes about thirty-eight minutes. Run
+here on **2026-08-12**, on a host with the tileset installed:
 
 ```console
 $ . playthrough/tooling/env.sh
 $ "$PLAYTHROUGH_PYTHON" -B -m unittest discover \
       -s playthrough/tooling -p 'test_*.py'
 [...]
-Ran 3017 tests in 1427.759s
+Ran 3589 tests in 2293.168s
 
-OK (skipped=1)
+OK (skipped=2)
 ```
 
-**One skip, and it is named rather than smoothed.** It is
-`test_tileset_provenance.EveryFailureToReadIsARefusal.test_an_unreadable_file_is_refused`,
-whose own message says why: *running as a user that ignores file modes*. A test
-that removes read permission and expects a refusal cannot assert anything as
-root, so it declines instead of passing vacuously.
+**Both skips are named rather than smoothed, and both decline for the same kind
+of reason — the host cannot present the condition they exist to measure.**
+
+* `test_tileset_provenance.EveryFailureToReadIsARefusal.test_an_unreadable_file_is_refused`,
+  whose own message says why: *running as a user that ignores file modes*. A test
+  that removes read permission and expects a refusal cannot assert anything as
+  root, so it declines instead of passing vacuously.
+* `test_env.TestThePathAncestryGate.test_a_safe_road_reports_nothing`: *this
+  sandbox's own base has an unsafe road, so there is no safe path to measure*. The
+  gate refuses a group- or world-writable non-sticky ancestor, and this host's
+  temporary base has one, so the positive case has nowhere to be demonstrated.
+  Its negative counterparts — the ones that assert the refusal — all run.
 
 The suite that measures this host's artwork rather than the record —
 `test_tileset_provenance`, over the pack installed at `gfx/MShockXotto+` — passes
@@ -2030,7 +2160,7 @@ account of one such divergence, and of what it took to close it honestly, is in
 ```console
 $ "$PLAYTHROUGH_PYTHON" -B playthrough/tooling/test_timeline.py
 [...]
-Ran 374 tests in 2.370s
+Ran 383 tests in 14.841s
 
 OK
 ```
@@ -2298,7 +2428,13 @@ not create merge-conflict surfaces in upstream-synced files** (the root
 over assertion** (`[path:locator]` citations and executed commands throughout,
 with plan figures marked **(plan)**); **make integrity claims auditable** (R12
 discharged against committed artifacts — section 11); and **least privilege
-over the repository** (no history rewriting, no force-push, no global
-configuration written, and the committer confined to a repository-local
-identity when it writes one at all — section 5, which also records what this
-branch's commits actually resolved their identity from).
+over the repository** (no history rewriting, no force-push, and **no git
+configuration written in any scope at all** — the committer resolves the identity
+git would use and reports it, and a repository-local pair that disagrees with it
+is a refusal rather than something to overwrite; section 5 carries the mechanism
+and what this branch's commits actually resolved their identity from). A review
+found this sentence still describing a committer "confined to a repository-local
+identity when it writes one", which is the behaviour that was **removed** — it
+wrote whatever the host had already resolved, which bought persistence rather
+than correctness and let the gate read its own tool's output back as a property
+of the repository.

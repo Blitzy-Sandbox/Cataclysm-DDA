@@ -42,6 +42,9 @@
 #                                         everything -> the commit
 #   8 attest        verify_artifacts.sh --phase post-commit
 #                                         the history -> the gate again
+#   9 publish       commit_artifacts.sh attest
+#                                         the report stage 8 wrote
+#                                           -> the committed attestation
 #
 # The order is forced by real data dependencies, not by taste:
 #
@@ -695,10 +698,18 @@ declare -rA STAGE_SCRIPT=(
 # ---------------------------------------------------------------------
 # WHICH STAGES DERIVE EVIDENCE, AND WHY THE ANSWER IS DECLARED HERE
 #
-# Five of the eight stages WRITE a delivered artifact: the timeline, the
+# Five of the NINE stages WRITE a delivered artifact: the timeline, the
 # transition frames, the film, the transcript pair and the captioned
-# film.  Three do not -- the two gate runs read evidence and write
-# nothing, and the checkpoint publishes what already exists.
+# film.  FOUR do not -- the two gate runs read evidence and write
+# nothing, and the two checkpoints publish what already exists, the
+# `commit` stage the artifacts and the `publish` stage the attestation
+# report the second gate run produced.
+#
+# The count is stated here because the classification below is where a
+# reader looks for it, and a review found it saying "five of the eight"
+# and "three do not" after the ninth stage was added -- true of the
+# pipeline as it was and wrong about the table directly beneath the
+# sentence.  Both tables are and were correct; only the prose lagged.
 #
 # That distinction used to live nowhere, and a review found the cost: the
 # trust state was logged and then acted on only INSIDE the render and the

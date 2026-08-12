@@ -131,7 +131,9 @@ There is no subprocess, no shell and no network surface of any kind.
 """
 
 import argparse
+import errno
 import hashlib
+import io
 import json
 import os
 import re
@@ -379,6 +381,15 @@ PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 # window these captures photograph is 1920x1080 = 2 073 600 pixels, so
 # 64 megapixels is generous by a factor of thirty.
 MAX_PIXELS = 64 * 1024 * 1024
+
+# A hard ceiling on the BYTES one capture may occupy, asked before the
+# file is read into memory at all.  read_verified_frame() reads the whole
+# of a frame it has validated -- that is the point of it -- so a planted
+# enormous file would otherwise be slurped in before anything looked at
+# its header.  DELIBERATELY THE SAME VALUE ocr_clock.py uses, for the
+# same reason the CPU cap below is, and asserted to be by
+# test_make_transitions.py.
+MAX_FRAME_BYTES = 64 * 1024 * 1024
 
 # The CPU budget, in seconds, granted to one composition.
 #
@@ -1239,15 +1250,60 @@ def _assert_decodable_provenance(path: str) -> None:
     set at creation is a fact about the past.  This checks it at the
     moment the bytes reach MoviePy.
 
+    THE CHECK AND THE READ ARE ONE OPERATION NOW.  A later review found
+    the other half of the race: these properties were read with `lstat`
+    and the frame was then handed to MoviePy BY PATHNAME, which reopens
+    it and hands it to Pillow -- so a concurrent writer with this
+    account's uid could substitute another inode in between and the
+    decoder would parse something nothing had validated (CWE-367).
+    read_verified_frame() closes that by opening once with O_NOFOLLOW,
+    asking `fstat` about the descriptor, and returning the bytes read
+    through it; _verified_frame_array() decodes those bytes and the clip
+    is built from the resulting array.  This function is the
+    descriptor-less half, kept public for a caller that wants the
+    question answered about a path it is not about to decode.
+
     :raises TransitionError: naming the property that failed.
     """
+    descriptor = _open_frame_descriptor(path)
     try:
-        info = os.lstat(path)
+        _refuse_undecodable_stat(os.fstat(descriptor), path)
+    finally:
+        os.close(descriptor)
+
+
+def _open_frame_descriptor(path: str) -> int:
+    """Open `path` for reading without following a final symlink.
+
+    O_NOFOLLOW makes "this is not a symlink" a property of the open
+    itself rather than of a preceding stat.  O_NONBLOCK is there because
+    this is the call that would otherwise block forever on a fifo planted
+    under a capture's name; the descriptor is checked for being a regular
+    file immediately afterwards.
+
+    :raises TransitionError: naming what the open refused.
+    """
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    try:
+        return os.open(path, flags)
     except OSError as err:
+        if err.errno in (errno.ELOOP, errno.EMLINK):
+            raise TransitionError(
+                "%s is a symbolic link, so the name checked and the "
+                "bytes decoded are two separate decisions"
+                % path) from err
         raise TransitionError(
             "%s could not be examined before composing: %s"
             % (path, err)) from err
-    if stat.S_ISLNK(info.st_mode):
+
+
+def _refuse_undecodable_stat(info: "os.stat_result", path: str) -> None:
+    """Refuse a stat result that is not a capture this account wrote.
+
+    :raises TransitionError: naming the property that failed.
+    """
+    if stat.S_ISLNK(info.st_mode):              # pragma: no cover
         raise TransitionError(
             "%s is a symbolic link, so the name checked and the bytes "
             "decoded are two separate decisions" % path)
@@ -1267,6 +1323,52 @@ def _assert_decodable_provenance(path: str) -> None:
             "its contents can be replaced between the capture that "
             "wrote it and this composition"
             % (path, stat.S_IMODE(info.st_mode)))
+
+
+def read_verified_frame(path: str) -> bytes:
+    """Return a capture's bytes, validated as they were read.
+
+    One open, one fstat, one read, in that order, so every property the
+    provenance rule asks is asked of the descriptor the bytes came out
+    of.  The counterpart of ocr_clock.read_verified_frame, which carries
+    the full reasoning.
+
+    The size is bounded twice -- against what `fstat` reported and
+    against what was actually read -- because a file being appended to
+    while it is read passes the first and not the second.
+
+    :raises TransitionError: naming the property that failed.
+    """
+    descriptor = _open_frame_descriptor(path)
+    try:
+        info = os.fstat(descriptor)
+        _refuse_undecodable_stat(info, path)
+        if info.st_size > MAX_FRAME_BYTES:
+            raise TransitionError(
+                "%s is %d bytes and the ceiling is %d.  A 1920x1080 "
+                "capture is under two hundred kilobytes, so a file this "
+                "large is not one and is refused before it is read into "
+                "memory" % (path, info.st_size, MAX_FRAME_BYTES))
+        chunks: List[bytes] = []
+        total = 0
+        while True:
+            try:
+                block = os.read(descriptor, 1024 * 1024)
+            except OSError as err:
+                raise TransitionError(
+                    "%s could not be read: %s" % (path, err)) from err
+            if not block:
+                break
+            total += len(block)
+            if total > MAX_FRAME_BYTES:
+                raise TransitionError(
+                    "%s grew past the %d-byte ceiling while it was being "
+                    "read, so it is being written to and is not a "
+                    "finished capture" % (path, MAX_FRAME_BYTES))
+            chunks.append(block)
+    finally:
+        os.close(descriptor)
+    return b"".join(chunks)
 
 
 class decode_limits(object):
@@ -1334,6 +1436,88 @@ class decode_limits(object):
                     pass
         self._saved = []
         return False
+
+
+def _image_size_of(data: bytes, path: str) -> Tuple[int, int]:
+    """Return the (width, height) a PNG's own IHDR chunk declares.
+
+    The bytes-shaped half of :func:`_image_size`, so a frame that has
+    already been read through a verified descriptor is measured from
+    those bytes rather than by opening its name a second time.  Pure
+    Python throughout: no native decoder sees this.
+
+    :raises TransitionError: for anything that is not a PNG whose first
+        chunk is a well-formed IHDR of a plausible size.
+    """
+    signature = PNG_MAGIC
+    if data[:len(signature)] != signature:
+        raise TransitionError(
+            "%s does not begin with the PNG signature (it begins %r).  "
+            "Every frame this module composes from is a PNG written by "
+            "capture.sh; a file carrying another format's content is "
+            "refused rather than handed to whichever native decoder it "
+            "would reach" % (path, data[:len(signature)]))
+    body = data[len(signature):len(signature) + 16]
+    if len(body) < 16 or body[4:8] != b"IHDR":
+        raise TransitionError(
+            "%s does not open with an IHDR chunk, so it is not a PNG "
+            "this pipeline wrote" % path)
+    width = int.from_bytes(body[8:12], "big")
+    height = int.from_bytes(body[12:16], "big")
+    if width <= 0 or height <= 0:
+        raise TransitionError(
+            "%s declares a %dx%d image" % (path, width, height))
+    if width * height > MAX_PIXELS:
+        raise TransitionError(
+            "%s declares %dx%d = %d pixels, past the %d-pixel ceiling"
+            % (path, width, height, width * height, MAX_PIXELS))
+    return width, height
+
+
+def _verified_frame_array(path: str, size: Tuple[int, int]) -> Any:
+    """Return one capture as an RGB array, read and decoded once.
+
+    THE WHOLE OF THE FIX FOR THE DECODE RACE, in one function: the bytes
+    are read through a validated descriptor, the geometry is taken from
+    those same bytes, and the decode is Pillow restricted to the PNG
+    plugin over an in-memory buffer -- so no pathname is handed to a
+    native decoder at any point and nothing can be substituted between
+    the check and the parse.
+
+    The array is what the clip is built from.  MoviePy's ImageClip
+    accepts either a filename or an array and hands a filename to Pillow
+    itself, which would reopen the path and undo the guarantee; an array
+    cannot be reopened.
+
+    :raises TransitionError: naming what failed, from the read, the
+        geometry check or the decode.
+    """
+    _require_numpy()
+    _require_pillow()
+    data = read_verified_frame(path)
+    actual = _image_size_of(data, path)
+    if actual != size:
+        raise TransitionError(
+            "%s is %dx%d, but the film is cut at %dx%d.  A transition "
+            "frame has to match the captures exactly: the encoder is "
+            "told one size, and a mismatched frame would either be "
+            "rescaled or break the concat pass."
+            % (path, actual[0], actual[1], size[0], size[1]))
+    previous = Image.MAX_IMAGE_PIXELS
+    Image.MAX_IMAGE_PIXELS = MAX_PIXELS
+    try:
+        with decode_limits():
+            with Image.open(io.BytesIO(data), formats=["PNG"]) as opened:
+                return np.asarray(opened.convert("RGB"))
+    except Image.DecompressionBombError as err:
+        raise TransitionError(
+            "%s declares more than %d pixels: %s"
+            % (path, MAX_PIXELS, err)) from err
+    except (OSError, ValueError) as err:
+        raise TransitionError(
+            "%s is not a decodable PNG: %s" % (path, err)) from err
+    finally:
+        Image.MAX_IMAGE_PIXELS = previous
 
 
 def _image_size(path: str) -> Tuple[int, int]:
@@ -1606,13 +1790,18 @@ def compose_transition_group(
         current, "the frame being faded out of", root)
     target = _validated_image_path(
         successor, "the frame being faded in to", root)
-    _assert_capture_size(source, geometry)
-    _assert_capture_size(target, geometry)
-    # PROVENANCE BEFORE THE DECODER.  _assert_capture_size reads only the
-    # IHDR header; these two frames are about to be handed to MoviePy,
-    # which hands them to Pillow, which is where the advisories are.
-    _assert_decodable_provenance(source)
-    _assert_decodable_provenance(target)
+    # ONE READ EACH, VALIDATED AS IT IS READ, AND NO PATHNAME REACHES A
+    # DECODER.  This used to be four separate reads of two names -- an
+    # IHDR read for the geometry, an lstat for the provenance, and then
+    # MoviePy reopening each path and handing it to Pillow -- and a
+    # review named the consequence: with a same-uid writer able to
+    # replace the inode in between, the bytes that were parsed were not
+    # the bytes that were checked (CWE-367).  _verified_frame_array does
+    # the read, the geometry check and the format-restricted decode
+    # through one descriptor and returns an array, which cannot be
+    # reopened by anybody.
+    source_frame = _verified_frame_array(source, geometry)
+    target_frame = _verified_frame_array(target, geometry)
 
     paths = group_frame_paths(prefix)
     clips: List[Any] = []
@@ -1626,10 +1815,10 @@ def compose_transition_group(
         # nothing at all.
         with decode_limits():
             clips = [
-                ImageClip(source).with_duration(FADE_SECONDS)
+                ImageClip(source_frame).with_duration(FADE_SECONDS)
                 .with_effects([vfx.FadeOut(FADE_SECONDS)]),
                 title_card(face, geometry, CARD_SECONDS),
-                ImageClip(target).with_duration(FADE_SECONDS)
+                ImageClip(target_frame).with_duration(FADE_SECONDS)
                 .with_effects([vfx.FadeIn(FADE_SECONDS)]),
             ]
             segment = concatenate_videoclips(clips)

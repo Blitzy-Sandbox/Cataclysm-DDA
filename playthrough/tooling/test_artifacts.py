@@ -48,6 +48,11 @@ CROSS-ARTIFACT AGREEMENT and PROVENANCE:
   option values the pipeline depends on; and NO keybinding for any
   debug action.  That turns "no cheating" and the legitimate ending
   from claims into properties a stranger can check.
+* THE PUBLISHED CHAIN.  playthrough/TECHNICAL_NOTES.md names itself the
+  one place the current digests live, and a review found it still
+  publishing a RETIRED record's -- so every row of that table is
+  compared with the bytes on disk here.  A document that describes
+  artifacts nobody shipped is worse than one that describes none.
 
 THIS SUITE MODIFIES NOTHING.  It opens no file for writing, invokes no
 producer that publishes, and takes a size-and-mtime fingerprint of every
@@ -105,6 +110,14 @@ MOVIE_MANIFEST = os.path.join(BUILD_DIR, "movie.json")
 TRANSCRIPT_MANIFEST = os.path.join(BUILD_DIR, "transcript.json")
 MOVIE = os.path.join(PLAYTHROUGH, "cata-play.mp4")
 CAPTIONED_MOVIE = os.path.join(PLAYTHROUGH, "cata-play-cc.mp4")
+
+# The document that publishes those artifacts' digests, and the heading
+# it publishes them under.  Kept beside the artifacts themselves because
+# the table below is a claim ABOUT them.
+NOTES = os.path.join(PLAYTHROUGH, "TECHNICAL_NOTES.md")
+CHAIN_HEADING = "### The shipped derivative chain, as it stands"
+CHAIN_ELISION = "\u2026"
+CHAIN_SPACES = "".join((" ", "\u00a0", "\u202f"))
 
 # The two ISO base media atoms whose ORDER decides whether a player can
 # start on its first request: `moov` is the index, `mdat` is every byte
@@ -1469,6 +1482,107 @@ class TestTheArtifactsAreTracked(ArtifactFixture):
             msg="the last pattern in .gitignore is %r; the playthrough "
                 "negation has to be last or part of this tree is "
                 "silently re-excluded" % patterns[-1])
+
+
+class TestThePublishedChainIsThisChain(ArtifactFixture):
+    """The digests TECHNICAL_NOTES.md publishes are these artifacts'.
+
+    That page carries a layered history on purpose, and one section --
+    *The shipped derivative chain, as it stands* -- is where it tells a
+    reader the CURRENT values live.  A code review found that section
+    still describing a retired 326-frame record while the tree held a
+    307-frame one, which is the failure this class exists to make
+    impossible: regenerate the chain without republishing it and the
+    suite says so, naming the artifact and both digests.
+    """
+
+    @classmethod
+    def published_rows(cls):
+        """Every `| path | digest | bytes |` row under the heading."""
+        if not os.path.isfile(NOTES):
+            raise unittest.SkipTest(
+                "no %s: there is no published chain to compare"
+                % (NOTES,))
+        text = _read_text(NOTES)
+        if CHAIN_HEADING not in text:
+            raise unittest.SkipTest(
+                "%r is not in %s; the section was renamed and this "
+                "comparison needs its new name"
+                % (CHAIN_HEADING, NOTES))
+        section = text.split(CHAIN_HEADING, 1)[1]
+        rows = []
+        for line in section.splitlines():
+            if line.startswith("### "):
+                break
+            if not line.startswith("| `playthrough/"):
+                continue
+            cells = [cell.strip() for cell in line.strip().split("|")]
+            # ['', path, digest, bytes, binding, '']
+            if len(cells) < 5:
+                continue
+            path = cells[1].strip("`")
+            digest = cells[2].strip("`")
+            elided = digest.endswith(CHAIN_ELISION)
+            digest = digest.rstrip(CHAIN_ELISION)
+            # Not str.replace: this module's own restraint check
+            # forbids a `replace` call by name, because os.replace
+            # writes.
+            size = "".join(char for char in cells[3]
+                           if char not in CHAIN_SPACES)
+            rows.append((path, digest, elided, size))
+        return rows
+
+    def test_the_table_has_a_row_for_every_artifact_of_the_chain(self):
+        published = {row[0] for row in self.published_rows()}
+        for path in (MANIFEST, AMENDMENTS, TIMELINE, DIGESTS,
+                     CONCAT_LIST, MOVIE_MANIFEST, TRANSCRIPT_MANIFEST,
+                     MOVIE, CAPTIONED_MOVIE, TRANSCRIPT_SRT,
+                     TRANSCRIPT_MD):
+            relative = os.path.relpath(path, REPO_ROOT)
+            with self.subTest(artifact=relative):
+                self.assertIn(
+                    relative, published,
+                    "%s is part of the derivative chain and the "
+                    "published table does not carry it, so nothing "
+                    "would notice it changing" % (relative,))
+
+    def test_every_published_digest_is_the_file_s_own(self):
+        rows = self.published_rows()
+        self.assertTrue(rows, "the chain table has no rows at all")
+        for path, digest, elided, _ in rows:
+            with self.subTest(artifact=path):
+                absolute = os.path.join(REPO_ROOT, path)
+                self.assertTrue(
+                    os.path.isfile(absolute),
+                    "the table names %s and no such file is here"
+                    % (path,))
+                self.assertTrue(
+                    re.fullmatch("[0-9a-f]+", digest),
+                    "%s carries %r, which is not a hex digest"
+                    % (path, digest))
+                measured = manifest.file_digest(absolute, path)
+                if elided:
+                    self.assertTrue(
+                        measured.startswith(digest),
+                        "%s is published as %s%s and hashes to %s"
+                        % (path, digest, CHAIN_ELISION, measured))
+                else:
+                    self.assertEqual(
+                        measured, digest,
+                        "%s is published as %s and hashes to %s"
+                        % (path, digest, measured))
+
+    def test_every_published_byte_count_is_the_file_s_own(self):
+        for path, _, _, size in self.published_rows():
+            with self.subTest(artifact=path):
+                self.assertTrue(
+                    size.isdigit(),
+                    "%s publishes %r where a byte count belongs"
+                    % (path, size))
+                self.assertEqual(
+                    os.path.getsize(os.path.join(REPO_ROOT, path)),
+                    int(size),
+                    "%s is published at %s bytes" % (path, size))
 
 
 class TestTheSuiteTouchesNothing(unittest.TestCase):

@@ -20,9 +20,9 @@ Timestamps are cumulative video time.
 
 **00:00:02,000** There is a long list here and I already know which one is mine.
 
-**00:00:02,250** M.
+**00:00:02,250** M. I know the word for what happened to me.
 
-**00:00:02,500** I.
+**00:00:02,500** I. It is a short word and it is the true one.
 
 **00:00:02,750** S. Missed. That is the honest word for what happened to me.
 
@@ -34,11 +34,11 @@ Timestamps are cumulative video time.
 
 **00:00:03,750** I know the answer to this one without reading the list.
 
-**00:00:04,000** F.
+**00:00:04,000** F. The same word my father put on his own papers.
 
-**00:00:04,250** I.
+**00:00:04,250** I. Four letters, and they cover my whole life.
 
-**00:00:04,500** S.
+**00:00:04,500** S. Nearly there, and I have never wanted another.
 
 **00:00:04,750** H. Fisher. Thirty-one seasons of it.
 
@@ -50,9 +50,9 @@ Timestamps are cumulative video time.
 
 **00:00:05,750** Two habits I will not pretend about, and both of them are on this page.
 
-**00:00:06,000** N.
+**00:00:06,000** N. Start with the one I am least proud of.
 
-**00:00:06,250** I.
+**00:00:06,250** I. No sense hiding it; it is on my breath.
 
 **00:00:06,500** C. Nicotine. Since I was nineteen.
 
@@ -62,11 +62,11 @@ Timestamps are cumulative video time.
 
 **00:00:07,250** And the other one.
 
-**00:00:07,500** C.
+**00:00:07,500** C. And the other thing I have always run on.
 
-**00:00:07,750** A.
+**00:00:07,750** A. Every galley I worked in had a pot going.
 
-**00:00:08,000** F.
+**00:00:08,000** F. Spell it out and let it stand against me.
 
 **00:00:08,250** Show me both of them.
 
@@ -80,7 +80,7 @@ Timestamps are cumulative video time.
 
 **00:00:09,500** H. Over the top of it, then.
 
-**00:00:09,750** I.
+**00:00:09,750** I. The schooling I never finished.
 
 **00:00:10,000** G. High school.
 
@@ -90,9 +90,9 @@ Timestamps are cumulative video time.
 
 **00:00:10,750** There is one licence on that list I have actually held in my hand.
 
-**00:00:11,000** B.
+**00:00:11,000** B. Now the one piece of paper I did earn.
 
-**00:00:11,250** O.
+**00:00:11,250** O. Nine years of it, and I earned every one.
 
 **00:00:11,500** A. Boating.
 
@@ -122,11 +122,11 @@ Timestamps are cumulative video time.
 
 **00:00:14,750** Start with the thing that will put me on the floor.
 
-**00:00:15,000** B.
+**00:00:15,000** B. Four letters for six years of trouble.
 
-**00:00:15,250** A.
+**00:00:15,250** A. The first thing a doctor ever wrote about me.
 
-**00:00:15,500** C.
+**00:00:15,500** C. No use pretending it will hold out here.
 
 **00:00:15,750** K. My back.
 
@@ -136,11 +136,11 @@ Timestamps are cumulative video time.
 
 **00:00:16,500** And the other thing I have always known about myself.
 
-**00:00:16,750** S.
+**00:00:16,750** S. The other thing thirty-one seasons gave me.
 
-**00:00:17,000** L.
+**00:00:17,000** L. A mercy on the boat and a danger on land.
 
-**00:00:17,250** E.
+**00:00:17,250** E. Better on the page than a surprise later.
 
 **00:00:17,500** E again.
 
@@ -152,15 +152,15 @@ Timestamps are cumulative video time.
 
 **00:00:18,500** One more honest thing, and then the other column.
 
-**00:00:18,750** A.
+**00:00:18,750** A. The word my mother's family never said aloud.
 
-**00:00:19,000** D.
+**00:00:19,000** D. Say it plainly, the way she never could.
 
 **00:00:19,250** D again.
 
-**00:00:19,500** I.
+**00:00:19,500** I. Halfway through a word I have watched do damage.
 
-**00:00:19,750** C.
+**00:00:19,750** C. Two letters left and no excuse ready.
 
 **00:00:20,000** T. It runs straight down my mother's side of the family.
 
@@ -172,13 +172,13 @@ Timestamps are cumulative video time.
 
 **00:00:21,000** Now what is right with me. There are fewer, and I will not pad the list.
 
-**00:00:21,250** T.
+**00:00:21,250** T. Something in my favour, for once.
 
-**00:00:21,500** O.
+**00:00:21,500** O. It is not modesty; there are only three.
 
-**00:00:21,750** U.
+**00:00:21,750** U. Thirty-one seasons put this one into me.
 
-**00:00:22,000** G.
+**00:00:22,000** G. One letter short of the only boast I make.
 
 **00:00:22,250** H. I do not break easily.
 
@@ -186,13 +186,13 @@ Timestamps are cumulative video time.
 
 **00:00:22,750** Thrown against a gunwale in February and back at work by the afternoon.
 
-**00:00:23,000** Next.
+**00:00:23,000** Ask it again. There is one more that is true.
 
-**00:00:23,250** S.
+**00:00:23,250** S. The one nobody believes until they sail with me.
 
-**00:00:23,500** T.
+**00:00:23,500** T. Bait boxes, three-day chowder, and never once ill.
 
-**00:00:23,750** O.
+**00:00:23,750** O. Not a boast, only thirty-one years of proof.
 
 **00:00:24,000** M. My stomach.
 
@@ -206,11 +206,11 @@ Timestamps are cumulative video time.
 
 **00:00:25,250** One more, and it is the one people always get wrong about me.
 
-**00:00:25,500** P.
+**00:00:25,500** P. Everything I own has one place it goes.
 
-**00:00:25,750** A.
+**00:00:25,750** A. That is what a small boat teaches you.
 
-**00:00:26,000** C.
+**00:00:26,000** C. My back will still charge me for it.
 
 **00:00:26,250** K. What I can carry.
 
@@ -288,7 +288,7 @@ Timestamps are cumulative video time.
 
 **00:00:35,500** Fifty-two years, and most of them wet.
 
-**00:00:35,750** Five.
+**00:00:35,750** Five. Whatever it guessed, this is the true number.
 
 **00:00:36,000** Two. Fifty-two.
 
@@ -296,13 +296,13 @@ Timestamps are cumulative video time.
 
 **00:00:36,500** They ought to know what to call me.
 
-**00:00:36,750** O.
+**00:00:36,750** O. The name my mother chose, and I will spell it whole.
 
-**00:00:37,000** D.
+**00:00:37,000** D. Slowly, the way she used to say it.
 
-**00:00:37,250** E.
+**00:00:37,250** E. Three letters in and it already sounds like her.
 
-**00:00:37,500** T.
+**00:00:37,500** T. Halfway. It is a long name for a deck hand.
 
 **00:00:37,750** T again.
 
@@ -310,15 +310,15 @@ Timestamps are cumulative video time.
 
 **00:00:38,250** And his name after mine.
 
-**00:00:38,500** V.
+**00:00:38,500** V. The name that came down from my grandfather.
 
-**00:00:38,750** A.
+**00:00:38,750** A. Six letters, and two countries inside them.
 
-**00:00:39,000** C.
+**00:00:39,000** C. I have never shortened it for anybody's convenience.
 
-**00:00:39,250** H.
+**00:00:39,250** H. My father wore this name on his licence too.
 
-**00:00:39,500** O.
+**00:00:39,500** O. One letter left, and then I am somebody again.
 
 **00:00:39,750** N. Vachon. My grandfather brought it down from Riviere-du-Loup in a duffel bag.
 
@@ -450,9 +450,9 @@ Timestamps are cumulative video time.
 
 **00:01:37,250** South. Off the tarmac, over the kerb, into the green.
 
-**00:01:38,250** South. Off the tarmac, over the kerb, into the green.
+**00:01:38,250** South again. The green is where the food is, if any is.
 
-**00:01:39,250** South. Off the tarmac, over the kerb, into the green.
+**00:01:39,250** And again. My back would rather walk than stand still.
 
 **00:01:40,250** The kerb, and then real ground. A leafy thing four paces down.
 

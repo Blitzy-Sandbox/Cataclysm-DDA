@@ -117,9 +117,9 @@ THE EIGHT VALUES, AND THE REASON FOR EACH
         pack is missing this module refuses rather than quietly writing
         the ``ASCIITiles`` that ship with the checkout, because that
         would record the session in the wrong tileset while every other
-        check still passed.  ``--allow-tileset-fallback`` (or
-        ``$PLAYTHROUGH_ALLOW_TILESET_FALLBACK=1``) is the deliberate
-        opt-in for a diagnostic run.
+        check still passed.  There is no opt-in and no switch: the
+        requirement names one pack, so an absent pack is a refusal
+        that says how to install it.
     ``TERMINAL_X = "240"`` and ``TERMINAL_Y = "67"``
         Ranges 80-960 and 24-270, defaults 80 and 24
         [src/options.cpp:2408-2416].  240x67 is what the engine
@@ -349,8 +349,9 @@ BOOL_FALSE = "false"
 # "MSXotto+" declares NAME: MshockXottoplus, and that id -- not the
 # display name -- is what goes into options.json.
 #
-# There is deliberately no fallback.  The requirement is to install the
-# CDDA-Tilesets pack and configure MSXotto+, and the checkout's own
+# There is deliberately no fallback -- not a defaulted-off one, not a
+# switchable one, none.  The requirement is to install the CDDA-Tilesets
+# pack and configure MSXotto+, and the checkout's own
 # ASCIITiles [gfx/ASCIITileset/tileset.txt:3] would satisfy nothing
 # except the appearance of it: the game would render, every frame would
 # be a real capture, every count would tally, and the requirement would
@@ -369,14 +370,6 @@ BOOL_FALSE = "false"
 TILESET_REQUIRED = "MshockXottoplus"
 TILESET_REQUIRED_ALIASES = (
     "MshockXottoplus", "MSXotto+", "MShockXotto+")
-
-# The checkout's own tileset -- the one that is always present, because
-# .gitignore:52 negates gfx/ASCIITileset -- and DIAGNOSTIC ONLY.  It is
-# NAMED here and defaulted from $PLAYTHROUGH_TILESET_FALLBACK, but
-# naming it authorises nothing: _fallback_allowed() has to say yes
-# first, and only an explicit --allow-tileset-fallback or
-# $PLAYTHROUGH_ALLOW_TILESET_FALLBACK=1 makes it do so.
-TILESET_FALLBACK = "ASCIITiles"
 
 # PATH_INFO::tileset_conf() [src/path_info.cpp:432-435].
 TILESET_CONF = "tileset.txt"
@@ -412,15 +405,6 @@ ENV_TILESET = "PLAYTHROUGH_TILESET"
 # of acceptable alternatives.  Whitespace-separated, as a shell
 # variable has to be.
 ENV_TILESET_ALIASES = "PLAYTHROUGH_TILESET_ALIASES"
-# env.sh -- the checkout's own tileset, and DIAGNOSTIC ONLY.
-# Nothing here consults it unless the substitution is asked for by
-# name through the opt-in below.
-ENV_TILESET_FALLBACK = "PLAYTHROUGH_TILESET_FALLBACK"
-# The one opt-in that lets a tileset other than MSXotto+ be
-# written; launch_game.sh reads the same variable, so a single
-# setting governs the whole pipeline -- and both stages announce
-# themselves on stderr when it is set.
-ENV_ALLOW_TILESET_FALLBACK = "PLAYTHROUGH_ALLOW_TILESET_FALLBACK"
 # Emitted by launch_game.sh on its KEY=value stdout channel
 # [playthrough/tooling/launch_game.sh, resolve_tileset]; consumed
 # here as a HINT
@@ -540,18 +524,16 @@ class Tileset:
 class TilesetChoice:
     """The resolved tileset, with the reason it was chosen.
 
-    ``origin`` is ``requested`` when a caller named the tileset,
-    ``required`` when the pipeline's own required pack was resolved,
-    and ``fallback`` when a deliberately allowed substitute was used.
-    The distinction is worth recording in
+    ``origin`` is ``requested`` when a caller named the tileset and
+    ``required`` when the pipeline's own required pack was resolved --
+    two values, because those are the only two ways a tileset can be
+    chosen here.  The distinction is still worth recording in
     ``playthrough/TECHNICAL_NOTES.md``: a run that used an
-    operator-nominated tileset, or that fell back to the checkout's
-    own ``ASCIITiles`` because the MSXotto+ pack was not installed, is
-    a materially different run from one that used the required pack.
-    ``fallback`` is why the third value exists at all, and it is
-    reachable only deliberately, through
-    ``--allow-tileset-fallback`` -- without that, an unavailable
-    required tileset raises instead of resolving.
+    operator-nominated spelling of the pack is worth telling apart from
+    one that resolved the pack by its own id.  There was a third value,
+    ``fallback``, for a deliberately allowed ASCIITiles substitution;
+    the requirement names one pack, so that branch is gone rather than
+    merely defaulted off.
     """
 
     tileset: Tileset
@@ -1564,29 +1546,11 @@ def _is_required(tileset: Tileset, wanted: str) -> bool:
     return tileset.ident in names or tileset.view in names
 
 
-def _fallback_allowed(explicit: Optional[bool] = None) -> bool:
-    """True when the ASCII fallback tileset may be written.
-
-    ``False`` unless the caller says otherwise, because the pipeline's
-    requirement names the MSXotto+ pack specifically.  The opt-in is
-    the ``allow_fallback`` argument, ``--allow-tileset-fallback`` on
-    the command line, or ``$PLAYTHROUGH_ALLOW_TILESET_FALLBACK=1`` --
-    the same variable ``launch_game.sh`` reads, so one setting governs
-    the whole pipeline.  Note what is NOT an opt-in:
-    ``$PLAYTHROUGH_TILESET_FALLBACK`` only NAMES the substitute, and
-    setting it alone changes nothing.
-    """
-    if explicit is not None:
-        return bool(explicit)
-    return os.environ.get(ENV_ALLOW_TILESET_FALLBACK, "") == "1"
-
-
 def resolve_tileset(
     root: Optional[str] = None,
     requested: Optional[str] = None,
     required: Optional[str] = None,
     tilesets: Optional[Sequence[Tileset]] = None,
-    allow_fallback: Optional[bool] = None,
 ) -> TilesetChoice:
     """Resolve the ONE tileset this pipeline is allowed to write.
 
@@ -1596,61 +1560,51 @@ def resolve_tileset(
        ``$PLAYTHROUGH_TILESET_RESOLVED`` as emitted by
        ``launch_game.sh``.  It is treated as a HINT and validated
        independently: the launcher and this module must agree, and if
-       they do not, the installed set decides.
+       they do not, the installed set decides.  A hint naming anything
+       but the required pack is REFUSED.
     2. ``required`` -- the MSXotto+ pack, asked for by every name it
        goes by, defaulting to ``$PLAYTHROUGH_TILESET``
        [playthrough/tooling/env.sh].
-    3. ``fallback`` -- the checkout's own ``ASCIITiles``, defaulting to
-       ``$PLAYTHROUGH_TILESET_FALLBACK``
-       [playthrough/tooling/env.sh] -- and ONLY when the caller
-       has explicitly allowed it.
 
-    STEP 3 IS OPT-IN, AND OFF BY DEFAULT.  The requirement is not
-    "some tileset": the game must be configured to use MSXotto+.
-    Quietly writing ``ASCIITiles`` instead produced a run that looked
-    entirely successful -- every count tallied, every frame was
-    captured -- while recording a session in the wrong tileset, which
-    is precisely the kind of silent substitution this pipeline is built
-    to refuse.  ``launch_game.sh`` hydrates the pack from its
-    pre-placed copy before this module runs, so reaching step 3 at all
-    means the pack is genuinely unavailable; the remedy is to install
-    it with ``playthrough/tooling/launch_game.sh tileset``, not to
-    substitute for it.  When the substitution IS asked for by name it
-    is recorded in the report's notes and on stderr, so a diagnostic
-    run cannot be mistaken for a compliant one.
+    THERE IS NO THIRD STEP, AND NO SWITCH THAT ADDS ONE.  The
+    requirement is not "some tileset": the game must be configured to
+    use MSXotto+.  An opt-in ASCIITiles substitution used to live here,
+    off by default and announced when taken, and a review was right that
+    a feature whose requirement names one pack should not carry the
+    losing side of that requirement as a code path at all.  Quietly
+    writing ``ASCIITiles`` produced a run that looked entirely
+    successful -- every count tallied, every frame captured -- while
+    recording a session in the wrong artwork, and the only symptom was
+    the artwork itself.  ``launch_game.sh`` hydrates the pack from its
+    pre-placed copy before this module runs, so an absent pack means the
+    pack is genuinely unavailable; the remedy is to install it with
+    ``playthrough/tooling/launch_game.sh tileset``.  The resolution of
+    the plan's two artwork statements is recorded once, in
+    playthrough/README.md ("Which artwork the requirement means").
 
-    :param allow_fallback: ``True`` to accept the ASCII fallback,
-        ``False`` to refuse it, ``None`` to read
-        ``$PLAYTHROUGH_ALLOW_TILESET_FALLBACK``.
-    :raises SeedError: when the hint is not installed, when the
-        required tileset is not installed and the fallback has not been
-        allowed, and when nothing usable is installed at all.  Writing
-        an id that is not installed would leave the game with a tileset
-        it cannot load, and claiming otherwise in the run's notes would
-        be a fabrication.
+    :raises SeedError: when the hint is not installed, when the hint is
+        not the required pack, and when the required tileset is not
+        installed.  Writing an id that is not installed would leave the
+        game with a tileset it cannot load, and claiming otherwise in
+        the run's notes would be a fabrication.
     """
     available = (list(tilesets) if tilesets is not None
                  else discover_tilesets(root))
     installed = tuple(item.ident for item in available)
     wanted = required or os.environ.get(ENV_TILESET) or TILESET_REQUIRED
-    fallback = (os.environ.get(ENV_TILESET_FALLBACK) or
-                TILESET_FALLBACK)
     hint = requested or os.environ.get(ENV_TILESET_RESOLVED) or ""
 
     if hint:
         match = _match_tileset(available, hint)
         if match is not None:
-            if not _is_required(match, wanted) and \
-                    not _fallback_allowed(allow_fallback):
+            if not _is_required(match, wanted):
                 raise SeedError(
                     f"'{hint}' was requested, but it is not the "
-                    f"required '{wanted}' (MSXotto+) and the "
-                    f"substitution was not allowed.  Recording the "
+                    f"required '{wanted}' (MSXotto+).  Recording the "
                     f"session in another tileset while every check "
                     f"passed is exactly the silent substitution this "
-                    f"module refuses: pass --allow-tileset-fallback or "
-                    f"set ${ENV_ALLOW_TILESET_FALLBACK}=1 to ask for "
-                    f"it deliberately")
+                    f"module refuses, and there is no switch that "
+                    f"permits it: the requirement names one pack")
             return TilesetChoice(
                 tileset=match,
                 origin="requested",
@@ -1677,47 +1631,19 @@ def resolve_tileset(
                     f"{match.directory} (matched on '{alias}')"),
                 installed=installed)
 
-    if not _fallback_allowed(allow_fallback):
-        raise SeedError(
-            f"the required tileset '{wanted}' (MSXotto+) is not "
-            f"installed, so there is nothing honest to write to "
-            f"{OPT_TILES}.  Installed ids: "
-            f"{', '.join(installed) or '(none)'}.  Run "
-            f"'playthrough/tooling/launch_game.sh tileset' to hydrate "
-            f"it from the pre-placed pack (gfx/ is git-ignored by "
-            f".gitignore:52, so installing it changes nothing "
-            f"tracked).  Ids come from the NAME: field of each "
-            f"gfx/*/tileset.txt, never from the directory name.  "
-            f"Falling back to '{fallback}' would render a plausible "
-            f"film while failing the requirement to configure "
-            f"MSXotto+, with no symptom but the artwork, so it is "
-            f"refused unless it is asked for explicitly: pass "
-            f"--allow-tileset-fallback or set "
-            f"${ENV_ALLOW_TILESET_FALLBACK}=1 for a diagnostic run")
-
-    match = _match_tileset(available, fallback)
-    if match is not None:
-        return TilesetChoice(
-            tileset=match,
-            origin="fallback",
-            reason=(
-                f"the required tileset ({wanted}) is not installed and "
-                f"the fallback was explicitly allowed, so the "
-                f"checkout's own {match.ident} is used instead -- this "
-                f"is a DIAGNOSTIC configuration and does not satisfy "
-                f"the requirement"),
-            installed=installed)
-
     raise SeedError(
-        f"the required tileset '{wanted}' is not installed, and there "
-        f"is deliberately no fallback: a run that quietly used the "
-        f"checkout's own ASCIITiles would render a plausible film "
+        f"the required tileset '{wanted}' (MSXotto+) is not installed, "
+        f"so there is nothing honest to write to {OPT_TILES}, and "
+        f"there is deliberately no fallback: a run that quietly used "
+        f"the checkout's own ASCIITiles would render a plausible film "
         f"while failing the requirement to configure MSXotto+, with "
         f"no symptom but the artwork.  Installed ids: "
         f"{', '.join(installed) or '(none)'}.  Run "
         f"'playthrough/tooling/launch_game.sh tileset' to hydrate it "
-        f"from the pre-placed pack.  Ids come from the NAME: field of "
-        f"each gfx/*/tileset.txt, never from the directory name")
+        f"from the pre-placed pack (gfx/ is git-ignored by "
+        f".gitignore:52, so installing it changes nothing tracked).  "
+        f"Ids come from the NAME: field of each gfx/*/tileset.txt, "
+        f"never from the directory name")
 
 
 # ---------------------------------------------------------------------
@@ -2139,7 +2065,6 @@ def patch(
     resolve_tiles: bool = True,
     worlds: str = WORLDS_AUTO,
     dry_run: bool = False,
-    allow_tileset_fallback: Optional[bool] = None,
 ) -> SeedReport:
     """Seed the pipeline's option values into ``path``, in place.
 
@@ -2170,10 +2095,6 @@ def patch(
         ``worldoptions.json`` -- ``"auto"`` reports but does not touch
         it, ``"patch"`` edits it, ``"skip"`` ignores it entirely.
     :param dry_run: compute and report everything, write nothing.
-    :param allow_tileset_fallback: ``True`` to accept a tileset other
-        than MSXotto+, ``False`` to refuse one, ``None`` to read
-        ``$PLAYTHROUGH_ALLOW_TILESET_FALLBACK``.  Refused by default:
-        see :func:`resolve_tileset`.
 
     ``24_HOUR``, ``SOUND_ENABLED`` and ``USE_TILES`` are deliberately
     NOT parameters.  There is no legitimate configuration of this
@@ -2220,14 +2141,11 @@ def patch(
     # Resolve the tileset before anything is mutated, so that an
     # unresolvable tileset leaves the file completely untouched.
     if resolve_tiles:
-        report.tileset = resolve_tileset(
-            root=root, requested=tileset,
-            allow_fallback=allow_tileset_fallback)
+        report.tileset = resolve_tileset(root=root, requested=tileset)
         if report.tileset.origin != "required":
-            # An operator-nominated tileset, and a deliberately allowed
-            # fallback, are both deviations from the required pack, so
-            # each is recorded in the report's notes rather than merely
-            # logged.
+            # An operator-nominated spelling of the pack is worth
+            # recording in the report's notes rather than merely being
+            # logged, because it is a different route to the same id.
             _note(report.tileset.reason, notes)
         else:
             LOG.debug("tileset: %s", report.tileset.reason)
@@ -2839,7 +2757,6 @@ def verify(
     point_pools: Optional[str] = None,
     world_compression: Optional[bool] = None,
     require_installed: bool = True,
-    allow_tileset_fallback: Optional[bool] = None,
 ) -> Dict[str, str]:
     """Read the options file back and assert every seeded value.
 
@@ -2848,15 +2765,12 @@ def verify(
         which is the stronger check of the two whenever ``gfx/`` is
         reachable.
     :param require_installed: when ``True``, the stored ``TILES`` value
-        must name an installed tileset AND, unless the fallback is
-        allowed, must be the MSXotto+ pack the run requires.  Set
-        ``False`` only when verifying a copy of the file away from a
-        ``gfx/`` tree.  CALL-SITE ONLY: :func:`build_parser` exposes no
-        flag that sets it, so every command-line verification -- and so
-        every production verification -- makes the strong check.
-    :param allow_tileset_fallback: ``True`` to accept a stored tileset
-        other than MSXotto+, ``None`` to read
-        ``$PLAYTHROUGH_ALLOW_TILESET_FALLBACK``.
+        must name an installed tileset AND must be the MSXotto+ pack the
+        run requires.  Set ``False`` only when verifying a copy of the
+        file away from a ``gfx/`` tree.  CALL-SITE ONLY:
+        :func:`build_parser` exposes no flag that sets it, so every
+        command-line verification -- and so every production
+        verification -- makes the strong check.
     :returns: the observed values of every seeded option.
     :raises SeedError: listing every mismatch found, so one run
         reports all of them rather than one at a time.
@@ -3064,22 +2978,21 @@ def verify(
                 f"{OPT_TILES} is {stored_tiles!r}, which is not "
                 f"installed; installed ids: "
                 f"{', '.join(installed) or '(none)'}")
-        elif not _fallback_allowed(allow_tileset_fallback):
+        else:
             # Installed is not the same as required.  The run has to be
             # recorded in MSXotto+, so a stored id that is merely
             # present -- ASCIITiles, say -- is reported here rather
             # than passing verification and being discovered in the
-            # finished movie.
+            # finished movie.  There is no switch that accepts one.
             match = _match_tileset(available, stored_tiles)
             wanted = os.environ.get(ENV_TILESET) or TILESET_REQUIRED
             if match is not None and not _is_required(match, wanted):
                 problems.append(
                     f"{OPT_TILES} is {stored_tiles!r}, but the run "
                     f"requires {wanted!r} (MSXotto+).  Install it with "
-                    f"`playthrough/tooling/launch_game.sh tileset`, or "
-                    f"pass --allow-tileset-fallback / set "
-                    f"${ENV_ALLOW_TILESET_FALLBACK}=1 to accept "
-                    f"another tileset deliberately")
+                    f"`playthrough/tooling/launch_game.sh tileset`; "
+                    f"there is deliberately no option that accepts "
+                    f"another tileset")
 
     if problems:
         raise SeedError(
@@ -3162,18 +3075,12 @@ def build_parser() -> argparse.ArgumentParser:
     # rules against a copy of an options file on a host with no gfx/
     # tree.  argparse cannot produce either of them, so no command line
     # -- and therefore no pipeline stage -- can reach the relaxed
-    # behaviour.  The one sanctioned way to record a session in another
-    # tileset is --allow-tileset-fallback, which announces itself in
-    # the report and on stderr.
-    parser.add_argument(
-        "--allow-tileset-fallback", dest="allow_tileset_fallback",
-        action="store_true", default=None,
-        help=f"accept a tileset other than '{TILESET_REQUIRED}' "
-             f"(MSXotto+) -- for instance the checkout's own "
-             f"'{TILESET_FALLBACK}'.  Refused by default, because the "
-             f"run is required to be recorded in MSXotto+ and a silent "
-             f"substitution would pass every other check.  Equivalent "
-             f"to ${ENV_ALLOW_TILESET_FALLBACK}=1")
+    # behaviour.  AND THERE IS NO FLAG THAT ACCEPTS ANOTHER TILESET.
+    # There was one, --allow-tileset-fallback, off by default and
+    # announced when used; the requirement names one pack, so the flag,
+    # the environment variable behind it and the branch they reached are
+    # all gone.  An operator who wants a different tileset installs it
+    # and names it with --tileset, which is validated just as strictly.
     parser.add_argument(
         "--terminal-x", type=int, metavar="N",
         default=TERMINAL_X_WANTED,
@@ -3318,9 +3225,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 args.repo_root)
             # require_installed is not passed and not exposed: every
             # command-line path takes the default True, so verification
-            # always asserts that TILES names an INSTALLED tileset and,
-            # unless the fallback was deliberately allowed, that it is
-            # the MSXotto+ pack the run requires.
+            # always asserts that TILES names an INSTALLED tileset and
+            # that it is the MSXotto+ pack the run requires.
             observed = verify(
                 path,
                 root=args.repo_root,
@@ -3328,8 +3234,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 terminal_x=args.terminal_x,
                 terminal_y=args.terminal_y,
                 point_pools=args.point_pools,
-                world_compression=args.world_compression,
-                allow_tileset_fallback=args.allow_tileset_fallback)
+                world_compression=args.world_compression)
             report = SeedReport(path=os.path.abspath(path))
             report.already.extend(sorted(observed))
             report.notes.append(
@@ -3347,8 +3252,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 point_pools=args.point_pools,
                 world_compression=args.world_compression,
                 worlds=args.worlds,
-                dry_run=args.dry_run,
-                allow_tileset_fallback=args.allow_tileset_fallback)
+                dry_run=args.dry_run)
             if args.dry_run:
                 # A dry run must not assert values it deliberately did
                 # not write; it reports what the file actually holds
@@ -3363,9 +3267,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     terminal_x=args.terminal_x,
                     terminal_y=args.terminal_y,
                     point_pools=args.point_pools,
-                    world_compression=args.world_compression,
-                    allow_tileset_fallback=(
-                        args.allow_tileset_fallback))
+                    world_compression=args.world_compression)
     except SeedError as err:
         LOG.error("%s", err)
         return 1

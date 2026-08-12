@@ -7,9 +7,9 @@
   },
   "amendments": {
     "path": "playthrough/amendments.jsonl",
-    "sha256": "757206e63e4ae5ad418d4c9030ffc16f0eddc8c783c9292f92cc8320d994d4ee",
-    "rows": 156,
-    "applied": 156
+    "sha256": "9e967f5da3ebf66a4db6bcfb39a2caff37921958af3473edbb9b78fbf25783dc",
+    "rows": 202,
+    "applied": 202
   },
   "captures": {
     "path": "playthrough/build/frame_digests.jsonl",
@@ -239,8 +239,8 @@
       "cue_start": 2.25,
       "cue_end": 2.5,
       "action": "press 'm' -- begin spelling the start I am looking for",
-      "commentary": "M.",
-      "amended": false
+      "commentary": "M. I know the word for what happened to me.",
+      "amended": true
     },
     {
       "frame": 11,
@@ -260,8 +260,8 @@
       "cue_start": 2.5,
       "cue_end": 2.75,
       "action": "press 'i' -- keep spelling it",
-      "commentary": "I.",
-      "amended": false
+      "commentary": "I. It is a short word and it is the true one.",
+      "amended": true
     },
     {
       "frame": 12,
@@ -386,8 +386,8 @@
       "cue_start": 4.0,
       "cue_end": 4.25,
       "action": "press 'f' -- begin spelling my trade",
-      "commentary": "F.",
-      "amended": false
+      "commentary": "F. The same word my father put on his own papers.",
+      "amended": true
     },
     {
       "frame": 18,
@@ -407,8 +407,8 @@
       "cue_start": 4.25,
       "cue_end": 4.5,
       "action": "press 'i' -- keep spelling it",
-      "commentary": "I.",
-      "amended": false
+      "commentary": "I. Four letters, and they cover my whole life.",
+      "amended": true
     },
     {
       "frame": 19,
@@ -428,8 +428,8 @@
       "cue_start": 4.5,
       "cue_end": 4.75,
       "action": "press 's' -- keep spelling it",
-      "commentary": "S.",
-      "amended": false
+      "commentary": "S. Nearly there, and I have never wanted another.",
+      "amended": true
     },
     {
       "frame": 20,
@@ -554,8 +554,8 @@
       "cue_start": 6.0,
       "cue_end": 6.25,
       "action": "press 'n' -- begin spelling the first of them",
-      "commentary": "N.",
-      "amended": false
+      "commentary": "N. Start with the one I am least proud of.",
+      "amended": true
     },
     {
       "frame": 26,
@@ -575,8 +575,8 @@
       "cue_start": 6.25,
       "cue_end": 6.5,
       "action": "press 'i' -- keep spelling it",
-      "commentary": "I.",
-      "amended": false
+      "commentary": "I. No sense hiding it; it is on my breath.",
+      "amended": true
     },
     {
       "frame": 27,
@@ -680,8 +680,8 @@
       "cue_start": 7.5,
       "cue_end": 7.75,
       "action": "press 'c' -- begin spelling it",
-      "commentary": "C.",
-      "amended": false
+      "commentary": "C. And the other thing I have always run on.",
+      "amended": true
     },
     {
       "frame": 32,
@@ -701,8 +701,8 @@
       "cue_start": 7.75,
       "cue_end": 8.0,
       "action": "press 'a' -- keep spelling it",
-      "commentary": "A.",
-      "amended": false
+      "commentary": "A. Every galley I worked in had a pot going.",
+      "amended": true
     },
     {
       "frame": 33,
@@ -722,8 +722,8 @@
       "cue_start": 8.0,
       "cue_end": 8.25,
       "action": "press 'f' -- keep spelling it",
-      "commentary": "F.",
-      "amended": false
+      "commentary": "F. Spell it out and let it stand against me.",
+      "amended": true
     },
     {
       "frame": 34,
@@ -869,8 +869,8 @@
       "cue_start": 9.75,
       "cue_end": 10.0,
       "action": "press 'i' -- keep spelling it",
-      "commentary": "I.",
-      "amended": false
+      "commentary": "I. The schooling I never finished.",
+      "amended": true
     },
     {
       "frame": 41,
@@ -974,8 +974,8 @@
       "cue_start": 11.0,
       "cue_end": 11.25,
       "action": "press 'b' -- type over what the box is holding",
-      "commentary": "B.",
-      "amended": false
+      "commentary": "B. Now the one piece of paper I did earn.",
+      "amended": true
     },
     {
       "frame": 46,
@@ -995,8 +995,8 @@
       "cue_start": 11.25,
       "cue_end": 11.5,
       "action": "press 'o' -- keep spelling it",
-      "commentary": "O.",
-      "amended": false
+      "commentary": "O. Nine years of it, and I earned every one.",
+      "amended": true
     },
     {
       "frame": 47,
@@ -1310,8 +1310,8 @@
       "cue_start": 15.0,
       "cue_end": 15.25,
       "action": "press 'b' -- begin spelling the first honest thing",
-      "commentary": "B.",
-      "amended": false
+      "commentary": "B. Four letters for six years of trouble.",
+      "amended": true
     },
     {
       "frame": 62,
@@ -1331,8 +1331,8 @@
       "cue_start": 15.25,
       "cue_end": 15.5,
       "action": "press 'a' -- keep spelling it",
-      "commentary": "A.",
-      "amended": false
+      "commentary": "A. The first thing a doctor ever wrote about me.",
+      "amended": true
     },
     {
       "frame": 63,
@@ -1352,8 +1352,8 @@
       "cue_start": 15.5,
       "cue_end": 15.75,
       "action": "press 'c' -- keep spelling it",
-      "commentary": "C.",
-      "amended": false
+      "commentary": "C. No use pretending it will hold out here.",
+      "amended": true
     },
     {
       "frame": 64,
@@ -1457,8 +1457,8 @@
       "cue_start": 16.75,
       "cue_end": 17.0,
       "action": "press 's' -- type over the old search",
-      "commentary": "S.",
-      "amended": false
+      "commentary": "S. The other thing thirty-one seasons gave me.",
+      "amended": true
     },
     {
       "frame": 69,
@@ -1478,8 +1478,8 @@
       "cue_start": 17.0,
       "cue_end": 17.25,
       "action": "press 'l' -- keep spelling it",
-      "commentary": "L.",
-      "amended": false
+      "commentary": "L. A mercy on the boat and a danger on land.",
+      "amended": true
     },
     {
       "frame": 70,
@@ -1499,8 +1499,8 @@
       "cue_start": 17.25,
       "cue_end": 17.5,
       "action": "press 'e' -- keep spelling it",
-      "commentary": "E.",
-      "amended": false
+      "commentary": "E. Better on the page than a surprise later.",
+      "amended": true
     },
     {
       "frame": 71,
@@ -1625,8 +1625,8 @@
       "cue_start": 18.75,
       "cue_end": 19.0,
       "action": "press 'a' -- type over the old search",
-      "commentary": "A.",
-      "amended": false
+      "commentary": "A. The word my mother's family never said aloud.",
+      "amended": true
     },
     {
       "frame": 77,
@@ -1646,8 +1646,8 @@
       "cue_start": 19.0,
       "cue_end": 19.25,
       "action": "press 'd' -- keep spelling it",
-      "commentary": "D.",
-      "amended": false
+      "commentary": "D. Say it plainly, the way she never could.",
+      "amended": true
     },
     {
       "frame": 78,
@@ -1688,8 +1688,8 @@
       "cue_start": 19.5,
       "cue_end": 19.75,
       "action": "press 'i' -- keep spelling it",
-      "commentary": "I.",
-      "amended": false
+      "commentary": "I. Halfway through a word I have watched do damage.",
+      "amended": true
     },
     {
       "frame": 80,
@@ -1709,8 +1709,8 @@
       "cue_start": 19.75,
       "cue_end": 20.0,
       "action": "press 'c' -- keep spelling it",
-      "commentary": "C.",
-      "amended": false
+      "commentary": "C. Two letters left and no excuse ready.",
+      "amended": true
     },
     {
       "frame": 81,
@@ -1835,8 +1835,8 @@
       "cue_start": 21.25,
       "cue_end": 21.5,
       "action": "press 't' -- type over the old search",
-      "commentary": "T.",
-      "amended": false
+      "commentary": "T. Something in my favour, for once.",
+      "amended": true
     },
     {
       "frame": 87,
@@ -1856,8 +1856,8 @@
       "cue_start": 21.5,
       "cue_end": 21.75,
       "action": "press 'o' -- keep spelling it",
-      "commentary": "O.",
-      "amended": false
+      "commentary": "O. It is not modesty; there are only three.",
+      "amended": true
     },
     {
       "frame": 88,
@@ -1877,8 +1877,8 @@
       "cue_start": 21.75,
       "cue_end": 22.0,
       "action": "press 'u' -- keep spelling it",
-      "commentary": "U.",
-      "amended": false
+      "commentary": "U. Thirty-one seasons put this one into me.",
+      "amended": true
     },
     {
       "frame": 89,
@@ -1898,8 +1898,8 @@
       "cue_start": 22.0,
       "cue_end": 22.25,
       "action": "press 'g' -- keep spelling it",
-      "commentary": "G.",
-      "amended": false
+      "commentary": "G. One letter short of the only boast I make.",
+      "amended": true
     },
     {
       "frame": 90,
@@ -1982,8 +1982,8 @@
       "cue_start": 23.0,
       "cue_end": 23.25,
       "action": "press 'slash' -- open the search again",
-      "commentary": "Next.",
-      "amended": false
+      "commentary": "Ask it again. There is one more that is true.",
+      "amended": true
     },
     {
       "frame": 94,
@@ -2003,8 +2003,8 @@
       "cue_start": 23.25,
       "cue_end": 23.5,
       "action": "press 's' -- type over the old search",
-      "commentary": "S.",
-      "amended": false
+      "commentary": "S. The one nobody believes until they sail with me.",
+      "amended": true
     },
     {
       "frame": 95,
@@ -2024,8 +2024,8 @@
       "cue_start": 23.5,
       "cue_end": 23.75,
       "action": "press 't' -- keep spelling it",
-      "commentary": "T.",
-      "amended": false
+      "commentary": "T. Bait boxes, three-day chowder, and never once ill.",
+      "amended": true
     },
     {
       "frame": 96,
@@ -2045,8 +2045,8 @@
       "cue_start": 23.75,
       "cue_end": 24.0,
       "action": "press 'o' -- keep spelling it",
-      "commentary": "O.",
-      "amended": false
+      "commentary": "O. Not a boast, only thirty-one years of proof.",
+      "amended": true
     },
     {
       "frame": 97,
@@ -2192,8 +2192,8 @@
       "cue_start": 25.5,
       "cue_end": 25.75,
       "action": "press 'p' -- type over the old search",
-      "commentary": "P.",
-      "amended": false
+      "commentary": "P. Everything I own has one place it goes.",
+      "amended": true
     },
     {
       "frame": 104,
@@ -2213,8 +2213,8 @@
       "cue_start": 25.75,
       "cue_end": 26.0,
       "action": "press 'a' -- keep spelling it",
-      "commentary": "A.",
-      "amended": false
+      "commentary": "A. That is what a small boat teaches you.",
+      "amended": true
     },
     {
       "frame": 105,
@@ -2234,8 +2234,8 @@
       "cue_start": 26.0,
       "cue_end": 26.25,
       "action": "press 'c' -- keep spelling it",
-      "commentary": "C.",
-      "amended": false
+      "commentary": "C. My back will still charge me for it.",
+      "amended": true
     },
     {
       "frame": 106,
@@ -3053,8 +3053,8 @@
       "cue_start": 35.75,
       "cue_end": 36.0,
       "action": "press '5' -- type over the number it guessed",
-      "commentary": "Five.",
-      "amended": false
+      "commentary": "Five. Whatever it guessed, this is the true number.",
+      "amended": true
     },
     {
       "frame": 145,
@@ -3137,8 +3137,8 @@
       "cue_start": 36.75,
       "cue_end": 37.0,
       "action": "press 'O' -- begin my given name",
-      "commentary": "O.",
-      "amended": false
+      "commentary": "O. The name my mother chose, and I will spell it whole.",
+      "amended": true
     },
     {
       "frame": 149,
@@ -3158,8 +3158,8 @@
       "cue_start": 37.0,
       "cue_end": 37.25,
       "action": "press 'd' -- keep spelling it",
-      "commentary": "D.",
-      "amended": false
+      "commentary": "D. Slowly, the way she used to say it.",
+      "amended": true
     },
     {
       "frame": 150,
@@ -3179,8 +3179,8 @@
       "cue_start": 37.25,
       "cue_end": 37.5,
       "action": "press 'e' -- keep spelling it",
-      "commentary": "E.",
-      "amended": false
+      "commentary": "E. Three letters in and it already sounds like her.",
+      "amended": true
     },
     {
       "frame": 151,
@@ -3200,8 +3200,8 @@
       "cue_start": 37.5,
       "cue_end": 37.75,
       "action": "press 't' -- keep spelling it",
-      "commentary": "T.",
-      "amended": false
+      "commentary": "T. Halfway. It is a long name for a deck hand.",
+      "amended": true
     },
     {
       "frame": 152,
@@ -3284,8 +3284,8 @@
       "cue_start": 38.5,
       "cue_end": 38.75,
       "action": "press 'V' -- begin the family name",
-      "commentary": "V.",
-      "amended": false
+      "commentary": "V. The name that came down from my grandfather.",
+      "amended": true
     },
     {
       "frame": 156,
@@ -3305,8 +3305,8 @@
       "cue_start": 38.75,
       "cue_end": 39.0,
       "action": "press 'a' -- keep spelling it",
-      "commentary": "A.",
-      "amended": false
+      "commentary": "A. Six letters, and two countries inside them.",
+      "amended": true
     },
     {
       "frame": 157,
@@ -3326,8 +3326,8 @@
       "cue_start": 39.0,
       "cue_end": 39.25,
       "action": "press 'c' -- keep spelling it",
-      "commentary": "C.",
-      "amended": false
+      "commentary": "C. I have never shortened it for anybody's convenience.",
+      "amended": true
     },
     {
       "frame": 158,
@@ -3347,8 +3347,8 @@
       "cue_start": 39.25,
       "cue_end": 39.5,
       "action": "press 'h' -- keep spelling it",
-      "commentary": "H.",
-      "amended": false
+      "commentary": "H. My father wore this name on his licence too.",
+      "amended": true
     },
     {
       "frame": 159,
@@ -3368,8 +3368,8 @@
       "cue_start": 39.5,
       "cue_end": 39.75,
       "action": "press 'o' -- keep spelling it",
-      "commentary": "O.",
-      "amended": false
+      "commentary": "O. One letter left, and then I am somebody again.",
+      "amended": true
     },
     {
       "frame": 160,
@@ -4754,8 +4754,8 @@
       "cue_start": 98.25,
       "cue_end": 99.25,
       "action": "press 'Down' -- south off the tarmac toward the wood",
-      "commentary": "South. Off the tarmac, over the kerb, into the green.",
-      "amended": false
+      "commentary": "South again. The green is where the food is, if any is.",
+      "amended": true
     },
     {
       "frame": 226,
@@ -4775,8 +4775,8 @@
       "cue_start": 99.25,
       "cue_end": 100.25,
       "action": "press 'Down' -- south off the tarmac toward the wood",
-      "commentary": "South. Off the tarmac, over the kerb, into the green.",
-      "amended": false
+      "commentary": "And again. My back would rather walk than stand still.",
+      "amended": true
     },
     {
       "frame": 227,

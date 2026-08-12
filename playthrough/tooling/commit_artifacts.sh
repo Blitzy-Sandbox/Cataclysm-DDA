@@ -1222,14 +1222,24 @@ readonly -a REQUIRED_ATTRIBUTES=(
     "*.gsav binary"
     "*.srt text"
     "*.jsonl text"
-    # The engine's own tree is committed verbatim and two of the files it
-    # writes end with a blank line, so `git diff --check` reports them.
-    # The bytes are evidence and must not be edited to please a linter, so
-    # whitespace checking is switched off for that subtree and nothing
-    # else.  It changes no byte and leaves the text/eol rules above in
-    # force, which the witnesses below measure rather than assume.
-    "playthrough/userdir/** -whitespace"
 )
+
+# SIX ROWS, AND DELIBERATELY NOT A SEVENTH.  A `playthrough/userdir/**
+# -whitespace` waiver used to sit here too, added so that `git diff
+# --check` would stop reporting the blank line at the end of the two
+# files the engine writes that way -- its debug log and the survivor's
+# memorial diary.  A review removed it: the plan's file schema for
+# .gitattributes permits EXACTLY these six additions and no seventh, and
+# a rule nobody authorised is a change to repository-wide configuration
+# made on this feature's own authority.
+#
+# The blank lines are still there and are still correct -- a memorial
+# rewritten to please a whitespace linter is no longer the memorial the
+# game wrote -- so what changed is only that they are REPORTED rather
+# than suppressed.  Nothing in this pipeline or in the repository's CI
+# fails on `git diff --check`; test_readme.py bounds the report to those
+# two engine-written files by name, so a THIRD one appearing is a finding
+# instead of being hidden by a waiver.
 
 # ---------------------------------------------------------------------
 # THE ATTRIBUTES AS GIT ACTUALLY APPLIES THEM, which is not the same
@@ -1263,15 +1273,6 @@ readonly -a ATTRIBUTE_WITNESSES=(
     "playthrough/userdir/save/World/master.gsav|text|unset"
     "playthrough/transcript.srt|text|set"
     "playthrough/manifest.jsonl|text|set"
-    # THE WHITESPACE WAIVER, MEASURED IN BOTH DIRECTIONS.  It has to reach
-    # the engine's own tree -- otherwise `git diff --check` reports the
-    # blank line at the end of the memorial the game wrote -- and it must
-    # NOT reach anything authored here, or a trailing space in the
-    # transcript or the tooling would stop being reported.  A row scoped
-    # to a directory can only be got right by asking git about a path on
-    # each side of it.
-    "playthrough/userdir/config/debug.log|whitespace|unset"
-    "playthrough/transcript.md|whitespace|unspecified"
 )
 
 # effective_attribute PATH ATTRIBUTE [SOURCE] -- what git would apply.
@@ -1356,11 +1357,11 @@ assert_attribute_semantics() {
             "overrides them.  Nothing was committed."
     fi
     # THE PATHS ARE LISTED FROM THE TABLE, not described in prose.  This
-    # sentence used to name six of them by hand -- the film, the map
-    # archive, the character save, the world save, the cue file and the
-    # record -- and the moment the whitespace waiver added two witnesses
-    # it reported "8 witness paths" and then named six, which is the same
-    # second-copy defect as a hard-coded check total.
+    # sentence used to name them by hand, and the moment a since-removed
+    # whitespace waiver added two witnesses it reported "8 witness paths"
+    # and then named six -- the same second-copy defect as a hard-coded
+    # check total, so the list is derived even now that the two counts
+    # happen to agree again.
     local witness="" listed=""
     for witness in "${ATTRIBUTE_WITNESSES[@]}"; do
         listed="${listed}${listed:+, }$(rel "${witness%%|*}")"
@@ -3509,6 +3510,36 @@ ${expected_device}, so another filesystem is mounted inside this tree"
 # `cache/innocuous.json`, which is the review's stated vector -- while
 # the protocol name in prose, an MD5 sum and the redacted placeholder
 # were correctly passed over.
+#
+# EVERY BYTE OF EVERY FILE, WHICH IS NOT WHAT IT USED TO DO.  A review
+# found the two blind spots in this scan and named them precisely: it read
+# only the first 262 144 bytes of a file, and it abandoned any file whose
+# first bytes carried a NUL -- while the caller reported "a scan over
+# every path".  Both were affordability decisions, and both were places to
+# hide a credential in a tree that commits 307 captures, two films and an
+# engine's entire save directory.  A secret in the 300th kilobyte of a
+# save file, or nine bytes after a PNG header, was published with the
+# scan reporting that it had found nothing.
+#
+# So the file is STREAMED in 1 MiB chunks with an 8 KiB overlap carried
+# between them, which is what keeps a match that straddles a boundary
+# findable, and nothing is skipped for being binary.  Findings are
+# deduplicated per file by (rule, digest) -- the same granularity the
+# reviewed baseline is keyed at -- so the overlap cannot report one
+# occurrence twice.
+#
+# WHAT CHANGES FOR BINARY CONTENT, AND WHY IT IS NOT SIMPLY THE SAME
+# RULES.  Compressed and encoded bytes are effectively random, and a
+# random stream of 110 MB contains `://` about a dozen times by
+# arithmetic alone -- so the url-credential expression, whose middle is
+# `[^/\s@]+`, would eventually match noise and refuse a checkpoint for a
+# credential nobody wrote.  A credential embedded in a binary file is
+# nevertheless still PRINTABLE ASCII, so that is the constraint applied
+# there: within a NUL-bearing chunk a match counts only when every
+# character of it is printable ASCII and it is at least twelve characters
+# long.  Fifteen consecutive printable ASCII bytes occur in random data
+# with probability about 1e-7 per position, which is the difference
+# between a control somebody can leave switched on and one they cannot.
 readonly SECRET_SCANNER='
 import hashlib
 import os
@@ -3519,15 +3550,27 @@ PLACEHOLDER = re.compile(
     r"\A(?:<[^>]*>|\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*|\**|x+|X+"
     r"|REDACTED|redacted|TOKEN|token|PASSWORD|password|secret|SECRET)\Z")
 
+# EVERY REPETITION IS BOUNDED, and that is a performance property with
+# teeth rather than tidiness.  The url-credential expression began
+# [a-zA-Z][a-zA-Z0-9+.-]*:// -- and over a long run of letters that is
+# QUADRATIC: at each position the class consumes the whole run, fails to
+# find the "://", and backtracks a character at a time.  Measured while
+# this scan was being extended to whole files -- a planted 400 KB run of a
+# single letter did not finish in five minutes, and the tree this scans
+# holds a 20 MB film and 134 save files.  The old 262 144-byte window hid
+# the shape rather than fixing it.  A URI scheme is a handful of
+# characters and a credential is not kilobytes long, so the ceilings
+# below are far above anything real and turn every rule linear.
 RULES = (
     ("url-credential",
-     r"[a-zA-Z][a-zA-Z0-9+.-]*://[^/\s:@]+:([^/\s@]+)@"),
-    ("github-token", r"gh[pousr]_[A-Za-z0-9]{16,}"),
-    ("github-pat", r"github_pat_[A-Za-z0-9_]{20,}"),
+     r"[a-zA-Z][a-zA-Z0-9+.-]{0,31}://[^/\s:@]{1,256}:"
+     r"([^/\s@]{1,256})@"),
+    ("github-token", r"gh[pousr]_[A-Za-z0-9]{16,255}"),
+    ("github-pat", r"github_pat_[A-Za-z0-9_]{20,255}"),
     ("aws-access-key", r"AKIA[0-9A-Z]{16}"),
     ("google-api-key", r"AIza[0-9A-Za-z_-]{35}"),
-    ("slack-token", r"xox[baprs]-[A-Za-z0-9-]{10,}"),
-    ("private-key", r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY"),
+    ("slack-token", r"xox[baprs]-[A-Za-z0-9-]{10,255}"),
+    ("private-key", r"-----BEGIN [A-Z0-9 ]{0,64}PRIVATE KEY"),
     # A CHARACTER CLASS FOR ONE LETTER, and it is load-bearing rather
     # than decorative: written as a plain literal, this pattern MATCHES
     # ITSELF, and the scan then reports the scanner as carrying a key.
@@ -3536,53 +3579,95 @@ RULES = (
     # searching, which is the whole difference.
     ("putty-key", r"P[u]TTY-User-Key-File-"),
     ("x-magic-cookie", r"MIT-MAGIC-COOKIE-1\W{0,8}[0-9a-f]{32}"),
-    ("http-basic", r"[Aa]uthorization:\s*Basic\s+[A-Za-z0-9+/=]{16,}"),
+    ("http-basic",
+     r"[Aa]uthorization:[ \t]{0,8}Basic[ \t]{1,8}"
+     r"[A-Za-z0-9+/=]{16,512}"),
     ("http-bearer",
-     r"[Aa]uthorization:\s*Bearer\s+[A-Za-z0-9._~+/-]{20,}"),
+     r"[Aa]uthorization:[ \t]{0,8}Bearer[ \t]{1,8}"
+     r"[A-Za-z0-9._~+/-]{20,512}"),
 )
 COMPILED = tuple((name, re.compile(pattern, re.MULTILINE))
                  for name, pattern in RULES)
 
-# A quarter of a megabyte per file.  The captures and the films are
-# megabytes of binary and are skipped on their first NUL anyway; this
-# bounds the one shape that is neither -- a large text file -- so the
-# scan cannot be made slow by planting one.
-WINDOW = 262144
+# The read size, and the overlap carried between reads.  A match cannot
+# be longer than the overlap and be found across a boundary, and the
+# longest thing any rule above can match is a URL or an armour line --
+# tens of characters, not thousands.  8 KiB is therefore generous and
+# bounds the memory the scan holds to CHUNK + OVERLAP per file however
+# large the file is.
+CHUNK = 1048576
+OVERLAP = 8192
+
+# What counts as a match inside NUL-bearing (binary) content: printable
+# ASCII throughout, and long enough that random bytes do not produce it.
+PRINTABLE = frozenset(chr(code) for code in range(0x20, 0x7F))
+MIN_BINARY = 12
 root = sys.argv[1]
+
+
+def reportable(rule, found, binary):
+    """Whether one match is worth reporting, given where it was found.
+
+    THE MATCH OBJECT, NOT ITS TEXT.  An earlier draft re-searched the
+    chunk here to reach the password group, which was both quadratic over
+    a chunk with many matches and WRONG -- it inspected the first match
+    in the chunk rather than this one.
+    """
+    if rule == "url-credential" and PLACEHOLDER.match(found.group(1)):
+        return False
+    if not binary:
+        return True
+    text = found.group(0)
+    if len(text) < MIN_BINARY:
+        return False
+    return all(char in PRINTABLE for char in text)
+
 
 for path in sys.stdin.buffer.read().split(b"\0"):
     if not path:
         continue
     name = os.fsdecode(path)
+    relative = os.path.relpath(name, root)
+    seen = set()
+    carry = ""
     try:
         with open(name, "rb") as handle:
-            blob = handle.read(WINDOW)
+            while True:
+                block = handle.read(CHUNK)
+                if not block:
+                    break
+                # CLASSIFIED PER CHUNK, not per file.  A NUL says these
+                # bytes are not text, and it says it about the region it
+                # is in: a save file whose header is binary and whose
+                # body is JSON gets the full text rules over the body.
+                binary = b"\0" in block
+                text = carry + block.decode("utf-8", "replace")
+                carry = text[-OVERLAP:] if len(text) > OVERLAP else text
+                for rule, expression in COMPILED:
+                    for found in expression.finditer(text):
+                        if not reportable(rule, found, binary):
+                            continue
+                        matched = found.group(0)
+                        # THE VALUE NEVER LEAVES THIS PROGRAM.  What is
+                        # reported is a sha256 of the matched text, which
+                        # is enough to compare against a reviewed
+                        # baseline and useless to anybody reading a log,
+                        # a terminal or a CI transcript.  It also keeps
+                        # the baseline itself free of credential-shaped
+                        # strings -- a baseline that quoted the value it
+                        # excuses would be one more copy of the value.
+                        digest = hashlib.sha256(
+                            matched.encode("utf-8")).hexdigest()
+                        # DEDUPLICATED PER FILE at exactly the baseline
+                        # granularity, so the 8 KiB overlap cannot report
+                        # one occurrence as two.
+                        if (rule, digest) in seen:
+                            continue
+                        seen.add((rule, digest))
+                        print("%s\t%s\t%s" % (relative, rule, digest))
     except OSError as err:
         sys.stderr.write("could not read %s: %s\n" % (name, err))
         raise SystemExit(2)
-    # A NUL byte means this is not text.  Every captured PNG, both films
-    # and the engine save files land here, which is why the scan is
-    # affordable over a tree of ten thousand captures.
-    if b"\0" in blob:
-        continue
-    text = blob.decode("utf-8", "replace")
-    relative = os.path.relpath(name, root)
-    for rule, expression in COMPILED:
-        for found in expression.finditer(text):
-            if rule == "url-credential":
-                secret = found.group(1)
-                if PLACEHOLDER.match(secret):
-                    continue
-            # THE VALUE NEVER LEAVES THIS PROGRAM.  What is reported is
-            # a sha256 of the matched text, which is enough to compare
-            # against a reviewed baseline and useless to anybody
-            # reading a log, a terminal or a CI transcript.  It also
-            # keeps the baseline itself free of credential-shaped
-            # strings -- a baseline that quoted the value it excuses
-            # would be one more copy of the value.
-            digest = hashlib.sha256(
-                found.group(0).encode("utf-8")).hexdigest()
-            print("%s\t%s\t%s" % (relative, rule, digest))
 '
 
 # The findings that are reviewed and accounted for, as
@@ -3668,8 +3753,9 @@ assert_no_secret_material() {
             "this script with the reason.  Nothing was committed."
     fi
     playthrough_log "the secret scan found nothing unaccounted for" \
-        "under $(rel "${PLAYTHROUGH_DIR}") (${accounted} reviewed" \
-        "finding(s) in the baseline)"
+        "under $(rel "${PLAYTHROUGH_DIR}") -- every byte of every file," \
+        "text and binary alike (${accounted} reviewed finding(s) in the" \
+        "baseline)"
     return 0
 }
 

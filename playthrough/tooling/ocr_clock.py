@@ -565,6 +565,16 @@ GLYPH_FONT_SHA256 = (
 # Pillow's own 89-megapixel bomb threshold.
 MAX_PIXELS = 64 * 1024 * 1024
 
+# A hard ceiling on the BYTES one capture may occupy, which is a
+# different question from its pixel count and is asked earlier.  The
+# provenance check now reads the file it validated (see
+# read_verified_frame), so a planted enormous file would otherwise be
+# read into memory before anything looked at its header.  A 1920x1080
+# root capture measures roughly 90 KiB compressed and the largest in the
+# delivered set is under 200 KiB, so 64 MiB is generous by a factor of
+# three hundred and still bounded.
+MAX_FRAME_BYTES = 64 * 1024 * 1024
+
 # The CPU budget, in seconds, granted to one decode.
 #
 # MEASURED, NOT GUESSED: twenty consecutive open_png() calls over a real
@@ -1010,15 +1020,66 @@ def assert_decodable_provenance(path: str) -> None:
     * group- or world-writable -- then so does anybody in that group,
       or anybody at all.
 
+    THE CHECK AND THE READ ARE ONE OPERATION NOW.  A later review found
+    the remaining half of this race: the properties above were read with
+    `lstat` and the file was then REOPENED BY NAME for the decode, so a
+    concurrent writer with the same uid could replace the inode between
+    the two (CWE-367) and the bytes that reached Pillow were not the
+    bytes that were validated.  read_verified_frame() closes that by
+    opening once with O_NOFOLLOW, asking `fstat` about the DESCRIPTOR,
+    and decoding what it read through that same descriptor.  This
+    function is the descriptor-less half, kept public because a caller
+    may legitimately want the question answered about a path it is not
+    about to decode; it delegates so there is one implementation of the
+    rule.
+
     :raises FrameUnreadableError: with the property that failed.
     """
+    descriptor = _open_frame_descriptor(path)
     try:
-        info = os.lstat(path)
+        _refuse_undecodable_stat(os.fstat(descriptor), path)
+    finally:
+        os.close(descriptor)
+
+
+def _open_frame_descriptor(path: str) -> int:
+    """Open `path` for reading without following a final symlink.
+
+    O_NOFOLLOW makes "this is not a symlink" a property of the OPEN
+    rather than of a preceding stat, so there is no window between the
+    two.  O_NONBLOCK is there because this is the call that would
+    otherwise BLOCK FOREVER on a fifo planted under a capture's name --
+    the descriptor is checked for being a regular file immediately after,
+    and O_NONBLOCK changes nothing for one.
+
+    :raises FrameUnreadableError: naming what the open refused.
+    """
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    try:
+        return os.open(path, flags)
     except OSError as exc:
+        if exc.errno in (errno.ELOOP, errno.EMLINK):
+            raise FrameUnreadableError(
+                "%s is a symbolic link, so the name checked and the "
+                "bytes decoded are two separate decisions and only one "
+                "of them was verified.  Every capture this pipeline "
+                "reads is a regular file written by capture.sh"
+                % path) from exc
         raise FrameUnreadableError(
             "%s could not be examined before decoding: %s"
             % (path, exc)) from exc
-    if stat.S_ISLNK(info.st_mode):
+
+
+def _refuse_undecodable_stat(info: os.stat_result, path: str) -> None:
+    """Refuse a stat result that is not a capture this account wrote.
+
+    Held against an `fstat` of the open descriptor wherever a decode
+    follows, so the object described is the object read.
+
+    :raises FrameUnreadableError: with the property that failed.
+    """
+    if stat.S_ISLNK(info.st_mode):              # pragma: no cover
         raise FrameUnreadableError(
             "%s is a symbolic link, so the name checked and the bytes "
             "decoded are two separate decisions and only one of them "
@@ -1045,6 +1106,65 @@ def assert_decodable_provenance(path: str) -> None:
             "reason that is acceptable is that nothing but this account "
             "can choose their input"
             % (path, stat.S_IMODE(info.st_mode)))
+
+
+def read_verified_frame(path: str) -> bytes:
+    """Return the bytes of a capture, validated as it was read.
+
+    ONE OPEN, ONE FSTAT, ONE READ, IN THAT ORDER.  This is the whole of
+    the check-to-use race the review named: everything the provenance
+    rule asks -- regular file, this account's, not writable by anybody
+    else -- is asked of the DESCRIPTOR that the returned bytes came out
+    of, so no concurrent writer can substitute another inode between the
+    question and the answer.  The PNG signature is checked on the bytes
+    for the same reason: a header read from the path and content decoded
+    from the path are two reads and therefore two facts.
+
+    The read is bounded by MAX_FRAME_BYTES, which is asked twice -- once
+    of the size `fstat` reported and once of what was actually read --
+    because a file being appended to while it is read can pass the first
+    and not the second.
+
+    :raises FrameUnreadableError: naming the property that failed.
+    """
+    descriptor = _open_frame_descriptor(path)
+    try:
+        info = os.fstat(descriptor)
+        _refuse_undecodable_stat(info, path)
+        if info.st_size > MAX_FRAME_BYTES:
+            raise FrameUnreadableError(
+                "%s is %d bytes and the ceiling is %d.  A 1920x1080 "
+                "capture is under two hundred kilobytes, so a file this "
+                "large is not one and is refused before it is read into "
+                "memory" % (path, info.st_size, MAX_FRAME_BYTES))
+        chunks: List[bytes] = []
+        total = 0
+        while True:
+            try:
+                block = os.read(descriptor, 1024 * 1024)
+            except OSError as exc:
+                raise FrameUnreadableError(
+                    "%s could not be read: %s" % (path, exc)) from exc
+            if not block:
+                break
+            total += len(block)
+            if total > MAX_FRAME_BYTES:
+                raise FrameUnreadableError(
+                    "%s grew past the %d-byte ceiling while it was "
+                    "being read, so it is being written to and is not a "
+                    "finished capture" % (path, MAX_FRAME_BYTES))
+            chunks.append(block)
+    finally:
+        os.close(descriptor)
+    data = b"".join(chunks)
+    if data[:len(PNG_MAGIC)] != PNG_MAGIC:
+        raise FrameUnreadableError(
+            "%s does not begin with the PNG signature (it begins %r).  "
+            "Every capture this pipeline reads is a PNG written by "
+            "capture.sh; a file with another format's content is "
+            "refused rather than handed to whichever native decoder it "
+            "would reach" % (path, data[:len(PNG_MAGIC)]))
+    return data
 
 
 class decode_limits(object):
@@ -1162,27 +1282,23 @@ def open_png(path: str) -> "Image.Image":
 
     Verified on this host under Pillow 11.3.0: a BMP renamed .png is
     refused with UnidentifiedImageError.
+
+    THE BYTES DECODED ARE THE BYTES VALIDATED.  This used to check the
+    path with `lstat`, read its signature by name, and then hand the NAME
+    to Image.open -- three separate reads of one pathname, which a review
+    correctly called a check-to-use race: a concurrent writer with this
+    account's uid could replace the inode after the checks and the
+    decoder would parse a file nothing had validated.  read_verified_frame
+    does all of it through one descriptor and returns the bytes, and the
+    decode is handed those bytes.
     """
-    assert_decodable_provenance(path)
-    try:
-        with open(path, "rb") as handle:
-            signature = handle.read(len(PNG_MAGIC))
-    except OSError as exc:
-        raise FrameUnreadableError(
-            "%s could not be read: %s" % (path, exc)) from exc
-    if signature != PNG_MAGIC:
-        raise FrameUnreadableError(
-            "%s does not begin with the PNG signature (it begins %r).  "
-            "Every capture this pipeline reads is a PNG written by "
-            "capture.sh; a file with another format's content is "
-            "refused rather than handed to whichever native decoder it "
-            "would reach" % (path, signature))
+    data = read_verified_frame(path)
     _require_pillow()
     previous = Image.MAX_IMAGE_PIXELS
     Image.MAX_IMAGE_PIXELS = MAX_PIXELS
     try:
         with decode_limits():
-            image = Image.open(path, formats=["PNG"])
+            image = Image.open(io.BytesIO(data), formats=["PNG"])
             image.load()
     except Image.DecompressionBombError as exc:
         raise FrameUnreadableError(

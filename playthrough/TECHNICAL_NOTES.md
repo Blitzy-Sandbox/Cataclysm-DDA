@@ -182,7 +182,7 @@ captured evidence can be rewritten, every artifact derived from it is deniable.
 Both files have therefore been **restored byte for byte** to the state the
 session wrote them in, the two functions that could rewrite them have been
 deleted from `manifest.py` and `session.py`, and corrections now live in
-**`playthrough/amendments.jsonl`** — **156 append-only amendments** in the
+**`playthrough/amendments.jsonl`** — **202 append-only amendments** in the
 shipped set, each bound to the sha256 of the manifest line it concerns and each
 stating its basis and its reason. `manifest.resolve_rows()` applies them to a
 derivative and to nothing else, and refuses rather than skips when a digest no
@@ -207,18 +207,18 @@ survivor and is kept for the engine behaviour it pins down.
 | --- | --- |
 | `playthrough/frames/` | **307** captures, `frame_00001.png` … `frame_00307.png`, every one 1920×1080 |
 | `playthrough/manifest.jsonl` | **307** rows, one per keystroke |
-| `playthrough/amendments.jsonl` | **156** append-only amendments — one action note and 155 commentaries, composed in a single pass to fit the caption geometry |
+| `playthrough/amendments.jsonl` | **202** append-only amendments reaching **201** of the 307 frames — one action note, 155 commentaries shortened to fit the caption geometry, and **46 appended at a code-review remediation**: 44 replacing a one-word cue with the motive behind it, and 2 giving frames 225 and 226 their own sentence instead of repeating frame 224's. See *Code-review remediation of the capture subsystem, and the fourth recording* |
 | `playthrough/build/frame_digests.jsonl` | **307** attestations, each at or after its own row |
 | `playthrough/build/acknowledgments.jsonl` | **309** acknowledgments resolving to **307** standing readings, one per capture; frame 298 carries three — two original readings and one appended at the security-review checkpoint that declares it supersedes both — and frame 307 carries the reading it had been missing. See *The evidence anchor, and the two ledger repairs* |
-| `playthrough/build/evidence_anchor.jsonl` | **15** hash-chained seal rows, one per evidence artifact, chain head `468793a63e813a78…`. Each row carries the artifact's sha256, its byte count and **git's own blob name** for it, plus the previous row's chain hash |
+| `playthrough/build/evidence_anchor.jsonl` | hash-chained seal rows, **15 per checkpoint that seals** — one per evidence artifact — each carrying the artifact's sha256, its byte count and **git's own blob name** for it, plus the previous row's chain hash. No total or head is quoted here on purpose: every checkpoint appends a generation and moves the head, so the authority is the `Playthrough-Evidence-Anchor` trailer on the checkpoint itself and the head recorded in `acceptance-report.txt` |
 | `playthrough/timeline.json` | **307** entries; **288.500 s** of captures + **12.000 s** of transitions = **300.500 s**; floor 0.25 s, ceiling 10.0 s; **114** exact clock readings and **193** reconciled |
 | transitions | **12** flagged entries — frames **170, 279, 283, 284, 285, 286, 296, 298, 299, 303, 304, 305** — materialised as twelve images each, **144** in total, under `build/transitions/` and never in `frames/` |
 | `playthrough/cata-play.mp4` | h264, 1920×1080, `yuv420p`, **452** encoded frames from 307 captures + 144 transition images, container **300.560 s**, **20 047 349** bytes |
-| `playthrough/cata-play-cc.mp4` | the same picture plus one `mov_text` subtitle stream tagged `language=eng`; **20 070 248** bytes. Its video stream hashes identically to the base film's (`MD5=4c38e03830e7d4a278f237276b9dae46` for both), so nothing is burned in |
+| `playthrough/cata-play-cc.mp4` | the same picture plus one `mov_text` subtitle stream tagged `language=eng`; **20 072 142** bytes. Its video stream hashes identically to the base film's (`MD5=4c38e03830e7d4a278f237276b9dae46` for both), so nothing is burned in |
 | `playthrough/transcript.srt` | **307** cues, contiguous from 1, the last closing at **00:05:00,500** — the timeline's own total; no cue over 2 lines of 42 columns |
 | `playthrough/transcript.md` | **307** stamped entries, every stamp a cue start |
 | `playthrough/userdir/save/Fairport Harbor/` | **134** tracked files, the live world; no `graveyard/` and no `memorial/` anywhere, because she lived |
-| `playthrough/acceptance-report.txt` | the gate's own passing verdict set over the tree it measured, published by the `attest` checkpoint. The pre-commit half reports **108 of 108** declared checks with **0** failures; the gate declares **122** in all — 108 before a commit, 31 after one — and the derivation table beside `GROUP_CHECKS_ALL` is the authority on which group holds which |
+| `playthrough/acceptance-report.txt` | the gate's own verdict set over the tree it measured, published by the `attest` checkpoint. The gate declares **134** checks in all — **119** before a commit and **37** after one — summed from the derivation table beside `GROUP_CHECKS_ALL`, which is the authority on which group holds which. The run-specific passes, failures and divergences are in the published report itself rather than quoted here, for the reason given under *Read this before any count on this page* |
 
 ### The survivor, mechanically
 
@@ -289,7 +289,7 @@ fourth recording necessary.
 | `playthrough/cata-play-cc.mp4` | the same picture plus one `mov_text` subtitle stream tagged `language=eng`; **0** differing pixels against the base film at four sampled times, so nothing is burned in |
 | `playthrough/transcript.srt` | **305** cues, contiguous from 1, the last closing at **00:03:42,750** — the timeline's own total |
 | `playthrough/transcript.md` | **305** stamped entries, every stamp a cue start |
-| `playthrough/acceptance-report.txt` | the gate's own **117 of 117** passing verdicts over the tree at `ebbafd6f39`, which was its whole declared inventory at that moment. The gate now declares **120**: the single "every row records what was pressed and why" verdict became a two-part rationale contract, and two properties were added — that the readable record's sentences are the caption track's, and that the recording in the tree has a checkpoint pair of its own. A receipt is per-run: a failing run removes it rather than letting it vouch for a tree it never measured, and only a passing `--phase all` or `--phase post-commit` run writes a new one |
+| `playthrough/acceptance-report.txt` | the gate's own **117 of 117** passing verdicts over the tree at `ebbafd6f39`, which was its whole declared inventory at that moment. The gate now declares **134** — **119** before a commit and **37** after one: the single "every row records what was pressed and why" verdict became a two-part rationale contract, and further properties were added — that the readable record's sentences are the caption track's, and that the recording in the tree has a checkpoint pair of its own. A receipt is per-run: a failing run removes it rather than letting it vouch for a tree it never measured, and only a passing `--phase all` or `--phase post-commit` run writes a new one |
 
 ### The survivor, mechanically
 
@@ -2100,16 +2100,19 @@ All four are present:
 
 | Artifact | State | Its own tests |
 | --- | --- | --- |
-| `playthrough/tooling/run_pipeline.sh` | present, 8 stages | `test_run_pipeline.py`, **106** |
-| `playthrough/tooling/verify_artifacts.sh` | present, **120** checks | `test_verify_artifacts.py`, **193** |
-| `playthrough/tooling/commit_artifacts.sh` | present, 3 checkpoints | `test_commit_artifacts.py`, **213** |
+| `playthrough/tooling/run_pipeline.sh` | present, **9** stages | `test_run_pipeline.py`, **136** |
+| `playthrough/tooling/verify_artifacts.sh` | present, **134** checks | `test_verify_artifacts.py`, **269** |
+| `playthrough/tooling/commit_artifacts.sh` | present, **6** mutating checkpoints | `test_commit_artifacts.py`, **294** |
 | `playthrough/README.md` | present | — |
 
 (Every figure in this table has moved since it was first written: the gate
 declared 111 checks and its suite held 21 tests, and the committer's suite held
-142. The current numbers are the ones above, re-measured on 2026-08-10 with
-`TestLoader.countTestCases()`, and *The tooling's own suites, mechanically
-counted* carries the whole set.)
+142. The current numbers are the ones above, re-measured with
+`TestLoader.countTestCases()` at the code-review remediation of 2026-08-12, and
+*The tooling's own suites, mechanically counted* carries the whole set. A review
+found this row stale twice over — 8 stages against a nine-stage registry, and
+106 tests against 136 — which is why the count is now taken from the loader on
+each revision rather than carried forward.)
 
 What the old text said about the *session* remains accurate and is kept: the
 stages were invoked directly and in the same order the sequencer uses —
@@ -2340,9 +2343,9 @@ models real growth (4 rows at creation, 7 after the session).
 
 **The count this paragraph originally carried — the post-commit phase reaching
 111 of 111 on a fully committed tree — has since moved three times, and is
-corrected here rather than left to be believed.** It became 114, then 117, and
-the audit now declares **120** across the two phases (106 before a commit, 31
-after one). A later pass also turned this very divergence from the `WARN` quoted
+corrected here rather than left to be believed.** It became 114, then 117, then 120, and
+the audit now declares **134** across the two phases (**119** before a commit,
+**37** after one). A later pass also turned this very divergence from the `WARN` quoted
 above into a **`FAIL` of its own**, which is why a tree carrying a retired
 survivor's pair measured **113 of 114 with one failure** on Sunday, August 9,
 2026: `VERIFY_CHECKS=114 VERIFY_PASSES=113 VERIFY_FAILURES=1 VERIFY=fail`. The
@@ -5910,24 +5913,36 @@ Confirmed against the pack itself: the `tileset.txt` under
 match on either, additionally tries the alias spellings `env.sh` lists, and
 never guesses from a directory name.
 
-**The resolution is "required and fails closed", not "preference with
-fallback".** This differs from how the folder specification for this file
-describes the resolution, and the code is the authority:
+**The resolution is "required and fails closed", and it is now published in
+one place.** A code review found that although this note recorded the conflict
+correctly, the code still shipped **both** artwork branches: the losing side
+survived as `PLAYTHROUGH_TILESET_FALLBACK` naming `ASCIITiles`, reachable when
+`PLAYTHROUGH_ALLOW_TILESET_FALLBACK=1` authorised a substitution — announced on
+stderr, recorded as `origin=fallback`, and registered as one of `env.sh`'s trust
+bypasses so `assert_capture_preconditions` refused a capture launch while it was
+set. The review's point stands on its own: a feature whose requirement names one
+tileset should not carry two artwork branches, and a well-documented conflict
+with both branches implemented is still a conflict.
 
-> ASCIITiles IS NOT A FALLBACK. `PLAYTHROUGH_TILESET_FALLBACK` only NAMES
-> which tileset a substitution would use; nothing consults it unless
-> `PLAYTHROUGH_ALLOW_TILESET_FALLBACK=1` authorises one, which is announced
-> and recorded as `origin=fallback`. That authorisation is one of `env.sh`'s
-> trust bypasses, so `assert_capture_preconditions` refuses a capture launch
-> while it is set.
+**Both variables, the branch and the bypass registration are gone** — removed
+from `env.sh`, `launch_game.sh`, `seed_options.py`, `supported_env.sh` and the
+acceptance gate — so `resolve_tileset()` now has exactly two outcomes: the
+required pack is installed and reported, or the script exits non-zero. There is
+no code path left that can produce an ASCIITiles session, which is a stronger
+statement than "the fallback is refused during capture".
 
-[playthrough/tooling/launch_game.sh:1426-1431], with the reasoning at
-[:1553-1562]: "A fallback would be worse than a failure: the checkout ships
-ASCIITiles, so a run that quietly fell back to it would still produce a
-full-length movie of a genuine SDL tiles session with every count tallying,
-and the only symptom would be ASCII art in the finished film." That is the
-same shape of failure as the black-movie one, and it gets the same treatment
-— refuse rather than degrade.
+**The reasoning lives in exactly one document.** It is the resolution record
+*Which artwork the requirement means* in `playthrough/README.md`, and
+`launch_game.sh:1663`, `launch_game.sh:2170` and `seed_options.py:1583` cite it
+by that name rather than restating it — so there is one authority and four
+enforcers, instead of four paraphrases that can drift.
+
+Failing closed is also the safer half, and the launcher says why in its own
+words: the checkout ships `ASCIITiles`, so a run that quietly fell back to it
+would still produce a full-length movie of a genuine SDL tiles session with every
+count tallying, and the only symptom would be ASCII art in the finished film.
+That is the same shape of failure as the black-movie one, and it gets the same
+treatment — refuse rather than degrade.
 
 **What is TRACKED, and what is merely present, measured.** Only four entries
 under `gfx/` are tracked, because `/gfx/*` is excluded with four negations:
@@ -6719,6 +6734,83 @@ capacity model and the run receipt). The single skip is
 this account ignores file modes; the error the previous recount carried is gone,
 because the artwork anchor was re-derived and now verifies.
 
+**Recounted on Wednesday, August 12, 2026, after the remediation recorded in
+*Code-review remediation of the published record and the pipeline's defences***
+— the pass that made the write path refuse markup and one-word narration, bound
+both decoders to a descriptor instead of a pathname, replaced the windowed
+staging scan with a streaming one, deleted the artwork fallback, asked the
+evidence anchor of each checkpoint rather than of the history, and amended
+forty-six narrations:
+
+```console
+$ . playthrough/tooling/env.sh
+$ "$PLAYTHROUGH_PYTHON" -B -m unittest discover -s playthrough/tooling \
+      -p 'test_*.py'
+Ran 3589 tests in 2293.168s
+OK (skipped=2)
+```
+
+Per module, counted the same mechanical way — `TestLoader.loadTestsFromName`
+then `countTestCases()`:
+
+| Module | Tests | | Module | Tests |
+| --- | ---: | --- | --- | ---: |
+| `test_artifacts` | 125 | | `test_preflight_capture` | 22 |
+| `test_capture` | 109 | | `test_readme` | 82 |
+| `test_commit_artifacts` | 294 | | `test_render_movie` | 136 |
+| `test_embed_captions` | 113 | | `test_run_pipeline` | 136 |
+| `test_env` | 290 | | `test_seed_options` | 131 |
+| `test_launch_game` | 206 | | `test_session` | 302 |
+| `test_make_srt` | 146 | | `test_sidebar_geometry` | 81 |
+| `test_make_transitions` | 118 | | `test_supported_env` | 80 |
+| `test_manifest` | 293 | | `test_tileset_provenance` | 58 |
+| `test_ocr_clock` | 215 | | `test_timeline` | 383 |
+| | | | `test_verify_artifacts` | 269 |
+|  |  | | **total (21 modules)** | **3589** |
+
+**The per-module figures sum to 3589 exactly, which equals the discovery run's
+own `Ran 3589 tests`** — the same agreement check, and the only reason to trust
+either number. It is a test now rather than a habit: `test_readme.py` resolves
+every total the operator page quotes against what the loader collects for the
+command written above it, so a count that moves without its page being
+republished fails the suite that noticed it. The first run after that guard
+existed failed on precisely that, quoting 3584 against 3589, which is the
+demonstration that it is load-bearing rather than decorative.
+
+**Not all of the +572 belongs to this pass, and the split is measured rather
+than asserted.** Eight of the twenty-one modules were never opened by this
+remediation — `git status` reports them unmodified — and yet four of those eight
+count differently from what the table above them published: `test_run_pipeline`
+106 → **136**, `test_supported_env` 36 → **80**, `test_timeline` 374 → **383**,
+`test_sidebar_geometry` 78 → **81**. A file this pass did not touch cannot have
+gained a case from it, so those **86** are the earlier table trailing the tree it
+described — the same staleness the review named in the check totals, showing up
+here in the suite figures. The remaining **486** is *at most* this pass's own,
+across the thirteen modules it did change, the largest being the gate at 193 →
+**269**, the staging script at 213 → **294**, the step at 225 → **302**, the
+environment at 178 → **290** and the record at 245 → **293**; the operator
+page's own suite went 54 → **82** and the shipped-artifact suite 122 → **125**,
+both from tests added to hold a published figure to a measurement. One module was
+edited without gaining a case: `test_capture` is three lines in and four out
+from the artwork fallback's deletion, and stays at **109**.
+
+**Two skips now, both named rather than smoothed, and neither of them new.**
+Each declines for the same kind of reason: this host cannot present the
+condition the test exists to measure.
+`test_tileset_provenance.EveryFailureToReadIsARefusal.test_an_unreadable_file_is_refused`
+says *running as a user that ignores file modes* — it removes read permission
+and expects a refusal, which root will not produce, so it declines instead of
+passing vacuously. `test_env.TestThePathAncestryGate.test_a_safe_road_reports_nothing`
+says *this sandbox's own base has an unsafe road, so there is no safe path to
+measure* — the gate refuses a group- or world-writable non-sticky ancestor, and
+this sandbox's temporary base is one, so the positive case has nowhere to stand;
+its negative counterparts, the cases asserting that the refusal actually fires,
+all run. The second skip is **not** something this pass introduced, which is
+checkable rather than a claim: `git show HEAD:playthrough/tooling/test_env.py`
+already contains `TestThePathAncestryGate` and that `skipTest` call at the same
+lines, so the previous recount's *"single skip"* was trailing the tree in the
+same way its four module figures were.
+
 #### Re-measured on Sunday, August 9, 2026, after the staging pass on `commit_artifacts.sh`
 
 The block above is dated on purpose and is left exactly as it was measured. This
@@ -7277,9 +7369,9 @@ playthrough/tooling/commit_artifacts.sh        PRESENT
 ```
 
 The functional gap the old text described — "no single orchestrator and no
-single shell-level gate" — is closed. There is one sequencer over eight stages,
-one gate declaring 120 checks across two phases — 111 when this was written,
-then 114, then 117, and every addition since is listed in the gate's own
+single shell-level gate" — is closed. There is one sequencer over nine stages,
+one gate declaring 134 checks across two phases — 111 when this was written,
+then 114, 117 and 120, and every addition since is listed in the gate's own
 per-group table beside `GROUP_CHECKS_ALL` — and one
 committer taking three
 ordered checkpoints, each with its own regression suite. `test_artifacts.py`
@@ -7420,18 +7512,22 @@ one way to get it wrong.** Rows were appended pass by pass, so a row's
 "Current measurement" means *current at the pass that added it* — and several
 early rows were themselves superseded by later ones. The rule is simple: **the
 later row wins**, and the explicit divider below separates the rows measured on
-the retired 419-frame record from the rows measured on the shipped 326-frame
-one. Where a digest, a count or a chain is what you are after rather than a
-history of corrections, go to *The shipped derivative chain, as it stands*,
-which states the current values once, with the date they were taken.
+the retired 419-frame record from the rows measured on the 326-frame one that
+followed it. Where a digest, a count or a chain is what you are after rather
+than a history of corrections, go to *The shipped derivative chain, as it
+stands*, which states the current values once, with the date they were taken.
 
 **Read the first row first.** The table below was written when the tree held
 Ambrose Halloran's 326-frame set, and its own top row announces that set as
-current. It no longer is. The row added above it on **Monday, August 10, 2026**
-supersedes it and everything downstream of it that carries a 326 or a 419.
+current. It no longer is — and neither is the row that first superseded it: the
+tree holds Odette Vachon's **307**-frame Fairport Harbor recording, not the
+**305**-frame Barrows one that row measured. The row added on **Wednesday,
+August 12, 2026** supersedes both, and everything downstream of it carrying a
+419, a 326 or a 305.
 
 | Earlier statement | Where | Current measurement |
 | --- | --- | --- |
+| **the shipped session is Odette Vachon's 305-frame Barrows recording, 219.750 + 3.000 = 222.750 s, with a 62-entry amendment ledger** | **the row below, and every section it points at** | **superseded wholesale.** The tree holds Odette Vachon's **307**-frame recording in **Fairport Harbor**, totalling **288.500 + 12.000 = 300.500 s**, with a **202**-row amendment ledger reaching **201** of those frames. She *lived*, so there is no `graveyard/` and no `memorial/`; the Barrows recording by the same survivor ended in death and was retired for reasons its own section gives. Derived artifacts: **307** cues, **307** transcript entries, **452** `file` directives over **451** `duration` lines in the concat list, **12** transition groups of twelve images (**144** in all), **307** tracked PNGs, **452** encoded packets, container **300.560 s**. The gate declares **134** checks — **119** before a commit and **37** after one — not the 120 the rows below quote. Suites, recounted **2026-08-12**: **3589** tests across **21** modules, `OK (skipped=2)`. Digests are deliberately NOT restated here: they are in *The shipped derivative chain, as it stands*, measured the same day, because a digest list copied into a corrections table is simply a second place for it to go stale. See *[The shipped session: Odette Vachon of Fairport Harbor](#the-shipped-session-odette-vachon-of-fairport-harbor)* |
 | **the shipped session is Ambrose Halloran's, 326 frames, 218.500 + 1.000 = 219.500 s, with no amendment ledger, ended by a signal inside `death_screen()`** | **the row below, and every section it points at** | **superseded wholesale.** The tree holds a **305**-frame session played by **Odette Vachon** in **Barrows**, totalling **219.750 + 3.000 = 222.750 s**, with a **62**-entry amendment ledger. The reason is R11 again, from the other direction: Ambrose's ending path was cut short by a signal, so `cleanup_at_end()` never ran, there was no `graveyard/` or `memorial/`, and the tree kept a live-shaped save for a dead man. Odette's death ran the engine's whole ending path and every screen of it was captured. Derived artifacts: **305** cues (206 one-line, 99 two-line, longest line 42 columns), **305** transcript entries, **341** concat entries with the final `file` repeated to 342 lines, **3** transition groups of 12 frames (**36** images), **305** tracked PNGs, **342** encoded frames, container **222.800 s**. Digests, measured on the shipped tree: `manifest.jsonl` **`9307363ad4c0…`** 69 574 B and `build/observations.jsonl` **`096a7292e89b…`** — both byte-identical to the capture; `amendments.jsonl` **`1274d753815b…`** 54 615 B, 62 rows; `timeline.json` **`3c4339c0412f…`** 200 163 B; `transcript.md` **`374f6f0b97b2…`** 14 465 B, titled `# Odette Vachon — what I did, and why`; `transcript.srt` **`7dd7ec12a9f7…`** 19 462 B; `cata-play.mp4` **`990ad52b4710…`** 9 189 760 B; `cata-play-cc.mp4` **`a82d6ffb387d…`** 9 205 909 B; `build/concat.txt` **`c37bee284844…`** 16 692 B; `build/movie.json` **`26bae7499ea5…`** and `build/transitions.json` **`96ac1c53e770…`**. The gate's own verdict over this tree is committed at `playthrough/acceptance-report.txt`: **117 of 117** checks passed, which was its whole declared inventory then; the gate now declares **120** and the receipt is the run that published the record rather than a statement about the current inventory. Suites, recounted 2026-08-10 over the integrated tree: **3017** tests across **21** modules, `OK (skipped=1)`. See *[The shipped session: Odette Vachon](#the-shipped-session-odette-vachon-of-fairport-harbor)* |
 | **the shipped session is Delphine Ouellette's, 419 frames, 233.000 s, with a 27-entry amendment ledger** | **essentially this whole page** | **superseded wholesale.** The tree now holds a **326**-frame session played by **Ambrose Halloran**, totalling **218.500 + 1.000 = 219.500 s**, with **no** amendment ledger (there is nothing to amend: the record was written once and not corrected). Frames, manifest, telemetry, digest ledger, date audit, timeline, both transcripts, both films, the dossier and the userdir were all replaced. The reason is R11: Delphine died, `ACTION_SAVE` is unreachable after death, so the Save & Quit her artifacts implied had never happened — and a captured record cannot be edited into compliance. See *The re-recorded session: Ambrose Halloran* |
 | 419-frame counts of every derived artifact — SRT cues, transcript entries, concat entries, transition groups, tracked PNGs | throughout | **326** cues, **326** transcript entries, **338** concat entries, **1** transition group of 12 frames, **326** tracked PNGs |
@@ -7441,7 +7537,7 @@ supersedes it and everything downstream of it that carries a 326 or a 419.
 | "246 of 395 clock readings were reconciled" | same | **204 of 419**, all with `reconciled_reason: clock-missing` |
 | the date line's weekday disagreement | its own section | this set reports `date_corrected_count` **0** and `date_conflict_count` **0**; 215 `confirmed`, 204 `unverified` |
 | two advisory hits on "frame" at rows 509/523; then **three** at rows 233/235/237 | the transcript-clean section | **none**: the blunt pattern, `frame` included, now returns nothing against `transcript.md`, `transcript.srt` or `dossier.md` — the published entries say `window`, which is the noun the game's own message used, supplied by amendments 9-11 of the ledger rather than by an edit to those three recorded rows |
-| 1377 tests across eleven test modules (and 152 earlier still), then 1992, then 2035, 2048, 1998 and 2222 in the individual remediation passes | the suite sections | 2284 across sixteen modules when this row was written; then 2607 across 20; **recounted 2026-08-10 over the integrated tree it is 3017 tests across 21 modules, `OK (skipped=1)`** — the artwork anchor was re-derived and now verifies, so the error that recount carried is gone, and the one remaining skip is the read-permission test declining as root. See *The tooling's own suites, mechanically counted*. Each earlier figure was correct for the tree it was measured in |
+| 1377 tests across eleven test modules (and 152 earlier still), then 1992, then 2035, 2048, 1998 and 2222 in the individual remediation passes | the suite sections | 2284 across sixteen modules when this row was written; then 2607 across 20; then 3017 across 21 on 2026-08-10; **recounted 2026-08-12 after the remediation of the published record and the pipeline's defences it is 3589 tests across 21 modules, `OK (skipped=2)`** — and only 486 of that growth is that pass's, because four modules it never opened already counted 86 higher than the 2026-08-10 table published. Both skips are environment-conditional and neither is new: the read-permission test declines as root, and the path-ancestry test declines because this sandbox's own base is an unsafe road. See *The tooling's own suites, mechanically counted*. Each earlier figure was correct for the tree it was measured in |
 | "four AAP artifacts do not exist", then "three" | its own section | **none**: `run_pipeline.sh`, `verify_artifacts.sh`, `commit_artifacts.sh` and `playthrough/README.md` all exist, each of the three scripts with its own suite. Those suites were 37, 21 and 142 tests when this row was written; **recounted 2026-08-10 they are 63, 50 and 157** |
 | the commit identity element is "UNMET, and blocked", and `commit_artifacts.sh` "does not, and will not" write it | the commit-identity section | **implemented**: `persist_identity_locally` records the identity git already resolved, `--local` only, never overwriting an existing pair. The container measurement is what settled it — with `HOME` reassigned and no `GIT_*` forwarded, an identity outside the mounted tree does not exist inside it |
 | "the two checkpoints" | the checkpoint section | **three**: `dossier` → `creation` → `final`, because "before the first gameplay frame" is ancestry between two commits |
@@ -7995,41 +8091,47 @@ the composed cache and re-verified against the tracked anchor:
 
 **One place, one date, one set of numbers.** Everything above this point that
 quotes a digest is either superseded or describes a retired record; this is the
-chain in the tree, measured with `sha256sum` and `stat -c%s` on **2026-08-10** at
-`5f902536e8`. Each row also says what binds it to its inputs, because a digest
-with no binding proves only that a file exists.
+chain in the tree, measured with `sha256sum` and `stat -c%s` on **2026-08-12**,
+after the code-review remediation regenerated the derived half of it and before
+the checkpoint that commits that regeneration — so every figure here is a
+working-tree figure, taken from the bytes the next checkpoint will stage. Each
+row also says what binds it to its inputs, because a digest with no binding
+proves only that a file exists.
 
 | Artifact | sha256 | Bytes | Bound to its inputs by |
 | --- | --- | ---: | --- |
-| `playthrough/manifest.jsonl` | `ce694804dcb7463a867ceb466928c5a3b5de305588537257987665b2f58cb9af` | 80 370 | the capture itself — byte-for-byte what the session wrote, never edited |
-| `playthrough/build/observations.jsonl` | `c02994c258f59b05…` | 230 538 | likewise, one telemetry row per capture |
-| `playthrough/build/frame_digests.jsonl` | `2d2a5d833bf582e1…` | 84 369 | 326 rows, attested in `timeline.json` as `"verified": 326` |
-| `playthrough/build/frame_dates.jsonl` | `1e19517b01164f48…` | 72 206 | the per-frame date audit `ocr_clock.py` wrote as it read |
-| `playthrough/amendments.jsonl` | `3e93306d92ad5653…` | 15 158 | 14 rows over 11 frames, each bound to the sha256 of the manifest line it amends |
-| `playthrough/timeline.json` | `d04c2d72849d69ceef392500211e1ee67f96489b8696de1be965ca2353e48747` | 220 427 | names `manifest.jsonl` `ce694804…` with `"rows": 326`, the ledger `3e93306d…` with `{"rows": 14, "applied": 14}`, and the digest ledger `2d2a5d83…` |
-| `playthrough/build/concat.txt` | `da6a4cd484fa79c0813b52b721942e0a455bb802715fd8424ca082865adc9cc5` | 16 354 | 339 `file` directives, 338 `duration` lines |
-| `playthrough/build/transitions.json` | `9d92e92fa43b26d4…` | 2 962 | one group at frame 139, 12 outputs, and the font `data/font/Terminus.ttf` `e0d64567…` |
-| `playthrough/cata-play.mp4` | `23da4ae0210a048a4324650ad4bf687bf98ef095cd1914a28e54fb34124b02e9` | 3 749 146 | `build/movie.json` names this digest, the concat list `da6a4cd4…` and the timeline `d04c2d72…` |
-| `playthrough/build/movie.json` | `0e138eee9953a84b…` | 619 | the generation manifest for the row above |
-| `playthrough/transcript.srt` | `4cdec24bf43d7413329d853ab43fb1067e04e225d0ae434e6b8e734d7e0225f0` | 29 078 | `build/transcript.json` names it beside the timeline `d04c2d72…` |
-| `playthrough/transcript.md` | `2ec57c3d13df32088754bd60b285ac1b810453f168bcfac03963652939f65469` | 23 727 | same generation manifest, same timeline, same pass |
-| `playthrough/build/transcript.json` | `68d26e3c821c90d2…` | 530 | the generation manifest for the two rows above |
-| `playthrough/cata-play-cc.mp4` | `5d75bc23f88df922…` | 3 774 677 | the base film's video stream copied intact plus the cue file above, muxed as `mov_text` |
-| `playthrough/dossier.md` | `167f60d958c83083…` | 9 965 | the survivor's own account; `make_srt.py` derives `transcript.md`'s title from its first heading |
+| `playthrough/manifest.jsonl` | `5b44cad73a5a29a8f5a7dc464eb197a6fae3c2b118ae012a5f6920da07238d74` | 100 014 | the capture itself — byte-for-byte what the session wrote, never edited |
+| `playthrough/build/observations.jsonl` | `e00a31af6f9608ff…` | 245 442 | likewise, one telemetry row per capture, **307** rows |
+| `playthrough/build/frame_digests.jsonl` | `68f76ea8436c4a8b…` | 79 528 | **307** rows, attested in `timeline.json` as `{"rows": 307, "verified": 307}` |
+| `playthrough/build/frame_dates.jsonl` | `495f8ff36da32151…` | 66 335 | the per-frame date audit `ocr_clock.py` wrote as it read, **307** rows |
+| `playthrough/amendments.jsonl` | `9e967f5da3ebf66a…` | 188 799 | **202** rows over **201** frames, each bound to the sha256 of the manifest line it amends |
+| `playthrough/timeline.json` | `0a73bda25cc879592906d804522e8ae985f77235de5c5f5b62a216c9b68893e9` | 211 693 | names `manifest.jsonl` `5b44cad7…` with `"rows": 307`, the ledger `9e967f5d…` with `{"rows": 202, "applied": 202}`, and the capture ledger `68f76ea8…` with `{"rows": 307, "verified": 307}` |
+| `playthrough/build/concat.txt` | `ce01bc93ae05d811c8b8b50ee75032a4da98af27871ec202650c0fe41654c5b3` | 22 845 | **452** `file` directives over **451** `duration` lines — 307 captures plus 144 transition images, with the final `file` repeated |
+| `playthrough/build/transitions.json` | `7bdce46d06cca349…` | 30 552 | **12** groups, **144** outputs, and the font `data/font/Terminus.ttf` `e0d64567…` |
+| `playthrough/cata-play.mp4` | `8e3610496ef3a3a24b36eeb8b8b0be9e7160c2c4382b14b03df7e4ab6a4769eb` | 20 047 349 | `build/movie.json` names this digest, the concat list `ce01bc93…` and the timeline `0a73bda2…` |
+| `playthrough/build/movie.json` | `fc0b45768f835023…` | 621 | the generation manifest for the row above |
+| `playthrough/transcript.srt` | `c71154ae892f602739674409f4985d9e41395d0c380d16fb002932e6cf24eb95` | 28 092 | `build/transcript.json` names it beside the timeline `0a73bda2…` |
+| `playthrough/transcript.md` | `4946111d0e1d32b173623d10352769d6ba751aaa07e7e403827ec6a5c7fc1670` | 23 061 | same generation manifest, same timeline, same pass |
+| `playthrough/build/transcript.json` | `4a540e39e156a74b…` | 530 | the generation manifest for the two rows above |
+| `playthrough/cata-play-cc.mp4` | `69c788681d664d37…` | 20 072 142 | the base film's video stream copied intact plus the cue file above, muxed as `mov_text` |
+| `playthrough/dossier.md` | `28346880d6441c8d…` | 4 432 | the survivor's own account; `make_srt.py` derives `transcript.md`'s title from its first heading |
 
-**The one transition group is `trans_00139_00.png` … `trans_00139_11.png`**, and
-frame 139 is the only entry the ceiling engaged on (raw delta 13.0 s, held at
-10.0 s). There is no `trans_00001_*` and there should not be: frame 1's raw
-delta was 0.0 s, so it takes the 0.25 s floor and flags no transition. A
-reference to a frame-1 transition anywhere is a reference to a file that has
-never existed in this record.
+**Twelve transition groups, not one**, at frames **170**, **279**, **283**,
+**284**, **285**, **286**, **296**, **298**, **299**, **303**, **304** and
+**305** — every entry whose raw clock delta exceeded the 10 s ceiling —
+materialised as `trans_<frame>_00.png` … `trans_<frame>_11.png`, **144** images
+in all under `playthrough/build/transitions/`. There is no `trans_00001_*` and
+there should not be: frame 1's raw delta is 0.0 s, so it takes the 0.25 s floor
+and flags no transition. A reference to a frame-1 transition anywhere on this
+page is a reference to a file that has never existed in any of these records.
 
 **Container facts, from `ffprobe` on the same date.** `cata-play.mp4`: one
-stream, `h264` High, `yuv420p`, 1920×1080, `nb_read_packets=339`,
-`duration=219.560000`, no audio. `cata-play-cc.mp4`: stream 0 `h264` (untagged
-language), stream 1 `mov_text` with `TAG:language=eng`, `duration=219.560000`,
-no audio. The computed timeline is 218.500 s of capture windows plus 1.000 s of
-transition, i.e. **219.500 s**, and `final_cue_end` equals it exactly.
+stream, `h264` High, `yuv420p`, 1920×1080, `nb_read_packets=452`,
+`duration=300.560000`, no audio. `cata-play-cc.mp4`: stream 0 `h264` (language
+tagged `und`), stream 1 `mov_text` with `TAG:language=eng`,
+`duration=300.560000`, no audio. The computed timeline is 288.500 s of capture
+windows plus 12.000 s of transition, i.e. **300.500 s**, and `final_cue_end`
+equals it exactly.
 
 ### R1's repository-local identity: what this branch carries
 
@@ -8132,23 +8234,36 @@ the three sections below opens with what became of it.
 > sure of from what it is only suspicious of: a reading with no word beyond the
 > key that produced it, or one that does not close as a sentence, is a FAIL; a
 > single-word reading, or one repeated inside its own neighbourhood, is a WARN
-> that names the frame. **Measured over the record shipped now:** all **307**
-> entries pass the falsifiable half — each closes as a sentence and each carries
-> at least one word beyond its own keystroke, **42** of them a single character
-> transcribed during a spelling run — with **no** single-word entries and
-> **two** that repeat a sentence used within the previous three. Those two are
-> the whole of the shortfall and are named here rather than left in a terminal:
-> **frames 225 and 226 both read *"South. Off the tarmac, over the kerb, into
-> the green."*** — two consecutive steps of one walk south off the car park and
-> onto the golf course, narrated identically because they were the same act
-> continued. The gate reports them and declines to decide whether that is a
-> reason, which is the honest division of labour: it can tell that two sentences
-> are the same, and it cannot tell whether one of them is a placeholder. A reader
-> can, and the entries are cited here so that a reader gets the chance. The five
-> thinnest readings are frames **11 (*"I."*)**, **18 (*"I."*)**, **19 (*"S."*)**,
-> **26 (*"I."*)** and **31 (*"C."*)**, each one keystroke of a name being typed
-> into the creator. The figures in the rest of this section are the 326-row
-> record's and are kept as the measurement they were.
+> that names the frame.
+>
+> **THIS PARAGRAPH WAS WRONG TWICE OVER, AND A LATER REVIEW SAID SO.** It used
+> to claim that the record shipped now carried **no** single-word entries, with
+> 42 of them "a single character transcribed during a spelling run" — as though
+> a transcribed character were not a single word. It is one, and the two claims
+> cannot both be true. **The measured figure was 44 single-word commentaries out
+> of 307**: 42 single characters from spelling runs, plus *"Next."* at frame 93
+> and *"Five."* at frame 144. The contract had also carried an explicit
+> exemption for a transcribed keystroke, which is what let the paragraph and the
+> gate agree with each other while both disagreed with the record.
+>
+> **Both halves are fixed, and neither by rewording.** The exemption is deleted:
+> the single-word class is now a **FAIL**, judged on the **commentary alone** and
+> with the same total-word rule `manifest.narration_substance_problem` applies
+> where a row is written, so the writer's door and the reader's gate cannot
+> disagree about what a label is. The union of note and commentary is still the
+> subject of the "carries a word beyond the key" property, which is what keeps
+> the 37 honest entries from being flagged. And the record itself was corrected
+> through 46 amendments — the 44 single-word cues and the two repeats — so
+> **measured over the record shipped now: 307 of 307 entries pass, each closing
+> as a sentence, each carrying a word beyond its own keystroke, and none a single
+> word**, with **no** entry repeating a sentence used within the previous three.
+> The repeat WARN is no longer emitted at all. The five thinnest readings are now
+> frames **120 (*"Marksmanship. No."*)**, **121 (*"Rifles. No."*)**, **267
+> (*"Two more."*)**, **47 (*"A. Boating."*)** and **48 (*"Show me."*)** — still
+> reported without a verdict, because three words can be a complete reason and
+> thirty can be padding, and that judgement is a reader's. The figures in the
+> rest of this section are the 326-row record's and are kept as the measurement
+> they were.
 
 R7 asks for first-person commentary explaining **why** each action was taken,
 and the gate that was supposed to check it only checked that the commentary was
@@ -8534,9 +8649,10 @@ obtainable by following a documented procedure instead of by having kept a copy.
   pass.
 * **The gate grew from 111 declared checks to 114** (101 of them functional),
   and every count in its own derivation table was maintained with it. It
-  declares **120** as this is written — 106 before a commit, 31 after one, 17 of
-  them in both phases — and the derivation table beside `GROUP_CHECKS_ALL`
-  remains the authority on which group holds which. It is
+  declared 120 when this pass was written and declares **134** now — **119**
+  before a commit, **37** after one, **22** of them in both phases (119 + 37 −
+  134) — and the derivation table beside `GROUP_CHECKS_ALL` remains the
+  authority on which group holds which. It is
   clean under `shellcheck` with no arguments, which it was not: a dead
   `check_frame_geometry` was deleted and two intentional `awk` literals carry
   narrowly scoped directives instead of a file-wide one.
@@ -8599,7 +8715,12 @@ commentaries were rewritten to fit while keeping the survivor's voice and her
 reason for acting, and — because one amendment per field is all there is — the
 ledger was **deleted and recomposed in one pass** as 156 amendments: one action
 note and 155 commentaries, each citing `make_srt.py`'s own `wrap_cue_text` as
-its basis. Validated before publication: 155 offenders, 155 replacements, none
+its basis. (That was the ledger's state then. It now holds **202** rows: a later
+code review found 44 commentaries that were a single word and two that repeated
+their neighbour, and those 46 were **appended**, ids 157-202, without touching
+any of the 156 — the recompose-in-one-pass move was needed only because the
+geometry rewrite touched fields that already carried amendments, which this
+later one did not.) Validated before publication: 155 offenders, 155 replacements, none
 missing, none superfluous, none still too long, none identical to what was
 recorded, no meta-language hits, longest result 78 characters. Measured on the
 published artifact afterwards: **maximum 2 lines, maximum 42 columns**, across
@@ -9143,16 +9264,29 @@ this was renamed from `test_two_live_processes_have_different_identities` to
 `test_a_later_process_of_the_same_program_differs`, because the first name
 claimed something untrue.
 
-**The check-then-signal race is narrowed, not closed.** The review asked for
-pidfds. `playthrough_headless_down` is bash, and bash has no pidfd; what it does
-instead is verify the program and the owning uid immediately before it signals,
-so the window is a few syscalls wide rather than the whole teardown. That is an
-improvement and not a proof, and the distinction is worth stating plainly:
-running as root, signalling a recycled pid is not a failed teardown, it is
-killing a stranger's process. Closing the window properly needs
-`pidfd_open`/`pidfd_send_signal`, which needs a compiled helper or a Python
-teardown — neither of which this feature has any other reason to grow. Recorded
-as a divergence rather than quietly treated as done.
+**The check-then-signal race WAS narrowed, and is now closed.** This entry used
+to end "recorded as a divergence rather than quietly treated as done", on the
+reasoning that `playthrough_headless_down` is bash, bash has no pidfd, and
+verifying the program and owning uid immediately before `kill "${pid}"` narrows
+the window to a few syscalls. A later security review declined that reasoning,
+and it was right to: narrowed is not closed, and running as root the failure mode
+is not a failed teardown but killing a stranger's process.
+
+**What was wrong with the argument.** Bash has no pidfd — but the pipeline
+already requires a *verified interpreter*, and Python has had `os.pidfd_open` and
+`signal.pidfd_send_signal` since 3.9. "This feature has no other reason to grow a
+Python teardown" was false: it has a Python teardown available in
+`PLAYTHROUGH_PYTHON` at every point where it signals anything.
+
+**What replaced it.** `playthrough_signal_pid KIND PID [SIGNAL]` pins the process
+with `os.pidfd_open`, runs the identity checks **after** the handle is held, and
+delivers the signal **through the handle** — so between validating and signalling
+there is no number left to recycle, and a process that has already exited yields
+`ESRCH` and no signal at all. It is handed a fixed program and four arguments with
+nothing interpolated. **Fail-safe rather than fail-open:** a kernel or interpreter
+without pidfd support gets a refusal and a diagnosis naming what to stop by hand
+(exit 2), because falling back to signalling a revalidated number is precisely the
+defect being removed. `kill "${pid}"` no longer appears on any teardown path.
 
 #### Two defects the work produced, and one it exposed
 
@@ -9581,3 +9715,252 @@ that carries this remediation therefore cannot exist until that commit does. The
 generator is fixed and proven; the document it generates is regenerated from a
 real post-commit run and published in the same sequence that commits it, which
 is the same pattern every earlier acceptance report in this history followed.
+
+---
+
+## Code-review remediation of the published record and the pipeline's defences
+
+A code review read this feature end to end — the two ignore-file changes, the
+nineteen authored units under `tooling/`, the artifact set and all four
+documents — and returned **seventeen findings: one critical, eight major, seven
+minor and one informational**. What follows is what changed, what was measured
+and what is still open, stated as open. Several findings are recorded in the
+sections they belong to rather than here, and those are cross-referenced instead
+of repeated.
+
+### The staging scan reads every byte now, and binary files are not skipped
+
+The committer has always announced *"a secret and credential scan over every
+path"*, and a review measured what it actually did: `SECRET_SCANNER` read the
+first `WINDOW=262144` bytes of each file, and `continue`d on any file whose
+prefix contained a NUL byte. So a credential past 256 KiB in a large text file,
+or anywhere in a save, an MP4 or a PNG, was not looked at — while the report
+above it claimed the whole tree had been.
+
+It now **streams** every file in 1 MiB chunks with an 8 KiB overlap, so a match
+spanning a chunk boundary is still found once, deduplicated by absolute offset. A
+file containing NUL bytes is no longer skipped: it is scanned with the
+high-confidence rules under a **printable-ASCII constraint**, which is what
+distinguishes an embedded credential (printable by construction, because it has
+to survive being copied) from random binary noise that happens to match a
+character class.
+
+Measured over the real tree: **665 files, 112 890 194 bytes, 3.9 s**, and exactly
+the one finding the reviewed baseline already accounts for. One genuine defect
+turned up while measuring, and it was a performance one rather than a
+correctness one: an unbounded quantifier in one rule backtracked quadratically on
+long binary runs, which on a 20 MB film is the difference between seconds and
+never finishing. Every quantifier in every rule is now bounded.
+
+### Stored markup could not be published before, and now cannot be recorded
+
+`assert_no_raw_markup` guarded the transcript's generated **heading** and nothing
+else; a commentary body was held only to `STYLE_RE`, which names the styling tags
+a caption could carry — `font`, `i`, `b`, `u`, `s`. `<img src=x onerror=…>` is
+none of them, so a payload in a commentary passed every check and was written
+verbatim into `playthrough/transcript.md`, which is Markdown and hands raw HTML
+to whatever renders it.
+
+The rule now lives in `manifest.raw_markup_problem` — an angle bracket, an
+ampersand, or an `on<word>=` attribute — and is applied at **three** doors: where
+a row is written (`build_row`), on **both sides** of an amendment
+(`build_amendment`, because `recorded` is a quotation of a row the writer would
+refuse), and at publication (`make_srt._commentary_problems`, so a payload that
+reached the record another way still cannot be published). `session.py` routes
+its pre-send gate through the same predicates, so the door the operator knocks on
+and the gate the artifact passes cannot differ in strength.
+
+**The reader is deliberately not given the rule.** `row_field_problems()` and
+`verify_manifest()` still read anything and say what is wrong with it, because a
+reader that refuses turns a foreign row into an unreadable manifest instead of a
+reported one. The asymmetry is written into both docstrings so it is not
+"tidied up" later.
+
+### The decoders are bound to a descriptor, not to a pathname
+
+Both decode doors used to validate a file and then **reopen it by name** for the
+native decode — `lstat`, check the header, then hand the path to Pillow. Between
+those two steps the pathname can be repointed (CWE-367), so what was checked and
+what was parsed need not be the same bytes.
+
+`ocr_clock.read_verified_frame` and `make_transitions._verified_frame_array` now
+open **once** with `O_NOFOLLOW|O_CLOEXEC`, validate the **descriptor** with
+`fstat` (regular file, owned by this account, not writable beyond its owner),
+read the bytes from that descriptor, take the geometry from those same bytes, and
+decode them from an in-memory buffer with `formats=["PNG"]` under the existing
+pixel ceiling and CPU limits. No pathname reaches a decoder at any point.
+
+One consequence is worth naming because it changes what MoviePy does:
+`compose_transition_group` now builds `ImageClip(array)` from the decoded array
+rather than `ImageClip(path)`. MoviePy's `ImageClip` accepts either and hands a
+filename to Pillow itself, which would have reopened the path and undone the
+guarantee — an array cannot be reopened. The only file MoviePy still opens by
+name anywhere in this pipeline is the transition card's typeface, and that one is
+checked against an attested digest before it is passed.
+
+### The evidence anchor is asked of each checkpoint, not of the history
+
+`check_evidence_anchor_trailer` searched the history for the newest commit
+carrying a `Playthrough-Evidence-Anchor` trailer and compared that to the chain
+head. A review pointed out what that does and does not establish: it establishes
+that *some* commit published the current head, and it says nothing about whether
+the checkpoints that produced the evidence published one. In this history they
+did not — the mechanism was built after them, and every row in the chain is a
+retrospective `remediation` seal — so the check passed while the property it
+existed for did not hold.
+
+The gate now takes the question **per required checkpoint**: `creation`, `final`
+and `media`. A declared trailer that is not the chain head is still a **FAIL**,
+checked first. A required checkpoint that publishes no head of its own is a
+**named divergence**, and it names them:
+
+```text
+DIVERGENCE  the evidence anchor's head is published in the history
+      observed: commit 8873312545 … declares Playthrough-Evidence-Anchor:
+                468793a63e813a78, which is the head the anchor ends on, but 5
+                required checkpoint(s) publish no head of their own:
+                800ab8e11f (creation) 7e10721d4e (creation) 555b12b88d (final)
+                4e8a49879a (final) b0038360c7 (media)
+```
+
+**Five, not three** — this history contains two `creation` commits and two
+`final` commits, which the earlier count had not accounted for. What would close
+the divergence is a session re-recorded through the hardened committer from its
+first commit onward. What cannot close it here is publishing the head to an
+external transparency service: this feature introduces **no network surface at
+all**, by plan (§0.8.2), and growing one to satisfy an attestation would be a
+larger deviation than the one it fixed. Recorded as a divergence rather than
+quietly treated as done.
+
+### The narration gate had an exemption that hid 44 entries
+
+Covered where the contract itself is documented, under *The narration: 43
+sentences that said what was pressed and not why* — the short version is that the
+single-word class was a WARN with an explicit exemption for a transcribed
+keystroke, the class is now a FAIL with no exemption and is judged on the
+**commentary alone**, and the 44 entries it names were corrected by 46 appended
+amendments (ids 157-202) with the whole chain regenerated from the amended
+record. The two entries that repeated frame 224's sentence are in the same set.
+
+### The seventh attribute rule is gone
+
+`.gitattributes` carried a seventh addition beyond the six the plan's file schema
+permits: `playthrough/userdir/** -whitespace`, added so `git diff --check` would
+stop reporting *new blank line at EOF* against files the **engine** writes that
+way. The reasoning still holds — a memorial rewritten to please a whitespace
+linter is no longer the memorial the game wrote — but the authority did not: it
+was a change to repository-wide configuration made on this feature's own
+authority, and the schema says *exactly* these six and no seventh.
+
+Removed, along with its seventeen-line comment block, and with it the two
+witnesses in `commit_artifacts.sh`'s `ATTRIBUTE_WITNESSES` and the row in
+`REQUIRED_ATTRIBUTES`. `git diff --numstat f38c2fbae3 -- .gitattributes` now
+reads exactly `6	0`. **Nothing was edited to compensate**, and the measurement
+that matters is that nothing needed to be: `git diff --check` over the committed
+tree reports **nothing at all**, so the waiver had been suppressing a report the
+current recording does not produce. `test_readme.py` asserts that emptiness
+directly, so a future recording whose engine files *do* end with a blank line
+surfaces as a finding instead of being silenced in advance.
+
+Its comment had also described the whole of `playthrough/userdir/` as
+engine-written, which is not quite true — `config/options.json` is patched in
+place by `seed_options.py` — and the corrected prose says so.
+
+### Nine stages, not eight
+
+`run_pipeline.sh`'s explanatory comment said *"Five of the eight stages WRITE a
+delivered artifact … Three do not"* while `STAGE_ORDER` has held **nine** since
+the `publish` stage was split out, and `STAGE_DERIVES_EVIDENCE` marks five
+producers and **four** non-producers. The prose had lagged its own table. Both
+the comment and the usage header now describe nine stages, and the two stale
+copies of the count on this page — a `present, 8 stages` row and *"one sequencer
+over eight stages"* — are corrected with them.
+
+### The Pillow residual, restated rather than re-explained
+
+`pillow==11.3.0` still carries published advisories that its own project first
+fixed in **12.1.1**, and it is still pinned there because `moviepy==2.2.1`
+declares `pillow<12.0,>=9.2.0` and 2.2.1 remains the newest MoviePy release. Two
+things were wrong with how `requirements.txt` explained that, and both are fixed
+in the file itself: one compensating control described behaviour the descriptor
+rewrite above had replaced (it said `make_transitions.py` decodes nothing itself
+and lets `ImageClip` do it, which is exactly what no longer happens), and the
+note did not state plainly enough that **vulnerable decoder code remains
+installed**. It now does, in those words.
+
+Three routes were considered and refused, with the third added by this pass:
+adopting a published MoviePy fork (the one that exists forks **1.x**, which lacks
+the API this pipeline is written against), building a private patched Pillow (an
+unverifiable native binary no advisory database describes), and **dropping
+MoviePy altogether** — refused on the plan's authority, which names it as one of
+the five libraries the requirement asks for (§0.5.1) and puts the transition unit
+where it is genuinely load-bearing (§0.7.2.4). What is done instead is isolation,
+and the isolation is now measurable: there are exactly **two** Pillow decodes in
+the pipeline, both over an in-memory buffer restricted to the PNG plugin, both on
+bytes read through a validated descriptor, both under a pre-decode pixel ceiling,
+and both on a PNG this pipeline captured itself.
+
+The trigger remains enforced rather than stated: `env.sh`'s closure checker reads
+MoviePy's declared Pillow bound from installed metadata and **fails** the moment
+it admits 12.1.1. Its current reading, verbatim: *"moviepy declares
+pillow<12.0,>=9.2.0, which excludes the first fixed release 12.1.1, so 11.3.0
+remains the newest permitted and the accepted risk is still forced rather than
+chosen."*
+
+### What the published documents were saying that was not so
+
+Four findings were about the documents rather than the code, and they are the
+ones worth being blunt about, because a report is the only part of this a reader
+is obliged to trust.
+
+* **`REPORT.md` claimed "No entry is a single word."** It was false for 44 of the
+  307 entries. The section now states the count, names the two classes, records
+  that both were corrected through the ledger, and quotes the gate's verdict over
+  the corrected record instead of asserting its own.
+* **It cited `playthrough/userdir/debug.log`, which does not exist.** The engine
+  writes its log beside the configuration, at
+  `playthrough/userdir/config/debug.log`. The path is corrected, and the claim
+  narrowed with it: a case-insensitive search of that log for `debug` matches
+  nothing, and the report now says explicitly that the claim is *no debug action
+  was ever activated* rather than *the string never occurs* — because
+  `DEBUG_DIFFICULTIES` is an ordinary world option the engine writes into
+  `config/options.json` and `external_options.json` for every world.
+* **Stale counts in all three documents.** `122`/`108`/`31` declared checks
+  against the gate's actual `134`/`119`/`37`, and `662` tracked files under
+  `playthrough/` against `665`. Corrected, and where a figure is structural the
+  documents now point at the tool that prints it rather than quoting it —
+  `test_readme.py` polices the page for the literals that went stale, including
+  the ones that are correct today, on the principle that a correct literal is a
+  stale literal waiting to happen.
+* **`README.md` listed `REPORT.md` twice** in a table headed "the four
+  documents", and quoted `44 insertions` above a paragraph saying `26 inserted
+  lines`. The duplicate row is merged. The insertion discrepancy had a cause
+  worth recording: the diff was taken as `f38c2fbae3..HEAD` while the prose
+  counted the working tree, and the 18-line difference was precisely the seventh
+  attribute rule and its comment block. Every diff in that section is now taken
+  against the **working tree**, which is the form whose answer does not depend on
+  whether the checkpoint carrying the page has been taken yet.
+
+### The identity conflict, quoted rather than paraphrased
+
+The remaining half of the identity finding was not about the verdict — that was
+already a divergence — but about the *authority* for it. A paraphrase of an
+exception is not an exception, so the displacing directive is now quoted word for
+word in the gate itself, from a single constant (`IDENTITY_DIRECTIVE`), and both
+branches of the check record one divergence through one helper so the two cannot
+drift apart. `REPORT.md` quotes the same text. The divergence now says in its own
+words that the two instructions cannot both be obeyed and that this is a
+requirement-level conflict **for a human to settle**, rather than implying a run
+of the gate could close it.
+
+### The credential, which is contained and not resolvable here
+
+The critical finding is the platform push token in `.git/config`, and it is the
+same one *Security-review remediation: the credential* records at length. What
+this pass added is the measurement rather than the argument: the token is
+390 characters, the file is mode `0600` and owned by `root`, `.git/config` is
+**not a tracked file**, and the whole-file scanner described above — now reading
+every byte of every path, binary included — matches it in **zero** tracked files.
+It cannot be rotated or revoked from inside this checkout, and removing it
+removes the push path the platform provisioned. Disclosed and escalated; not
+closed.

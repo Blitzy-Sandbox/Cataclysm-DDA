@@ -885,6 +885,20 @@ def _commentary_problems(
             "entry %d's commentary carries markup or an override "
             "code; the caption track is plain selectable text and is "
             "never styled or positioned" % position)
+    # THE WIDER GATE, WHICH THE HEADING HAD AND THE BODY DID NOT.  A
+    # review measured the consequence exactly: STYLE_RE names the
+    # styling tags a caption could carry -- font, i, b, u, s -- and
+    # `<img src=x onerror=...>` is none of them, so a payload in a
+    # commentary passed every check here and was written verbatim into
+    # playthrough/transcript.md, which is Markdown and passes raw HTML
+    # to whatever renders it.  assert_no_raw_markup already held the
+    # generated HEADING to the wider rule; manifest.py now owns that
+    # rule, applies it where a row is written, and it is applied here so
+    # publication refuses a payload that reached the record another way.
+    problem = manifest.raw_markup_problem(
+        value, "entry %d's commentary" % position)
+    if problem is not None:
+        problems.append(problem)
     return problems
 
 
@@ -1575,25 +1589,21 @@ def assert_no_raw_markup(text: str, label: str) -> None:
     resembling a tag means something has gone wrong upstream rather than
     that a document needs cleaning.
 
+    THE RULE ITSELF LIVES IN manifest.py, and is imported rather than
+    restated, for the reason given beside the vocabulary gate at the top
+    of this file: two lists mean two answers to one question, and this
+    question decides whether a string is publishable.  A review found
+    exactly that drift -- this gate held the HEADING to the wide rule
+    while the body was held only to STYLE_RE, which does not name `img`
+    -- so the writer (build_row, build_amendment), this gate and
+    _commentary_problems now all reach the same verdict through the same
+    function.
+
     :raises TranscriptError: naming what was found.
     """
-    for needle, why in (
-            ("<", "an angle bracket, which opens an HTML tag"),
-            (">", "an angle bracket, which closes an HTML tag"),
-            ("&", "an ampersand, which opens an HTML entity"),
-    ):
-        if needle in text:
-            raise TranscriptError(
-                "%s contains %s (%r).  The header is written into "
-                "Markdown, which passes raw HTML to the renderer, so it "
-                "is refused rather than escaped: this artifact is "
-                "evidence, and a title carrying markup is a fault to "
-                "report rather than a string to clean"
-                % (label, why, needle))
-    if re.search(r"\bon[a-z]+\s*=", text, re.IGNORECASE):
-        raise TranscriptError(
-            "%s contains an HTML event-handler attribute, which would "
-            "execute in a permissive renderer" % label)
+    problem = manifest.raw_markup_problem(text, label)
+    if problem is not None:
+        raise TranscriptError(problem)
 
 
 def assert_survivor_name_grammar(name: str, source: str) -> None:

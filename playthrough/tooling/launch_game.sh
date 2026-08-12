@@ -16,8 +16,8 @@
 #      geometry capture.sh photographs.
 #   3. RESOLVE the REQUIRED tileset, MSXotto+, installed already or
 #      hydrated from a pre-placed pack whose provenance is verified
-#      first.  Its absence FAILS THE RUN; the ASCIITiles fallback is
-#      diagnostic only and has to be asked for by name.
+#      first.  Its absence FAILS THE RUN: there is one artwork contract
+#      and no substitute of any kind.
 #   4. PROBE for an existing save, so a run that finds a CHARACTER save
 #      RESUMES it instead of replacing it.  A world with no character in
 #      it has nothing to continue and is reused.
@@ -314,10 +314,6 @@ ${PLAYTHROUGH_RUN_DIR}/cata-play.pid}"
 # The real path of PLAYTHROUGH_RUNTIME_DIR, resolved once by
 # validate_tunables so every confinement comparison uses one string.
 RUNTIME_REAL=""
-# Set when a diagnostic ASCIITiles fallback is explicitly permitted; a
-# recorded session must never set it.  See resolve_tileset().
-ALLOW_TILESET_FALLBACK="${PLAYTHROUGH_ALLOW_TILESET_FALLBACK:-0}"
-
 # ---------------------------------------------------------------------
 # Results.  Functions here set globals rather than echoing values,
 # because a `$( ... )` capture runs in a subshell where `exit` from the
@@ -663,20 +659,6 @@ validate_tunables() {
     # `sleep` operand, and 0.5 is a reasonable settle.
     require_positive_number PLAYTHROUGH_LIVENESS_SETTLE \
         "${LIVENESS_SETTLE}" 3600
-
-    # PLAYTHROUGH_ALLOW_TILESET_FALLBACK is not a number, but it is
-    # read from the environment and it decides whether a run may be
-    # recorded in the wrong artwork, so it is held to exactly two
-    # values.  Anything else -- "yes", "true", "0 " -- is a mistake
-    # worth refusing rather than a value worth interpreting, because
-    # every interpretation of it that is not 1 is silently 0.
-    case "${ALLOW_TILESET_FALLBACK}" in
-        0|1) ;;
-        *)
-            die "${EX_USAGE}" "PLAYTHROUGH_ALLOW_TILESET_FALLBACK=" \
-                "'${ALLOW_TILESET_FALLBACK}' is neither 0 nor 1"
-            ;;
-    esac
 
     validate_scratch_path PLAYTHROUGH_BUILD_LOG "${BUILD_LOG}"
     BUILD_LOG="${VALIDATED_PATH}"
@@ -1545,12 +1527,10 @@ print(PIL.__version__)' 2>/dev/null
 # which is why it cannot stand in for the artwork requirement.  MSXotto+
 # (TILES=MshockXottoplus) is required and resolve_tileset() fails closed.
 #
-# ASCIITiles IS NOT A FALLBACK.  PLAYTHROUGH_TILESET_FALLBACK only NAMES
-# which tileset a substitution would use; nothing consults it unless
-# PLAYTHROUGH_ALLOW_TILESET_FALLBACK=1 authorises one, which is announced
-# and recorded as origin=fallback.  That authorisation is one of env.sh's
-# trust bypasses, so assert_capture_preconditions refuses a capture
-# launch while it is set.
+# THERE IS NO ASCIITiles PATH AT ALL.  A diagnostic fallback to the
+# checkout's own tileset used to exist behind a registered trust bypass;
+# the requirement names one pack, so the branch, the variable and the
+# bypass are all gone and resolve_tileset() has exactly two outcomes.
 assert_tiles_binary() {
     if [ ! -f "${PLAYTHROUGH_GAME_BIN}" ]; then
         die "${EX_PREREQ}" "no binary at ${PLAYTHROUGH_GAME_BIN}" \
@@ -1679,23 +1659,23 @@ ensure_headless() {
 # NO FALLBACK.
 #
 # WHICH REQUIREMENT, AND WHY IT OUTRANKS THE OTHER TEXT.  The plan says
-# two things about artwork and a review was right that enforcing one of
-# them without saying why is the implementation deciding for itself.  The
-# resolution is recorded once, in env.sh beside PLAYTHROUGH_TILESET, and
-# every consumer including this one enforces that single contract.  In
-# short: §0.1.2's last bullet is the only text that names a pack and it
-# is an instruction in the imperative -- "You must install the tilesets
-# found in this repository https://github.com/I-am-Erk/CDDA-Tilesets ...
-# and configure the game to use the MSXotto+ Tileset" -- while §0.7.3's
-# and §0.8.2's ASCIITiles statements describe the checkout BEFORE any
-# provisioning, reasoning from `.gitignore:52` as §0.4.1.3 says in as
-# many words.  A description of the starting state does not override an
-# instruction about what to do to it.
+# two things about artwork.  The resolution is recorded ONCE, as a
+# resolution record in playthrough/README.md ("Which artwork the
+# requirement means"), and every consumer -- this launcher, seed_options,
+# capture.sh and the acceptance gate -- enforces that single contract
+# without restating the reasoning.  In short: the only text that names a
+# pack is an instruction in the imperative, and the ASCIITiles statements
+# describe the checkout BEFORE any provisioning.  A description of the
+# starting state does not override an instruction about what to do to it.
 #
-# A fallback would be worse than a failure: the checkout ships
-# ASCIITiles, so a run that quietly fell back to it would still produce
-# a full-length movie of a genuine SDL tiles session with every count
-# tallying, and the only symptom would be ASCII art in the finished film.
+# The losing side is not carried as a switch either.  It was, once --
+# behind a trust bypass, announced on stderr, recorded as
+# origin=fallback -- and a review was right that a feature whose
+# requirement names one tileset should not ship two artwork branches.
+# Failing closed is also the safer half: the checkout ships ASCIITiles, so
+# a run that quietly fell back to it would still produce a full-length
+# movie of a genuine SDL tiles session with every count tallying, and the
+# only symptom would be ASCII art in the finished film.
 #
 # PLAYTHROUGH_TILESET is a DIAGNOSTIC OVERRIDE rather than a production
 # option: naming anything other than MSXotto+ leaves the artwork
@@ -2126,23 +2106,16 @@ find_required_tileset() {
 # <repo>/gfx/ -- and every one of those is a refusal, as is any failure
 # to READ the anchor at all.  Unestablished provenance is the finding.
 #
-# WHY THE FALLBACK IS EXEMPT.  PLAYTHROUGH_ALLOW_TILESET_FALLBACK is a
-# registered trust bypass: a run that took it is already diagnostic,
-# capture.sh already refuses to produce a production frame under it, and
-# the fallback artwork (ASCIITiles) is TRACKED, so git already says which
-# bytes it is.  The exemption is logged, never silent.
+# NOTHING IS EXEMPT FROM IT.  There used to be one exemption -- the
+# diagnostic ASCIITiles fallback, whose bytes git carries -- and the whole
+# fallback is gone, so the anchor now applies to every tileset this
+# launcher will ever resolve, unconditionally.  One requirement, one
+# tileset, one anchor, no exceptions to reason about.
 verify_tileset_provenance() {
     local dir="$1"
     local ident="$2"
     local view="$3"
     local checker="${PLAYTHROUGH_TOOLING_DIR}/tileset_provenance.py"
-    if [ "${TILESET_ORIGIN}" = "fallback" ]; then
-        playthrough_log "the resolved tileset is the DIAGNOSTIC" \
-            "fallback '${ident}', which is tracked in git and already" \
-            "refuses a production capture; the provenance anchor" \
-            "describes the required MSXotto+ and is not applied to it"
-        return 0
-    fi
     if [ ! -f "${checker}" ]; then
         die "${EX_PREREQ}" "no ${checker}, so the artwork under" \
             "'${dir}' cannot be verified against the tracked" \
@@ -2192,11 +2165,9 @@ verify_tileset_provenance() {
 resolve_tileset() {
     assert_repo_root
     local required="${PLAYTHROUGH_TILESET}"
-    # NAMED here, authorised nowhere.  This only says WHICH tileset a
-    # diagnostic run would substitute; ALLOW_TILESET_FALLBACK is the
-    # only thing that says one may be substituted at all.
-    local fallback="${PLAYTHROUGH_TILESET_FALLBACK:-ASCIITiles}"
-
+    # ONE TILESET, ONE BRANCH.  There is no substitute named here and no
+    # variable that could authorise one: see the resolution record in
+    # playthrough/README.md ("Which artwork the requirement means").
     scan_installed_tilesets
     if find_required_tileset "${required}"; then
         TILESET_ORIGIN="required-installed"
@@ -2208,18 +2179,6 @@ resolve_tileset() {
         scan_installed_tilesets
         if find_required_tileset "${required}"; then
             TILESET_ORIGIN="required-from-pack"
-        elif [ "${ALLOW_TILESET_FALLBACK}" = "1" ] &&
-             find_required_tileset "${fallback}"; then
-            # DIAGNOSTIC ONLY, reached solely because the operator set
-            # PLAYTHROUGH_ALLOW_TILESET_FALLBACK=1: a movie rendered in
-            # ASCIITiles does not satisfy the requirement however
-            # genuinely it was captured.
-            TILESET_ORIGIN="fallback"
-            playthrough_warn "'${required}' is unavailable, and" \
-                "PLAYTHROUGH_ALLOW_TILESET_FALLBACK=1, so this run" \
-                "uses '${TILESET_ID}' instead.  THIS IS A DIAGNOSTIC" \
-                "CONFIGURATION: the required tileset is MSXotto+, so" \
-                "do not record a session under it."
         else
             report_installed_tilesets
             if [ "${TILESET_LINKS_SKIPPED}" -gt 0 ]; then
@@ -2255,11 +2214,10 @@ resolve_tileset() {
                 "compose.py) at PLAYTHROUGH_TILESET_PACK, or install" \
                 "it under gfx/ by hand -- gfx/ is git-ignored at" \
                 ".gitignore:52, so either changes nothing tracked." \
-                "A fallback to '${fallback}' exists for DIAGNOSIS" \
-                "ONLY, and only when" \
-                "PLAYTHROUGH_ALLOW_TILESET_FALLBACK=1 is set" \
-                "deliberately; it does not satisfy the requirement" \
-                "and must not be used for a recorded session."
+                "There is no substitute and no switch that would" \
+                "accept one: an ASCII capture looks like a perfectly" \
+                "good frame, so a run that quietly came up on other" \
+                "artwork would fail the requirement invisibly."
         fi
     fi
 

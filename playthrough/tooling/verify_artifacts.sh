@@ -568,13 +568,13 @@ readonly -a DEBUG_LOG_RELATIVE_PATHS=("config/debug.log" "debug.log")
 # it.  `+tiles` in the binary's banner says the SDL tiles PATH was
 # compiled in, not which artwork was drawn through it; every count, every
 # duration, every cue and even the luminance gate are satisfied exactly
-# as well by an ASCII-rendered session.  env.sh says as much in its own
-# words when it registers PLAYTHROUGH_ALLOW_TILESET_FALLBACK: a run under
-# the fallback "may render artwork other than the required MSXotto+,
-# which no other check would notice" (env.sh:1837-1840).  So four
-# assertions are made here, from four independent directions -- the
-# installed pack, the committed option values, the engine's own log, and
-# the pixels of the captures themselves.
+# as well by an ASCII-rendered session -- which is exactly why no code
+# path in this pipeline can select other artwork any more: the diagnostic
+# ASCIITiles fallback and the trust bypass that reached it are both gone,
+# so there is one contract and these assertions measure whether it held.
+# Four are made here, from four independent directions -- the installed
+# pack, the committed option values, the engine's own log, and the pixels
+# of the captures themselves.
 #
 # The engine's log line is the strongest of the four, because it is
 # CAPTURE-TIME evidence written by the game rather than a statement about
@@ -662,6 +662,15 @@ readonly CHECKPOINT_TRAILER_KEY="Playthrough-Checkpoint"
 readonly ANCHOR_TRAILER_KEY="Playthrough-Evidence-Anchor"
 readonly CHECKPOINT_CREATION_NAME="creation"
 readonly CHECKPOINT_FINAL_NAME="final"
+
+# The third checkpoint the anchor is asked about.  `creation` and `final`
+# are the two the plan mandates (R1); `media` is the one that first
+# publishes the rendered film and its transcripts, so it is the earliest
+# commit at which the anchor has a complete evidence tree to seal.  Named
+# here because the anchor gate must be able to ASK EACH REQUIRED
+# CHECKPOINT for a trailer of its own rather than accept the newest one
+# anywhere in the history.
+readonly CHECKPOINT_MEDIA_NAME="media"
 
 # The engine's record of which world and survivor were last loaded, read
 # out of a commit rather than off disk.  A fixed program with no
@@ -3230,24 +3239,51 @@ def main(argv):
 #   FAIL  the narration carries no word beyond the key that was pressed
 #         -- an entry that names the keystroke and nothing else accounts
 #         for nothing, whichever field it is written in;
-#   FAIL  the narration does not close as a sentence.
+#   FAIL  the narration does not close as a sentence;
+#   FAIL  the COMMENTARY is a single word ("Swing.", "West.", "M.").
 #
-#   WARN  the narration is a single word ("Swing.", "West.", "Again."),
-#   WARN  or it repeats the previous three entries' sentence verbatim.
+#   WARN  the commentary repeats a sentence used within the previous
+#         three entries.
 #
-# The last two are the class the review demonstrated, and they are
-# REPORTED WITH EVERY FRAME NUMBER rather than failed, for the reason
-# this file's own PASS text has always given: whether a short sentence is
-# a REASON is not machine-decidable, and three words can be a complete
-# reason where thirty are padding.  "West." on the eighth step west is
-# the survivor's whole thought; the same word standing in for a reason
-# nobody wrote is a shortfall against R7.  A program cannot separate
-# those two, so it counts them, names them, and leaves the judgement to
-# the reader -- and the count is published in the acceptance report and
-# stated in playthrough/REPORT.md and TECHNICAL_NOTES.md, which is what
-# makes the shortfall disclosed rather than hidden.  A record made
-# entirely of labels would therefore not fail here; it would arrive with
-# every one of its entries named, which no reader could miss.
+# THE SINGLE-WORD CLASS IS A FAILURE, and it was not always.  It was a
+# WARN, on the argument that a program cannot tell a one-word reason from
+# a one-word placeholder -- "West." on the eighth step west being the
+# survivor's whole thought.  A review measured the delivered record and
+# settled the argument the other way: 44 of 307 entries carry a
+# single-word commentary, 42 of them the character that had just been
+# typed into a search box, and not one of them explains why.  R7 asks for
+# per-action first-person commentary explaining WHY, and the commentary
+# is what becomes the caption cue and the transcript entry -- so a
+# one-word commentary is a one-word cue whatever its action note says,
+# and a gate that merely counted them let the record ship with them.  A
+# reason short enough to be one word can be written in two.
+#
+# ITS SUBJECT IS THE COMMENTARY ALONE, while the key-only property's
+# subject stays the UNION of the note and the commentary.  That is not an
+# inconsistency, it is the difference between the two questions: "does
+# this entry account for anything at all" is answered by everything the
+# reader of the RECORD gets, and "is this cue a label" is answered by the
+# field that is published as the cue.  Measured on the delivered record
+# the union framing is what removed 37 false findings against entries
+# whose reason is written in both fields, and the commentary-only
+# word count reports exactly the 44 the review named and nothing else.
+#
+# THERE IS NO EXEMPTION FOR A TRANSCRIBED KEYSTROKE.  There used to be:
+# a commentary that was just the character pressed was counted as its own
+# "transcription" class, on the argument that the reason for a spelling
+# run belongs to the entry that opens it.  The review found that this
+# exempted 42 of the 44 offenders -- the exemption was doing the work of
+# hiding the finding.  A run of keystrokes that spells a word still gets
+# one cue per keystroke on the film, and each of those cues is a
+# published sentence that has to say something.
+#
+# WHAT IS STILL ONLY REPORTED is the repeat class, and for the reason the
+# single-word class no longer qualifies for: a sentence that covers a run
+# of keystrokes is a real way to narrate a run, and whether the third
+# repetition is padding or emphasis is a judgement.  It is named with
+# every frame number, and the count is published in the acceptance report
+# and stated in playthrough/REPORT.md and TECHNICAL_NOTES.md, which is
+# what makes it disclosed rather than hidden.
 #
 # THE SUBJECT IS THE EFFECTIVE NARRATION.  The record is append-only, so
 # a sentence corrected after the fact is corrected in
@@ -3283,22 +3319,6 @@ def pressed_key(action):
     """The key the action names, or "" when it names none."""
     match = RATIONALE_KEY_RE.match(action)
     return match.group(1) if match else ""
-
-
-def is_key_transcription(action, commentary):
-    """The commentary is the pressed character, written down.
-
-    A run of keystrokes that spells a word into a search filter is
-    recorded one character per frame, and the entry's commentary is that
-    character.  It is a TRANSCRIPTION of the keystroke rather than a
-    claim about motive, so it is counted as its own class instead of
-    being reported as a one-word reason: the reason for the run belongs
-    to the entry that opens it.
-    """
-    key = pressed_key(action)
-    if len(key) != 1:
-        return False
-    return commentary.strip().rstrip(".").lower() == key.lower()
 
 
 def timeline_narration(timeline_path):
@@ -3363,12 +3383,11 @@ def check_rationale(manifest_path, timeline_path):
                    "playthrough/amendments.jsonl applied")
 
     offences = []
-    thin = []
     repeats = []
     recent = []
     thinnest = []
     measured = 0
-    transcriptions = 0
+    labels = 0
     for index, action, commentary in narration:
         if not isinstance(action, str) or not isinstance(commentary, str):
             continue
@@ -3396,10 +3415,17 @@ def check_rationale(manifest_path, timeline_path):
                 offences,
                 "frame %s says %r, which does not close as a sentence"
                 % (index, commentary))
-        elif is_key_transcription(action, commentary):
-            transcriptions += 1
-        elif len(distinct) < 2:
-            note_problem(thin, "frame %s: %r" % (index, commentary))
+        elif len(rationale_words(commentary)) < 2:
+            # THE COMMENTARY ALONE, and a total rather than a distinct
+            # count: the same rule manifest.narration_substance_problem
+            # applies where the row is written, so the writer's door and
+            # the reader's gate cannot disagree about what a label is.
+            labels += 1
+            note_problem(
+                offences,
+                "frame %s says %r, which is one word -- a cue that names "
+                "the keystroke instead of accounting for it"
+                % (index, commentary))
         elif normalised and normalised in recent:
             note_problem(repeats, "frame %s: %r" % (index, commentary))
         recent.append(normalised)
@@ -3408,38 +3434,37 @@ def check_rationale(manifest_path, timeline_path):
 
     if offences:
         bad("no entry is only the key that produced it",
-            summarise(offences),
-            "every entry a closed sentence carrying at least one word "
-            "beyond the key pressed, in its note or its commentary -- "
-            "correct an entry through playthrough/amendments.jsonl, "
-            "which is appended to rather than editing the record")
+            "%s%s" % (summarise(offences),
+                      (" -- %d of them a single-word commentary"
+                       % labels) if labels else ""),
+            "every entry a closed sentence, carrying at least one word "
+            "beyond the key pressed in its note or its commentary, and "
+            "carrying more than one word in the commentary itself -- the "
+            "commentary is the published cue.  Correct an entry through "
+            "playthrough/amendments.jsonl, which is appended to rather "
+            "than editing the record")
     else:
         ok("no entry is only the key that produced it",
-           "%d entr(ies) measured against %s: each closes as a sentence "
-           "and each carries at least one word beyond its own keystroke, "
-           "%d of them a single character transcribed from a spelling "
-           "run.  This is the falsifiable half of the requirement; that "
-           "what the entry adds is a REASON is not machine-decidable and "
-           "is not claimed here"
-           % (measured, subject, transcriptions))
+           "%d entr(ies) measured against %s: each closes as a sentence, "
+           "each carries at least one word beyond its own keystroke, and "
+           "no commentary is a single word.  This is the falsifiable half "
+           "of the requirement; that what the entry adds is a REASON is "
+           "not machine-decidable and is not claimed here"
+           % (measured, subject))
 
-    # THE SHORTFALL, COUNTED AND NAMED RATHER THAN FAILED.  See the
-    # header above for why this is a WARN: a program cannot tell a
-    # one-word reason from a one-word placeholder, so both are published.
-    if thin or repeats:
+    # THE REPEAT CLASS, COUNTED AND NAMED RATHER THAN FAILED.  See the
+    # header above for why this one alone is still a WARN: a sentence
+    # that covers a run of keystrokes is a real way to narrate a run.
+    if repeats:
         verdict("WARN",
-                "entries whose narration is a single word or repeats the "
-                "one before it",
-                "%d single-word entr(ies)%s; %d entr(ies) repeating a "
-                "sentence used within the previous %d%s -- R7 asks for "
-                "commentary explaining WHY, and these are the entries a "
-                "reader has to judge for themselves.  The shortfall is "
-                "stated in playthrough/REPORT.md and "
+                "entries repeating the sentence before them",
+                "%d entr(ies) repeating a sentence used within the "
+                "previous %d: %s -- R7 asks for commentary explaining "
+                "WHY, and these are the entries a reader has to judge "
+                "for themselves.  The shortfall is stated in "
+                "playthrough/REPORT.md and "
                 "playthrough/TECHNICAL_NOTES.md rather than left here"
-                % (len(thin),
-                   (": " + summarise(thin)) if thin else "",
-                   len(repeats), RATIONALE_WINDOW,
-                   (": " + summarise(repeats)) if repeats else ""))
+                % (len(repeats), RATIONALE_WINDOW, summarise(repeats)))
 
     # The thinnest entries, named so a reader can judge the half no
     # program can.  Reported without a verdict attached on purpose: three
@@ -8878,6 +8903,49 @@ requirement is an order rather than a coexistence"
 # than hiding it -- an honest "this differs from the plan, here is why"
 # is the point of the exercise, and it is recorded in
 # playthrough/TECHNICAL_NOTES.md as well.
+
+# The host directive that displaces the plan's repository-local
+# requirement, QUOTED WORD FOR WORD so a reader can weigh the two
+# instructions against each other without taking this file's paraphrase
+# of either.  A review asked for exactly this: a divergence that
+# summarises the rule it obeyed instead of citing it is asking to be
+# believed.  The backticks the directive is written with are ESCAPED
+# rather than single-quoted: a single-quoted string cannot be continued
+# across lines -- the backslash and the newline would both survive into
+# the value -- so the quotation is assembled in double quotes, where a
+# `\`` is a backtick and not a command substitution.
+readonly IDENTITY_DIRECTIVE="All git commits must be authored and \
+committed as \`Blitzy Agent <agent@blitzy.com>\`. Never run \
+\`git config user.name\`/\`user.email\`, and never override the \
+author/committer identity."
+
+# record_identity_divergence OBSERVED
+#   The one divergence this check can record, written once.  It was
+#   written twice -- once for the no-commits-yet branch and once for the
+#   agreeing branch -- and two copies of a citation is two places for it
+#   to drift from the directive it quotes.
+record_identity_divergence() {
+    record_divergence "git has an identity to commit these artifacts \
+under, and the history agrees with it" "$1" \
+        "a repository-local pair -- 'git config --local user.name' and \
+'user.email' set in this checkout's own .git/config, per the plan's \
+sections 0.3.1 and 0.10.2" \
+        "the execution environment this record was produced in FIXES \
+the committer identity itself and PROHIBITS creating that pair.  Its \
+directive, verbatim: \"${IDENTITY_DIRECTIVE}\"  Setting a \
+repository-local pair means running one of the two commands that \
+sentence forbids, so satisfying the plan here would have been a \
+violation rather than a compliance -- and the two instructions cannot \
+both be obeyed, which is a requirement-level conflict for a human to \
+settle rather than something a run of this gate can close.  The \
+property the plan wanted the pair FOR does hold and is measured above: \
+an identity resolves, and it is the one the history was committed \
+under.  What does not hold is where it is configured.  This is reported \
+as a divergence rather than a pass because a report that reads as \
+compliance is the defect; it is recorded in \
+playthrough/TECHNICAL_NOTES.md as well"
+}
+
 check_git_identity() {
     local ident="" configured="" committed=""
     local local_name="" local_email="" scope="" caveat=""
@@ -8928,21 +8996,7 @@ committed identity to compare it against${caveat}"
             record_pass "git has an identity to commit these artifacts \
 under, and the history agrees with it" "${observed_new}"
         else
-            record_divergence "git has an identity to commit these artifacts \
-under, and the history agrees with it" "${observed_new}" \
-                "a repository-local pair -- 'git config --local user.name' and \
-'user.email' set in this checkout's own .git/config, per the \
-plan's sections 0.3.1 and 0.10.2" \
-                "the execution environment this record was produced in FIXES the \
-committer identity itself and PROHIBITS running 'git config \
-user.name' or 'user.email' at any scope, so creating the pair the \
-plan asks for would have been a violation rather than a \
-compliance.  The property the plan wanted it FOR does hold and is \
-measured above: an identity resolves, and it is the one the \
-history was committed under.  What does not hold is where it is \
-configured.  This is reported as a divergence rather than a pass \
-because a report that reads as compliance is the defect; it is \
-recorded in playthrough/TECHNICAL_NOTES.md as well"
+            record_identity_divergence "${observed_new}"
         fi
         return 0
     fi
@@ -8960,21 +9014,7 @@ the same identity${caveat}"
             record_pass "git has an identity to commit these artifacts \
 under, and the history agrees with it" "${observed_ok}"
         else
-            record_divergence "git has an identity to commit these artifacts \
-under, and the history agrees with it" "${observed_ok}" \
-                "a repository-local pair -- 'git config --local user.name' and \
-'user.email' set in this checkout's own .git/config, per the \
-plan's sections 0.3.1 and 0.10.2" \
-                "the execution environment this record was produced in FIXES the \
-committer identity itself and PROHIBITS running 'git config \
-user.name' or 'user.email' at any scope, so creating the pair the \
-plan asks for would have been a violation rather than a \
-compliance.  The property the plan wanted it FOR does hold and is \
-measured above: an identity resolves, and it is the one the \
-history was committed under.  What does not hold is where it is \
-configured.  This is reported as a divergence rather than a pass \
-because a report that reads as compliance is the defect; it is \
-recorded in playthrough/TECHNICAL_NOTES.md as well"
+            record_identity_divergence "${observed_ok}"
         fi
         return 0
     fi
@@ -9471,9 +9511,66 @@ requirement is about"
 # proves nothing about this history -- or a checkpoint taken by something
 # other than the committer.  Both are worth reporting rather than
 # passing.
+#
+# AND IT IS ASKED OF EACH CHECKPOINT, NOT OF THE HISTORY AS A WHOLE.  A
+# review found this check taking the NEWEST commit carrying a trailer
+# anywhere in the history and comparing that one against the ledger --
+# which passes on a history where the trailer arrived long after the
+# lifecycle checkpoints it is supposed to bind.  That is exactly this
+# history: the delivered `creation`, `final` and `media` commits carry no
+# trailer, because the anchor mechanism was built after them, and every
+# anchor row is a retrospective seal.  A retrospective seal is a true
+# statement about the bytes and NOT a contemporaneous witness to when
+# they were made, so the two are now told apart:
+#
+#   FAIL        no commit publishes the head, or the head it publishes is
+#               not the one the ledger ends on;
+#   DIVERGENCE  the head is published, but one or more REQUIRED
+#               lifecycle checkpoints carry no trailer of their own --
+#               each is NAMED, with the honest reason it cannot be
+#               repaired: history is not rewritten here (no rewriting,
+#               no force-push), so a checkpoint taken before the
+#               mechanism existed can never acquire a contemporaneous
+#               one;
+#   PASS        the head is published and every required checkpoint
+#               carries its own trailer.
+#
+# WHAT WOULD CLOSE THE DIVERGENCE, stated so nobody mistakes the seal for
+# more than it is: a re-recording taken through the hardened committer,
+# whose creation/final/media commits each carry their own trailer, and the
+# head published in an EXTERNAL immutable attestation -- a transparency
+# log or a signature held outside this repository.  Neither is available
+# to an offline pipeline that must not rewrite published history, so the
+# gap is reported at every run rather than smoothed over.
+
+# commit_anchor_trailer COMMIT -- the anchor head COMMIT declares, if any.
+commit_anchor_trailer() {
+    "${GIT}" log --max-count=1 --format='%B' "$1" 2>/dev/null |
+        "${SED}" -n "s/^${ANCHOR_TRAILER_KEY}: //p" |
+        "${HEAD}" -n 1 || true
+}
+
+# unanchored_checkpoints -- every required lifecycle checkpoint reachable
+# from HEAD that publishes no anchor head of its own, as
+# "<short> (<milestone>)" entries.  The names are bounded like every other
+# population this gate reports.
+unanchored_checkpoints() {
+    local milestone commit
+    for milestone in "${CHECKPOINT_CREATION_NAME}" \
+        "${CHECKPOINT_FINAL_NAME}" "${CHECKPOINT_MEDIA_NAME}"; do
+        while IFS= read -r commit; do
+            [ -n "${commit}" ] || continue
+            if [ -z "$(commit_anchor_trailer "${commit}")" ]; then
+                printf '%s (%s)\n' "${commit:0:10}" "${milestone}"
+            fi
+        done < <(checkpoint_commits "${milestone}")
+    done
+}
+
 check_evidence_anchor_trailer() {
     local name="the evidence anchor's head is published in the history"
-    local commit="" declared="" head="" subject=""
+    local commit="" declared="" head="" subject="" line=""
+    local -a unanchored=()
     head="$(bounded "${BOUND_PROBE_SECONDS}" "${PYTHON}" -B -c '
 import sys
 
@@ -9505,24 +9602,53 @@ whose head appears nowhere in the history is one more mutable file \
 beside the evidence"
         return 0
     fi
-    declared="$("${GIT}" log --max-count=1 --format='%B' "${commit}" \
-        2>/dev/null | "${SED}" -n \
-        "s/^${ANCHOR_TRAILER_KEY}: //p" | "${HEAD}" -n 1 || true)"
+    declared="$(commit_anchor_trailer "${commit}")"
     subject="$("${GIT}" log --max-count=1 --format='%h %s' "${commit}" \
         2>/dev/null || true)"
-    if [ "${declared}" = "${head}" ]; then
-        record_pass "${name}" \
-            "commit ${subject} declares ${ANCHOR_TRAILER_KEY}: \
-${declared:0:16}, which is the head the anchor ends on"
+    if [ "${declared}" != "${head}" ]; then
+        record_fail "${name}" \
+            "the anchor ends on ${head:0:16} and the newest commit \
+carrying the trailer (${subject}) declares ${declared:0:16}" \
+            "the same value.  A newer head than the history publishes \
+means the evidence was sealed again WITHOUT a checkpoint -- take one so \
+the head is fixed in a commit object -- and a head the history does not \
+recognise at all means the ledger was rewritten after it was published"
         return 0
     fi
-    record_fail "${name}" \
-        "the anchor ends on ${head:0:16} and the newest commit carrying \
-the trailer (${subject}) declares ${declared:0:16}" \
-        "the same value.  A newer head than the history publishes means \
-the evidence was sealed again WITHOUT a checkpoint -- take one so the \
-head is fixed in a commit object -- and a head the history does not \
-recognise at all means the ledger was rewritten after it was published"
+    # THE HEAD IS PUBLISHED.  Now ask each REQUIRED checkpoint whether it
+    # publishes one of its own, because "somewhere in the history" is a
+    # weaker claim than the one this gate's name makes.
+    while IFS= read -r line; do
+        [ -n "${line}" ] || continue
+        unanchored+=("${line}")
+    done < <(unanchored_checkpoints)
+    if [ "${#unanchored[@]}" -eq 0 ]; then
+        record_pass "${name}" \
+            "commit ${subject} declares ${ANCHOR_TRAILER_KEY}: \
+${declared:0:16}, which is the head the anchor ends on, and every \
+'${CHECKPOINT_CREATION_NAME}', '${CHECKPOINT_FINAL_NAME}' and \
+'${CHECKPOINT_MEDIA_NAME}' checkpoint publishes a head of its own"
+        return 0
+    fi
+    record_divergence "${name}" \
+        "commit ${subject} declares ${ANCHOR_TRAILER_KEY}: \
+${declared:0:16}, which is the head the anchor ends on, but \
+${#unanchored[@]} required checkpoint(s) publish no head of their own: \
+${unanchored[*]}" \
+        "a trailer on EACH required checkpoint, so that the seal is \
+contemporaneous with the commit it seals rather than a later statement \
+about it, and the head additionally retained OUTSIDE this repository \
+(a transparency log or a detached signature) so that rewriting the \
+history could not also rewrite its own witness" \
+        "those checkpoints were taken BEFORE the anchor mechanism \
+existed, and this pipeline does not rewrite published history -- no \
+rewriting and no force-push (AAP 0.10.2, least privilege over the \
+repository) -- so a commit object that already exists can never acquire \
+a contemporaneous trailer.  The seal that IS present is a true statement \
+about the artifact bytes and NOT a witness to when they were made; \
+closing the gap needs a re-recording taken through the hardened \
+committer, and the external retention needs a network service this \
+offline pipeline does not have"
 }
 
 group_version_control() {

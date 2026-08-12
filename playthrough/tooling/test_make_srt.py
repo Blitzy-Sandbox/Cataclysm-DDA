@@ -1319,6 +1319,46 @@ class TestRefusalsThatProtectADownstreamCount(unittest.TestCase):
                 self.assertTrue(any("markup" in text
                                     for text in problems))
 
+    def test_a_payload_the_caption_gate_does_not_name_is_refused(self):
+        """The review's exact vector, at the publication end.
+
+        STYLE_RE names the styling tags a cue could carry -- font, i, b,
+        u, s -- and `img` is not one of them, so this payload passed
+        every check here and was written verbatim into
+        playthrough/transcript.md, which is Markdown.  The wide rule
+        lives in manifest.py and is applied to every entry now, not only
+        to the generated heading.
+        """
+        for value in ("<img src=x onerror=alert(1)> I wait.",
+                      "I wait &lt;here&gt;.",
+                      "I wait here onload=alert(1)."):
+            with self.subTest(value=repr(value)):
+                problems = make_srt.entry_problems(
+                    minimal(commentary=value))
+                self.assertTrue(
+                    any("transcript.md" in text or "event-handler" in text
+                        for text in problems),
+                    msg=problems)
+
+    def test_a_payload_stops_the_whole_publication(self):
+        """End to end: neither artifact is written, and nothing is left.
+
+        The refusal has to reach the FILES, not only the predicate: a
+        payload that fails entry_problems but still lands in
+        transcript.md would be the finding all over again.
+        """
+        with workspace() as root:
+            seed_timeline(root, build(
+                clocks=REFERENCE_CLOCKS[:2],
+                words=("<img src=x onerror=alert(1)> I wake up.",
+                       "I wait, and listen to the corridor."),
+                dates=REFERENCE_DATES[:2]))
+            self.assertNotEqual(make_srt.main([], root=root), 0)
+            for name in ("transcript.srt", "transcript.md"):
+                self.assertFalse(
+                    os.path.exists(os.path.join(root, name)),
+                    msg="%s was published from a payload" % name)
+
 
 class TestWritingBothArtifacts(unittest.TestCase):
     """The file contract and the exit status a stage reads."""

@@ -133,8 +133,6 @@ ENVIRONMENT_KEYS = (
     "PLAYTHROUGH_SCREEN_HEIGHT",
     "PLAYTHROUGH_TILESET",
     "PLAYTHROUGH_TILESET_ALIASES",
-    "PLAYTHROUGH_TILESET_FALLBACK",
-    "PLAYTHROUGH_ALLOW_TILESET_FALLBACK",
     "PLAYTHROUGH_TILESET_RESOLVED",
     "PLAYTHROUGH_SESSION_MODE",
     "PLAYTHROUGH_PANEL_OPTIONS_JSON",
@@ -828,15 +826,15 @@ class TestResolvingTheTileset(SeedFixture):
             self.assertEqual(
                 seed_options.resolve_tileset(root=self.root).origin,
                 "required")
-        # And NAMING a substitute authorises nothing.  $..._FALLBACK
-        # says WHICH tileset a fallback would use; it does not say that
-        # one may be used, so on its own it changes nothing and the
-        # absent required pack is still a refusal.
+        # And an absent required pack is a refusal, whatever else is
+        # installed and whatever the retired fallback variables say --
+        # nothing in this module reads them any more.
         with _environment(PLAYTHROUGH_TILESET="Absent",
-                          PLAYTHROUGH_TILESET_FALLBACK="HouseStyle"):
+                          PLAYTHROUGH_TILESET_FALLBACK="HouseStyle",
+                          PLAYTHROUGH_ALLOW_TILESET_FALLBACK="1"):
             with self.assertRaises(seed_options.SeedError) as bad:
                 seed_options.resolve_tileset(root=self.root)
-        self.assertIn("--allow-tileset-fallback", str(bad.exception))
+        self.assertIn("deliberately no fallback", str(bad.exception))
 
     def test_every_spelling_of_the_pack_resolves_to_it(self):
         """The pack is spelled differently in three places at once.
@@ -855,53 +853,63 @@ class TestResolvingTheTileset(SeedFixture):
                 self.assertEqual(choice.origin, "required")
                 self.assertEqual(choice.ident, MSX_IDENT)
 
-    def test_the_substitute_has_to_be_asked_for_by_name(self):
-        """The one sanctioned way to record another tileset.
+    def test_there_is_no_substitution_to_ask_for(self):
+        """The losing side of the requirement is not a code path.
 
-        It exists so that somebody debugging the pipeline on a host with
-        no pack can still bring the game up, and it announces itself:
-        ``origin`` becomes ``fallback`` and the reason says so, which is
-        what keeps a diagnostic run from being mistaken for a compliant
-        one.
+        A review found the artwork conflict resolved in favour of
+        MSXotto+ while an opt-in ASCIITiles substitution was still
+        carried behind a flag, an argument and an environment variable.
+        All three are gone: with ASCIITiles installed and every one of
+        them set, an absent pack is still a refusal, and the module has
+        no parameter that could accept one.
         """
         self.write_tileset(ASCII_DIR, ASCII_IDENT, ASCII_VIEW)
         with _environment(PLAYTHROUGH_TILESET="Absent",
                           PLAYTHROUGH_TILESET_FALLBACK=ASCII_IDENT,
                           PLAYTHROUGH_ALLOW_TILESET_FALLBACK="1"):
-            choice = seed_options.resolve_tileset(root=self.root)
-        self.assertEqual(choice.origin, "fallback")
-        self.assertEqual(choice.ident, ASCII_IDENT)
-        self.assertIn("DIAGNOSTIC", choice.reason)
-        # The argument is equivalent to the variable, and either way it
-        # is off unless it is supplied.
-        with _environment(PLAYTHROUGH_TILESET="Absent",
-                          PLAYTHROUGH_TILESET_FALLBACK=ASCII_IDENT):
-            self.assertEqual(
-                seed_options.resolve_tileset(
-                    root=self.root, allow_fallback=True).origin,
-                "fallback")
-            with self.assertRaises(seed_options.SeedError):
-                seed_options.resolve_tileset(
-                    root=self.root, allow_fallback=False)
+            with self.assertRaises(seed_options.SeedError) as bad:
+                seed_options.resolve_tileset(root=self.root)
+        self.assertIn("no fallback", str(bad.exception))
+        self.assertNotIn(
+            "allow_fallback",
+            seed_options.resolve_tileset.__code__.co_varnames,
+            msg="the parameter is gone, not merely defaulted off")
+        for name in ("allow_tileset_fallback",):
+            for function in (seed_options.patch, seed_options.verify):
+                with self.subTest(function=function.__name__):
+                    self.assertNotIn(name,
+                                     function.__code__.co_varnames)
 
-    def test_an_allowed_fallback_is_recorded_in_the_report(self):
-        """A deviation reaches the notes, not just the log.
+    def test_the_command_line_has_no_fallback_flag(self):
+        """argparse cannot produce what no branch would honour."""
+        parser = seed_options.build_parser()
+        self.assertNotIn(
+            "--allow-tileset-fallback",
+            " ".join(action.option_strings[0]
+                     for action in parser._actions
+                     if action.option_strings))
 
-        ``playthrough/TECHNICAL_NOTES.md`` quotes the report, so a run
-        that did not use the required pack has to say so somewhere the
-        write-up will actually pick it up.
+    def test_an_installed_but_unrequired_tileset_is_refused(self):
+        """The stored value is held to the requirement, not to presence.
+
+        ``verify`` used to accept any installed id when the fallback was
+        allowed.  With one contract there is nothing to allow: an id that
+        is merely installed is reported, which is what stops the wrong
+        artwork being discovered in the finished film.
         """
-        self.write_tileset(ASCII_DIR, ASCII_IDENT, ASCII_VIEW)
+        self.write_both_tilesets()
         self.write_options()
-        with _environment(PLAYTHROUGH_TILESET="Absent",
-                          PLAYTHROUGH_TILESET_FALLBACK=ASCII_IDENT,
-                          PLAYTHROUGH_ALLOW_TILESET_FALLBACK="1"):
-            report = seed_options.patch(root=self.root)
-        self.assertEqual(report.tileset.origin, "fallback")
-        self.assertTrue(
-            any("fallback" in note for note in report.notes),
-            msg=f"notes were {report.notes!r}")
-        self.assertEqual(self.values()["TILES"], ASCII_IDENT)
+        self.patch()
+        entries, pretty = seed_options.load_entries(self.options_json)
+        for entry in entries:
+            if entry["name"] == "TILES":
+                entry["value"] = ASCII_IDENT
+        with open(self.options_json, "w", encoding="utf-8") as handle:
+            handle.write(seed_options.serialize_entries(entries, pretty))
+        with self.assertRaises(seed_options.SeedError) as bad:
+            self.verify()
+        self.assertIn("requires", str(bad.exception))
+        self.assertIn("no option that accepts", str(bad.exception))
 
 
 class TestPatchingTheFile(SeedFixture):

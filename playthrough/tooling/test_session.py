@@ -314,7 +314,7 @@ class SessionFixture(unittest.TestCase):
             "frame": 1,
             "key": "j",
             "action": "press 'j'",
-            "commentary": "South.",
+            "commentary": "South, one step.",
             "capture_attempts": 1,
             "manifest": manifest.relative_to_repo(self.manifest),
             "frames_dir": manifest.relative_to_repo(self.frames),
@@ -542,7 +542,8 @@ class TheStep(SessionFixture):
     def test_the_sidecar_stores_the_immutable_key(self):
         opened = self.open_session()
         self.stub_window(opened)
-        opened.step("shift+4", commentary="Sleep.", note="lie down")
+        opened.step("shift+4", note="lie down",
+                    commentary="Sleep, while it is quiet.")
         row = self.sidecar()[0]
         for field in session.ATTESTED_FIELDS:
             self.assertIn(field, row)
@@ -556,7 +557,7 @@ class TheStep(SessionFixture):
         self.stub_window(opened)
         with self.assertRaises(session.RecordError):
             opened.step("-", action="press 'X' -- nothing",
-                        commentary="No.")
+                        commentary="No, not that one.")
         self.assertEqual(self.sent, [])
         self.assertEqual(self.rows(), [])
 
@@ -564,16 +565,55 @@ class TheStep(SessionFixture):
         opened = self.open_session()
         self.stub_window(opened)
         with self.assertRaises(session.KeyRejected):
-            opened.step("ctrl+r", commentary="No.")
+            opened.step("ctrl+r", commentary="No, not that one.")
         self.assertEqual(self.sent, [])
         self.assertEqual(self.rows(), [])
 
     def test_the_journal_is_cleared_once_the_row_is_durable(self):
         opened = self.open_session()
         self.stub_window(opened)
-        opened.step("j", commentary="South.")
+        opened.step("j", commentary="South, one step.")
         self.assertFalse(
             os.path.isfile(session.journal_path(self.root)))
+
+    def test_a_one_word_commentary_sends_nothing(self):
+        """A review finding, at the door it came in through.
+
+        44 of the delivered 307 entries were a single word -- 42 of them
+        the letter just typed into a search box -- which names the
+        keystroke instead of saying why.  Nothing is sent and no row is
+        written, so the step is simply retried with the reason written
+        out.
+        """
+        opened = self.open_session()
+        self.stub_window(opened)
+        for payload in ("M.", "Next.", "Five."):
+            with self.subTest(payload=payload):
+                with self.assertRaises(session.RecordError) as caught:
+                    opened.step("m", commentary=payload,
+                                note="begin spelling the start")
+                self.assertIn("which is one word", str(caught.exception))
+        self.assertEqual(self.sent, [])
+        self.assertEqual(self.rows(), [])
+
+    def test_a_markup_payload_sends_nothing(self):
+        """The other publication hazard, refused before the key.
+
+        transcript.md is Markdown, so a commentary carrying raw HTML
+        would be rendered rather than read.  Both narrations are held to
+        it: the action is quoted in the reports as well.
+        """
+        opened = self.open_session()
+        self.stub_window(opened)
+        with self.assertRaises(session.RecordError) as caught:
+            opened.step("j", commentary="I go <img src=x "
+                                        "onerror=alert(1)> south.")
+        self.assertIn("angle bracket", str(caught.exception))
+        with self.assertRaises(session.RecordError):
+            opened.step("j", action="press 'j' -- <b>south</b>",
+                        commentary="South, one step off the kerb.")
+        self.assertEqual(self.sent, [])
+        self.assertEqual(self.rows(), [])
 
 
 class JournalRecovery(SessionFixture):
@@ -775,7 +815,7 @@ class JournalRecovery(SessionFixture):
             handle.write("stub")
         self.journal(
             phase=session.JOURNAL_PHASE_CAPTURED, key="Return",
-            action="press 'Return'", commentary="English.",
+            action="press 'Return'", commentary="English, so I can read it.",
             payload={session.CAPTURE_MODE_KEY:
                      session.CAPTURE_MODE_PRODUCTION,
                      "FRAME_INDEX": "7",
@@ -794,10 +834,11 @@ class JournalRecovery(SessionFixture):
     def test_a_stale_entry_is_discarded_not_replayed(self):
         opened = self.open_session()
         self.stub_window(opened)
-        opened.step("j", commentary="South.")
+        opened.step("j", commentary="South, one step.")
         opened.close()
         self.journal(phase=session.JOURNAL_PHASE_DELIVERED, frame=1,
-                     key="j", action="press 'j'", commentary="South.")
+                     key="j", action="press 'j'",
+                     commentary="South, one step.")
         again = self.open_session()
         self.assertEqual(len(self.rows()), 1)
         self.assertEqual(len(self.sidecar()), 1)
@@ -820,12 +861,13 @@ class JournalRecovery(SessionFixture):
             handle.write("stub")
         manifest.append_row(
             self.manifest, 1, "playthrough/frames/frame_00001.png",
-            FIXED_REAL_TS, "08:00:00", "press 'j'", "South.",
+            FIXED_REAL_TS, "08:00:00", "press 'j'",
+            "South, one step.",
             root=self.root)
         self.assertEqual(self.sidecar(), [])
         self.journal(
             phase=session.JOURNAL_PHASE_CAPTURED, frame=1, key="j",
-            action="press 'j'", commentary="South.",
+            action="press 'j'", commentary="South, one step.",
             payload={session.CAPTURE_MODE_KEY:
                      session.CAPTURE_MODE_PRODUCTION,
                      "FRAME_INDEX": "1",
@@ -887,7 +929,8 @@ class JournalRecovery(SessionFixture):
             payload["FRAME_SHA256"] = STUB_FRAME_SHA256
         manifest.append_row(
             self.manifest, 1, "playthrough/frames/frame_00001.png",
-            FIXED_REAL_TS, "08:00:00", "press 'j'", "South.",
+            FIXED_REAL_TS, "08:00:00", "press 'j'",
+            "South, one step.",
             root=self.root)
         session.append_observation(
             self.observations,
@@ -896,7 +939,7 @@ class JournalRecovery(SessionFixture):
             root=self.root)
         self.journal(
             phase=session.JOURNAL_PHASE_CAPTURED, frame=1, key="j",
-            action="press 'j'", commentary="South.", payload=payload)
+            action="press 'j'", commentary="South, one step.", payload=payload)
         return payload
 
     def ledger_rows(self):
@@ -995,7 +1038,7 @@ class JournalRecovery(SessionFixture):
         """The same gap is visible to a read-only caller."""
         opened = self.open_session()
         self.stub_window(opened)
-        opened.step("j", commentary="South.")
+        opened.step("j", commentary="South, one step.")
         path = os.path.join(self.root, *manifest.DIGESTS_REL_PARTS)
         with open(path, "w", encoding="utf-8") as handle:
             handle.write("")
@@ -1208,7 +1251,7 @@ class MandatoryAudits(SessionFixture):
         self.stub_window(opened)
         self._bind_debug()
         with self.assertRaises(session.CheatGuard):
-            opened.step("j", commentary="South.")
+            opened.step("j", commentary="South, one step.")
         self.assertEqual(self.sent, [])
         self.assertEqual(self.rows(), [])
 
@@ -1222,10 +1265,10 @@ class MandatoryAudits(SessionFixture):
     def test_a_changed_keybindings_file_is_re_read(self):
         opened = self.open_session()
         self.stub_window(opened)
-        opened.step("j", commentary="South.")
+        opened.step("j", commentary="South, one step.")
         self._bind_debug("DEBUG_DIALOGUE_DL_EFFECT")
         with self.assertRaises(session.CheatGuard):
-            opened.step("k", commentary="North.")
+            opened.step("k", commentary="North, one step.")
 
     def test_the_mode_is_pinned_and_a_declaration_must_agree(self):
         opened = self.open_session()
@@ -1270,10 +1313,10 @@ class MandatoryAudits(SessionFixture):
         self.lastworld()
         opened = self.open_session()
         self.stub_window(opened)
-        opened.step("j", commentary="South.")
+        opened.step("j", commentary="South, one step.")
         self.world("Fern Creek", ("#QQ==", "#UkI="))
         with self.assertRaises(session.CheatGuard):
-            opened.step("k", commentary="North.")
+            opened.step("k", commentary="North, one step.")
 
     def test_a_resumed_session_refuses_the_creator_before_sending(self):
         """The prevention the save-set comparison is not.
@@ -1293,7 +1336,7 @@ class MandatoryAudits(SessionFixture):
         for key in session.MENU_NEW_SURVIVOR_HOTKEYS:
             with self.subTest(key=key):
                 with self.assertRaises(session.CheatGuard):
-                    opened.step(key, commentary="No.")
+                    opened.step(key, commentary="No, not that one.")
         self.assertEqual(self.sent, [])
         self.assertEqual(self.rows(), [])
 
@@ -1329,7 +1372,7 @@ class MandatoryAudits(SessionFixture):
         self.assertEqual(opened.ui_phase, session.UI_PHASE_MENU)
         # The stub capture reports a clock, which is the sidebar, which
         # is what a loaded character draws.
-        opened.step("Return", commentary="Continue.")
+        opened.step("Return", commentary="Continue, nothing to change.")
         self.assertEqual(opened.ui_phase, session.UI_PHASE_IN_WORLD)
         # And from there the same letters are ordinary commands again.
         opened.step("r", commentary="Read the label on it.")
@@ -1368,7 +1411,7 @@ class MandatoryAudits(SessionFixture):
         for key in session.MENU_NEW_SURVIVOR_HOTKEYS:
             with self.subTest(key=key, process="same"):
                 with self.assertRaises(session.CheatGuard):
-                    opened.step(key, commentary="No.")
+                    opened.step(key, commentary="No, not that one.")
         opened.close()
         again = self.open_session()
         self.stub_window(again)
@@ -1468,7 +1511,7 @@ class MandatoryAudits(SessionFixture):
         self.assertIsNone(without.sidebar_frame)
         self.assertTrue(without.verify_record())
         with self.assertRaises(session.CheatGuard):
-            without.step("u", commentary="No.")
+            without.step("u", commentary="No, not that one.")
         without.close()
         # A torn sidecar is the same answer, reached the same way.
         with open(self.observations, "w", encoding="utf-8") as handle:
@@ -1478,7 +1521,7 @@ class MandatoryAudits(SessionFixture):
         self.stub_window(torn)
         self.assertEqual(torn.ui_phase, session.UI_PHASE_MENU)
         with self.assertRaises(session.CheatGuard):
-            torn.step("u", commentary="No.")
+            torn.step("u", commentary="No, not that one.")
 
     def test_a_telemetry_row_for_an_unrecorded_frame_is_not_evidence(
             self):
@@ -1489,7 +1532,7 @@ class MandatoryAudits(SessionFixture):
         os.environ["STUB_NO_SIDEBAR"] = "1"
         opened = self.open_session()
         self.stub_window(opened)
-        opened.step("1", commentary="English.")
+        opened.step("1", commentary="English, so I can read it.")
         opened.close()
         with open(self.observations, "a", encoding="utf-8") as handle:
             handle.write(json.dumps({
@@ -1504,7 +1547,7 @@ class MandatoryAudits(SessionFixture):
         self.assertEqual(after.ui_phase, session.UI_PHASE_MENU)
         self.assertIsNone(after.sidebar_frame)
         with self.assertRaises(session.CheatGuard):
-            after.step("u", commentary="No.")
+            after.step("u", commentary="No, not that one.")
 
     def test_a_coarse_time_phrase_alone_releases_the_phase(self):
         """A survivor without a watch still draws a sidebar.
@@ -1552,7 +1595,7 @@ class MandatoryAudits(SessionFixture):
         opened = self.open_session()
         self.stub_window(opened)
         with self.assertRaises(session.CheatGuard):
-            opened.step("Return", commentary="Continue.")
+            opened.step("Return", commentary="Continue, nothing to change.")
         # The keystroke and its frame really happened, so the record says
         # so; what stops is everything after them.
         self.assertEqual(self.sent, ["Return"])
@@ -1613,7 +1656,7 @@ class MandatoryAudits(SessionFixture):
         self.stub_window(opened)
         os.unlink(os.path.join(self.save, "Fern Creek", "#QQ==.sav"))
         with self.assertRaises(session.CheatGuard):
-            opened.step("j", commentary="South.")
+            opened.step("j", commentary="South, one step.")
 
     def test_evidenced_engine_death_cleanup_is_accepted(self):
         """The engine may move the save and reset its world after death."""
@@ -1718,7 +1761,7 @@ class MandatoryAudits(SessionFixture):
         self.lastworld()
         opened = self.open_session()
         self.stub_window(opened)
-        opened.step("j", commentary="South.")
+        opened.step("j", commentary="South, one step.")
         os.unlink(os.path.join(
             self.save, "Fern Creek", "#QQ==.sav"))
         self.write_death_persistence()
@@ -1832,7 +1875,7 @@ class TheRouteIsGuardedNotOnlyTheLetters(SessionFixture):
         self.lastworld()
         opened = self.open_session()
         self.stub_window(opened)
-        opened.step("Return", commentary="Continue.")
+        opened.step("Return", commentary="Continue, nothing to change.")
         self.assertEqual(opened.ui_phase, session.UI_PHASE_IN_WORLD)
         opened.step("Return", note="read the note through",
                     commentary="The custom sheet I drew is still in my "
@@ -2180,7 +2223,7 @@ class TheRouteIsGuardedByThePhotograph(SessionFixture):
                     commentary="Fern Creek.")
         self.assertEqual(self.sent, ["Return"])
         with self.assertRaises(session.CheatGuard):
-            opened.step("u", commentary="No.")
+            opened.step("u", commentary="No, not that one.")
 
     def test_a_create_run_with_its_survivor_is_guarded_too(self):
         """The rule is "one survivor", not "resume mode".
@@ -2314,7 +2357,7 @@ class TheLauncherStateCoupling(SessionFixture):
         for key in session.MENU_NEW_SURVIVOR_HOTKEYS:
             with self.subTest(key=key):
                 with self.assertRaises(session.CheatGuard):
-                    opened.step(key, commentary="No.")
+                    opened.step(key, commentary="No, not that one.")
         self.assertEqual(self.sent, [])
 
     def test_the_state_reaches_the_status_payload(self):
@@ -2363,7 +2406,7 @@ class ADeathIsNotResumable(SessionFixture):
         self.world("Fern Creek", ("#QQ==",))
         self.lastworld("Fern Creek", "A")
         self.write_record(
-            ("press 'j' -- walk south", "South."),
+            ("press 'j' -- walk south", "South, one step."),
             ("press 'O' -- begin my last words", "O."),
         )
 
@@ -2412,7 +2455,7 @@ class ADeathIsNotResumable(SessionFixture):
         self.world("Fern Creek", ("#QQ==",))
         self.lastworld("Fern Creek", "A")
         self.write_record(
-            ("press 'j' -- walk south", "South."),
+            ("press 'j' -- walk south", "South, one step."),
             ("press '5' -- wait a while", "Rest."),
         )
         probe = self.probe()
@@ -2944,7 +2987,7 @@ class TheCaptureDigestIsSealedByTheStep(SessionFixture):
             handle.write("stub")
         self.journal(
             phase=session.JOURNAL_PHASE_CAPTURED, frame=1, key="j",
-            action="press 'j'", commentary="South.",
+            action="press 'j'", commentary="South, one step.",
             payload={session.CAPTURE_MODE_KEY:
                      session.CAPTURE_MODE_PRODUCTION,
                      "FRAME_INDEX": "1",
@@ -2972,7 +3015,7 @@ class TheCaptureDigestIsSealedByTheStep(SessionFixture):
             handle.write("stub")
         self.journal(
             phase=session.JOURNAL_PHASE_CAPTURED, frame=1, key="j",
-            action="press 'j'", commentary="South.",
+            action="press 'j'", commentary="South, one step.",
             payload={session.CAPTURE_MODE_KEY:
                      session.CAPTURE_MODE_PRODUCTION,
                      "FRAME_INDEX": "1",
@@ -3002,7 +3045,7 @@ class TheCaptureDigestIsSealedByTheStep(SessionFixture):
             handle.write("stub")
         self.journal(
             phase=session.JOURNAL_PHASE_CAPTURED, frame=1, key="j",
-            action="press 'j'", commentary="South.",
+            action="press 'j'", commentary="South, one step.",
             payload={session.CAPTURE_MODE_KEY:
                      session.CAPTURE_MODE_PRODUCTION,
                      "FRAME_INDEX": "1",
@@ -3026,10 +3069,10 @@ class TheCaptureDigestIsSealedByTheStep(SessionFixture):
         """Every attestation written stays written, byte for byte."""
         opened = self.open_session()
         self.stub_window(opened)
-        opened.step("j", commentary="South.")
+        opened.step("j", commentary="South, one step.")
         with open(self.ledger_path(), "rb") as handle:
             before = handle.read()
-        opened.step("k", commentary="North.")
+        opened.step("k", commentary="North, one step.")
         with open(self.ledger_path(), "rb") as handle:
             after = handle.read()
         self.assertTrue(after.startswith(before))
@@ -3052,7 +3095,7 @@ class TheCaptureFailureDiagnostic(SessionFixture):
         os.environ["STUB_FAIL"] = "1"
         with self.assertRaises(session.CaptureError) as failed:
             opened.step("j", note="west along the fence",
-                        commentary="West.")
+                        commentary="West, one step.")
         reason = str(failed.exception)
         self.assertIn(session.journal_path(self.root), reason)
         self.assertIn("captures this index", reason)
@@ -3076,7 +3119,7 @@ class TheCaptureFailureDiagnostic(SessionFixture):
 
         opened._capture_frame = missing
         with self.assertRaises(session.ToolMissing) as failed:
-            opened.step("j", note="west", commentary="West.")
+            opened.step("j", note="west", commentary="West, one step.")
         self.assertIn("captures this index", str(failed.exception))
         self.assertEqual(
             session._status_for(failed.exception), session.EXIT_USAGE)
@@ -3732,7 +3775,7 @@ PAYLOAD
     def test_a_change_beside_the_map_makes_the_row_say_so(self):
         opened = self.open_session()
         self.stub_window(opened)
-        opened.step("k", commentary="North.", note="step north")
+        opened.step("k", commentary="North, one step.", note="step north")
         self.set_env("STUB_PNG_2", self.png("counter.png", mark=(36, 3)))
         second = opened.step(
             "k", commentary="Two steps.", note="step north again")
@@ -3748,7 +3791,7 @@ PAYLOAD
     def test_a_real_change_leaves_the_row_alone(self):
         opened = self.open_session()
         self.stub_window(opened)
-        opened.step("k", commentary="North.", note="step north")
+        opened.step("k", commentary="North, one step.", note="step north")
         self.set_env("STUB_PNG_2", self.png("moved.png", mark=(5, 9)))
         second = opened.step(
             "k", commentary="And again.", note="step north again")
@@ -4068,7 +4111,7 @@ class TheStatusPayload(SessionFixture):
         os.environ["STUB_NO_SIDEBAR"] = "1"
         opened = self.open_session()
         self.stub_window(opened)
-        opened.step("1", commentary="English.")
+        opened.step("1", commentary="English, so I can read it.")
         opened.close()
         status, payload = self._status()
         self.assertEqual(status, session.EXIT_OK)
@@ -4169,7 +4212,7 @@ class SidecarStagingSiblings(SessionFixture):
     def test_a_symlink_at_a_staging_name_is_left_not_followed(self):
         opened = self.open_session()
         self.stub_window(opened)
-        opened.step("j", note="step south", commentary="South.")
+        opened.step("j", note="step south", commentary="South, one step.")
         opened.close()
         before = _bytes_of(self.observations)
         elsewhere = os.path.join(self.build, "elsewhere.jsonl")
@@ -4185,7 +4228,7 @@ class SidecarStagingSiblings(SessionFixture):
         """Append-only, proved by bytes across a second step."""
         opened = self.open_session()
         self.stub_window(opened)
-        opened.step("j", note="step south", commentary="South.")
+        opened.step("j", note="step south", commentary="South, one step.")
         first = _bytes_of(self.observations)
         opened.step("k", note="step north", commentary="Back north.")
         opened.close()
@@ -4503,7 +4546,7 @@ class TheRoomForTheNextFrame(SessionFixture):
         opened = self.open_session()
         self.stub_window(opened)
         with self.assertRaises(session.CapacityError) as failed:
-            opened.step("j", commentary="South.")
+            opened.step("j", commentary="South, one step.")
         message = str(failed.exception)
         self.assertIn("THE KEY HAS NOT BEEN SENT", message)
         self.assertIn("1024 byte(s) free", message)
@@ -4519,7 +4562,7 @@ class TheRoomForTheNextFrame(SessionFixture):
         self.measured(session.capture_reserve(None))
         opened = self.open_session()
         self.stub_window(opened)
-        result = opened.step("j", commentary="South.")
+        result = opened.step("j", commentary="South, one step.")
         self.assertEqual(result.frame, 1)
         self.assertEqual(self.sent, ["j"])
 
@@ -4540,7 +4583,7 @@ class TheRoomForTheNextFrame(SessionFixture):
         opened = self.open_session()
         self.stub_window(opened)
         with self.assertRaises(session.CapacityError) as caught:
-            opened.step("j", commentary="South.")
+            opened.step("j", commentary="South, one step.")
         self.assertIn("NO PROOF", str(caught.exception))
         self.assertIn("THE KEY HAS NOT BEEN SENT",
                       str(caught.exception))
@@ -4707,7 +4750,8 @@ class TheObserveBeforeTheNextKeyGuard(SessionFixture):
         opened = self.open_session()
         self.stub_window(opened)
         result = session.Session.step(
-            opened, "j", commentary="South.", expect=session.EXPECT_EITHER)
+            opened, "j", commentary="South, one step.",
+            expect=session.EXPECT_EITHER)
         self.assertEqual(result.frame, 1)
         self.assertEqual(self.ledger(), [])
 
@@ -4718,7 +4762,7 @@ class TheObserveBeforeTheNextKeyGuard(SessionFixture):
         self.first_step(opened)
         with self.assertRaises(session.ObservationRequired) as caught:
             session.Session.step(
-                opened, "k", commentary="North.",
+                opened, "k", commentary="North, one step.",
                 expect=session.EXPECT_EITHER)
         self.assertIn("has not been read", str(caught.exception))
         self.assertEqual(
@@ -4744,7 +4788,7 @@ class TheObserveBeforeTheNextKeyGuard(SessionFixture):
         session.send_key = refuse
         with self.assertRaises(session.WindowError):
             session.Session.step(
-                opened, "k", commentary="North.",
+                opened, "k", commentary="North, one step.",
                 observed="frame 1 shows the hallway, nothing selected",
                 expect=session.EXPECT_EITHER)
         rows = self.ledger()
@@ -4761,7 +4805,7 @@ class TheObserveBeforeTheNextKeyGuard(SessionFixture):
         self.first_step(opened)
         with self.assertRaises(session.ObservationRequired):
             session.Session.step(
-                opened, "k", commentary="North.", observed="ok",
+                opened, "k", commentary="North, one step.", observed="ok",
                 expect=session.EXPECT_EITHER)
         self.assertEqual(self.sent, ["j"])
 
@@ -4774,7 +4818,7 @@ class TheObserveBeforeTheNextKeyGuard(SessionFixture):
                       map_pixels=0)
         with self.assertRaises(session.GuardHalt) as caught:
             session.Session.step(
-                opened, "k", commentary="North.",
+                opened, "k", commentary="North, one step.",
                 observed="frame 1 shows the hallway, nothing selected",
                 expect=session.EXPECT_CHANGED)
         self.assertIn("declared --expect changed", str(caught.exception))
@@ -4805,7 +4849,7 @@ class TheObserveBeforeTheNextKeyGuard(SessionFixture):
         self.first_step(opened)
         with self.assertRaises(session.GuardHalt) as caught:
             session.Session.step(
-                opened, "k", commentary="North.",
+                opened, "k", commentary="North, one step.",
                 observed="frame 1 shows the hallway, nothing selected",
                 expect=session.EXPECT_CHANGED)
         self.assertIn("not observed at all", str(caught.exception))
@@ -4816,7 +4860,7 @@ class TheObserveBeforeTheNextKeyGuard(SessionFixture):
         self.stub_window(opened)
         self.first_step(opened)
         result = session.Session.step(
-            opened, "k", commentary="North.",
+            opened, "k", commentary="North, one step.",
             observed="frame 1 shows the hallway, nothing selected",
             expect=session.EXPECT_EITHER)
         self.assertEqual(result.frame, 2)
@@ -4857,7 +4901,7 @@ class TheObserveBeforeTheNextKeyGuard(SessionFixture):
         self.stub_window(opened)
         with self.assertRaises(session.GuardHalt) as caught:
             session.Session.step(
-                opened, "Y", commentary="Yes.",
+                opened, "Y", commentary="Yes, that is the one.",
                 expect=session.EXPECT_EITHER,
                 expect_modal="save-and-quit")
         self.assertIn("does not show it", str(caught.exception))
@@ -4868,7 +4912,7 @@ class TheObserveBeforeTheNextKeyGuard(SessionFixture):
         self.stub_window(opened)
         with self.assertRaises(session.RecordError):
             session.Session.step(
-                opened, "Y", commentary="Yes.",
+                opened, "Y", commentary="Yes, that is the one.",
                 expect_modal="no-such-box")
         self.assertEqual(self.sent, [])
 
@@ -4881,7 +4925,7 @@ class TheObserveBeforeTheNextKeyGuard(SessionFixture):
                       map_pixels=0)
         with self.assertRaises(session.GuardHalt):
             session.Session.step(
-                opened, "k", commentary="North.",
+                opened, "k", commentary="North, one step.",
                 observed="frame 1 shows the hallway, nothing selected",
                 expect=session.EXPECT_CHANGED)
         opened.close()
@@ -4889,7 +4933,7 @@ class TheObserveBeforeTheNextKeyGuard(SessionFixture):
         self.stub_window(second, window=4243)
         with self.assertRaises(session.ObservationRequired) as caught:
             session.Session.step(
-                second, "l", commentary="East.",
+                second, "l", commentary="East, one step.",
                 observed="frame 2 did not move; the filter is closed",
                 expect=session.EXPECT_EITHER)
         self.assertIn("STOPPED the session", str(caught.exception))
@@ -4897,7 +4941,7 @@ class TheObserveBeforeTheNextKeyGuard(SessionFixture):
         second.acknowledge(
             2, "frame 2 shows the same screen as frame 1; nothing moved")
         result = session.Session.step(
-            second, "l", commentary="East.",
+            second, "l", commentary="East, one step.",
             expect=session.EXPECT_EITHER)
         self.assertEqual(result.frame, 3)
         self.assertEqual(self.sent, ["l"])

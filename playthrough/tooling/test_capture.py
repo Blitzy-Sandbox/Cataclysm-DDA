@@ -2253,7 +2253,6 @@ class TestTheTrustState(CaptureFixture):
         "PLAYTHROUGH_ALLOW_UNVERIFIED_EXECUTABLES",
         "PLAYTHROUGH_ALLOW_UNAUTHENTICATED_X",
         "PLAYTHROUGH_ALLOW_UNVERIFIED_TILESET_PACK",
-        "PLAYTHROUGH_ALLOW_TILESET_FALLBACK",
         "PLAYTHROUGH_ALLOW_VULNERABLE_PILLOW",
         "PLAYTHROUGH_ALLOW_ANY_COMPILER",
         # ADDED BY A SECURITY REVIEW, and it was right.  The end-of-life
@@ -2326,13 +2325,13 @@ class TestTheTrustState(CaptureFixture):
         security-relevant variable whose spelling is wrong.
         """
         status, _, err = self.run_capture(
-            "1", PLAYTHROUGH_ALLOW_TILESET_FALLBACK="true")
+            "1", PLAYTHROUGH_ALLOW_UNVERIFIED_TILESET_PACK="true")
         self.assertEqual(status, EX_USAGE)
-        self.assertIn("PLAYTHROUGH_ALLOW_TILESET_FALLBACK", err)
+        self.assertIn("PLAYTHROUGH_ALLOW_UNVERIFIED_TILESET_PACK", err)
 
     def test_an_explicit_zero_is_not_a_bypass(self):
         payload, _ = self.capture(
-            "1", PLAYTHROUGH_ALLOW_TILESET_FALLBACK="0",
+            "1", PLAYTHROUGH_ALLOW_UNVERIFIED_TILESET_PACK="0",
             PLAYTHROUGH_ALLOW_UNVERIFIED_EXECUTABLES="0")
         self.assertEqual(payload["CAPTURE_MODE"], "production")
         self.assertEqual(self.frame_files(), ["frame_00001.png"])

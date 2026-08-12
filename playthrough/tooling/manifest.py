@@ -2362,12 +2362,138 @@ def sentinel_problems(action, commentary, label):
     return problems
 
 
+# ---------------------------------------------------------------------
+# RAW MARKUP, WHICH IS A PUBLICATION HAZARD RATHER THAN A STYLE RULE
+#
+# Every string in these two fields is copied VERBATIM into
+# playthrough/transcript.md, and Markdown passes raw HTML straight
+# through to whatever renders it.  A review found the guard that knows
+# this -- make_srt.assert_no_raw_markup -- applied to the transcript's
+# generated HEADING alone, so a commentary reading
+# `<img src=x onerror=...>` reached the committed document while the
+# narrower caption gate (which looks for styling tags and override
+# codes) passed it: `img` is not a styling tag.
+#
+# So the rule lives HERE, beside the other content rules, and is applied
+# at the two moments text ENTERS the record -- build_row() and
+# build_amendment() -- as well as at publication.  Refused rather than
+# escaped, deliberately: these artifacts are evidence, and a title or a
+# sentence carrying markup is a fault to report rather than a string to
+# clean.  The same reasoning is written out at
+# make_srt.SURVIVOR_NAME_PUNCTUATION for the survivor's name.
+#
+# DELIBERATELY NARROW, and not a general sanitiser: an angle bracket, an
+# ampersand, or an `onsomething=` attribute.  A keystroke description and
+# a survivor's sentence have no legitimate use for any of the three --
+# measured over the delivered record, which carries none of them in any
+# of its 307 rows or 202 amendments -- so each one means something has
+# gone wrong upstream rather than that a document needs cleaning.
+#
+# THE READER IS NOT GIVEN THIS RULE, for the reason action_shape_problem
+# gives above: a reader that refuses is a reader that turns a foreign row
+# into an unreadable manifest instead of a reported one.  The writer
+# refuses, the publisher refuses, and row_field_problems() goes on being
+# able to READ anything and say what is wrong with it.
+RAW_MARKUP_CHARACTERS = (
+    ("<", "an angle bracket, which opens an HTML tag"),
+    (">", "an angle bracket, which closes an HTML tag"),
+    ("&", "an ampersand, which opens an HTML entity"),
+)
+
+# An HTML event-handler attribute -- `onerror=`, `onload=` -- which
+# executes in a permissive renderer even where the tag itself was
+# stripped.  Held separately from the characters above so a payload that
+# arrives without brackets is still refused.
+EVENT_HANDLER_RE = re.compile(r"\bon[a-z]+\s*=", re.IGNORECASE)
+
+
+def raw_markup_problem(value, label="commentary"):
+    """Report text that a renderer would EXECUTE rather than show.
+
+    Pure, and returns the first problem rather than a list: one
+    occurrence is already a refusal, and naming the character a reader
+    has to go and find is what makes the message actionable.
+
+    :returns: the problem, or None when the text is safe to publish.
+    """
+    if not isinstance(value, str):
+        return None
+    for needle, why in RAW_MARKUP_CHARACTERS:
+        if needle in value:
+            return (
+                "%s carries %s (%r): %r.  This string is copied "
+                "verbatim into playthrough/transcript.md, and Markdown "
+                "passes raw HTML to the renderer, so it is refused "
+                "rather than escaped -- the transcript is evidence, and "
+                "a sentence carrying markup is a fault to report rather "
+                "than a string to clean.  Say it in words"
+                % (label, why, needle, value))
+    if EVENT_HANDLER_RE.search(value):
+        return (
+            "%s carries an HTML event-handler attribute, which would "
+            "execute in a permissive renderer: %r" % (label, value))
+    return None
+
+
+# The words a narration is measured in: letters, digits and the
+# apostrophe that holds a contraction together.  The same expression the
+# acceptance gate counts with, so the writer and the gate cannot
+# disagree about what a word is.
+NARRATION_WORD_RE = re.compile(r"[0-9a-z']+")
+
+
+def narration_words(value):
+    """Return the comparable words of one narration, lowercased."""
+    if not isinstance(value, str):
+        return []
+    return NARRATION_WORD_RE.findall(value.lower())
+
+
+def narration_substance_problem(value, label="commentary"):
+    """Report a commentary that names a keystroke instead of a reason.
+
+    R7 asks for first-person commentary explaining WHY the survivor
+    acted, and a review found 44 of the delivered 307 entries carrying a
+    single word -- 42 of them the letter that had just been typed into a
+    search box, plus "Next." and "Five.".  Every structural check passed
+    over them: they are non-empty, in voice, free of markup, and they
+    close as sentences.  What they do not do is account for anything.
+    A one-word label is the one shape that can be told from a reason
+    mechanically, so it is refused HERE, where the row is written and
+    the driver still knows what they were doing and why.
+    Anything longer is a judgement the writer of the sentence makes.
+    The acceptance gate reports the same class over the effective
+    narration; this closes the door the record comes in through.
+
+    WRITER ONLY.  The delivered record still holds those 44 rows,
+    because it is append-only and evidence is not rewritten: they are
+    corrected in playthrough/amendments.jsonl, which is what every
+    derivative reads through resolve_rows().  A reader given this rule
+    would refuse to read the very record the ledger exists to correct.
+
+    :returns: the problem, or None.
+    """
+    words = narration_words(value)
+    if len(words) > 1:
+        return None
+    return (
+        "%s is %r, which is one word.  A row says WHY the survivor "
+        "pressed the key, and a single word names the keystroke instead "
+        "of accounting for it -- the letter typed into a search box, or "
+        "the number entered in a box, is already recorded in the "
+        "action.  Write the reason for the run this keystroke belongs "
+        "to, in the survivor's own voice" % (label, value))
+
+
 def _validated_commentary(value):
     """Return the survivor's own words, or refuse them.
 
     Length that is merely long is advised about and recorded as given;
     an out-of-character sentence is REFUSED, because it would go verbatim
-    into the transcript and onto the film as a caption.
+    into the transcript and onto the film as a caption.  So are the two
+    classes a review found reaching the committed transcript: raw markup
+    (see raw_markup_problem) and a one-word label standing in for a
+    reason (see narration_substance_problem).
     """
     text = _validated_text(value, "commentary")
     if len(text) > CUE_ADVISORY_LENGTH:
@@ -2395,6 +2521,12 @@ def _validated_commentary(value):
     problem = meta_vocabulary_problem(text, "commentary")
     if problem is not None:
         raise ManifestError(problem)
+    # THE OTHER TWO CONTENT GATES ARE APPLIED IN build_row() rather than
+    # here, and the reason is the message a caller gets: markup and a
+    # one-word label are reported ALONGSIDE the placeholder and shape
+    # findings, in one refusal that names the frame, instead of the first
+    # of them hiding the rest.  See raw_markup_problem and
+    # narration_substance_problem above for the rules themselves.
     return text
 
 
@@ -2572,6 +2704,22 @@ def build_row(frame, file, real_ts, ingame_clock, action, commentary):
     shape = action_shape_problem(row["action"], "frame %d" % index)
     if shape is not None:
         problems.append(shape)
+    # AND THE TWO PUBLICATION GATES, over BOTH narrations.  Every string
+    # in these two fields is copied verbatim into
+    # playthrough/transcript.md and quoted in the reports, so markup is
+    # refused in either; a one-word label is refused in the commentary,
+    # which is the field that has to say why.  Both are collected rather
+    # than raised, so one refusal names every problem with the row.
+    for label, value in (("frame %d action" % index, row["action"]),
+                         ("frame %d commentary" % index,
+                          row["commentary"])):
+        markup = raw_markup_problem(value, label)
+        if markup is not None:
+            problems.append(markup)
+    substance = narration_substance_problem(
+        row["commentary"], "frame %d commentary" % index)
+    if substance is not None:
+        problems.append(substance)
     if problems:
         raise ManifestError("  ".join(problems))
     return _ordered_row(row)
@@ -3275,12 +3423,33 @@ def build_amendment(number, amended_ts, frame, field, source_sha256,
             "amendment that says nothing does not belong in a ledger a "
             "reviewer has to read"
             % (row["frame"], row["field"]))
+    # THE PUBLICATION RULE REACHES THE LEDGER TOO, on both sides of the
+    # correction.  `amended` is what every derivative publishes, so it
+    # plainly has to pass; `recorded` has to pass as well, because it is
+    # a QUOTATION of a manifest row and the writer refuses markup there,
+    # so a `recorded` value carrying any would be a claim about a row
+    # that cannot exist.  A review found this ledger able to introduce
+    # exactly the markup the row writer refuses.
+    for name in ("recorded", "amended"):
+        problem = raw_markup_problem(
+            row[name],
+            "the %s %s for frame %d" % (name, row["field"], row["frame"]))
+        if problem:
+            raise ManifestError(problem)
     if row["field"] == "commentary":
         problem = meta_vocabulary_problem(row["amended"])
         if problem:
             raise ManifestError(
                 "the amended commentary for frame %d is not in the "
                 "survivor's voice: %s" % (row["frame"], problem))
+        # AND IT MUST BE A REASON.  An amendment that replaces a
+        # one-word label with another one-word label is the defect
+        # restated, not corrected.
+        problem = narration_substance_problem(
+            row["amended"],
+            "the amended commentary for frame %d" % row["frame"])
+        if problem:
+            raise ManifestError(problem)
     else:
         problem = action_shape_problem(row["amended"], "amended")
         if problem:

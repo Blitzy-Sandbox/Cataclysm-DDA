@@ -43,12 +43,25 @@ Blitzy Agent <agent@blitzy.com>
 ```
 
 The plan asks for a repository-local identity (§0.3.1, §0.10.2). The execution
-environment forbids writing git configuration in any scope, so a repository-local
-pair could not be created without violating a constraint that outranks the
-preference for one. What is delivered instead is the property the local identity
+environment this record was produced in fixes the committer identity itself and
+prohibits creating that pair. **Its directive, quoted word for word rather than
+paraphrased, because a paraphrase is not an exception:**
+
+> All git commits must be authored and committed as
+> `Blitzy Agent <agent@blitzy.com>`. Never run `git config
+> user.name`/`user.email`, and never override the author/committer identity.
+
+Setting a repository-local pair means running one of the two commands that
+sentence forbids, so satisfying the plan here would have been a violation rather
+than a compliance. **The two instructions cannot both be obeyed**, which makes this
+a requirement-level conflict for a human to settle and not something any run of
+the gate can close. What is delivered instead is the property the local identity
 was wanted *for*: the identity **resolves**, and it **agrees with every commit in
-the history**. Both are asserted by the acceptance gate rather than claimed here.
-This divergence is recorded in full in `TECHNICAL_NOTES.md`.
+the history**. Both are asserted by the acceptance gate rather than claimed here,
+and the gate quotes the same directive verbatim in its own divergence — the
+constant it quotes from is `IDENTITY_DIRECTIVE` in `verify_artifacts.sh`, so the
+wording in the gate and the wording here cannot drift apart silently. This
+divergence is recorded in full in `TECHNICAL_NOTES.md`.
 
 **And the gate now calls it a divergence rather than a pass.** It previously
 reported this check as `PASS` with the caveat in its prose — the sentence was
@@ -100,10 +113,24 @@ have read.
 
 The gate's own verdicts are committed rather than left in a terminal.
 `playthrough/acceptance-report.txt` is the **post-commit** half — the properties
-only a commit can make true — and reports **31 of 31 declared checks, 31 passes,
-0 failures**. The **pre-commit** half, which measures the artifacts themselves,
-reports **108 of 108 declared, 108 passes, 0 failures, 12 informational notes**.
-122 in all.
+only a commit can make true — and declares **37 checks**. The **pre-commit** half,
+which measures the artifacts themselves, declares **119**. **134 in all**, and the
+counts are summed from the derivation table beside `GROUP_CHECKS_ALL` in
+`verify_artifacts.sh` rather than written by hand, so the gate refuses its own
+report if the number of checks it printed is not the number it declared.
+
+**The committed acceptance report is the authority on the run-specific verdict,
+not this paragraph.** A code review made the point that mattered: a document that
+recites pass counts drifts away from the gate that produces them, and a recited
+count that has gone stale reads as compliance. So the totals above are the
+*declared* ones, which are structural, and the passes, failures, divergences and
+informational notes for the run this document was published beside are in
+`playthrough/acceptance-report.txt`, measured over the commit it names in its own
+`VERIFY_MEASURED_COMMIT` line. Two verdicts in it are **divergences** rather than
+passes, and both are stated in full below: the git identity is not
+repository-local (next paragraph) and the checkpoints taken before the
+evidence-anchor mechanism existed publish no chain head of their own
+(*The security controls this record rests on*).
 
 The `creation` checkpoint is taken after the first autosave rather than at the
 instant the creator closed, and the reason is the engine's: no character file
@@ -251,15 +278,47 @@ with its cumulative video timestamp and first-person commentary saying why the
 survivor did it. It is generated from `timeline.json` in the same pass as the
 caption file, so the two cannot disagree about when anything happened.
 
-**One shortfall, named rather than buried.** Two entries repeat a sentence used
-within the previous three: **frames 225 and 226 both read *"South. Off the
-tarmac, over the kerb, into the green."*** They are two consecutive steps of one
-walk south off the car park onto the golf course, narrated identically because
-they were the same act continued. The acceptance gate reports them and declines
-to decide whether that is a reason — it can tell that two sentences are the same
-and it cannot tell whether one is a placeholder — so they are cited here for a
-reader to judge. No entry is a single word, and all 307 close as sentences and
-carry a word beyond the key that produced them.
+**Two shortfalls were found by review, and both are corrected in the record
+rather than explained in this document.** An earlier version of this section
+claimed that no entry was a single word. That was false, and the count is worth
+stating plainly: **44 of the 307 commentaries were one word** — forty-two of them
+a single character transcribed while spelling a search term during character
+creation (*"M."*, *"I."*, *"S."*), plus *"Next."* at frame 93 and *"Five."* at
+frame 144. A letter is not a reason, and R7 asks for the reason. Separately,
+**frames 225 and 226 repeated frame 224's sentence** — *"South. Off the tarmac,
+over the kerb, into the green."* — across three identical paces.
+
+Both were corrected the only way this record permits: **the manifest is
+append-only, so nothing was edited.** 46 amendments were appended to
+`playthrough/amendments.jsonl` (ids 157–202), each one binding itself to the
+sha256 of the manifest line it corrects, quoting the recorded sentence verbatim,
+and stating its basis and its reason. Frame 224 was left exactly as recorded — it
+is the origin sentence, not the defect — and 225 and 226 were given their own
+motive. The whole chain was then regenerated from the amended record, so the
+timeline, the caption file, the readable transcript and the captioned film all
+derive from it. **Both the raw record and the ledger are committed**, which is
+what makes the correction auditable rather than invisible: a reader can see what
+was written, what it was changed to, and why.
+
+What the gate reports over the corrected record, verbatim:
+
+```text
+PASS  no entry is only the key that produced it
+      observed: 307 entr(ies) measured against the effective narration: the
+      record with playthrough/amendments.jsonl applied: each closes as a
+      sentence, each carries at least one word beyond its own keystroke, and
+      no commentary is a single word.  This is the falsifiable half of the
+      requirement; that what the entry adds is a REASON is not machine-decidable
+      and is not claimed here
+```
+
+No entry repeats a sentence used within the previous three, so the repeat
+warning the gate used to print is no longer emitted at all. The gate also names
+the five thinnest entries so a reader can judge the half no program can — now
+*"Marksmanship. No."* (frame 120), *"Rifles. No."* (121), *"Two more."* (267),
+*"A. Boating."* (47) and *"Show me."* (48). Three words can be a complete reason
+and thirty can be padding; that judgement is the reader's, and this document does
+not claim it.
 
 ### The caption track is selectable, not burned in
 
@@ -312,7 +371,7 @@ dependency is worse than one that explains an extra line.
 
 ```console
 $ git ls-files playthrough | wc -l
-662
+665
 $ git ls-files playthrough/frames | wc -l
 307
 $ git ls-files playthrough/userdir | wc -l
@@ -369,22 +428,56 @@ comment cannot satisfy it and refactoring cannot silently void it.
 | The evidence | the ledgers are hash-chained and each row carries the git blob name of what it seals | `manifest.py` |
 | The journal | writes are verified and durability failures propagate rather than being swallowed | `session.py` |
 | The payload | a chosen value cannot forge a `KEY=value` record or a log line | `session.py` |
-| The decoders | provenance checked before decode; the decode runs under CPU limits with core dumps forbidden | `ocr_clock.py`, `make_transitions.py` |
+| The decoders | the bytes are read through one `O_NOFOLLOW` descriptor, validated by `fstat` on that descriptor and decoded from memory, so no pathname reaches a native decoder; the decode runs under CPU limits with core dumps forbidden | `ocr_clock.py`, `make_transitions.py` |
 | The transcript | the survivor name is held to a conservative grammar rather than escaped after the fact | `make_srt.py` |
 | The container | identified by image id and a build-inputs digest, never by a mutable tag | `supported_env.sh` |
 
-Five of these are **documented divergences from the guidance that prompted them**,
-recorded with their reasons rather than quietly dropped: signalling the X server
-uses a verify-immediately-before-`kill` sequence rather than a pidfd, because bash
-has none — the window is narrowed to a few syscalls, not closed; apt inputs are
-not snapshotted, because the value of an in-support release *is* its updates, and
-the build records its inventory and binds it to the image identity instead; engine
+**Two of these were tightened by the review that produced this revision**, and
+saying so is the point of keeping the list. The X server is no longer signalled by
+number: `env.sh` pins a **pidfd** through the pipeline's own interpreter
+(`os.pidfd_open` then `signal.pidfd_send_signal`) and validates the process's
+identity *after* the handle is pinned, so a pid recycled between the check and the
+signal can no longer be signalled by mistake — and where pidfd is unavailable the
+helper reports and sends nothing rather than falling back. And the staging scan
+now reads **every byte of every path**: it streams each file in overlapping chunks
+instead of examining a 256 KiB window, and a file containing NUL bytes is scanned
+under a printable-ASCII constraint rather than skipped, so the row above that says
+"over every path" is now measurably true — 665 paths and 112,890,194 bytes in
+3.9 s on this host.
+
+**Four remain documented divergences from the guidance that prompted them**,
+recorded with their reasons rather than quietly dropped: apt inputs are not
+snapshotted, because the value of an in-support release *is* its updates, and the
+build records its inventory and binds it to the image identity instead; engine
 files are classified by position and refused by property rather than by an
 explicit filename schema; the evidence ledger is hash-chained, git-anchored and
 published in a commit trailer rather than signed, because no key management exists
 here and a private key committed to the tree it signs proves nothing; and the
 repository-local git identity is reported as a divergence rather than created, for
-the reason given at the top of this section.
+the reason given at the top of this report.
+
+**And one residual is named by the gate rather than by this paragraph.** The
+evidence anchor's head is published as a commit trailer, but the mechanism was
+built after the session's own checkpoints were taken, so those checkpoints carry
+no head of their own. A review found the gate accepting any newest trailer as
+though it covered them, which is exactly the reading that made a retrospective
+seal look like a contemporaneous one. The gate now asks the question **per
+required checkpoint** and reports what it finds:
+
+```text
+DIVERGENCE  the evidence anchor's head is published in the history
+      observed: … declares Playthrough-Evidence-Anchor: 468793a63e813a78, which
+                is the head the anchor ends on, but 5 required checkpoint(s)
+                publish no head of their own: 800ab8e11f (creation)
+                7e10721d4e (creation) 555b12b88d (final) 4e8a49879a (final)
+                b0038360c7 (media)
+```
+
+What would close it is a re-recorded session whose checkpoints are taken through
+the hardened committer from the first commit onward. What cannot close it here is
+publishing the head to an external transparency service: this feature introduces
+no network surface of any kind, by plan (§0.8.2), and inventing one to satisfy an
+attestation would be a larger deviation than the one it fixed.
 
 ## B) Character Creation
 
@@ -586,9 +679,22 @@ This is checkable from committed files rather than taken on trust:
   writes that file only when a binding is changed, so its absence is the
   evidence that the shipped bindings — in which every debug action is unbound —
   are the ones that were played.
-* **`playthrough/userdir/debug.log` does not exist**, and no debug identifier
-  appears anywhere under the committed userdir.
+* **The engine's own log is committed, and it records no debug activity.** It is
+  at `playthrough/userdir/config/debug.log` — the engine writes it beside the
+  configuration, not at the top of the userdir, and an earlier version of this
+  report cited the wrong path. A case-insensitive search of it for `debug`
+  matches **nothing at all**, across the whole 1 634 bytes of it.
 * The committed character save carries `"debug_mode": false`.
+* **What the word does appear as, stated so the claim above is not read wider
+  than it is:** `DEBUG_DIFFICULTIES` is an ordinary world option and is written
+  into `playthrough/userdir/config/options.json` and
+  `save/Fairport Harbor/external_options.json` by the engine, as it is for every
+  world; the character save carries the `debug_mode` key quoted above; and
+  `uistate.json` carries the engine's own interface state. So the claim being
+  made here is **not** that the string never occurs under the userdir — it is
+  that **no debug action was ever activated**, which is what the unbound
+  keybindings, the absent `keybindings.json`, the `false` flag and the silent
+  engine log say between them.
 
 **Death was never close enough to resist, and that is the honest way to put
 it.** The survivor met no monster at any point in the recorded day. She heard

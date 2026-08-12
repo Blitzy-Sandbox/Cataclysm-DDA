@@ -604,7 +604,8 @@ class TestTheTimestampColumn(ManifestFixture):
             with self.subTest(supplied=supplied):
                 row = manifest.append_row(
                     self.manifest, index, manifest.frame_file(index),
-                    supplied, None, "press 'j'", "South.",
+                    supplied, None, "press 'j'",
+                    "South, one step off the kerb.",
                     root=self.directory)
                 self.assertEqual(row["real_ts"], stored)
         written = manifest.read_rows(self.manifest, root=self.directory)
@@ -624,7 +625,8 @@ class TestTheTimestampColumn(ManifestFixture):
         _, first = self.capture_stderr(
             manifest.append_row, self.manifest, 1,
             manifest.frame_file(1), "2026-05-14T09:12:03Z", None,
-            "press 'j'", "South.", root=self.directory)
+            "press 'j'", "South, one step off the kerb.",
+            root=self.directory)
         self.assertIn("was rewritten to", first)
         self.assertIn("the instant is unchanged", first)
         self.assertIn("capture.sh", first)
@@ -634,7 +636,8 @@ class TestTheTimestampColumn(ManifestFixture):
         _, second = self.capture_stderr(
             manifest.append_row, self.manifest, 2,
             manifest.frame_file(2), "2026-05-14T09:12:04Z", None,
-            "press 'k'", "North.", root=self.directory)
+            "press 'k'", "North again, back the way I came.",
+            root=self.directory)
         self.assertEqual(second, "")
 
     def test_the_canonical_form_is_written_without_a_word(self):
@@ -642,7 +645,7 @@ class TestTheTimestampColumn(ManifestFixture):
         _, said = self.capture_stderr(
             manifest.append_row, self.manifest, 1,
             manifest.frame_file(1), FIXED_REAL_TS, None, "press 'j'",
-            "South.", root=self.directory)
+            "South, one step off the kerb.", root=self.directory)
         self.assertEqual(
             said, "",
             msg="the ordinary case is the whole session; it is silent")
@@ -748,9 +751,12 @@ class TestTheNarrativeColumns(ManifestFixture):
         self.assertEqual(self.row(commentary=text)["commentary"], text)
 
     def test_a_runaway_field_is_refused_and_a_long_one_is_advised(self):
+        # TWO WORDS AT LEAST, in every fixture here: a one-word
+        # commentary is refused on its own account (see
+        # narration_substance_problem), and this test is about LENGTH.
         with self.assertRaises(manifest.ManifestError):
-            self.row(commentary="c" * (manifest.MAX_FIELD_LENGTH + 1))
-        long_enough = "c" * (manifest.CUE_ADVISORY_LENGTH + 1)
+            self.row(commentary="cold " * manifest.MAX_FIELD_LENGTH)
+        long_enough = "cold " * (manifest.CUE_ADVISORY_LENGTH // 4)
         row, err = self.capture_stderr(self.row,
                                        commentary=long_enough)
         self.assertEqual(
@@ -1216,6 +1222,133 @@ class TestSentinelsAreRefusedNotAdvised(ManifestFixture):
             offenders, [],
             msg=("every row of the committed record has to say what was "
                  "pressed and why; these do not: %r" % offenders))
+
+
+class TestRawMarkupNeverReachesTheRecord(ManifestFixture):
+    """A review finding, end to end: the payload and where it landed.
+
+    playthrough/transcript.md is Markdown and Markdown passes raw HTML
+    to whatever renders it.  The wide guard existed -- it held the
+    transcript's generated HEADING -- while the body was held only to the
+    caption gate, which names the styling tags a cue could carry (font,
+    i, b, u, s) and does not name `img`.  So a commentary reading
+    `<img src=x onerror=alert(1)>` passed every check in the pipeline and
+    was written verbatim into a committed document.
+
+    The rule now lives in this module and is applied where text ENTERS
+    the record, on both narrations and on both sides of an amendment.
+    Refused rather than escaped: this artifact is evidence, and a
+    sentence carrying markup is a fault to report rather than a string to
+    clean.
+    """
+
+    PAYLOADS = (
+        '<img src=x onerror=alert(1)>',
+        'I look at <b>the shelf</b> and take the tin.',
+        'The tin says beans &amp; frankfurters, so I keep it.',
+        'I check the shelf onerror=alert(1) and move on.',
+    )
+
+    def test_the_writer_refuses_a_payload_in_the_commentary(self):
+        for payload in self.PAYLOADS:
+            with self.subTest(payload=payload):
+                with self.assertRaises(manifest.ManifestError) as caught:
+                    self.row(commentary=payload)
+                self.assertIn("frame 1 commentary",
+                              str(caught.exception))
+
+    def test_the_writer_refuses_a_payload_in_the_action(self):
+        with self.assertRaises(manifest.ManifestError) as caught:
+            self.row(action="press '5' -- wait <script>alert(1)</script>")
+        self.assertIn("frame 1 action", str(caught.exception))
+
+    def test_nothing_is_written_when_a_payload_is_refused(self):
+        self.write_frames([1])
+        with self.assertRaises(manifest.ManifestError):
+            self.append(commentary=self.PAYLOADS[0])
+        self.assertFalse(
+            os.path.exists(self.manifest),
+            msg="a refused row writes nothing at all")
+
+    def test_ordinary_prose_with_a_hyphen_or_a_quote_still_passes(self):
+        for text in ("I take the tin -- it is the only food here.",
+                     "The label says 'beans', so it is food.",
+                     "I am not sure it is safe, but I am hungry."):
+            with self.subTest(text=text):
+                self.assertEqual(self.row(commentary=text)["commentary"],
+                                 text)
+
+    def test_the_rule_is_reported_rather_than_raised_for_a_caller(self):
+        """A pure predicate, so a caller can ask before it writes."""
+        self.assertIsNone(
+            manifest.raw_markup_problem("I take the tin.", "commentary"))
+        problem = manifest.raw_markup_problem(
+            "<img src=x onerror=alert(1)>", "commentary")
+        self.assertIn("angle bracket", problem)
+        self.assertIn("transcript.md", problem)
+
+    def test_the_real_record_carries_no_markup(self):
+        """The delivered evidence is held to the rule as well."""
+        real = os.path.join(
+            os.path.dirname(os.path.abspath(manifest.__file__)),
+            os.pardir, "manifest.jsonl")
+        if not os.path.exists(real):
+            self.skipTest("no captured record in this checkout")
+        offenders = []
+        with open(real, "r", encoding="utf-8") as handle:
+            for number, line in enumerate(handle, start=1):
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                for name in ("action", "commentary"):
+                    if manifest.raw_markup_problem(row.get(name), name):
+                        offenders.append((number, name))
+        self.assertEqual(offenders, [], msg=repr(offenders))
+
+
+class TestAOneWordCommentaryIsNotAReason(ManifestFixture):
+    """R7 asks WHY, and a review found 44 entries answering with a label.
+
+    42 of them were the letter that had just been typed into a search
+    box, plus "Next." and "Five.".  Each passed every structural check --
+    non-empty, in voice, free of markup, closing as a sentence -- and
+    accounted for nothing.  The one-word shape is the part of that class
+    a program can tell from a reason, so the writer refuses it, where the
+    driver still knows what they were doing.
+
+    THE READER IS DELIBERATELY NOT GIVEN THIS RULE.  The delivered record
+    still holds those 44 rows, because it is append-only; they are
+    corrected in playthrough/amendments.jsonl and every derivative reads
+    through resolve_rows().  A reader that refused them would refuse to
+    read the very record the ledger exists to correct.
+    """
+
+    def test_the_writer_refuses_a_single_word(self):
+        for payload in ("M.", "Next.", "Five.", "South", "Again!"):
+            with self.subTest(payload=payload):
+                with self.assertRaises(manifest.ManifestError) as caught:
+                    self.row(commentary=payload)
+                self.assertIn("which is one word", str(caught.exception))
+
+    def test_two_words_are_the_writer_s_whole_rule(self):
+        """Length is a judgement; naming the keystroke is not."""
+        self.assertEqual(self.row(commentary="South, quickly.")[
+            "commentary"], "South, quickly.")
+
+    def test_the_reader_still_reads_a_one_word_row(self):
+        """The property that keeps the delivered record readable."""
+        row = dict(self.row())
+        row["commentary"] = "M."
+        self.assertEqual(
+            [problem for problem in manifest.row_field_problems(row, 1)
+             if "one word" in problem], [])
+
+    def test_the_rule_is_reported_rather_than_raised_for_a_caller(self):
+        self.assertIsNone(
+            manifest.narration_substance_problem("South, quickly."))
+        problem = manifest.narration_substance_problem("M.")
+        self.assertIn("one word", problem)
+        self.assertIn("in the survivor's own voice", problem)
 
 
 class TestTheActionNamesAKeystroke(ManifestFixture):
@@ -3085,6 +3218,70 @@ class TestTheAmendmentLedger(ManifestFixture):
         with self.assertRaises(manifest.ManifestError):
             self.amend(amended="something else entirely")
         self.assertEqual(self.ledger(), ())
+
+    def test_an_amendment_may_not_introduce_raw_markup(self):
+        """The ledger is a publication path, so it carries the rule too.
+
+        A review found the markup gate applied to the transcript's
+        heading alone.  This is the other door into the published
+        Markdown: whatever `amended` says is what a derivative prints.
+        `recorded` is held to it as well, because that field QUOTES a
+        manifest row and the row writer refuses markup -- so a
+        `recorded` value carrying any is a claim about a row that cannot
+        exist.
+        """
+        self.append_many(2)
+        for field, amended in (
+                ("commentary",
+                 "I take the tin <img src=x onerror=alert(1)>."),
+                ("action", "press '5' -- wait <b>here</b>")):
+            with self.subTest(field=field):
+                with self.assertRaises(manifest.ManifestError) as caught:
+                    self.amend(field=field, amended=amended)
+                self.assertIn("angle bracket", str(caught.exception))
+        with self.assertRaises(manifest.ManifestError):
+            self.amend(field="commentary",
+                       recorded="I wait <b>here</b>, and listen.",
+                       amended="I wait, and listen to the corridor.")
+        self.assertEqual(self.ledger(), ())
+
+    def test_an_amended_commentary_may_not_be_one_word(self):
+        """A correction that restates the defect is not a correction."""
+        self.append_many(2)
+        with self.assertRaises(manifest.ManifestError) as caught:
+            self.amend(field="commentary", amended="South.")
+        self.assertIn("which is one word", str(caught.exception))
+        self.assertEqual(self.ledger(), ())
+
+    def test_a_one_word_row_can_still_be_amended_into_a_reason(self):
+        """The path the 44 delivered entries are corrected through.
+
+        The `recorded` side is a one-word label -- that is the whole
+        point of the amendment -- so the substance rule applies to the
+        amended value alone.  The row is written as a LINE rather than
+        through the writer, because the writer now refuses it: that is
+        the shape of the delivered record, which was captured before the
+        rule existed and is append-only.
+        """
+        self.write_frames([1, 2])
+        self.append(frame=1)
+        with open(self.manifest, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(
+                {"frame": 2, "file": manifest.frame_file(2),
+                 "real_ts": FIXED_REAL_TS, "ingame_clock": "08:15:33",
+                 "action": "press 'm' -- begin spelling the start",
+                 "commentary": "M."}, ensure_ascii=False) + "\n")
+        row = self.amend(
+            frame=2, field="commentary",
+            amended="Spelling it is faster than reading the whole list.",
+            basis="the capture shows the search box with an M in it.",
+            reason="the recorded note transcribed the key rather than "
+                   "saying why the search was opened.")
+        self.assertEqual(row["recorded"], "M.")
+        self.assertEqual(
+            manifest.verify_amendments(
+                self.ledger_path(), self.manifest, root=self.directory),
+            [])
 
     def test_the_ledger_may_not_be_pointed_at_another_artifact(self):
         """The exploit this closes is a write, not a read.

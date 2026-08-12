@@ -2097,7 +2097,6 @@ class TestTheTrustState(EnvFixture):
         "PLAYTHROUGH_ALLOW_UNVERIFIED_EXECUTABLES",
         "PLAYTHROUGH_ALLOW_UNAUTHENTICATED_X",
         "PLAYTHROUGH_ALLOW_UNVERIFIED_TILESET_PACK",
-        "PLAYTHROUGH_ALLOW_TILESET_FALLBACK",
         "PLAYTHROUGH_ALLOW_VULNERABLE_PILLOW",
         "PLAYTHROUGH_ALLOW_ANY_COMPILER",
         # ADDED BY A SECURITY REVIEW, and it was right.  The end-of-life
@@ -2147,7 +2146,7 @@ class TestTheTrustState(EnvFixture):
 
     def test_a_value_of_zero_is_not_a_bypass(self):
         result = self.sourced(preset={
-            "PLAYTHROUGH_ALLOW_TILESET_FALLBACK": "0",
+            "PLAYTHROUGH_ALLOW_UNVERIFIED_TILESET_PACK": "0",
             "PLAYTHROUGH_ALLOW_ANY_COMPILER": ""})
         self.assertEqual(result["PLAYTHROUGH_TRUST_STATE"], "trusted")
 
@@ -2166,10 +2165,10 @@ class TestTheTrustState(EnvFixture):
         what proves it rather than the comment.
         """
         result = self.sourced(
-            after='export PLAYTHROUGH_ALLOW_TILESET_FALLBACK=1\n'
+            after='export PLAYTHROUGH_ALLOW_UNVERIFIED_TILESET_PACK=1\n'
                   'playthrough_trust_refresh || true\n'
                   'export LATE="${PLAYTHROUGH_TRUST_STATE}"\n'
-                  'unset PLAYTHROUGH_ALLOW_TILESET_FALLBACK\n'
+                  'unset PLAYTHROUGH_ALLOW_UNVERIFIED_TILESET_PACK\n'
                   'playthrough_trust_refresh || true\n'
                   'export AGAIN="${PLAYTHROUGH_TRUST_STATE}"')
         self.assertEqual(result.get("LATE"), "diagnostic")
@@ -3615,9 +3614,71 @@ class TestTheTeardownSignalsOnlyWhatItVerified(EnvFixture):
                       body)
         self.assertIn("playthrough_pid_is", body)
         self.assertIn("playthrough_proc_uid", body)
-        # And the check precedes the signal.
-        self.assertLess(body.index("playthrough_pid_is"),
-                        body.index("if kill "))
+        # And the check precedes the signal.  The CALL sites are compared
+        # rather than the first mention of each name, because the block
+        # explaining why the signal goes through a handle names the helper
+        # before the loop that uses it.
+        self.assertLess(body.index('if ! playthrough_pid_is "'),
+                        body.index('$(playthrough_signal_pid "'))
+
+    def test_the_teardown_signals_through_a_handle_not_a_number(self):
+        """CWE-367, closed rather than narrowed.
+
+        A review asked for pidfds and got, for a while, an honest "the
+        window is a few syscalls wide instead of the whole teardown" --
+        because bash has no pidfd.  It does not need one: this pipeline
+        already requires a verified interpreter, and os.pidfd_open pins
+        the PROCESS rather than the number.  A bare `kill` on a number
+        anywhere in this teardown would be the defect returning.
+        """
+        source = env_source()
+        start = source.index("playthrough_headless_down() {")
+        body = source[start:source.index("\n}\n", start)]
+        self.assertNotIn("if kill ", body)
+        self.assertNotIn('kill "${pid}"', body)
+        self.assertIn("playthrough_signal_pid", body)
+        helper = source[source.index("playthrough_signal_pid() {"):]
+        helper = helper[:helper.index("\n}\n")]
+        self.assertIn("pidfd_open", helper)
+        self.assertIn("pidfd_send_signal", helper)
+        # The identity questions are asked AFTER the handle is held,
+        # which is the whole reason the handle closes the race.
+        self.assertLess(helper.index("opener(pid)"),
+                        helper.index("/proc/%d/comm"))
+
+    def test_the_handle_signals_the_process_it_verified(self):
+        """End to end, against a real process this test owns."""
+        result = self.source(
+            preset={"CLONE_INDEX": str(SPARE_INDEX)},
+            after=(
+                'sleep 30 & victim=$!\n'
+                'playthrough_signal_pid sleep "${victim}" SIGTERM '
+                '>/dev/null 2>&1 || printf "REFUSED\\n" >&2\n'
+                'sleep 0.5\n'
+                'if [ -d "/proc/${victim}" ]; then\n'
+                '    printf "VICTIM[alive]\\n" >&2\n'
+                'else\n'
+                '    printf "VICTIM[stopped]\\n" >&2\n'
+                'fi\n'
+                'kill "${victim}" 2>/dev/null || true\n'))
+        self.assertIn("VICTIM[stopped]", result.stderr)
+        self.assertNotIn("REFUSED", result.stderr)
+
+    def test_the_handle_refuses_a_process_of_another_program(self):
+        """The recycled-number case, at the helper itself."""
+        result = self.source(
+            preset={"CLONE_INDEX": str(SPARE_INDEX)},
+            after=(
+                'sleep 30 & victim=$!\n'
+                'playthrough_signal_pid Xvfb "${victim}" SIGTERM '
+                '>/dev/null 2>&1 || printf "REFUSED\\n" >&2\n'
+                'sleep 0.5\n'
+                'if [ -d "/proc/${victim}" ]; then\n'
+                '    printf "VICTIM[alive]\\n" >&2\n'
+                'fi\n'
+                'kill "${victim}" 2>/dev/null || true\n'))
+        self.assertIn("REFUSED", result.stderr)
+        self.assertIn("VICTIM[alive]", result.stderr)
 
 
 class TestRuntimeRetention(EnvFixture):

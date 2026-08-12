@@ -2558,16 +2558,16 @@ export PLAYTHROUGH_TILESET="MshockXottoplus"
 # spelling aid for ONE tileset, not a list of acceptable alternatives.
 export PLAYTHROUGH_TILESET_ALIASES="MshockXottoplus MSXotto+ MShockXotto+"
 
-# DIAGNOSTIC ONLY, and unreachable unless it is asked for by name.
-# The checkout's own tileset -- the one thing that is always installed,
-# because .gitignore:52 negates it -- so that somebody debugging the
-# pipeline on a host with no pack can still bring the game up and look
-# at a frame.  It is NOT a fallback: nothing consults it unless
-# PLAYTHROUGH_ALLOW_TILESET_FALLBACK=1 is set deliberately, and
-# launch_game.sh says so loudly on stderr and records origin=fallback
-# when it does.  A session recorded under it does not satisfy the
-# requirement, which names MSXotto+.
-export PLAYTHROUGH_TILESET_FALLBACK="ASCIITiles"
+# THERE IS NO SECOND TILESET IN THIS PIPELINE, and there is deliberately
+# no variable naming one.  A diagnostic ASCIITiles path used to live here,
+# reachable only under PLAYTHROUGH_ALLOW_TILESET_FALLBACK=1 and recorded
+# as origin=fallback -- and a review was right that carrying the losing
+# side of the requirement conflict at all left two artwork branches in a
+# feature whose requirement names exactly one.  The whole branch is gone:
+# no variable, no bypass, no code path.  A host without the pack gets a
+# refusal that says how to install it, which is the honest outcome,
+# because an ASCII capture looks like a perfectly good frame and would
+# fail the requirement invisibly.
 
 # Seconds to let a frame settle after a keystroke before capturing.
 # The game redraws asynchronously; capturing too early photographs the
@@ -3320,7 +3320,7 @@ playthrough_assert_video_driver() {
 # RECOMPUTED AT EVERY CALL, never memoised.  A caller can export one of
 # these variables after sourcing this file -- a test harness does
 # exactly that -- so an answer cached at source time would be a
-# statement about the past.  The cost is a loop over seven names.
+# statement about the past.  The cost is a loop over the registry's names.
 #
 # ANY VALUE OTHER THAN EMPTY OR "0" COUNTS AS ACTIVE, which is stricter
 # than the individual check sites (they act only on "1").  That is
@@ -3334,7 +3334,6 @@ export PLAYTHROUGH_TRUST_BYPASS_VARS="\
 PLAYTHROUGH_ALLOW_UNVERIFIED_EXECUTABLES \
 PLAYTHROUGH_ALLOW_UNAUTHENTICATED_X \
 PLAYTHROUGH_ALLOW_UNVERIFIED_TILESET_PACK \
-PLAYTHROUGH_ALLOW_TILESET_FALLBACK \
 PLAYTHROUGH_ALLOW_VULNERABLE_PILLOW \
 PLAYTHROUGH_ALLOW_ANY_COMPILER \
 PLAYTHROUGH_ALLOW_UNSAFE_PATH_ANCESTRY \
@@ -3356,10 +3355,6 @@ captured and inject keystrokes into the session"
         PLAYTHROUGH_ALLOW_UNVERIFIED_TILESET_PACK)
             printf '%s' "the artwork ingested into gfx/ came from a \
 path this host cannot vouch for"
-            ;;
-        PLAYTHROUGH_ALLOW_TILESET_FALLBACK)
-            printf '%s' "the run may render artwork other than the \
-required MSXotto+, which no other check would notice"
             ;;
         PLAYTHROUGH_ALLOW_VULNERABLE_PILLOW)
             printf '%s' "frames are decoded by a Pillow older than \
@@ -4369,6 +4364,105 @@ playthrough_x_ownership_record() {
     printf '%s' "${PLAYTHROUGH_RUN_DIR}/x-ownership${PLAYTHROUGH_DISPLAY_NUM}"
 }
 
+# playthrough_signal_pid KIND PID [SIGNAL]
+#   Signal a process THROUGH A HANDLE, never through its number.
+#
+#   THE RACE THIS CLOSES, IN ITS OWN WORDS (CWE-367).  Teardown used to
+#   verify a pid -- alive, the expected program, owned by this account --
+#   and then run `kill "${pid}"`.  Everything between those two steps is
+#   a window: if the process exits inside it and the kernel hands the
+#   number to something else, the signal goes to a stranger.  Running as
+#   root, that is not a failed teardown; it is killing somebody else's
+#   process.  A previous remediation narrowed the window to a few
+#   syscalls and said so honestly in TECHNICAL_NOTES.md -- "narrowed, not
+#   closed" -- because bash has no pidfd.  Bash does not need one: the
+#   pipeline already REQUIRES a verified interpreter, and Python has had
+#   os.pidfd_open and signal.pidfd_send_signal since 3.9.
+#
+#   HOW THE HANDLE MAKES IT SAFE.  os.pidfd_open() pins THAT PROCESS: the
+#   descriptor refers to the process itself and not to the number, so it
+#   cannot be inherited by a later occupant of the number.  The identity
+#   checks run AFTER the handle is held, and the signal is delivered
+#   through the handle -- so between validating and signalling there is no
+#   number left to recycle.  If the process has exited by then,
+#   pidfd_send_signal reports ESRCH and nothing is signalled at all.
+#
+#   FAIL-SAFE, NOT FAIL-OPEN.  A kernel or interpreter without pidfd
+#   support gets a REFUSAL and a diagnosis naming what to stop by hand;
+#   it does not fall back to signalling a number, because "signal by
+#   revalidated number alone" is precisely the defect.  Exit statuses:
+#   0 signalled, 1 not signalled and why on stderr, 2 pidfd unavailable.
+playthrough_signal_pid() {
+    local kind="${1-}" pid="${2-}" signal="${3:-SIGTERM}"
+    case "${pid}" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    # The program is handed a fixed script and four arguments; nothing is
+    # interpolated into it.  It prints one line to stderr when it refuses
+    # so the caller can quote the reason.
+    "${PLAYTHROUGH_PYTHON}" -c '
+import os
+import signal
+import sys
+
+kind, text, name = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    pid = int(text)
+except ValueError:
+    sys.stderr.write("%s is not a pid\n" % text)
+    raise SystemExit(1)
+opener = getattr(os, "pidfd_open", None)
+sender = getattr(signal, "pidfd_send_signal", None)
+if opener is None or sender is None:
+    sys.stderr.write(
+        "this interpreter has no pidfd support, so the process cannot "
+        "be signalled through a handle\n")
+    raise SystemExit(2)
+try:
+    handle = opener(pid)
+except (OSError, AttributeError) as err:
+    if getattr(err, "errno", None) == 38:   # ENOSYS: no pidfd_open
+        sys.stderr.write(
+            "this kernel has no pidfd_open, so the process cannot be "
+            "signalled through a handle\n")
+        raise SystemExit(2)
+    sys.stderr.write("%s %d could not be pinned: %s\n" % (kind, pid, err))
+    raise SystemExit(1)
+try:
+    # EVERY IDENTITY QUESTION IS ASKED AFTER THE HANDLE IS HELD.  The
+    # signal goes to the pinned process, so a number recycled before the
+    # handle was taken can only make this REFUSE -- never mis-target.
+    try:
+        with open("/proc/%d/comm" % pid, "r", encoding="utf-8") as comm:
+            observed = comm.read().strip()
+    except OSError as err:
+        sys.stderr.write("%s %d could not be identified: %s\n"
+                         % (kind, pid, err))
+        raise SystemExit(1)
+    if observed != kind:
+        sys.stderr.write("%d is %r and not %r\n" % (pid, observed, kind))
+        raise SystemExit(1)
+    try:
+        owner = os.stat("/proc/%d" % pid).st_uid
+    except OSError as err:
+        sys.stderr.write("%s %d could not be examined: %s\n"
+                         % (kind, pid, err))
+        raise SystemExit(1)
+    if owner != os.geteuid():
+        sys.stderr.write("%s %d is owned by uid %d and this run is uid "
+                         "%d\n" % (kind, pid, owner, os.geteuid()))
+        raise SystemExit(1)
+    try:
+        sender(handle, getattr(signal, name))
+    except OSError as err:
+        sys.stderr.write("%s %d was not signalled: %s\n"
+                         % (kind, pid, err))
+        raise SystemExit(1)
+finally:
+    os.close(handle)
+' "${kind}" "${pid}" "${signal}"
+}
+
 # playthrough_pid_is KIND PID
 #   True when PID is alive and its executable name is KIND.  /proc is
 #   read directly because `ps` is not in the pipeline's tool contract and
@@ -5237,7 +5331,18 @@ playthrough_headless_down() {
     # anything is sent to it: alive, the expected program, owned by this
     # account, and started when the record says.  A number that does not
     # answer to that is reported and left alone.
-    local kind="" expected=""
+    #
+    # AND THE SIGNAL ITSELF GOES THROUGH A HANDLE.  Checking a number and
+    # then signalling that number leaves a window between the two in which
+    # the number can be recycled (CWE-367), and a review was right that
+    # narrowing that window is not closing it.  playthrough_signal_pid
+    # pins the process with os.pidfd_open first and asks every identity
+    # question of the pinned process afterwards, so a recycled number can
+    # only produce a refusal.  The checks below are kept in front of it
+    # because they produce the DIAGNOSIS an operator needs -- "the number
+    # was recycled and here is what holds it now" -- which the handle
+    # alone would report only as ESRCH.
+    local kind="" expected="" refusal="" signalled=0
     for pid in \
         "$(cat "${PLAYTHROUGH_WM_PIDFILE}" 2>/dev/null || true)" \
         "$(cat "${PLAYTHROUGH_XVFB_PIDFILE}" 2>/dev/null || true)"; do
@@ -5268,9 +5373,29 @@ printf '<unreadable>')).  It was NOT signalled: the number was recycled" \
                 "not started by this account and was NOT signalled."
             continue
         fi
-        if kill "${pid}" 2>/dev/null; then
-            stopped=$(( stopped + 1 ))
-        fi
+        # `|| status=$?` rather than a bare assignment, so that a refusal
+        # cannot end a caller running under `set -e`: a teardown that
+        # aborts the script because ONE process could not be signalled
+        # would leave the rest of the surface up.
+        signalled=0
+        refusal="$(playthrough_signal_pid "${kind}" "${pid}" SIGTERM \
+            2>&1 >/dev/null)" || signalled=$?
+        case "${signalled}" in
+            0) stopped=$(( stopped + 1 )) ;;
+            2)
+                playthrough_warn "${kind} ${pid} was NOT signalled:" \
+                    "${refusal:-pidfd signalling is unavailable}." \
+                    "This pipeline signals a process through a handle" \
+                    "rather than through its number, because a number" \
+                    "can be recycled between the check and the signal" \
+                    "and this runs as root.  Stop it by hand:" \
+                    "kill ${pid}."
+                ;;
+            *)
+                playthrough_warn "${kind} ${pid} was NOT signalled:" \
+                    "${refusal:-no detail was reported}."
+                ;;
+        esac
     done
     playthrough_log "stopped ${stopped} process(es) of the headless" \
         "surface this checkout owns on ${PLAYTHROUGH_DISPLAY}; the" \

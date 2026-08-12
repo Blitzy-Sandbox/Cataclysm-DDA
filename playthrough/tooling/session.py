@@ -9610,12 +9610,15 @@ class Session:
         text = (build_action(validated, note) if action is None
                 else assert_action_derived(validated, action))
         voice = _required_text(commentary, "commentary")
-        # THE TWO HONESTY GATES, both BEFORE anything irreversible and
-        # both refusals rather than advisories.  A sentence that is not
-        # the survivor's voice, or that states a time or a date the
-        # frames do not support, never becomes a row -- because a row is
-        # evidence and evidence is not corrected afterwards.
+        # THE HONESTY GATES, all BEFORE anything irreversible and all
+        # refusals rather than advisories.  A sentence that is not the
+        # survivor's voice, that carries markup a renderer would execute,
+        # that is one word standing in for a reason, or that states a
+        # time or a date the frames do not support, never becomes a row
+        # -- because a row is evidence and evidence is not corrected
+        # afterwards.
         self._assert_voice(voice)
+        self._assert_publishable(text, voice)
         self._assert_clock_honesty(voice)
         self._assert_menu_hotkey_permitted(validated, text, voice)
 
@@ -9962,6 +9965,38 @@ class Session:
             commentary, "commentary")
         if problem is not None:
             raise RecordError(problem)
+
+    def _assert_publishable(self, action: str, commentary: str) -> None:
+        """Refuse a narration that cannot honestly be published.
+
+        TWO CLASSES A REVIEW FOUND IN THE DELIVERED RECORD, refused here
+        for the same reason the voice gate above refuses: the row becomes
+        a Markdown entry and an SRT cue, and neither is corrected after
+        the fact.
+
+        * RAW MARKUP.  playthrough/transcript.md is Markdown, which
+          passes raw HTML to whatever renders it, and the caption gate
+          names only styling tags -- so `<img src=x onerror=...>` passed
+          every check and reached the committed document.
+        * A ONE-WORD COMMENTARY.  44 of the delivered 307 entries were a
+          single word -- 42 of them the letter just typed into a search
+          box -- which is the keystroke written down rather than the
+          reason R7 asks for.  Those are corrected in the amendment
+          ledger because the record is append-only; this is what stops
+          the next one being recorded in the first place.
+
+        manifest.py owns both rules, so this gate and the gate at
+        publication cannot differ in strength.  Nothing is sent and
+        nothing is journalled, so the step is retried with the sentence
+        written out.
+        """
+        for problem in (manifest.raw_markup_problem(action, "the action"),
+                        manifest.raw_markup_problem(commentary,
+                                                    "commentary"),
+                        manifest.narration_substance_problem(
+                            commentary, "commentary")):
+            if problem is not None:
+                raise RecordError(problem)
 
     def _assert_clock_honesty(self, commentary: str) -> None:
         """Refuse a stated time or date the frames contradict.

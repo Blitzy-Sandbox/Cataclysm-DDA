@@ -997,21 +997,25 @@ class TestThePageAndTheScriptsAgree(ExampleFixture):
                             r"session\.py ([a-z][a-z-]*)"))
 
 
-class TestTheWhitespaceWaiverIsNarrow(unittest.TestCase):
-    """F22: the engine's own bytes, and nothing else, are exempt.
+class TestNoWhitespaceWaiverRemains(unittest.TestCase):
+    """F22, reopened: the exemption is gone, and nothing replaced it.
 
-    `git diff --check` reported `new blank line at EOF` against two files
-    the ENGINE wrote — its debug log and the survivor's memorial diary —
-    which are committed verbatim because they are what the session
-    produced. Editing them to please a whitespace linter would mean the
-    committed memorial was no longer the one the game wrote, so the rule
-    is waived for that subtree instead.
+    A `playthrough/userdir/** -whitespace` row was added here so that
+    `git diff --check` would stop reporting `new blank line at EOF`
+    against files the ENGINE writes that way — its debug log and a
+    survivor's memorial diary — on the reasoning that a memorial
+    rewritten to please a whitespace linter is no longer the memorial the
+    game wrote. A review removed it: the plan's file schema for
+    `.gitattributes` permits exactly six additions and no seventh, so the
+    waiver was a change to repository-wide configuration made on this
+    feature's own authority.
 
-    Driven against the real rule file with `git check-attr`, on BOTH sides
-    of the boundary. A waiver widened to `playthrough/**` would silence
-    the check over the transcripts, the reports and the tooling too, and
-    would pass every assertion phrased only as "the engine's files are
-    exempt" — measured: it did.
+    So the property under test inverted. It used to be "the engine's tree
+    is exempt and nothing else is"; it is now "NOTHING is exempt", and the
+    report the waiver used to suppress is measured directly instead —
+    which is the stronger arrangement, because a future recording whose
+    engine files do end with a blank line then surfaces as a finding
+    rather than being silenced before it happens.
     """
 
     def whitespace(self, path):
@@ -1019,40 +1023,76 @@ class TestTheWhitespaceWaiverIsNarrow(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, msg=proc.stderr)
         return proc.stdout.rsplit(": ", 1)[-1].strip()
 
-    def test_the_engine_tree_is_exempt(self):
+    def test_no_path_under_this_feature_is_exempt(self):
+        """Engine-written and authored alike: the rule applies to both."""
         for path in ("playthrough/userdir/config/debug.log",
-                     "playthrough/userdir/save/World/master.gsav"):
-            with self.subTest(path=path):
-                self.assertEqual(self.whitespace(path), "unset")
-
-    def test_nothing_authored_here_is_exempt(self):
-        for path in ("playthrough/transcript.md",
+                     "playthrough/userdir/save/World/master.gsav",
+                     "playthrough/transcript.md",
                      "playthrough/transcript.srt",
                      "playthrough/README.md",
                      "playthrough/manifest.jsonl",
                      "playthrough/tooling/session.py",
                      "playthrough/tooling/env.sh"):
             with self.subTest(path=path):
-                self.assertEqual(self.whitespace(path), "unspecified",
-                                 "the waiver reaches an authored file, "
-                                 "so whitespace defects in it would stop "
-                                 "being reported")
+                self.assertEqual(
+                    self.whitespace(path), "unspecified",
+                    "a whitespace exemption reaches this path, so "
+                    "defects in it would stop being reported")
+
+    def test_the_rule_file_carries_exactly_the_six_permitted_rows(self):
+        """The schema is `6\t0`, and it is asked of git rather than read.
+
+        Six lines added and none removed: the thirty-nine that were there
+        before this feature stay exactly as they were, and no seventh row
+        was appended.
+
+        ASKED OF THE TREE, not of HEAD, and the difference matters for one
+        run only. The reading is `<base>` against the WORKING TREE, which
+        is the state a checkpoint is about to publish; HEAD gives the same
+        answer once that checkpoint is taken, and gave `24 0` while the
+        seventh row was still committed. Pinning it to HEAD would make
+        this assertion unanswerable in exactly the window where the
+        removal needs asserting.
+        """
+        # THE BASE IS DERIVED, not spelled out: it is the parent of the
+        # first commit that touched playthrough/, which is the tree as it
+        # was before this feature existed, and it is the same resolution
+        # verify_artifacts.sh makes for its own change-surface check.
+        first = git("log", "--format=%H", "--", "playthrough")
+        self.assertEqual(first.returncode, 0, msg=first.stderr)
+        oldest = first.stdout.split()[-1]
+        base = git("rev-parse", "--verify", "%s^" % oldest)
+        self.assertEqual(base.returncode, 0, msg=base.stderr)
+        proc = git("diff", "--numstat", base.stdout.strip(),
+                   "--", ".gitattributes")
+        self.assertEqual(proc.returncode, 0, msg=proc.stderr)
+        self.assertEqual(proc.stdout.split(), ["6", "0", ".gitattributes"])
 
     def test_the_check_is_clean_over_the_committed_tree(self):
-        """The property the waiver exists to produce, end to end."""
+        """Measured WITHOUT an exemption, which is the whole point.
+
+        This assertion read the same before the waiver was removed and
+        means something different now: then it was the property the
+        waiver produced, and now it is the property the tree has on its
+        own. If a recording ever commits an engine file ending in a blank
+        line, this fails and names it — which is the disclosure the
+        waiver used to prevent.
+        """
         empty = git("hash-object", "-t", "tree", "/dev/null")
         self.assertEqual(empty.returncode, 0, msg=empty.stderr)
         proc = git("diff", "--check", empty.stdout.strip(), "HEAD",
                    "--", "playthrough")
         self.assertEqual(
             proc.stdout.strip(), "",
-            "git reports a whitespace defect in the committed tree")
+            "git reports a whitespace defect in the committed tree, and "
+            "there is no longer an exemption to suppress it: either the "
+            "byte is wrong or the page must disclose the file")
 
-    def test_the_page_documents_the_waiver_and_its_scope(self):
+    def test_the_page_records_the_removal_and_its_reason(self):
         text = page()
-        self.assertIn("playthrough/userdir/** -whitespace", text)
-        self.assertIn("whitespace waiver", text)
-        self.assertIn("engine's tree **alone**", text)
+        self.assertIn("six type rows, and deliberately no seventh", text)
+        self.assertIn("a review removed it", text)
+        self.assertIn("said\nrather than suppressed", text)
 
 
 class TestTheHostedSessionWalkthroughIsDocumented(ExampleFixture):
@@ -1480,6 +1520,116 @@ class TestTheQuotedOutputIsStillTrue(ExampleFixture):
         # and differs between builds; `+tiles` is the claim.
         self.assertIn("+tiles, +sound", example.output)
         self.assertIn("+tiles, +sound", proc.stdout.splitlines())
+
+    def collected(self, modules):
+        """How many tests the loader would collect from `modules`."""
+        if TOOLING not in sys.path:
+            sys.path.insert(0, TOOLING)
+        loader = unittest.TestLoader()
+        # Importing every suite must not leave bytecode behind: this
+        # module asserts elsewhere that it writes nothing at all.
+        writing = sys.dont_write_bytecode
+        sys.dont_write_bytecode = True
+        try:
+            return sum(loader.loadTestsFromName(name).countTestCases()
+                       for name in modules)
+        finally:
+            sys.dont_write_bytecode = writing
+
+    def test_every_test_total_it_quotes_is_what_the_loader_collects(self):
+        """A published test count that had moved on is a real finding.
+
+        Two runs are quoted -- a discovery over the whole directory and
+        one module on its own -- and neither can be re-run from inside
+        itself.  So each quoted total is held to what the LOADER would
+        collect for the command written above it, which is the number
+        the runner reports and costs one import per module.  Elapsed
+        times are not asserted: the page says they vary by host.
+        """
+        every = sorted(name[:-len(".py")]
+                       for name in os.listdir(TOOLING)
+                       if name.startswith("test_") and
+                       name.endswith(".py"))
+        quoted = [example for example in console_examples()
+                  if any(line.startswith("Ran ") and
+                         line.endswith("s") and " tests in " in line
+                         for line in example.output)]
+        self.assertEqual(
+            len(quoted), 2,
+            "the page quotes %d test runs; this test knows how to "
+            "resolve a directory discovery and a single module"
+            % (len(quoted),))
+        for example in quoted:
+            total = int(re.search(r"Ran (\d+) tests in ",
+                                  "\n".join(example.output)).group(1))
+            with self.subTest(line=example.line):
+                if "discover" in example.command:
+                    modules = every
+                    what = "discovery over %d modules" % (len(modules),)
+                else:
+                    named = re.findall(r"(test_\w+)\.py",
+                                       example.command)
+                    self.assertEqual(
+                        len(named), 1,
+                        "a quoted run names %d suite modules and is "
+                        "neither a discovery nor a single module"
+                        % (len(named),))
+                    modules = named
+                    what = named[0]
+                self.assertEqual(
+                    total, self.collected(modules),
+                    "README line %d quotes %d tests for %s and the "
+                    "loader collects %d; re-run the command and "
+                    "publish what it answers"
+                    % (example.line, total, what,
+                       self.collected(modules)))
+
+    def test_the_skips_it_names_are_skips_that_exist(self):
+        """A named skip is checkable; an unnamed one is an excuse."""
+        text = page()
+        marker = "**Both skips are named"
+        self.assertEqual(text.count(marker), 1,
+                         "the page's skip block moved or is gone")
+        lines = text[text.index(marker):].splitlines()[1:]
+        block, started = [], False
+        for line in lines:
+            if line.startswith("* "):
+                started = True
+            elif started and line.strip() and not line.startswith("  "):
+                break
+            if started:
+                block.append(line)
+        named = re.findall(r"`(test_\w+)\.(\w+)\.(test_\w+)`",
+                           "\n".join(block))
+        counted = re.findall(r"OK \(skipped=(\d+)\)", text)
+        self.assertEqual(len(counted), 1,
+                         "exactly one skip count is quoted; found %d"
+                         % (len(counted),))
+        self.assertEqual(
+            len(named), int(counted[0]),
+            "the run reports %s skip(s) and the page names %d"
+            % (counted[0], len(named)))
+        for module, group, method in named:
+            with self.subTest(test="%s.%s" % (group, method)):
+                path = os.path.join(TOOLING, module + ".py")
+                self.assertTrue(os.path.isfile(path),
+                                "no such suite module: %s" % (path,))
+                with open(path, encoding="utf-8") as handle:
+                    source = handle.read()
+                self.assertIn("class %s(" % (group,), source,
+                              "the page names a group that is gone")
+                opening = "    def %s(" % (method,)
+                self.assertIn(opening, source,
+                              "the page names a test that is gone")
+                body = source[source.index(opening):]
+                end = body.find("\n    def ", 1)
+                if end != -1:
+                    body = body[:end]
+                self.assertIn(
+                    "skipTest", body,
+                    "%s is named as a skip and no longer declines; a "
+                    "test that now runs must come off the list"
+                    % (method,))
 
 
 class TestTheReadOnlyToolExamplesRun(ExampleFixture):

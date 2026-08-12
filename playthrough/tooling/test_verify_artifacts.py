@@ -1549,8 +1549,14 @@ class TestTheGitIdentityIsResolvableAndMatchesTheHistory(
     """
 
     def body(self):
+        # FROM THE HELPER, not from the check.  The one divergence this
+        # check can record was written out twice, once per branch, and
+        # two copies of a citation is two places for it to drift from the
+        # directive it quotes -- so it lives in
+        # record_identity_divergence, immediately above, and the body
+        # under test is both of them together.
         source = gate_source()
-        start = source.index("check_git_identity() {")
+        start = source.index("record_identity_divergence() {")
         return source[start:source.index("committed_file() {", start)]
 
     def test_the_authoritative_resolution_is_what_decides(self):
@@ -1581,6 +1587,57 @@ class TestTheGitIdentityIsResolvableAndMatchesTheHistory(
         self.assertIn("0.3.1", body)
         self.assertIn("0.10.2", body)
         self.assertIn("TECHNICAL_NOTES.md", body)
+
+    def test_the_displacing_directive_is_quoted_word_for_word(self):
+        """A divergence that paraphrases its authority asks to be
+        believed.
+
+        The verdict used to say the environment "PROHIBITS running 'git
+        config user.name' or 'user.email' at any scope" -- true, and a
+        summary.  A review asked for the exception text itself, so the
+        directive is held as one constant and quoted into the verdict,
+        and this is the assertion that it is the directive rather than a
+        description of it.
+        """
+        source = joined_source()
+        marker = 'readonly IDENTITY_DIRECTIVE="'
+        start = source.index(marker) + len(marker)
+        # The backticks the directive is written with are escaped in the
+        # shell literal, so they are unescaped before the comparison:
+        # what is asserted is the SENTENCE, not the quoting of it.
+        held = source[start:source.index('"\n', start)].replace("\\`", "`")
+        self.assertEqual(
+            held,
+            "All git commits must be authored and committed as "
+            "`Blitzy Agent <agent@blitzy.com>`. Never run "
+            "`git config user.name`/`user.email`, and never override "
+            "the author/committer identity.")
+        # And it is QUOTED, not merely held: the verdict introduces it as
+        # a quotation so a reader knows which words are the host's.
+        self.assertIn("directive, verbatim:", source,
+                      msg="the divergence must present the directive as "
+                          "a quotation")
+        self.assertIn('verbatim: \\"${IDENTITY_DIRECTIVE}\\"', source,
+                      msg="the quoted text must be the constant itself, "
+                          "not a second copy of it")
+
+    def test_the_conflict_is_named_as_one_for_a_human_to_settle(self):
+        """Two instructions that cannot both be obeyed is not a bug.
+
+        The plan requires a repository-local pair; the host forbids the
+        commands that create one.  A gate cannot close that, and saying
+        so is the difference between a disclosed conflict and a quiet
+        one.
+        """
+        source = joined_source()
+        self.assertIn("requirement-level conflict for a human to settle",
+                      source)
+
+    def test_the_two_branches_share_one_divergence(self):
+        """Written once, so the citation cannot drift between copies."""
+        body = self.body()
+        self.assertEqual(body.count("record_identity_divergence "), 2)
+        self.assertEqual(body.count("IDENTITY_DIRECTIVE"), 1)
 
     def test_the_check_name_no_longer_promises_a_local_scope(self):
         """The name has to describe what is actually measured.
@@ -2770,29 +2827,35 @@ class CheckerCase(unittest.TestCase):
 
 
 class TestTheRationaleContract(CheckerCase):
-    """"Swing." is not a reason, and the gate has to say so.
+    """"Swing." is not a reason, and the gate has to refuse it.
 
     TWO CHANNELS, AND WHICH PROPERTY GOES DOWN WHICH ONE.  The verdict
     FAILS when an entry carries no word beyond the key that produced it,
-    or does not close as a sentence -- both decidable whichever field the
-    survivor wrote in.  A single-word entry and a sentence repeated
-    inside the window are REPORTED, with every frame number, because a
-    program cannot tell a one-word reason from a one-word placeholder:
-    "West." on the eighth step west is a whole thought, and the same word
-    standing in for a reason nobody wrote is a shortfall.  The check's
-    own PASS text has always disclaimed deciding that, and measuring the
-    contract against a record whose action notes are written in the
-    survivor's voice is what showed the per-entry refusal reporting
-    entries that plainly do give a reason.
+    when it does not close as a sentence, or when the COMMENTARY is a
+    single word.  Only a sentence repeated inside the window is
+    REPORTED rather than failed.
 
-    The narration is read as the UNION of the action's note and the
-    commentary, which is what a reader of the record gets.
+    THE SINGLE-WORD CLASS MOVED FROM REPORTED TO REFUSED, and these tests
+    are where that is pinned.  It was a WARN on the argument that a
+    program cannot tell a one-word reason from a one-word placeholder; a
+    review then measured the delivered record and found 44 of 307 entries
+    carrying one, 42 of them the character just typed into a search box,
+    and none of them explaining anything.  A gate that counted them let
+    the record ship with them, so counting is no longer the answer.
+
+    THE TWO SUBJECTS ARE DIFFERENT ON PURPOSE.  "Carries a word beyond
+    the key" is asked of the UNION of the action's note and the
+    commentary, which is what a reader of the RECORD gets -- measured on
+    the delivered record, that framing is what removed 37 false findings
+    against entries whose reason is written across both fields.  "Is a
+    single word" is asked of the COMMENTARY alone, because the commentary
+    is what is published as the caption cue and the transcript entry, so
+    a one-word commentary is a one-word cue whatever its note says.
     """
 
     LABEL = "record"
     NAME = "no entry is only the key that produced it"
-    SHORTFALL = ("entries whose narration is a single word or repeats "
-                 "the one before it")
+    SHORTFALL = "entries repeating the sentence before them"
 
     def write_record(self, pairs):
         """A manifest file from (action, commentary) pairs."""
@@ -2831,6 +2894,16 @@ class TestTheRationaleContract(CheckerCase):
         self.tmp = tempfile.mkdtemp(prefix="blitzy_gate_")
         self.addCleanup(__import__("shutil").rmtree, self.tmp,
                         ignore_errors=True)
+        # THE CHECKER IMPORTS timeline.py TO READ THE EFFECTIVE
+        # NARRATION, so the tooling directory has to be importable for
+        # the ledger-correction case to exercise the timeline branch at
+        # all.  It is inserted HERE rather than relied on: it used to
+        # arrive as a side effect of whichever other class happened to
+        # run first, which made this class pass in a full run and fail
+        # when a single test was named.  Never removed, for the same
+        # reason -- a sibling class is entitled to the entry it added.
+        if TOOLING not in sys.path:
+            sys.path.insert(0, TOOLING)
 
     def test_an_entry_that_is_only_its_own_key_is_refused(self):
         """The one shape that accounts for nothing in either field."""
@@ -2838,55 +2911,84 @@ class TestTheRationaleContract(CheckerCase):
         self.assertEqual(kind, "FAIL")
         self.assertIn("the key and nothing else", observed)
 
-    def test_the_reviewed_label_is_reported_with_its_frame(self):
-        """"Swing." beside `press '2' -- swing` cannot pass unnamed.
+    def test_the_reviewed_label_is_refused_with_its_frame(self):
+        """"Swing." beside `press '2' -- swing` is refused, and named.
 
-        It is not a refusal, because the same shape is "West." on the
-        eighth step west -- see this class's own docstring -- but it is
-        counted and named, which is what the review asked for and what
-        being satisfied by non-emptiness alone never gave.
+        It used to PASS with a counted warning.  A review measured what
+        that permitted and the answer is 44 published cues that account
+        for nothing, so the verdict is now a failure -- and it still
+        names the frame, because a failure a reader cannot locate is
+        half a finding.
         """
         kind, _, observed = self.judge([("press '2' -- swing",
                                          "Swing.")])
-        self.assertEqual(kind, "PASS", msg=observed)
-        shortfall = self.reported([("press '2' -- swing", "Swing.")])
-        self.assertIsNotNone(shortfall,
-                             msg="the label was neither failed nor "
-                                 "reported, which is the defect the "
-                                 "review found")
-        self.assertEqual(shortfall[0], "WARN")
-        self.assertIn("1 single-word entr(ies)", shortfall[2])
-        self.assertIn("'Swing.'", shortfall[2])
+        self.assertEqual(kind, "FAIL")
+        self.assertIn("which is one word", observed)
+        self.assertIn("frame 1", observed)
+        self.assertIn("'Swing.'", observed)
 
-    def test_a_one_word_label_is_reported(self):
-        """A one-word note and a one-word echo of it, which is the
-        shape the shipped record carries fourteen times."""
-        shortfall = self.reported([("press 'Left' -- west", "West.")])
-        self.assertIsNotNone(shortfall)
-        self.assertIn("'West.'", shortfall[2])
+    def test_a_one_word_label_is_refused(self):
+        """A one-word note and a one-word echo of it."""
+        kind, _, observed = self.judge([("press 'Left' -- west",
+                                         "West.")])
+        self.assertEqual(kind, "FAIL")
+        self.assertIn("'West.'", observed)
 
-    def test_a_one_word_echo_of_a_full_note_is_not_reported(self):
-        """The union is what a reader gets, and it is a sentence."""
+    def test_a_one_word_echo_of_a_full_note_is_refused(self):
+        """The published cue is the commentary, note or no note.
+
+        This case is the one that changed meaning: the union framing
+        makes the entry account for something, so it does not trip the
+        key-only property -- and the cue a viewer reads is still the
+        single word "Mail.", which is why the commentary is asked its own
+        question.
+        """
         pairs = [("press 'M' -- begin spelling my trade", "Mail.")]
         kind, _, observed = self.judge(pairs)
-        self.assertEqual(kind, "PASS", msg=observed)
-        self.assertIsNone(self.reported(pairs))
+        self.assertEqual(kind, "FAIL")
+        self.assertIn("accounting for it", observed)
 
-    def test_a_transcribed_keystroke_is_not_reported_as_a_label(self):
-        """Spelling a word into a filter is a transcription.
+    def test_a_transcribed_keystroke_is_refused_like_any_other_label(self):
+        """The exemption that was hiding 42 of the 44 offenders.
 
-        One character per frame is what the engine's own search field
-        forces, and the reason for the run belongs to the entry that
-        opens it -- so these are counted as their own class rather than
-        reported as one-word reasons.
+        Spelling a word into the engine's search field is one character
+        per frame, and a "transcription" class used to exempt exactly
+        that shape on the argument that the reason belongs to the entry
+        opening the run.  Each of those keystrokes still gets its own cue
+        on the film, and a cue reading "M." says nothing to anybody.
         """
         pairs = [("press 'm' -- begin spelling the start I want", "M."),
                  ("press 'i' -- continue spelling it", "I.")]
         kind, _, observed = self.judge(pairs)
-        self.assertEqual(kind, "PASS", msg=observed)
-        self.assertIn("2 of them a single character transcribed",
-                      observed)
-        self.assertIsNone(self.reported(pairs))
+        self.assertEqual(kind, "FAIL")
+        self.assertIn("2 of them a single-word commentary", observed)
+
+    def test_the_gate_and_the_writer_agree_on_what_a_word_is(self):
+        """One rule, not two spellings of one rule.
+
+        manifest.narration_substance_problem refuses a one-word
+        commentary where the row is WRITTEN; this gate refuses the same
+        class where the record is READ.  If the two disagreed about what
+        counts as a word, a row could pass the door and fail the gate for
+        ever, with no correction that both accepted.
+
+        Compared as SOURCE TEXT rather than by importing either side: the
+        assertion is that the two spellings are the same spelling, and
+        importing to ask a compiled pattern for its own text would pass
+        just as happily on two patterns that differ in the one place a
+        reader would look.
+        """
+        def spelling_of(source, name):
+            start = source.index("%s = re.compile(" % name)
+            opened = source.index("(", start) + 1
+            return source[opened:source.index(")", opened)].strip()
+
+        with open(os.path.join(TOOLING, "manifest.py"),
+                  encoding="utf-8") as handle:
+            writer = handle.read()
+        self.assertEqual(
+            spelling_of(gate_source(), "RATIONALE_WORD_RE"),
+            spelling_of(writer, "NARRATION_WORD_RE"))
 
     def test_an_unclosed_fragment_is_refused(self):
         kind, _, observed = self.judge(
@@ -4695,14 +4797,35 @@ class TestTheAnchorHeadMustBePublished(SyntheticGateFixture):
                          msg=result.stderr.decode("utf-8", "replace"))
         return result.stdout.decode("utf-8", "replace").strip()
 
-    def commit(self, trailer=None, subject="a checkpoint"):
-        """One commit over the tree, carrying `trailer` if given."""
+    def commit(self, trailer=None, subject="a checkpoint",
+               milestone="creation"):
+        """One commit over the tree, carrying `trailer` if given.
+
+        `milestone` is the lifecycle name the commit declares, and it is
+        declared only alongside an anchor trailer: the tests that pass no
+        trailer are about a history with no checkpoint machinery in it at
+        all, which is a different case from a checkpoint that publishes
+        no head.  That second case is unanchored_checkpoint().
+        """
         self.git("add", "-A", ".")
         arguments = ["commit", "--quiet", "-m", subject]
         if trailer is not None:
-            arguments += ["-m", "Playthrough-Checkpoint: creation\n%s: %s"
-                          % (self.TRAILER, trailer)]
+            arguments += ["-m", "Playthrough-Checkpoint: %s\n%s: %s"
+                          % (milestone, self.TRAILER, trailer)]
         self.git(*arguments)
+
+    def unanchored_checkpoint(self, milestone, subject):
+        """A lifecycle checkpoint that publishes no anchor head.
+
+        This is what every checkpoint in the delivered history looks
+        like: taken before the anchor mechanism existed, so it declares
+        its milestone and nothing about the evidence tree.
+        """
+        self.write(os.path.join(self.dir, "%s.marker" % milestone),
+                   "%s\n" % milestone)
+        self.git("add", "-A", ".")
+        self.git("commit", "--quiet", "-m", subject,
+                 "-m", "Playthrough-Checkpoint: %s" % milestone)
 
     def verdict(self):
         return self.drive(
@@ -4792,6 +4915,76 @@ class TestTheAnchorHeadMustBePublished(SyntheticGateFixture):
         recorded = self.verdict()
         self.assertEqual(recorded.kind_of(self.NAME), "PASS")
         self.assertIn(second[:16], recorded.detail(self.NAME))
+
+    def test_a_checkpoint_publishing_no_head_is_a_named_divergence(self):
+        """The delivered history's shape, and the reason this changed.
+
+        A review found this check taking the NEWEST commit carrying a
+        trailer anywhere in the history and comparing only that one --
+        which passes on a history whose lifecycle checkpoints carry no
+        trailer at all, because the mechanism arrived after them.  That
+        is the delivered history exactly.  The head IS published, so this
+        is not a failure; the seal is not contemporaneous with the
+        commits it seals, so it is not a pass either.  It is a divergence
+        that NAMES the checkpoints, and naming them is the point: an
+        unnamed one reads downstream as covered.
+        """
+        self.prepare()
+        self.unanchored_checkpoint("final", "the session was saved")
+        head = self.seal()
+        self.commit(trailer=head, subject="a later seal")
+        recorded = self.verdict()
+        self.assertEqual(recorded.kind_of(self.NAME), "DIVERGENCE")
+        detail = recorded.detail(self.NAME)
+        self.assertIn(head[:16], detail)
+        self.assertIn("(final)", detail)
+        self.assertEqual(recorded.failures, 0)
+
+    def test_the_divergence_says_why_it_cannot_be_closed(self):
+        """Rewriting the commit is the only repair, and it is forbidden.
+
+        A divergence that does not say what would close it is a shrug.
+        This one says the two things that would: a re-recording taken
+        through the hardened committer, and retention of the head outside
+        this repository.
+        """
+        self.prepare()
+        self.unanchored_checkpoint("media", "the film was published")
+        head = self.seal("media")
+        self.commit(trailer=head, subject="a later seal")
+        recorded = self.verdict()
+        self.assertEqual(recorded.kind_of(self.NAME), "DIVERGENCE")
+        # detail() collects the verdict line and every line beneath it, so
+        # the requirement and the reason are both in what it returns.
+        detail = recorded.detail(self.NAME)
+        self.assertIn("force-push", detail)
+        self.assertIn("re-recording", detail)
+        self.assertIn("OUTSIDE this repository", detail)
+
+    def test_every_required_checkpoint_carrying_one_passes(self):
+        """The state a re-recording would leave, so the pass is reachable.
+
+        A gate whose pass verdict no run can reach is a permanent red
+        light rather than a measurement, so the anchored shape is
+        measured too: each of the three required milestones publishing a
+        head of its own, and the newest of them the one the ledger ends
+        on.
+        """
+        self.prepare()
+        first = self.seal()
+        self.commit(trailer=first, subject="creation",
+                    milestone="creation")
+        self.write(os.path.join(self.dir, "timeline.json"), "[]\n")
+        second = self.seal("final")
+        self.commit(trailer=second, subject="final", milestone="final")
+        self.write(os.path.join(self.dir, "transcript.srt"), "\n")
+        third = self.seal("media")
+        self.commit(trailer=third, subject="media", milestone="media")
+        recorded = self.verdict()
+        self.assertEqual(recorded.kind_of(self.NAME), "PASS")
+        detail = recorded.detail(self.NAME)
+        self.assertIn(third[:16], detail)
+        self.assertIn("publishes a head of its own", detail)
 
 
 class TestTheStagingSoundnessCheckDelegates(SyntheticGateFixture):

@@ -158,11 +158,17 @@ numpy==2.5.1  # frame luminance statistics and MoviePy arrays
 #     renamed .png raises UnidentifiedImageError instead of reaching the
 #     parser for its real format.  There is no other Image.open in the
 #     module, and its own test suite asserts that structurally.
-#   * make_transitions.py DECODES NOTHING ITSELF.  It verifies the PNG
-#     signature and the IHDR chunk before a frame is composed, and the
-#     decode is MoviePy's ImageClip -- so the file that reaches the
-#     decoder has been proved to be a real PNG rather than another
-#     format wearing the extension.
+#   * make_transitions.py NEVER HANDS MoviePy A FILE.  It reads each
+#     capture's bytes through a descriptor opened O_NOFOLLOW, fstats
+#     that descriptor, checks the PNG signature and the IHDR chunk on
+#     the bytes it read, decodes them with Pillow restricted to the PNG
+#     plugin over an in-memory buffer, and gives ImageClip the resulting
+#     numpy ARRAY.  So the composition path opens no file by name after
+#     it has been checked -- there is no window in which the inode could
+#     be swapped for another format or another file -- and MoviePy's own
+#     image loading never runs at all.  This is stronger than it was: it
+#     used to pass the PATHNAME to ImageClip after checking it, which a
+#     review identified as a check-then-use race (CWE-367).
 #   * geometry is read WITHOUT A DECODER AT ALL, in both modules.  Frame
 #     width and height come from a pure-Python read of the IHDR chunk,
 #     so the dimension probe -- which every stage does on every frame --
@@ -186,11 +192,31 @@ numpy==2.5.1  # frame luminance statistics and MoviePy arrays
 # the platform requirement further down is part of the dependency set
 # and not a footnote.
 #
-# TWO OTHER ROUTES WERE CONSIDERED AND REFUSED, recorded here so the
+# THREE OTHER ROUTES WERE CONSIDERED AND REFUSED, recorded here so the
 # decision is not re-litigated as an oversight.  An audited third-party
 # MoviePy FORK compatible with Pillow 12.x would trade a reviewed,
 # widely-used release for an unreviewed one, which moves the supply-chain
-# risk rather than removing it, and no such fork is published.  A PRIVATE
+# risk rather than removing it.  One such fork is published and was read:
+# it forks MoviePy 1.x, and 1.x does not have the API this pipeline is
+# written against -- `with_effects`, `vfx.FadeOut`, keyword `TextClip`
+# -- so adopting it would mean rewriting make_transitions.py onto an
+# unmaintained major version to escape a pin, which is a worse position
+# than the pin.  DROPPING MoviePy ENTIRELY would end the question, and it
+# is refused on a higher authority than preference: the plan names
+# moviepy as one of the five libraries the requirement asks for
+# [AAP 0.5.1, "Named in R9"] and states the transition unit is where it
+# is kept genuinely load-bearing, performing "the fade mathematics and
+# the text composition that R9 names it for" [AAP 0.7.2.4].  Removing it
+# to satisfy an advisory would fail the requirement the file exists to
+# satisfy.  What is done instead of removal is ISOLATION, and it is real
+# rather than promised: MoviePy is reached only from
+# make_transitions.py, only for 12 transition groups, only over frames
+# this pipeline captured, and -- since the descriptor-bound rewrite
+# recorded above -- only through numpy arrays, so no MoviePy code opens
+# or decodes a CAPTURE at all.  It opens exactly one file by name, the
+# typeface TextClip renders the card in, and that one is checked against
+# an attested digest before it is passed (the FONT IS ATTESTED control
+# listed above).  A PRIVATE
 # Pillow build carrying backported fixes would produce a native imaging
 # binary that nobody downstream can verify and that no advisory database
 # describes -- the opposite of what requirements.lock exists to
@@ -218,6 +244,37 @@ numpy==2.5.1  # frame luminance statistics and MoviePy arrays
 # series, so there is no patched in-range release to move to either.
 # `pip check` on the provisioned interpreter is silent and the installed
 # Pillow is 11.3.0, which is what this file says.
+#
+# RE-VERIFIED AGAIN AT THE REMEDIATION OF 2026-08-12, because a code
+# review asked -- for the second time, and correctly -- for a patched
+# stack rather than an explanation, and named the fix versions:
+#
+#     moviepy   latest release still 2.2.1, still "pillow<12.0,>=9.2.0"
+#     moviepy   the upstream request to support Pillow >= 12
+#               (Zulko/moviepy issue 2553, opened against 12.1.1)
+#               remains OPEN, with no release lifting the cap
+#     pillow    12.3.0 available; the advisories the review cites are
+#               fixed in 12.1.1 and 12.2.0, both of which are above the
+#               cap and therefore both unreachable from here
+#
+# THE PLAIN STATEMENT, because everything above is context and this is
+# the finding: VULNERABLE DECODER CODE REMAINS INSTALLED.  Pillow 11.3.0
+# carries the published advisories its own project fixed in 12.1.1 and
+# 12.2.0, this file pins it deliberately, and no combination of pins in
+# this file both installs a fixed Pillow and keeps `pip install -r`
+# resolvable.  Nothing below cancels that; what is below is the reason
+# the residual is narrow and what enforces the narrowness.
+#
+# WHAT IS ACTUALLY IN FORCE, as opposed to argued: there are exactly TWO
+# Pillow decodes in this pipeline, both of them over an in-memory buffer
+# with `formats=["PNG"]`, both of them on bytes read through a descriptor
+# opened O_NOFOLLOW and fstat-validated, both of them under a pixel
+# ceiling checked before the decode, and both of them on a PNG this
+# pipeline captured itself from an X server it started on the machine
+# doing the decoding.  Neither of them can be reached by a file that
+# arrived any other way, and the transition path -- the one that exists
+# only because MoviePy is a dependency at all -- was narrowed further at
+# this same remediation and no longer lets MoviePy open anything.
 #
 # THIS IS AN ACCEPTED, DISCLOSED RISK RATHER THAN A CLEAN BILL OF
 # HEALTH, and it is recorded as one in playthrough/TECHNICAL_NOTES.md

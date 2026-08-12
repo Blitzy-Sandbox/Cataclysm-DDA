@@ -61,6 +61,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 
 # Keep bytecode out of playthrough/tooling/: the terminal
@@ -2242,6 +2243,26 @@ class TestEveryImageComesThroughOneDoor(unittest.TestCase):
             with self.subTest(line=line):
                 self.assertIn('formats=["PNG"]', line)
 
+    def test_no_door_hands_a_pathname_to_the_decoder(self):
+        """The check-to-use race, asserted structurally.
+
+        A review found the provenance rule applied with `lstat` and the
+        file then REOPENED BY NAME for the decode, so the bytes Pillow
+        parsed were not the bytes that were validated.  Both doors decode
+        an in-memory buffer now, so a `Image.open(path` anywhere in this
+        module would be that defect coming back.
+        """
+        source_path = os.path.join(TOOLING, "ocr_clock.py")
+        with open(source_path, encoding="utf-8") as handle:
+            lines = handle.readlines()
+        for number, line in enumerate(lines, start=1):
+            stripped = line.strip()
+            if stripped.startswith("#") or "Image.open(" not in line:
+                continue
+            with self.subTest(line=number):
+                self.assertIn("Image.open(io.BytesIO(", line,
+                              "a decoder is being handed a pathname")
+
     @unittest.skipIf(Image is None, "needs Pillow")
     def test_a_bmp_named_png_is_refused(self):
         target = self.path("frame_00001.png")
@@ -2391,6 +2412,61 @@ class TestTheDecoderIsEnteredUnderConditions(unittest.TestCase):
         with self.assertRaises(ocr_clock.FrameUnreadableError) as caught:
             ocr_clock.open_png(os.path.join(self.root, "absent.png"))
         self.assertIn("could not be examined", str(caught.exception))
+
+    # -- one open, one fstat, one read --------------------------------
+
+    @unittest.skipIf(Image is None, "needs Pillow")
+    def test_the_verified_read_returns_the_bytes_it_validated(self):
+        path = self.frame()
+        with open(path, "rb") as handle:
+            expected = handle.read()
+        self.assertEqual(ocr_clock.read_verified_frame(path), expected)
+
+    def test_the_verified_read_refuses_each_property(self):
+        """The same rule, asked of the descriptor the bytes come from."""
+        fifo = os.path.join(self.root, "fifo.png")
+        os.mkfifo(fifo, 0o600)
+        cases = [(fifo, "not a regular file"),
+                 (os.path.join(self.root, "absent.png"),
+                  "could not be examined")]
+        if Image is not None:
+            link = os.path.join(self.root, "link.png")
+            os.symlink(self.frame(), link)
+            cases.append((link, "symbolic link"))
+            cases.append((self.frame(name="loose.png", mode=0o666),
+                          "writable beyond its owner"))
+        for path, expected in cases:
+            with self.subTest(path=os.path.basename(path)):
+                with self.assertRaises(
+                        ocr_clock.FrameUnreadableError) as caught:
+                    ocr_clock.read_verified_frame(path)
+                self.assertIn(expected, str(caught.exception))
+
+    def test_a_file_past_the_byte_ceiling_is_not_read_into_memory(self):
+        """A planted enormous file is refused from its size alone."""
+        path = os.path.join(self.root, "huge.png")
+        with open(path, "wb") as handle:
+            handle.write(ocr_clock.PNG_MAGIC)
+            handle.truncate(ocr_clock.MAX_FRAME_BYTES + 1)
+        os.chmod(path, 0o600)
+        with self.assertRaises(ocr_clock.FrameUnreadableError) as caught:
+            ocr_clock.read_verified_frame(path)
+        self.assertIn("ceiling", str(caught.exception))
+
+    def test_a_fifo_does_not_block_the_reader(self):
+        """O_NONBLOCK is why this test can be written at all.
+
+        Opening a fifo for reading blocks until a writer arrives, so the
+        refusal has to happen without ever waiting for one -- a capture
+        path replaced by a fifo would otherwise hang the pipeline instead
+        of failing it.
+        """
+        fifo = os.path.join(self.root, "hang.png")
+        os.mkfifo(fifo, 0o600)
+        started = time.monotonic()
+        with self.assertRaises(ocr_clock.FrameUnreadableError):
+            ocr_clock.read_verified_frame(fifo)
+        self.assertLess(time.monotonic() - started, 5.0)
 
     # -- the limits around the decode --------------------------------
 
